@@ -1,0 +1,48 @@
+{
+  "name": "Maxiconfort Livraison Pro",
+  "short_name": "Maxiconfort",
+  "description": "Gestion des tournées et livraisons Maxiconfort Île-de-France",
+  "start_url": "/maxiconfort-v7.html",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#FF8800",
+  "lang": "fr-FR",
+  "categories": ["business", "productivity"],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icon-180.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Ma tournée",
+      "short_name": "Tournée",
+      "description": "Accéder à ma tournée du jour",
+      "url": "/maxiconfort-v7.html#livreur",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
