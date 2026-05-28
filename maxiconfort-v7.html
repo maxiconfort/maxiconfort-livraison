@@ -580,7 +580,7 @@ textarea{resize:vertical;min-height:65px}
         </div>
         <div class="fg" style="margin-bottom:10px">
           <label>Sélectionner les commandes à inclure</label>
-          <div style="border:1px solid var(--brd2);border-radius:var(--r);overflow:hidden;max-height:200px;overflow-y:auto" id="cmd-checklist"></div>
+          <div style="border:1px solid var(--brd2);border-radius:var(--r);overflow:hidden;max-height:450px;overflow-y:auto" id="cmd-checklist"></div>
         </div>
         <button class="btn btn-p btn-full" onclick="creerTournee()">🗺 Créer la tournée</button>
       </div>
@@ -1831,7 +1831,8 @@ Maxiconfort — {TEL_CONTACT}</textarea>
         <div class="fg"><label>Nom client *</label><input id="f-nom" placeholder="Mme Martin"></div>
         <div class="fg"><label>Téléphone *</label><input id="f-tel" placeholder="06 12 34 56 78"></div>
         <div class="fg"><label>Email</label><input id="f-email" type="email" placeholder="client@email.com"></div>
-        <div class="fg"><label>Date de livraison *</label><input id="f-date" type="date"></div>
+        <div class="fg"><label>📅 Date prise de commande</label><input id="f-date-cmd" type="date"></div>
+        <div class="fg"><label>🚚 Date livraison souhaitée *</label><input id="f-date" type="date"></div>
         <div class="fg full"><label>Adresse complète *</label><input id="f-adresse" placeholder="12 rue des Lilas, 94350 Villiers-sur-Marne"></div>
         <div class="fg"><label>Étage</label><input id="f-etage" placeholder="2e étage"></div>
         <div class="fg"><label>Ascenseur</label><select id="f-asc"><option>Non</option><option>Oui</option></select></div>
@@ -2069,13 +2070,33 @@ const MODES_OPTIONS = MODES_PAIE.map(m => '<option value="'+m.id+'">'+m.icon+' '
 
 const SUPABASE_URL = 'https://jmvfjtnmebstkzcfnlgp.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImptdmZqdG5tZWJzdGt6Y2ZubGdwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg3OTYxODYsImV4cCI6MjA5NDM3MjE4Nn0.t_zyGmY96wUB_hk63WOSYZniBy_9oHwfpDvcxwl2s5U';
+const APP_SECRET = '9fefa508934706dba95559be02e2033f0df05f593a4b4d81da7d7aac307ce257';
+
+// Intercepteur fetch : injecte x-app-secret sur tous les appels vers Supabase
+(function(){
+  var orig = window.fetch;
+  window.fetch = function(input, init){
+    init = init || {};
+    var url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (url.indexOf(SUPABASE_URL) === 0) {
+      var h = init.headers;
+      if (h instanceof Headers) {
+        h.set('x-app-secret', APP_SECRET);
+      } else {
+        init.headers = Object.assign({}, h || {}, { 'x-app-secret': APP_SECRET });
+      }
+    }
+    return orig.call(this, input, init);
+  };
+})();
+
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: {
     params: { eventsPerSecond: 10 }
   },
   db: { schema: 'public' },
   global: {
-    headers: { 'apikey': SUPABASE_KEY }
+    headers: { 'apikey': SUPABASE_KEY, 'x-app-secret': APP_SECRET }
   }
 });
 
@@ -2185,6 +2206,7 @@ async function sbSaveCommande(cmd) {
       livreur: cmd.livreur||'',
       statut: cmd.statut||'en-attente',
       date_livraison: cmd.date||'',
+      date_commande: (cmd.dateCmd && cmd.dateCmd.length === 10) ? cmd.dateCmd : null,
       instr: cmd.instr||'',
       origine: cmd.origine||'',
       ref_marketplace: cmd.refMarketplace||'',
@@ -2709,7 +2731,7 @@ async function sbLoadAll() {
           paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
           montantEnc:parseFloat(r.montant_enc)||0,
           livreur:r.livreur||'', statut:r.statut||'en-attente',
-          date:r.date_livraison||'', instr:r.instr||'',
+          date:r.date_livraison||'', dateCmd:r.date_commande||'', instr:r.instr||'',
           origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
         };
       });
@@ -2825,7 +2847,7 @@ async function sbChargerPlusCommandes() {
           paie:r2.paie||'Espèces', stpaie:r2.stpaie||'Non payé',
           montantEnc:parseFloat(r2.montant_enc)||0,
           livreur:r2.livreur||'', statut:r2.statut||'en-attente',
-          date:r2.date_livraison||'', instr:r2.instr||'',
+          date:r2.date_livraison||'', dateCmd:r2.date_commande||'', instr:r2.instr||'',
           origine:r2.origine||'', refMarketplace:r2.ref_marketplace||'',
           modePaie:r2.mode_paie||'Espèces',
         };
@@ -2884,7 +2906,7 @@ function startPolling() {
               paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
               montantEnc:parseFloat(r.montant_enc)||0,
               livreur:r.livreur||'', statut:r.statut||'en-attente',
-              date:r.date_livraison||'', instr:r.instr||'',
+              date:r.date_livraison||'', dateCmd:r.date_commande||'', instr:r.instr||'',
               origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
               modePaie:r.mode_paie||'Espèces',
             };
@@ -2987,7 +3009,7 @@ function sbStartRealtime() {
         remiseGlobaleVal:r.remise_globale_val, remiseGlobaleType:r.remise_globale_type,
         remiseMotif:r.remise_motif, paie:r.paie, stpaie:r.stpaie,
         montantEnc:r.montant_enc, livreur:r.livreur, statut:r.statut,
-        date:r.date_livraison, instr:r.instr, origine:r.origine,
+        date:r.date_livraison, dateCmd:r.date_commande||'', instr:r.instr, origine:r.origine,
         refMarketplace:r.ref_marketplace,
       };
       if (idx > -1) commandes[idx] = mapped;
@@ -3322,6 +3344,8 @@ async function brevoEnvoiGroupeTournee(tid, type) {
       });
       sbSaveSmsHistorique(s.client, s.tel, type, msg, 'échec');
     }
+    // Throttle 200ms entre SMS pour eviter rate-limit Brevo (~5 SMS/s max)
+    await new Promise(function(r){ setTimeout(r, 200); });
   }
 
   smsRendrHistorique();
@@ -3374,6 +3398,8 @@ async function brevoEnvoiVeille() {
       });
       sbSaveSmsHistorique(c.client, c.tel, 'veille', msg, 'envoyé');
     } else fail++;
+    // Throttle 200ms entre SMS pour eviter rate-limit Brevo (~5 SMS/s max)
+    await new Promise(function(r){ setTimeout(r, 200); });
   }
 
   smsRendrHistorique();
@@ -4429,7 +4455,9 @@ function getLignesData() {
 function openNewCmd() {
   var _gm_cmd_title=document.getElementById('m-cmd-title'); if(_gm_cmd_title) _gm_cmd_title.textContent='Nouvelle commande';
 
-  document.getElementById('f-date').value = new Date().toISOString().split('T')[0];
+  var _today_iso = new Date().toISOString().split('T')[0];
+  document.getElementById('f-date').value = _today_iso;
+  var _fdc = document.getElementById('f-date-cmd'); if (_fdc) _fdc.value = _today_iso;
   ['f-nom','f-tel','f-email','f-adresse','f-etage','f-code','f-instr','f-remise-val','f-remise-motif'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
   document.getElementById('f-paie').value='Espèces';
   document.getElementById('f-stpaie').value='Non payé';
@@ -4480,6 +4508,11 @@ function ouvrirEditionCommande(id) {
   document.getElementById('f-stpaie').value  = c.stpaie || 'Non payé';
   document.getElementById('f-livreur').value = c.livreur|| '';
   document.getElementById('f-date').value    = c.date   || new Date().toISOString().split('T')[0];
+  var _fdc_edit = document.getElementById('f-date-cmd');
+  if (_fdc_edit) {
+    _fdc_edit.value = c.date_commande
+      || (c.created_at ? String(c.created_at).split('T')[0] : new Date().toISOString().split('T')[0]);
+  }
 
   // Origine marketplace
   var origEl = document.getElementById('f-origine');
@@ -4569,6 +4602,7 @@ function saveCmd() {
     paie:document.getElementById('f-paie').value, stpaie:document.getElementById('f-stpaie').value,
     livreur:document.getElementById('f-livreur').value, statut:'en-attente',
     date:document.getElementById('f-date').value, instr:document.getElementById('f-instr').value,
+    dateCmd:(document.getElementById('f-date-cmd')||{}).value||'',
     origine:origine, refMarketplace:refMkt,
   };
   if (isEdit) {
@@ -4765,20 +4799,61 @@ function ajouterTournee(id) {
 // ════════════════════════════════════════
 // TOURNÉES
 // ════════════════════════════════════════
+// Extrait CP + ville d'une adresse francaise libre.
+// Ex: "8 Geo lufbery 02300 Chauny" -> {cp:"02300", ville:"CHAUNY"}
+function extraireCpVille(adresse){
+  if(!adresse) return {cp:'?????', ville:'(adresse manquante)'};
+  // Dernier "CP + texte" jusqu'a la fin (le plus fiable)
+  var m = adresse.match(/(\d{5})\s+([^,\d][^,]*?)\s*$/);
+  if(m) return {cp:m[1], ville:m[2].trim().toUpperCase()};
+  // Fallback : "CP ville," au milieu
+  m = adresse.match(/(\d{5})\s+([^,\d][^,]*?)(?=,)/);
+  if(m) return {cp:m[1], ville:m[2].trim().toUpperCase()};
+  // Dernier fallback : juste le CP
+  var cp = adresse.match(/(\d{5})/);
+  return {cp: cp ? cp[1] : '?????', ville:'(ville ?)'};
+}
+
 function populateCmdChecklist() {
-  const el=document.getElementById('cmd-checklist');
+  const el = document.getElementById('cmd-checklist');
   if(!el) return;
-  const dispo=commandes.filter(c=>c.statut!=='livré'&&c.statut!=='annulé');
-  if(!dispo.length){el.innerHTML='<div style="padding:12px;font-size:12px;color:var(--t3)">Aucune commande disponible</div>';return;}
-  el.innerHTML=dispo.map(c=>`
-    <label style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--brd);cursor:pointer;font-size:13px" onclick="event.stopPropagation()">
-      <input type="checkbox" id="chk-${c.id}" value="${c.id}" style="width:16px;height:16px;accent-color:var(--blue);flex-shrink:0">
-      <div style="flex:1">
-        <div style="font-weight:600">${c.client}</div>
-        <div style="font-size:11px;color:var(--t3)">${c.produit} · ${c.prix} € · ${fmtDate(c.date)}</div>
-      </div>
-      ${stBdg(c.statut)}
-    </label>`).join('');
+  const dispo = commandes.filter(c => c.statut !== 'livré' && c.statut !== 'annulé');
+  if(!dispo.length) {
+    el.innerHTML = '<div style="padding:12px;font-size:12px;color:var(--t3)">Aucune commande disponible</div>';
+    return;
+  }
+
+  // Regroupement par CP + ville
+  var groupes = {};
+  dispo.forEach(function(c){
+    var cv = extraireCpVille(c.adresse);
+    var key = cv.cp + '|' + cv.ville;
+    if(!groupes[key]) groupes[key] = { cv: cv, cmds: [] };
+    groupes[key].cmds.push(c);
+  });
+  // Tri groupes par CP croissant
+  var keysSorted = Object.keys(groupes).sort();
+
+  el.innerHTML = keysSorted.map(function(key){
+    var g = groupes[key];
+    var cv = g.cv;
+    var nb = g.cmds.length;
+    return ''+
+      '<div style="background:var(--bg2);padding:7px 12px;font-size:11px;font-weight:800;color:var(--t2);text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--brd);position:sticky;top:0;z-index:2">'+
+        '📍 ' + cv.cp + ' · ' + cv.ville + ' <span style="opacity:.6;font-weight:600">(' + nb + ')</span>' +
+      '</div>' +
+      g.cmds.map(function(c){
+        return '<label style="display:flex;align-items:flex-start;gap:10px;padding:11px 12px;border-bottom:1px solid var(--brd);cursor:pointer;font-size:13px" onclick="event.stopPropagation()">'+
+          '<input type="checkbox" id="chk-'+c.id+'" value="'+c.id+'" style="width:20px;height:20px;accent-color:var(--blue);flex-shrink:0;margin-top:1px">'+
+          '<div style="flex:1;min-width:0">'+
+            '<div style="font-weight:700;font-size:13px;margin-bottom:2px">'+c.id+' · '+(c.client||'?')+'</div>'+
+            '<div style="font-size:11px;color:var(--t2);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(c.produit||'')+' · <b>'+(c.prix||0)+' €</b></div>'+
+            '<div style="font-size:11px;color:var(--t3)">🚚 souhaitée : '+fmtDate(c.date)+'</div>'+
+          '</div>'+
+          stBdg(c.statut)+
+        '</label>';
+      }).join('');
+  }).join('');
 }
 
 function supprimerTournee(tid) {
@@ -4893,6 +4968,78 @@ function renderTournees() {
 // ════════════════════════════════════════
 let currentLvTourneeId = null; // tournée actuellement affichée dans vue livreur
 
+// Resume caisse du livreur — extrait de renderLivreur() pour lisibilite (refactor 2026-05-28)
+// Affiche la caisse uniquement si le role est 'livreur' ET qu'il a au moins 1 livraison.
+function renderLivreurCaisse(t) {
+  var caisseDiv = document.getElementById('lv-caisse-summary');
+  if (!caisseDiv) {
+    var caisseContainer = document.createElement('div');
+    caisseContainer.id = 'lv-caisse-summary';
+    caisseContainer.style.margin = '0 0 14px 0';
+    var lvList = document.getElementById('lv-list');
+    if (lvList && lvList.parentNode) lvList.parentNode.insertBefore(caisseContainer, lvList);
+    caisseDiv = caisseContainer;
+  }
+
+  var livreesCount = t && t.stops ? t.stops.filter(function(s){ return s.statut === 'livré'; }).length : 0;
+  if (!(livreesCount > 0 && role === 'livreur')) {
+    caisseDiv.innerHTML = '';
+    return;
+  }
+
+  var stopsLivres = t.stops.filter(function(s){ return s.statut === 'livré'; });
+  var caisseEsp = stopsLivres.filter(function(s){ return s.paie==='Espèces'  && s.stpaie==='Payé'; }).reduce(function(a,s){ return a+(s.prix||0); },0);
+  var caisseCB  = stopsLivres.filter(function(s){ return s.paie==='CB'        && s.stpaie==='Payé'; }).reduce(function(a,s){ return a+(s.prix||0); },0);
+  var caisseVir = stopsLivres.filter(function(s){ return s.paie==='Virement'  && s.stpaie==='Payé'; }).reduce(function(a,s){ return a+(s.prix||0); },0);
+  var caissePrepaye = stopsLivres.filter(function(s){
+    return ['Site web','Amazon','Cdiscount','Manomano','LeBonCoin','Fnac Darty','Rakuten','Rue du Commerce','Autre plateforme','Déjà payé'].includes(s.paie)
+        && s.stpaie==='Payé';
+  }).reduce(function(a,s){ return a+(s.prix||0); },0);
+
+  var today = new Date().toISOString().split('T')[0];
+  var tourneeDate = t ? t.date : today;
+  var depJour = depenses.filter(function(d){
+    return (d.livreur||'').toLowerCase() === livNom.toLowerCase()
+        && (d.date === tourneeDate || d.date === today);
+  });
+
+  var lignes = [];
+  if (caisseEsp     > 0) lignes.push({icon:'💵', label:'Espèces',   val:'+'+caisseEsp+' €',     color:'var(--od)'});
+  if (caisseCB      > 0) lignes.push({icon:'💳', label:'CB (TPE)',  val:'+'+caisseCB+' €',      color:'var(--bd)'});
+  if (caisseVir     > 0) lignes.push({icon:'🏦', label:'Virement',  val:'+'+caisseVir+' €',     color:'var(--gd)'});
+  if (caissePrepaye > 0) lignes.push({icon:'🌐', label:'Pré-payé',  val:'+'+caissePrepaye+' €', color:'#5344A7'});
+  depJour.forEach(function(d){
+    var modeLabel = d.modePaie === 'CB' ? ' 💳' : ' 💵';
+    lignes.push({
+      icon:'💸',
+      label: d.cat + modeLabel + (d.comment ? ' — '+d.comment : ''),
+      val: '-' + d.montant + ' €',
+      color: d.modePaie === 'CB' ? 'var(--bd)' : 'var(--rd)',
+      depId: d.id
+    });
+  });
+
+  var totalDepEsp = depJour.filter(function(d){ return d.modePaie !== 'CB'; }).reduce(function(s,d){ return s+d.montant; }, 0);
+  var netARemettre = Math.max(0, caisseEsp - totalDepEsp);
+
+  caisseDiv.innerHTML = '<div style="background:var(--card);border:1.5px solid var(--brd);border-radius:16px;padding:16px;margin:0 0 4px">' +
+    '<div style="font-size:15px;font-weight:800;margin-bottom:14px">💼 Ma caisse du jour</div>' +
+    '<div style="background:var(--bg);border-radius:12px;padding:12px;margin-bottom:12px">' +
+      lignes.map(function(l){
+        var editBtn = l.depId ? '<button onclick="lvModifierDepense(\'' + l.depId + '\')" style="background:none;border:none;cursor:pointer;font-size:14px;padding:2px 6px">✏️</button>' : '';
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--brd)">' +
+          '<span style="font-size:14px">' + l.icon + ' <span style="font-weight:600">' + l.label + '</span></span>' +
+          '<span style="display:flex;align-items:center;gap:4px">' + editBtn + '<span style="font-size:15px;font-weight:800;color:' + l.color + '">' + l.val + '</span></span>' +
+        '</div>';
+      }).join('') +
+    '</div>' +
+    '<div style="background:' + (netARemettre > 0 ? 'var(--green)' : 'var(--rl)') + ';border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center">' +
+      '<div style="color:' + (netARemettre > 0 ? '#fff' : 'var(--rd)') + ';font-size:14px;font-weight:700">💵 Espèces à remettre</div>' +
+      '<div style="color:' + (netARemettre > 0 ? '#fff' : 'var(--rd)') + ';font-size:22px;font-weight:900">' + netARemettre + ' €</div>' +
+    '</div>' +
+  '</div>';
+}
+
 function renderLivreur() {
   var sel = document.getElementById('lv-tournee-select');
   var selectorWrap = document.getElementById('lv-selector-wrap');
@@ -4983,73 +5130,8 @@ function renderLivreur() {
 
   var _glv_eta_fin=document.getElementById('lv-eta-fin'); if(_glv_eta_fin) _glv_eta_fin.textContent='Fin estimée ' + (lastStop && lastStop.etaFin ? lastStop.etaFin : '—');
 
-  // ── Résumé caisse livreur (si livraisons effectuées) ──
-  var caisseDiv = document.getElementById('lv-caisse-summary');
-  if (!caisseDiv) {
-    var caisseContainer = document.createElement('div');
-    caisseContainer.id = 'lv-caisse-summary';
-    caisseContainer.style.margin = '0 0 14px 0';
-    var lvList = document.getElementById('lv-list');
-    if (lvList && lvList.parentNode) lvList.parentNode.insertBefore(caisseContainer, lvList);
-    caisseDiv = caisseContainer;
-  }
-  if (livrees > 0 && role === 'livreur') {
-    var stopsLivres = t.stops.filter(function(s){ return s.statut === 'livré'; });
-    var caisseEsp = stopsLivres.filter(function(s){ return s.paie==='Espèces' && s.stpaie==='Payé'; }).reduce(function(acc,s){ return acc+(s.prix||0); },0);
-    var caisseCB  = stopsLivres.filter(function(s){ return s.paie==='CB' && s.stpaie==='Payé'; }).reduce(function(acc,s){ return acc+(s.prix||0); },0);
-    var caisseVir = stopsLivres.filter(function(s){ return s.paie==='Virement' && s.stpaie==='Payé'; }).reduce(function(acc,s){ return acc+(s.prix||0); },0);
-    var caissePrepaye = stopsLivres.filter(function(s){ return ['Site web','Amazon','Cdiscount','Manomano','LeBonCoin','Fnac Darty','Rakuten','Rue du Commerce','Autre plateforme','Déjà payé'].includes(s.paie) && s.stpaie==='Payé'; }).reduce(function(acc,s){ return acc+(s.prix||0); },0);
-    var caisseTotal = caisseEsp + caisseCB;
-    var nonPaye = stopsLivres.filter(function(s){ return s.stpaie !== 'Payé'; }).reduce(function(acc,s){ return acc+(s.prix||0); },0);
-    var today = new Date().toISOString().split('T')[0];
-    // Dépenses liées à cette tournée (par date de tournée, pas today)
-    var tourneeDate = t ? t.date : today;
-    var depJour = depenses.filter(function(d){
-      return (d.livreur||'').toLowerCase() === livNom.toLowerCase() && (d.date === tourneeDate || d.date === today);
-    });
-    var totalDep = depJour.reduce(function(s,d){ return s+d.montant; }, 0);
-
-    // Lignes recap
-    var lignes = [];
-    if (caisseEsp > 0)    lignes.push({icon:'💵', label:'Espèces',      val:'+'+caisseEsp+' €',   color:'var(--od)'});
-    if (caisseCB > 0)     lignes.push({icon:'💳', label:'CB (TPE)',      val:'+'+caisseCB+' €',    color:'var(--bd)'});
-    if (caisseVir > 0)    lignes.push({icon:'🏦', label:'Virement',      val:'+'+caisseVir+' €',   color:'var(--gd)'});
-    if (caissePrepaye > 0)lignes.push({icon:'🌐', label:'Pré-payé',      val:'+'+caissePrepaye+' €',color:'#5344A7'});
-    // Non encaissé masqué — info non utile pour le livreur
-    depJour.forEach(function(d){
-      var modeLabel = d.modePaie === 'CB' ? ' 💳' : ' 💵';
-      lignes.push({icon:'💸', label:d.cat+modeLabel+(d.comment?' — '+d.comment:''), val:'-'+d.montant+' €', color: d.modePaie==='CB' ? 'var(--bd)' : 'var(--rd)', depId: d.id});
-    });
-
-    // Séparer dépenses espèces et CB
-    var depJourEsp = depJour.filter(function(d){ return d.modePaie !== 'CB'; });
-    var depJourCb  = depJour.filter(function(d){ return d.modePaie === 'CB'; });
-    var totalDepEsp = depJourEsp.reduce(function(s,d){ return s+d.montant; }, 0);
-    var netARemettre = Math.max(0, caisseEsp - totalDepEsp); // Espèces - dépenses espèces seulement
-
-    caisseDiv.innerHTML = '<div style="background:var(--card);border:1.5px solid var(--brd);border-radius:16px;padding:16px;margin:0 0 4px">' +
-      '<div style="font-size:15px;font-weight:800;margin-bottom:14px">💼 Ma caisse du jour</div>' +
-
-      // Tableau récap
-      '<div style="background:var(--bg);border-radius:12px;padding:12px;margin-bottom:12px">' +
-        lignes.map(function(l){
-          var editBtn = l.depId ? '<button onclick="lvModifierDepense(\'' + l.depId + '\')" style="background:none;border:none;cursor:pointer;font-size:14px;padding:2px 6px">✏️</button>' : '';
-          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--brd)">' +
-            '<span style="font-size:14px">' + l.icon + ' <span style="font-weight:600">' + l.label + '</span></span>' +
-            '<span style="display:flex;align-items:center;gap:4px">' + editBtn + '<span style="font-size:15px;font-weight:800;color:' + l.color + '">' + l.val + '</span></span>' +
-          '</div>';
-        }).join('') +
-      '</div>' +
-
-      // Total à remettre
-      '<div style="background:' + (netARemettre > 0 ? 'var(--green)' : 'var(--rl)') + ';border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center">' +
-        '<div style="color:' + (netARemettre > 0 ? '#fff' : 'var(--rd)') + ';font-size:14px;font-weight:700">💵 Espèces à remettre</div>' +
-        '<div style="color:' + (netARemettre > 0 ? '#fff' : 'var(--rd)') + ';font-size:22px;font-weight:900">' + netARemettre + ' €</div>' +
-      '</div>' +
-    '</div>';
-  } else {
-    caisseDiv.innerHTML = '';
-  }
+  // ── Resume caisse livreur (extrait dans renderLivreurCaisse) ──
+  renderLivreurCaisse(t);
 
   // ── Render stops ──
   var stColors = {
@@ -10214,7 +10296,7 @@ function gpsDemarrerReel() {
       btn.textContent = '⏹️ Arrêter ma journée';
       btn.style.background = 'var(--red)';
     }
-    toast('🚀 GPS démarré — suivi automatique actif', 'ok');
+    toast('🚀 GPS démarré — ⚠️ Garde l\'app au PREMIER PLAN, écran allumé. Sinon le suivi s\'arrête.', 'ok');
 
     // Demander WakeLock pour garder GPS actif
     gpsDemanderWakeLock();
@@ -10648,8 +10730,8 @@ setInterval(function() {
     Object.entries(gpsPositions).forEach(function(entry){
       var nomLivreur = entry[0];
       var pos = entry[1];
-      if (!pos || !pos.timestamp) return;
-      var dernierMaj = new Date(pos.timestamp).getTime();
+      if (!pos || !pos.updated_at) return;
+      var dernierMaj = new Date(pos.updated_at).getTime();
       var ecartMs = maintenant - dernierMaj;
       if (ecartMs > SEUIL_MS) {
         livreursFiges.push({
@@ -10686,7 +10768,7 @@ function gpsUpdateCarteReel() {
   if (!window.gpsMapInstance) return;
 
   var maintenant = new Date();
-  var LIMITE_MS = 2 * 60 * 60 * 1000; // 2 heures
+  var LIMITE_MS = 12 * 60 * 60 * 1000; // 12 heures
 
   Object.entries(gpsPositions).forEach(function(entry) {
     var nom = entry[0];
@@ -10738,7 +10820,7 @@ function gpsRenderCardsReel() {
   var el = document.getElementById('gps-cards');
   if (!el) return;
   var maintenant = new Date();
-  var LIMITE_MS = 2 * 60 * 60 * 1000;
+  var LIMITE_MS = 12 * 60 * 60 * 1000;
   var actifs = Object.entries(gpsPositions).filter(function(entry) {
     var pos = entry[1];
     if (!pos.updated_at) return true;
@@ -10771,6 +10853,90 @@ function gpsRenderCardsReel() {
       '</div>'+
     '</div>';
   }).join('');
+}
+
+// Affiche les stops clients des tournees J-1, J, J+1 sur la carte GPS.
+// 1) Coords approximatives immediates via getCoordsFromAdresse (zero reseau)
+// 2) Affinage en arriere-plan via Nominatim (throttle 1.5s par requete)
+window.gpsStopMarkers = window.gpsStopMarkers || [];
+async function gpsLoadStopsReels() {
+  if (!window.gpsMapInstance) return;
+  if (typeof tournees === 'undefined' || !tournees) return;
+  if (typeof getCoordsFromAdresse !== 'function') return;
+
+  var today = new Date();
+  var hier  = new Date(today.getTime() - 86400000).toISOString().split('T')[0];
+  var demain= new Date(today.getTime() + 86400000).toISOString().split('T')[0];
+
+  // Stops a afficher (tournees du jour, veille et lendemain)
+  var stops = [];
+  tournees.forEach(function(t){
+    if (!t.stops || !t.date) return;
+    if (t.date < hier || t.date > demain) return;
+    t.stops.forEach(function(s, idx){
+      if (!s.adresse) return;
+      stops.push(Object.assign({}, s, {
+        livreur: t.livreur, tdate: t.date, tid: t.id, idx: idx
+      }));
+    });
+  });
+
+  // Retirer anciens markers
+  window.gpsStopMarkers.forEach(function(m){
+    try { window.gpsMapInstance.removeLayer(m); } catch(e){}
+  });
+  window.gpsStopMarkers = [];
+
+  if (!stops.length) return;
+
+  var stColors = {
+    'livré':'#3B6D11','livre':'#3B6D11',
+    'en-cours':'#BA7517','en route':'#BA7517','en_route':'#BA7517',
+    'a-venir':'#185FA5','prévu':'#185FA5','prevu':'#185FA5','planifié':'#185FA5',
+    'annulé':'#A32D2D','annule':'#A32D2D'
+  };
+
+  // Affichage immediat (coords approximatives via CP)
+  stops.forEach(function(s){
+    var coords = getCoordsFromAdresse(s.adresse);
+    if (!coords) return;
+    var color = stColors[(s.statut||'').toLowerCase()] || '#888';
+    var icon = L.divIcon({
+      className: '',
+      html: '<div style="width:30px;height:30px;border-radius:50%;background:#fff;border:3px solid '+color+';display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,.25)">📦</div>',
+      iconSize: [30,30], iconAnchor: [15,15]
+    });
+    var marker = L.marker([coords.lat, coords.lng], { icon: icon }).addTo(window.gpsMapInstance);
+    marker.bindPopup(
+      '<div style="font-size:13px;min-width:200px">'+
+        '<div style="font-weight:700;margin-bottom:4px">'+(s.client||'?')+'</div>'+
+        '<div style="font-size:12px;color:#666;margin-bottom:3px">📍 '+(s.adresse||'')+'</div>'+
+        (s.produit ? '<div style="font-size:12px;margin-bottom:3px">🛏 '+s.produit+'</div>' : '') +
+        '<div style="font-size:12px;margin-bottom:3px"><b>Statut :</b> <span style="color:'+color+';font-weight:700">'+(s.statut||'?')+'</span></div>'+
+        '<div style="font-size:11px;color:#999;margin-top:5px">🚚 '+(s.livreur||'?')+' · '+(s.tdate||'?')+'</div>'+
+      '</div>'
+    );
+    s._marker = marker;
+    window.gpsStopMarkers.push(marker);
+  });
+
+  // Affinage Nominatim en arriere-plan (1.5s entre requetes)
+  for (var i = 0; i < stops.length; i++) {
+    var s = stops[i];
+    if (!s._marker) continue;
+    try {
+      if (typeof geocoderAdresse === 'function') {
+        // Si deja en cache, instant. Sinon fetch Nominatim.
+        var cached = (typeof geocodeCache !== 'undefined') && geocodeCache[s.adresse];
+        var coords = cached || await geocoderAdresse(s.adresse);
+        if (coords && coords.lat && coords.lng) {
+          s._marker.setLatLng([coords.lat, coords.lng]);
+        }
+        // Throttle uniquement si on a vraiment requete Nominatim
+        if (!cached) await new Promise(function(r){ setTimeout(r, 1500); });
+      }
+    } catch(e) { console.warn('gpsLoadStopsReels affinage:', e.message); }
+  }
 }
 
 // ════════════════════════════════════════
@@ -10870,6 +11036,9 @@ function gpsInit() {
   });
   // Charger les vraies positions depuis Supabase immédiatement
   setTimeout(function(){ gpsChargerPositions(); }, 500);
+
+  // Afficher les vrais stops clients (commandes des tournees J-1, J, J+1) sur la carte
+  setTimeout(function(){ gpsLoadStopsReels(); }, 700);
 
   // Init positions
   GPS_LIV.forEach(l => l.trail = [{lat:l.lat, lng:l.lng}]);
