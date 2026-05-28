@@ -552,7 +552,7 @@ textarea{resize:vertical;min-height:65px}
     </div>
     <div class="tw" id="cmd-table-wrap" style="overflow:visible">
       <table>
-        <thead><tr><th>#</th><th>Client</th><th>Adresse</th><th>Produit</th><th>Montant</th><th>Paiement</th><th>Origine</th><th>Date</th><th>Livreur</th><th>Statut</th><th></th></tr></thead>
+        <thead><tr><th>#</th><th>Client</th><th>Adresse</th><th>Produit</th><th>Montant</th><th>Paiement</th><th>Origine</th><th>📅 Cmd</th><th>🚚 Livr.</th><th>Livreur</th><th>Statut</th><th></th></tr></thead>
         <tbody id="cmd-tbody"></tbody>
       </table>
     </div>
@@ -4323,7 +4323,8 @@ function renderCmds(list) {
       <td style="font-size:12px">${c.produit}</td>
       <td><strong>${c.prix} €</strong></td>
       <td>${pBdg(c.stpaie)}</td>
-      <td style="font-size:12px;color:var(--t2)">${fmtDate(c.date)}</td>
+      <td style="font-size:12px;color:var(--t2);white-space:nowrap">${c.dateCmd ? fmtDate(c.dateCmd) : '—'}</td>
+      <td style="font-size:12px;color:var(--t2);white-space:nowrap">${c.date ? fmtDate(c.date) : '—'}</td>
       <td style="font-size:12px">${c.livreur||'—'}</td>
       <td>${stBdg(c.statut)}</td>
       <td style="color:var(--t3);font-size:16px">›</td>
