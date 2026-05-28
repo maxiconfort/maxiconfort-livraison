@@ -1,0 +1,25 @@
+# Secrets — JAMAIS commit
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Editeurs
+.vscode/
+.idea/
+*.swp
+
+# Logs / temp
+*.log
+*.tmp
+node_modules/
+
+# Backups
+*-backup.html
+*~
