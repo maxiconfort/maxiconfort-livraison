@@ -1267,7 +1267,7 @@ textarea{resize:vertical;min-height:65px}
 📞 Merci de rester joignable. Le chauffeur vous contactera avant son arrivée. Pour toute question : {TEL_CONTACT}. À demain !</textarea>
           <div class="sms-counter" id="cnt-veille">0 / 160 caractères</div>
           <div class="sms-preview" id="prev-veille"></div>
-          <div style="font-size:11px;color:var(--t3);margin-top:8px">Variables : {PRENOM} {DATE} {HEURE_DEBUT} {HEURE_FIN} {LIVREUR} {TEL_CONTACT}</div>
+          <div style="font-size:11px;color:var(--t3);margin-top:8px">Variables : {PRENOM} {DATE} {HEURE_DEBUT} {HEURE_FIN} {LIVREUR} {TEL_CONTACT} {LIEN_SUIVI}</div>
         </div>
         <div class="card">
           <div class="card-t">Paramètres envoi</div>
@@ -2758,7 +2758,7 @@ async function sbLoadAll() {
           paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
           montantEnc:parseFloat(r.montant_enc)||0,
           livreur:r.livreur||'', statut:r.statut||'en-attente',
-          date:r.date_livraison||'', dateCmd:r.date_commande||'', instr:r.instr||'',
+          date:r.date_livraison||'', dateCmd:r.date_commande||'', instr:r.instr||'', tracking_token:r.tracking_token||'',
           origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
         };
       });
@@ -2874,7 +2874,7 @@ async function sbChargerPlusCommandes() {
           paie:r2.paie||'Espèces', stpaie:r2.stpaie||'Non payé',
           montantEnc:parseFloat(r2.montant_enc)||0,
           livreur:r2.livreur||'', statut:r2.statut||'en-attente',
-          date:r2.date_livraison||'', dateCmd:r2.date_commande||'', instr:r2.instr||'',
+          date:r2.date_livraison||'', dateCmd:r2.date_commande||'', instr:r2.instr||'', tracking_token:r2.tracking_token||'',
           origine:r2.origine||'', refMarketplace:r2.ref_marketplace||'',
           modePaie:r2.mode_paie||'Espèces',
         };
@@ -2933,7 +2933,7 @@ function startPolling() {
               paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
               montantEnc:parseFloat(r.montant_enc)||0,
               livreur:r.livreur||'', statut:r.statut||'en-attente',
-              date:r.date_livraison||'', dateCmd:r.date_commande||'', instr:r.instr||'',
+              date:r.date_livraison||'', dateCmd:r.date_commande||'', instr:r.instr||'', tracking_token:r.tracking_token||'',
               origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
               modePaie:r.mode_paie||'Espèces',
             };
@@ -3036,7 +3036,7 @@ function sbStartRealtime() {
         remiseGlobaleVal:r.remise_globale_val, remiseGlobaleType:r.remise_globale_type,
         remiseMotif:r.remise_motif, paie:r.paie, stpaie:r.stpaie,
         montantEnc:r.montant_enc, livreur:r.livreur, statut:r.statut,
-        date:r.date_livraison, dateCmd:r.date_commande||'', instr:r.instr, origine:r.origine,
+        date:r.date_livraison, dateCmd:r.date_commande||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'',
         refMarketplace:r.ref_marketplace,
       };
       if (idx > -1) commandes[idx] = mapped;
@@ -3344,6 +3344,11 @@ async function brevoEnvoiGroupeTournee(tid, type) {
     if (['livré','annulé'].includes(s.statut)) continue;
 
     var prenom = s.client.replace(/^(M\.|Mme|Mr\.?)\s*/i,'').split(' ')[0];
+    // Lien suivi public via tracking_token de la commande
+    var _cmdRef = commandes.find(function(x){ return x.id === s.cmdId; });
+    var _lienSuivi = (_cmdRef && _cmdRef.tracking_token)
+      ? 'https://livraison.maxiconfort.fr/track.html?t=' + _cmdRef.tracking_token
+      : '';
     var msg = tpl
       .replace(/{PRENOM}/g, prenom)
       .replace(/{LIVREUR}/g, t.livreur||'')
@@ -3351,7 +3356,8 @@ async function brevoEnvoiGroupeTournee(tid, type) {
       .replace(/{HEURE_DEBUT}/g, s.etaDebut||'08:00')
       .replace(/{HEURE_FIN}/g, s.etaFin||'17:00')
       .replace(/{TEL_CONTACT}/g, societe.tel||'')
-      .replace(/{HEURE}/g, now.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}));
+      .replace(/{HEURE}/g, now.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}))
+      .replace(/{LIEN_SUIVI}/g, _lienSuivi);
 
     var ok = await brevoSendSMS(s.tel, msg);
     if (ok) {
@@ -3395,7 +3401,8 @@ async function brevoEnvoiVeille() {
     t.stops.forEach(function(s){
       if (!['livré','annulé'].includes(s.statut)) {
         clients.push({client:s.client, tel:s.tel||'', livreur:t.livreur,
-          heure_debut:s.etaDebut||'08:00', heure_fin:s.etaFin||'17:00', produit:s.produit||''});
+          heure_debut:s.etaDebut||'08:00', heure_fin:s.etaFin||'17:00', produit:s.produit||'',
+          cmdId: s.cmdId || ''});
       }
     });
   });
@@ -3406,6 +3413,11 @@ async function brevoEnvoiVeille() {
     var c = clients[i];
     if (!c.tel || c.tel.length < 8) { fail++; continue; }
     var prenom = c.client.replace(/^(M\.|Mme|Mr\.?)\s*/i,'').split(' ')[0];
+    // Lien suivi public via tracking_token de la commande
+    var _cmdRefV = commandes.find(function(x){ return x.id === c.cmdId; });
+    var _lienSuiviV = (_cmdRefV && _cmdRefV.tracking_token)
+      ? 'https://livraison.maxiconfort.fr/track.html?t=' + _cmdRefV.tracking_token
+      : '';
     var msg = tpl
       .replace(/{PRENOM}/g, prenom)
       .replace(/{DATE}/g, dateFr)
@@ -3413,7 +3425,8 @@ async function brevoEnvoiVeille() {
       .replace(/{HEURE_FIN}/g, c.heure_fin)
       .replace(/{PRODUIT}/g, c.produit)
       .replace(/{LIVREUR}/g, c.livreur||'')
-      .replace(/{TEL_CONTACT}/g, telContact);
+      .replace(/{TEL_CONTACT}/g, telContact)
+      .replace(/{LIEN_SUIVI}/g, _lienSuiviV);
 
     var ok = await brevoSendSMS(c.tel, msg);
     if (ok) {

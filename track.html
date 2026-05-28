@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Suivi de votre livraison — Maxiconfort</title>
+<meta name="theme-color" content="#185FA5">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --blue: #185FA5; --bl: #E6F1FB; --bd: #0C447C;
+  --green: #3B6D11; --gl: #EAF3DE; --gd: #27500A;
+  --orange: #BA7517; --ol: #FAEEDA; --od: #633806;
+  --red: #A32D2D; --rl: #FCEBEB; --rd: #791F1F;
+  --bg: #F4F3EF; --card: #FFFFFF;
+  --text: #1A1A18; --t2: #5F5E5A; --t3: #9C9A92;
+  --brd: rgba(0,0,0,0.09); --brd2: rgba(0,0,0,0.17);
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --r: 12px; --sh: 0 1px 4px rgba(0,0,0,0.07);
+}
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  min-height: 100vh;
+  padding: 16px;
+}
+.wrap { max-width: 520px; margin: 0 auto; }
+.logo {
+  text-align: center;
+  margin-bottom: 18px;
+}
+.logo-name {
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--blue);
+}
+.logo-name span { color: var(--orange); }
+.logo-sub { font-size: 12px; color: var(--t3); margin-top: 2px; }
+
+.card {
+  background: var(--card);
+  border-radius: var(--r);
+  padding: 18px 16px;
+  margin-bottom: 12px;
+  box-shadow: var(--sh);
+  border: 1px solid var(--brd);
+}
+
+.statut-card {
+  text-align: center;
+  padding: 24px 16px;
+}
+.statut-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+.statut-titre {
+  font-size: 22px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+.statut-sous {
+  font-size: 14px;
+  color: var(--t2);
+  line-height: 1.4;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--brd);
+  gap: 12px;
+}
+.row:last-child { border-bottom: none; }
+.row-lbl {
+  font-size: 12px;
+  color: var(--t3);
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: .4px;
+  flex-shrink: 0;
+}
+.row-val {
+  font-size: 14px;
+  color: var(--text);
+  font-weight: 600;
+  text-align: right;
+}
+
+#map {
+  height: 280px;
+  border-radius: var(--r);
+  border: 1px solid var(--brd);
+  margin-bottom: 12px;
+}
+
+.footer {
+  text-align: center;
+  font-size: 12px;
+  color: var(--t3);
+  padding: 16px 0;
+  line-height: 1.6;
+}
+.footer a {
+  color: var(--blue);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.loading, .erreur {
+  text-align: center;
+  padding: 60px 20px;
+}
+.loading { color: var(--t3); }
+.erreur { color: var(--red); }
+.erreur-icon { font-size: 48px; margin-bottom: 16px; }
+
+.bdg {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.bdg-blue { background: var(--bl); color: var(--bd); }
+.bdg-green { background: var(--gl); color: var(--gd); }
+.bdg-orange { background: var(--ol); color: var(--od); }
+.bdg-red { background: var(--rl); color: var(--rd); }
+.bdg-grey { background: #E8E8E5; color: #555; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">
+    <div class="logo-name">Maxi<span>confort</span></div>
+    <div class="logo-sub">Suivi de votre livraison</div>
+  </div>
+
+  <div id="content">
+    <div class="loading">
+      <div style="font-size: 36px; margin-bottom: 12px">⏳</div>
+      Chargement...
+    </div>
+  </div>
+
+  <div class="footer">
+    Une question ? Contactez-nous :<br>
+    <a id="contact-link" href="tel:">📞 Charger contact...</a>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// Configuration Supabase
+const SUPABASE_URL = 'https://jmvfjtnmebstkzcfnlgp.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImptdmZqdG5tZWJzdGt6Y2ZubGdwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg3OTYxODYsImV4cCI6MjA5NDM3MjE4Nn0.t_zyGmY96wUB_hk63WOSYZniBy_9oHwfpDvcxwl2s5U';
+
+function getToken() {
+  // Token peut etre dans ?t=XXX ou apres /t/ dans le path
+  var params = new URLSearchParams(window.location.search);
+  var t = params.get('t');
+  if (t) return t;
+  var path = window.location.pathname;
+  var m = path.match(/\/t\/([a-f0-9-]+)/i);
+  return m ? m[1] : null;
+}
+
+function afficherErreur(msg) {
+  document.getElementById('content').innerHTML =
+    '<div class="erreur">'+
+      '<div class="erreur-icon">❌</div>'+
+      '<div style="font-weight:700;margin-bottom:8px">'+msg+'</div>'+
+      '<div style="font-size:13px;color:var(--t3);margin-top:8px">Verifiez le lien que vous avez recu par SMS.</div>'+
+    '</div>';
+}
+
+function badgeStatut(s) {
+  var defs = {
+    'en-attente': {ico:'⏳', lbl:'En attente', sub:'Votre commande est enregistree.', col:'grey'},
+    'en-route':   {ico:'🚚', lbl:'Le livreur arrive !', sub:'Notre livreur est en chemin vers votre adresse.', col:'blue'},
+    'arrivé':     {ico:'📍', lbl:'Le livreur est arrive', sub:'Il sera chez vous d\'un instant a l\'autre.', col:'orange'},
+    'livré':      {ico:'✅', lbl:'Livre !', sub:'Merci de votre confiance.', col:'green'},
+    'reporté':    {ico:'📅', lbl:'Report planifie', sub:'Votre livraison a ete reportee. Nous vous recontactons.', col:'orange'},
+    'absent':     {ico:'🔔', lbl:'Vous etiez absent', sub:'Nous repassons. Contactez-nous pour reprogrammer.', col:'red'},
+    'annulé':     {ico:'❌', lbl:'Commande annulee', sub:'Si c\'est une erreur, contactez-nous.', col:'red'},
+    'problème':   {ico:'⚠️', lbl:'Probleme de livraison', sub:'Nous vous contacterons rapidement.', col:'red'}
+  };
+  return defs[s] || defs['en-attente'];
+}
+
+async function chargerCommande() {
+  var token = getToken();
+  if (!token) {
+    afficherErreur('Lien de suivi invalide');
+    return;
+  }
+
+  try {
+    var resp = await fetch(SUPABASE_URL + '/rest/v1/commandes?tracking_token=eq.' + encodeURIComponent(token) + '&select=*', {
+      headers: {
+        'apikey': SUPABASE_ANON,
+        'Authorization': 'Bearer ' + SUPABASE_ANON,
+        'x-tracking-token': token
+      }
+    });
+    if (!resp.ok) {
+      afficherErreur('Suivi introuvable ou expire');
+      return;
+    }
+    var data = await resp.json();
+    if (!data || !data.length) {
+      afficherErreur('Aucune commande trouvee pour ce lien');
+      return;
+    }
+    afficherCommande(data[0]);
+  } catch(e) {
+    console.error(e);
+    afficherErreur('Erreur de chargement');
+  }
+}
+
+function afficherCommande(c) {
+  var st = badgeStatut(c.statut);
+  // Premier prenom uniquement (jamais le nom complet pour la confidentialite)
+  var prenom = (c.client || '').replace(/^(M\.|Mme|Mr\.?)\s*/i, '').split(' ')[0];
+  var produit = (c.produit || '—');
+  var livreur = (c.livreur && c.livreur !== '' && c.livreur !== '—') ? c.livreur : 'En cours d\'affectation';
+
+  document.getElementById('content').innerHTML =
+    '<div class="card statut-card">'+
+      '<div class="statut-icon">'+st.ico+'</div>'+
+      '<div class="statut-titre">'+st.lbl+'</div>'+
+      '<div class="statut-sous">Bonjour '+prenom+', '+st.sub+'</div>'+
+    '</div>' +
+
+    '<div class="card">'+
+      '<div class="row"><span class="row-lbl">Commande</span><span class="row-val">'+c.id+'</span></div>'+
+      '<div class="row"><span class="row-lbl">Produit</span><span class="row-val">'+produit+'</span></div>'+
+      '<div class="row"><span class="row-lbl">Livreur</span><span class="row-val">'+livreur+'</span></div>'+
+      (c.date_livraison
+        ? '<div class="row"><span class="row-lbl">Livraison</span><span class="row-val">'+formatDate(c.date_livraison)+'</span></div>'
+        : '') +
+      '<div class="row"><span class="row-lbl">Adresse</span><span class="row-val">'+(c.adresse||'—')+'</span></div>'+
+    '</div>' +
+
+    '<div id="map"></div>';
+
+  // Charger les parametres societe pour le contact
+  chargerContact();
+
+  // Carte avec marqueur sur l'adresse
+  afficherCarte(c.adresse);
+}
+
+async function chargerContact() {
+  try {
+    var resp = await fetch(SUPABASE_URL + '/rest/v1/parametres?cle=eq.societe_tel&select=valeur', {
+      headers: {
+        'apikey': SUPABASE_ANON,
+        'Authorization': 'Bearer ' + SUPABASE_ANON,
+        'x-tracking-token': getToken()
+      }
+    });
+    if (!resp.ok) {
+      // Fallback : contact en dur
+      var el = document.getElementById('contact-link');
+      el.href = 'mailto:contact@maxiconfort.fr';
+      el.textContent = '📧 contact@maxiconfort.fr';
+      return;
+    }
+    var data = await resp.json();
+    var tel = data && data.length ? data[0].valeur : '';
+    var el = document.getElementById('contact-link');
+    if (tel) {
+      el.href = 'tel:' + tel.replace(/\s/g,'');
+      el.textContent = '📞 ' + tel;
+    } else {
+      el.href = 'mailto:contact@maxiconfort.fr';
+      el.textContent = '📧 contact@maxiconfort.fr';
+    }
+  } catch(e) {
+    var el = document.getElementById('contact-link');
+    el.href = 'mailto:contact@maxiconfort.fr';
+    el.textContent = '📧 contact@maxiconfort.fr';
+  }
+}
+
+function formatDate(s) {
+  if (!s) return '';
+  var d = new Date(s);
+  if (isNaN(d)) return s;
+  return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+
+async function afficherCarte(adresse) {
+  if (!adresse) return;
+  try {
+    // Geocodage via Nominatim
+    var q = encodeURIComponent(adresse + ', France');
+    var resp = await fetch('https://nominatim.openstreetmap.org/search?format=json&q=' + q + '&limit=1&countrycodes=fr', {
+      headers: { 'Accept-Language': 'fr' }
+    });
+    var data = await resp.json();
+    if (!data || !data.length) return;
+
+    var lat = parseFloat(data[0].lat);
+    var lng = parseFloat(data[0].lon);
+
+    var map = L.map('map').setView([lat, lng], 14);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap',
+      maxZoom: 19
+    }).addTo(map);
+
+    var icon = L.divIcon({
+      className: '',
+      html: '<div style="width:40px;height:40px;border-radius:50%;background:#185FA5;border:3px solid #fff;display:flex;align-items:center;justify-content:center;font-size:20px;box-shadow:0 3px 12px rgba(0,0,0,.3)">🏠</div>',
+      iconSize: [40,40], iconAnchor: [20,20]
+    });
+    L.marker([lat, lng], { icon: icon }).addTo(map)
+      .bindPopup('<b>Adresse de livraison</b><br>'+adresse).openPopup();
+  } catch(e) {
+    console.warn('Carte non chargee:', e);
+  }
+}
+
+// Lancer
+chargerCommande();
+// Rafraichissement auto toutes les 30 secondes pour suivre le statut
+setInterval(chargerCommande, 30000);
+</script>
+</body>
+</html>
