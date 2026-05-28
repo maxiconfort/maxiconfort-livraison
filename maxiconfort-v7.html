@@ -7449,7 +7449,7 @@ function stkRender() {
       </td>
       <td style="font-size:13px">${p.seuil}</td>
       <td style="font-size:13px;font-weight:600;color:var(--blue)">${livreMois}</td>
-      <td class="td-valeur-stock" style="font-size:13px;font-weight:600;color:var(--t2)">${valeur.toLocaleString('fr-FR')} €</td>
+      <td class="td-valeur-stock" style="font-size:13px;font-weight:600;color:var(--t2)">${(p.cat==='Service' || (p.composants && p.composants.length>0)) ? '—' : valeur.toLocaleString('fr-FR') + ' €'}</td>
       <td>${statutHtml}</td>
       <td>
         <div style="display:flex;gap:5px">
@@ -7461,8 +7461,13 @@ function stkRender() {
     </tr>`;
   }).join('') || '<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--t3)">Aucun produit trouvé</td></tr>';
 
-  // Valeur totale
-  const valTotale = produits.reduce((s, p) => s + p.stock * p.prix, 0);
+  // Valeur totale — exclut les Services et les Ensembles avec composants
+  // (les composants sont deja comptes dans leur ligne propre, ne pas double-compter)
+  const valTotale = produits.reduce((s, p) => {
+    if (p.cat === 'Service') return s;
+    if (p.composants && Array.isArray(p.composants) && p.composants.length > 0) return s;
+    return s + p.stock * p.prix;
+  }, 0);
   const existingFoot = document.getElementById('stk-footer');
   if (existingFoot) existingFoot.remove();
   const foot = document.createElement('div');
