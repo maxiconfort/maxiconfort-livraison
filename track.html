@@ -333,8 +333,19 @@ async function afficherCarte(adresse) {
 
 // Lancer
 chargerCommande();
-// Rafraichissement auto toutes les 30 secondes pour suivre le statut
-setInterval(chargerCommande, 30000);
+// Rafraichissement auto seulement si la 1ere charge a reussi
+// (evite le spam d'erreurs en boucle si Supabase injoignable)
+var _trackOk = false;
+var _origCharger = chargerCommande;
+chargerCommande = async function() {
+  try {
+    await _origCharger();
+    if (!_trackOk) {
+      _trackOk = true;
+      setInterval(_origCharger, 30000);
+    }
+  } catch(e) { /* silent */ }
+};
 </script>
 </body>
 </html>
