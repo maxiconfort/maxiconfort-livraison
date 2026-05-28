@@ -8850,7 +8850,9 @@ async function sbLoadProduits() {
           id:r.id, nom:r.nom, cat:r.cat||'', dim:r.dim||'',
           prix:parseFloat(r.prix)||0, poids:parseFloat(r.poids)||0,
           stock:parseInt(r.stock)||0, seuil:parseInt(r.seuil)||2,
-          empl:r.empl||'', remarque:r.remarque||''
+          empl:r.empl||'', remarque:r.remarque||'',
+          composants: (r.composants && Array.isArray(r.composants)) ? r.composants : null,
+          actif: r.actif !== false
         };
         if (existing > -1) produits[existing] = mapped;
         else produits.push(mapped);
@@ -8907,7 +8909,9 @@ function sbStartRealtimeProduits() {
           id:r.id, nom:r.nom, cat:r.cat||'', dim:r.dim||'',
           prix:parseFloat(r.prix)||0, poids:parseFloat(r.poids)||0,
           stock:parseInt(r.stock)||0, seuil:parseInt(r.seuil)||2,
-          empl:r.empl||'', remarque:r.remarque||''
+          empl:r.empl||'', remarque:r.remarque||'',
+          composants: (r.composants && Array.isArray(r.composants)) ? r.composants : null,
+          actif: r.actif !== false
         };
         var idx = produits.findIndex(function(p){ return p.id === r.id; });
         if (idx > -1) produits[idx] = mapped;
