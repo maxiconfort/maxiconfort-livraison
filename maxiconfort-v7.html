@@ -4350,6 +4350,7 @@ function renderCmds(list) {
       <td style="font-size:12px">${c.produit}</td>
       <td><strong>${c.prix} €</strong></td>
       <td>${pBdg(c.stpaie)}</td>
+      <td style="font-size:12px;color:var(--t2)">${c.origine || '—'}</td>
       <td style="font-size:12px;color:var(--t2);white-space:nowrap">${c.dateCmd ? fmtDate(c.dateCmd) : '—'}</td>
       <td style="font-size:12px;color:var(--t2);white-space:nowrap">${c.date ? fmtDate(c.date) : '—'}</td>
       <td style="font-size:12px">${c.livreur||'—'}</td>
@@ -7396,31 +7397,60 @@ function stkDeduireStock(cmdId) {
 
     // NOUVEAU : si produit est un ENSEMBLE (composants definis),
     // decrementer les composants au lieu du produit lui-meme.
+    // SUBSTITUTION AUTO : si composant en rupture, chercher un produit
+    // de meme categorie + meme dimension avec stock suffisant.
     if (prod.composants && Array.isArray(prod.composants) && prod.composants.length > 0) {
       prod.composants.forEach(function(c) {
         var composantProd = produits.find(function(x){ return x.id === c.id; });
         if (!composantProd) { console.warn('Stock: composant non trouve:', c.id); return; }
         var qteRequise = (c.qte || 1) * qteADeduire;
-        var ancienStockComp = composantProd.stock;
-        composantProd.stock = Math.max(0, composantProd.stock - qteRequise);
+
+        // Recherche substitut si stock insuffisant
+        var cible = composantProd;
+        var substitue = false;
+        if (composantProd.stock < qteRequise) {
+          // Critere : meme cat + meme dim (apres normalisation), actif, stock suffisant
+          var dimRef = (composantProd.dim || '').toLowerCase().replace(/\s+/g, '');
+          var substitut = produits.find(function(x){
+            if (x.id === composantProd.id) return false;
+            if (x.actif === false) return false;
+            if (x.cat !== composantProd.cat) return false;
+            var dimX = (x.dim || '').toLowerCase().replace(/\s+/g, '');
+            if (!dimRef || !dimX || !dimX.includes(dimRef.split('×')[0]+'×'+dimRef.split('×')[1])) {
+              // fallback : meme dim brute
+              if (dimX !== dimRef) return false;
+            }
+            return x.stock >= qteRequise;
+          });
+          if (substitut) {
+            cible = substitut;
+            substitue = true;
+          }
+        }
+
+        var ancienStockComp = cible.stock;
+        cible.stock = Math.max(0, cible.stock - qteRequise);
 
         stkMouvements.unshift({
           date: new Date().toISOString().split('T')[0],
-          produit: composantProd.nom,
+          produit: cible.nom,
           type: 'sortie-livraison',
-          qte: -(ancienStockComp - composantProd.stock),
-          stockApres: composantProd.stock,
-          motif: 'Livraison ' + cmdId + ' → ' + (cmd.client||'') + ' (composant de ' + prod.nom + ' ×' + qteADeduire + ')',
+          qte: -(ancienStockComp - cible.stock),
+          stockApres: cible.stock,
+          motif: 'Livraison ' + cmdId + ' → ' + (cmd.client||'') + ' (composant de ' + prod.nom + ' ×' + qteADeduire + ')'
+               + (substitue ? ' [SUBSTITUTION auto : remplace ' + composantProd.nom + ' en rupture]' : ''),
           auto: true,
+          substitue: substitue,
         });
 
-        sbSaveProduit(composantProd);
+        sbSaveProduit(cible);
 
-        if (composantProd.stock === 0) {
-          toast('❌ RUPTURE composant : ' + composantProd.nom, 'err');
-          notifAjout('urgent','stock','Rupture — '+composantProd.nom,'Composant epuise apres livraison ensemble.','Gerer le stock','stock');
-        } else if (composantProd.stock <= composantProd.seuil) {
-          toast('⚠️ Stock bas composant : ' + composantProd.nom + ' (' + composantProd.stock + ' restants)', 'info');
+        // Alertes (silencieuses si juste substitution sans nouveau probleme)
+        if (cible.stock === 0) {
+          toast('❌ RUPTURE composant : ' + cible.nom, 'err');
+          notifAjout('urgent','stock','Rupture — '+cible.nom,'Composant epuise apres livraison ensemble.','Gerer le stock','stock');
+        } else if (cible.stock <= cible.seuil) {
+          toast('⚠️ Stock bas composant : ' + cible.nom + ' (' + cible.stock + ' restants)', 'info');
         }
       });
       return; // L'ensemble lui-meme n'est PAS decremente
