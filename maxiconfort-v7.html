@@ -1581,6 +1581,33 @@ Maxiconfort — {TEL_CONTACT}</textarea>
     </div>
   </div>
 
+  <!-- ─── MODAL : COMPOSITION ENSEMBLE ─── -->
+  <div class="mbd" id="m-compo">
+    <div class="modal" style="max-width:640px">
+      <div class="mh">
+        <div class="mt">🔧 Composition de l'ensemble</div>
+        <button class="mx" onclick="closeModal('m-compo')">✕</button>
+      </div>
+      <div style="background:var(--bg);border-radius:var(--r);padding:12px;margin-bottom:14px">
+        <div style="font-size:15px;font-weight:800" id="compo-nom">—</div>
+        <div style="font-size:12px;color:var(--t3);margin-top:4px">
+          Stock physique de l'ensemble : <strong id="compo-physique">—</strong> ·
+          Dispo calculé via composants : <strong id="compo-dispo" style="color:var(--violet)">—</strong>
+        </div>
+      </div>
+      <div style="font-size:12px;font-weight:700;color:var(--t2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.4px">Composants requis</div>
+      <div id="compo-list" style="margin-bottom:12px;border:1px solid var(--brd);border-radius:var(--r);padding:8px;background:var(--bg)"></div>
+      <button class="btn" onclick="composAjouterLigne()" style="margin-bottom:14px;background:var(--vl);color:var(--vd);border:1px solid var(--violet)">+ Ajouter un composant</button>
+      <div style="background:var(--bl);border-radius:var(--r);padding:10px 12px;margin-bottom:12px;font-size:12px;color:var(--bd)">
+        💡 La vente de cet ensemble décrémentera automatiquement chaque composant (× sa quantité) au lieu du stock ensemble lui-même.
+      </div>
+      <div class="fa">
+        <button class="btn btn-p" onclick="composSauver()">✅ Sauvegarder</button>
+        <button class="btn" onclick="closeModal('m-compo')">Annuler</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── PAGE PARAMÈTRES ─── -->
   <div class="page" id="p-pins">
 
@@ -7233,6 +7260,96 @@ function stkReCrediterStock(cmdId) {
   if (pStock && pStock.classList.contains('on')) stkRender();
 }
 
+// ════════════════════════════════════════
+// MODAL COMPOSITION — Editeur de composants
+// ════════════════════════════════════════
+window._composEditingId = null;
+window._composBuffer = []; // [{id:"pr11",qte:1}, ...]
+
+function ouvrirComposition(idProduit) {
+  var p = produits.find(function(x){ return x.id === idProduit; });
+  if (!p) { toast('Produit introuvable', 'err'); return; }
+  window._composEditingId = idProduit;
+  window._composBuffer = (p.composants && Array.isArray(p.composants))
+    ? p.composants.map(function(c){ return { id: c.id, qte: c.qte || 1 }; })
+    : [];
+
+  document.getElementById('compo-nom').textContent = p.nom;
+  document.getElementById('compo-physique').textContent = p.stock + ' u.';
+  document.getElementById('compo-dispo').textContent = (typeof getStockDispo === 'function') ? (getStockDispo(p) + ' u.') : '—';
+
+  composRenderList();
+  openModal('m-compo');
+}
+
+function composRenderList() {
+  var el = document.getElementById('compo-list');
+  if (!el) return;
+  if (!window._composBuffer.length) {
+    el.innerHTML = '<div style="padding:14px;text-align:center;color:var(--t3);font-size:12px">Aucun composant — clique sur "+ Ajouter un composant"</div>';
+    return;
+  }
+  // Liste des produits eligibles comme composants (tout sauf les Ensembles eux-memes et les Services)
+  var optionsHtml = produits
+    .filter(function(x){ return x.actif !== false && x.cat !== 'Ensemble' && x.cat !== 'Service'; })
+    .sort(function(a,b){ return (a.cat||'').localeCompare(b.cat||'') || (a.nom||'').localeCompare(b.nom||''); })
+    .map(function(x){ return '<option value="'+x.id+'">['+x.cat+'] '+x.nom+' (stk '+x.stock+')</option>'; })
+    .join('');
+
+  el.innerHTML = window._composBuffer.map(function(c, idx){
+    var prod = produits.find(function(x){ return x.id === c.id; });
+    return '<div style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid var(--brd)">'+
+      '<select onchange="composChangeProduit('+idx+', this.value)" style="flex:1;padding:7px;border:1px solid var(--brd2);border-radius:6px;font-size:12px;background:var(--card);color:var(--text);font-family:var(--font)">'+
+        '<option value="">— Choisir un produit —</option>'+
+        optionsHtml.replace('value="'+c.id+'"', 'value="'+c.id+'" selected') +
+      '</select>'+
+      '<input type="number" min="1" value="'+(c.qte||1)+'" onchange="composChangeQte('+idx+', this.value)" style="width:60px;padding:7px;border:1px solid var(--brd2);border-radius:6px;font-size:13px;text-align:center;background:var(--card);color:var(--text);font-family:var(--font)" title="Quantite requise">'+
+      '<button onclick="composSupprimerLigne('+idx+')" class="btn btn-sm" style="color:var(--rd);background:var(--rl)" title="Supprimer">🗑</button>'+
+    '</div>';
+  }).join('');
+}
+
+function composAjouterLigne() {
+  window._composBuffer.push({ id: '', qte: 1 });
+  composRenderList();
+}
+
+function composSupprimerLigne(idx) {
+  window._composBuffer.splice(idx, 1);
+  composRenderList();
+}
+
+function composChangeProduit(idx, newId) {
+  if (window._composBuffer[idx]) window._composBuffer[idx].id = newId;
+}
+
+function composChangeQte(idx, newQte) {
+  if (window._composBuffer[idx]) window._composBuffer[idx].qte = Math.max(1, parseInt(newQte) || 1);
+}
+
+async function composSauver() {
+  var p = produits.find(function(x){ return x.id === window._composEditingId; });
+  if (!p) { toast('Produit introuvable', 'err'); return; }
+  // Filtrer les lignes valides (id renseigne)
+  var compoFinale = window._composBuffer.filter(function(c){ return c.id; });
+  // Detection doublons
+  var ids = compoFinale.map(function(c){ return c.id; });
+  if (new Set(ids).size !== ids.length) {
+    toast('Composant en double — fusionne les lignes', 'err');
+    return;
+  }
+  p.composants = compoFinale.length ? compoFinale : null;
+  try {
+    await sbSaveProduit(p);
+    toast('🔧 Composition sauvegardee', 'ok');
+    closeModal('m-compo');
+    if (typeof stkRender === 'function') stkRender();
+  } catch(e) {
+    console.warn('composSauver:', e);
+    toast('Erreur sauvegarde composition', 'err');
+  }
+}
+
 // Calcule le stock DISPONIBLE d'un produit :
 // - Produit simple : retourne p.stock
 // - Produit "Ensemble" avec composition : retourne min(stock_composant / qte_requise)
@@ -7454,6 +7571,7 @@ function stkRender() {
       <td>
         <div style="display:flex;gap:5px">
           <button onclick="ouvrirAjustement('${p.id}')" class="btn btn-sm btn-p" title="Ajuster stock">±</button>
+          ${(p.cat==='Ensemble' || estEnsemble)?`<button onclick="ouvrirComposition('${p.id}')" class="btn btn-sm" title="Composition" style="background:var(--vl);color:var(--vd)">🔧</button>`:''}
           <button onclick="editerProduit('${p.id}')" class="btn btn-sm" title="Modifier">✏️</button>
           <button onclick="supprimerProduit('${p.id}')" class="btn btn-sm" style="color:var(--rd)" title="Supprimer">🗑</button>
         </div>
@@ -8692,7 +8810,8 @@ async function sbSaveProduit(p) {
         id: p.id, nom: p.nom, cat: p.cat||'', dim: p.dim||'',
         prix: p.prix||0, poids: p.poids||0, stock: p.stock||0,
         seuil: p.seuil||2, empl: p.empl||'', remarque: p.remarque||'',
-        actif: true, updated_at: new Date().toISOString()
+        composants: (p.composants && Array.isArray(p.composants) && p.composants.length > 0) ? p.composants : null,
+        actif: p.actif !== false, updated_at: new Date().toISOString()
       })
     });
     if (!resp.ok) {
