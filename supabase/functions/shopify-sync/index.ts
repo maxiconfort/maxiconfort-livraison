@@ -167,8 +167,14 @@ Deno.serve(async (req: Request) => {
     const sinceIso = await getLastSync();
 
     // 2. Appeler Shopify
+    // Filtres :
+    //   - updated_at_min : on prend aussi les commandes dont le statut a change
+    //     (ex: pending devenu paid plus tard)
+    //   - financial_status=paid : uniquement les commandes payees (regle metier Borhen)
+    //   - status=any : ne pas filtrer par statut de fulfillment
     const url = `https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_VERSION}/orders.json` +
-      `?created_at_min=${encodeURIComponent(sinceIso)}` +
+      `?updated_at_min=${encodeURIComponent(sinceIso)}` +
+      `&financial_status=paid` +
       `&status=any&limit=250`;
 
     const resp = await fetch(url, {
