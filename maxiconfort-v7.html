@@ -12046,6 +12046,11 @@ function supprimerStop(tid, idx) {
   t.stops.splice(idx, 1);
   // Renuméroter
   t.stops.forEach((x, i) => x.num = i + 1);
+  // SYNC SUPABASE (sinon le Realtime ramene l'ancien etat dans qq secondes)
+  try { if (typeof sbSaveTournee === 'function') sbSaveTournee(t); } catch(e) { console.warn('sbSaveTournee:', e); }
+  if (cmd) {
+    try { if (typeof sbSaveCommande === 'function') sbSaveCommande(cmd); } catch(e) { console.warn('sbSaveCommande:', e); }
+  }
   // Rafraîchir le modal et le reste
   ouvrirModifTournee(tid);
   renderTournees(); renderCmds(); renderDash(); renderLivreur();
