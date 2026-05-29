@@ -1867,6 +1867,16 @@ Maxiconfort — {TEL_CONTACT}</textarea>
         <div class="fg"><label>Mode paiement</label><select id="f-paie"><option>Espèces</option><option>CB</option><option>Virement</option><option>Déjà payé</option></select></div>
         <div class="fg"><label>Statut paiement</label><select id="f-stpaie"><option>Non payé</option><option>Payé</option><option>Partiel</option></select></div>
         <div class="fg"><label>Livreur assigné</label><select id="f-livreur"><option value="">— Non assigné —</option></select></div>
+        <div class="fg"><label>🚚 Transporteur</label>
+          <select id="f-transporteur" onchange="document.getElementById('f-tracking-wrap').style.display = this.value==='GLS' ? '' : 'none'">
+            <option value="RANOU">RANOU (livraison interne)</option>
+            <option value="GLS">GLS (transporteur national)</option>
+          </select>
+        </div>
+        <div class="fg" id="f-tracking-wrap" style="display:none">
+          <label>📦 N° de suivi GLS</label>
+          <input id="f-tracking" placeholder="ex: ABC123456789" autocomplete="off">
+        </div>
         <div class="fg"><label>🛒 Origine de la commande</label>
           <select id="f-origine" style="padding:9px 11px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font);width:100%">
             <option value="">— Source de vente —</option>
@@ -2237,6 +2247,8 @@ async function sbSaveCommande(cmd) {
       instr: cmd.instr||'',
       origine: cmd.origine||'',
       ref_marketplace: cmd.refMarketplace||'',
+      transporteur: cmd.transporteur || 'RANOU',
+      tracking_transporteur: cmd.trackingTransporteur || null,
       updated_at: new Date().toISOString(),
       created_at: new Date().toISOString()
     };
@@ -2758,7 +2770,7 @@ async function sbLoadAll() {
           paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
           montantEnc:parseFloat(r.montant_enc)||0,
           livreur:r.livreur||'', statut:r.statut||'en-attente',
-          date:r.date_livraison||'', dateCmd:r.date_commande||'', instr:r.instr||'', tracking_token:r.tracking_token||'',
+          date:r.date_livraison||'', dateCmd:r.date_commande||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'',
           origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
         };
       });
@@ -2874,7 +2886,7 @@ async function sbChargerPlusCommandes() {
           paie:r2.paie||'Espèces', stpaie:r2.stpaie||'Non payé',
           montantEnc:parseFloat(r2.montant_enc)||0,
           livreur:r2.livreur||'', statut:r2.statut||'en-attente',
-          date:r2.date_livraison||'', dateCmd:r2.date_commande||'', instr:r2.instr||'', tracking_token:r2.tracking_token||'',
+          date:r2.date_livraison||'', dateCmd:r2.date_commande||'', instr:r2.instr||'', tracking_token:r2.tracking_token||'', transporteur:r2.transporteur||'RANOU', trackingTransporteur:r2.tracking_transporteur||'',
           origine:r2.origine||'', refMarketplace:r2.ref_marketplace||'',
           modePaie:r2.mode_paie||'Espèces',
         };
@@ -2933,7 +2945,7 @@ function startPolling() {
               paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
               montantEnc:parseFloat(r.montant_enc)||0,
               livreur:r.livreur||'', statut:r.statut||'en-attente',
-              date:r.date_livraison||'', dateCmd:r.date_commande||'', instr:r.instr||'', tracking_token:r.tracking_token||'',
+              date:r.date_livraison||'', dateCmd:r.date_commande||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'',
               origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
               modePaie:r.mode_paie||'Espèces',
             };
@@ -3036,7 +3048,7 @@ function sbStartRealtime() {
         remiseGlobaleVal:r.remise_globale_val, remiseGlobaleType:r.remise_globale_type,
         remiseMotif:r.remise_motif, paie:r.paie, stpaie:r.stpaie,
         montantEnc:r.montant_enc, livreur:r.livreur, statut:r.statut,
-        date:r.date_livraison, dateCmd:r.date_commande||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'',
+        date:r.date_livraison, dateCmd:r.date_commande||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'',
         refMarketplace:r.ref_marketplace,
       };
       if (idx > -1) commandes[idx] = mapped;
@@ -4506,6 +4518,10 @@ function openNewCmd() {
   document.getElementById('f-livreur').value='';
   var origEl=document.getElementById('f-origine'); if(origEl) origEl.value='';
   var refEl=document.getElementById('f-ref-mkt'); if(refEl) refEl.value='';
+  // Transporteur RANOU par defaut + tracking vide + champ tracking cache
+  var _ftr = document.getElementById('f-transporteur'); if (_ftr) _ftr.value = 'RANOU';
+  var _ftk = document.getElementById('f-tracking'); if (_ftk) _ftk.value = '';
+  var _ftkw = document.getElementById('f-tracking-wrap'); if (_ftkw) _ftkw.style.display = 'none';
   document.getElementById('f-remise-type').value='pct';
   document.getElementById('lignes-produits').innerHTML='';
   ligneCount=0;
@@ -4550,6 +4566,13 @@ function ouvrirEditionCommande(id) {
   document.getElementById('f-stpaie').value  = c.stpaie || 'Non payé';
   document.getElementById('f-livreur').value = c.livreur|| '';
   document.getElementById('f-date').value    = c.date   || new Date().toISOString().split('T')[0];
+  // Pre-remplir transporteur + tracking
+  var _ftr_e = document.getElementById('f-transporteur');
+  if (_ftr_e) _ftr_e.value = c.transporteur || 'RANOU';
+  var _ftk_e = document.getElementById('f-tracking');
+  if (_ftk_e) _ftk_e.value = c.trackingTransporteur || '';
+  var _ftkw_e = document.getElementById('f-tracking-wrap');
+  if (_ftkw_e) _ftkw_e.style.display = ((c.transporteur || 'RANOU') === 'GLS') ? '' : 'none';
   var _fdc_edit = document.getElementById('f-date-cmd');
   if (_fdc_edit) {
     _fdc_edit.value = c.date_commande
@@ -4632,6 +4655,17 @@ function saveCmd() {
   const prodLabel = lignes[0].produit + (lignes.length>1 ? ' (+'+( lignes.length-1)+' autre'+(lignes.length>2?'s':'')+')'  : '');
   var origine = document.getElementById('f-origine')?.value || '';
   var refMkt = document.getElementById('f-ref-mkt')?.value || '';
+  var transporteur = (document.getElementById('f-transporteur')||{}).value || 'RANOU';
+  var tracking = ((document.getElementById('f-tracking')||{}).value || '').trim();
+  // Detection : tracking GLS nouvellement rempli -> declenche SMS expedition apres save
+  var declencherSmsExpedition = false;
+  if (isEdit && transporteur === 'GLS' && tracking) {
+    var _existing = commandes.find(x => x.id === window._editingCmdId);
+    var _ancienTracking = (_existing && _existing.trackingTransporteur) || '';
+    if (_ancienTracking !== tracking) declencherSmsExpedition = true;
+  } else if (!isEdit && transporteur === 'GLS' && tracking) {
+    declencherSmsExpedition = true;
+  }
   const cmdData = {
     id: isEdit ? window._editingCmdId : '#'+nextCmdId++,
     client:nom, tel, email:document.getElementById('f-email').value,
@@ -4646,6 +4680,7 @@ function saveCmd() {
     date:document.getElementById('f-date').value, instr:document.getElementById('f-instr').value,
     dateCmd:(document.getElementById('f-date-cmd')||{}).value||'',
     origine:origine, refMarketplace:refMkt,
+    transporteur:transporteur, trackingTransporteur:tracking,
   };
   if (isEdit) {
     // Mise à jour commande existante
@@ -4682,6 +4717,34 @@ function saveCmd() {
   if (!document.getElementById('f-livreur').value) {
     notifAjout('warn','commande','Commande sans livreur — '+nom,'Aucun livreur assigné pour cette commande.','Assigner livreur','commandes');
   }
+  // Declencher SMS expedition GLS (apres save Supabase, dedupe cote serveur)
+  if (declencherSmsExpedition) {
+    setTimeout(function(){ sendCmdSmsAsync(cmdData.id, 'expedition'); }, 1800);
+  }
+}
+
+// Appel Edge Function send-cmd-sms (non bloquant, dedupe cote serveur)
+async function sendCmdSmsAsync(cmdId, type) {
+  if (!cmdId || !type) return;
+  try {
+    var resp = await fetch(SUPABASE_URL + '/functions/v1/send-cmd-sms', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        'x-app-secret': APP_SECRET,
+      },
+      body: JSON.stringify({ cmdId: cmdId, type: type })
+    });
+    var data = await resp.json().catch(function(){ return {}; });
+    if (data.sent) {
+      toast('📱 SMS ' + type + ' envoye au client', 'ok');
+    } else if (data.skipped) {
+      console.log('SMS deja envoye:', type, cmdId);
+    } else if (data.error) {
+      console.warn('SMS erreur:', data.error);
+    }
+  } catch(e) { console.warn('sendCmdSmsAsync:', e.message); }
 }
 
 function autoPrix() {}
@@ -5291,7 +5354,7 @@ function renderLivreur() {
         : '<div class="lv-contact-grid">'+
             '<button class="lv-cbtn lv-cbtn-call lv-call-btn" data-tel="'+tel+'">📞 Appeler</button>'+
             '<button class="lv-cbtn lv-cbtn-wa lv-wa-btn" data-wanum="'+waNum+'" data-client="'+s.client+'">💬 WhatsApp</button>'+
-            '<button class="lv-cbtn lv-cbtn-waze lv-waze-btn" data-adresse="'+adresseNav+'" style="background:#1FCECA;color:#000;font-weight:900;">🚗 Waze</button>'+
+            '<button class="lv-cbtn lv-cbtn-waze lv-waze-btn" data-adresse="'+adresseNav+'" data-cmd-id="'+(s.cmdId||'')+'" style="background:#1FCECA;color:#000;font-weight:900;">🚗 Waze</button>'+
             '<button class="lv-cbtn lv-cbtn-nav lv-nav-btn" data-adresse="'+adresseNav+'" style="background:var(--ol);color:var(--od);">🗺 Maps</button>'+
             '<button class="lv-cbtn lv-cbtn-note lv-note-btn" data-tid="'+t.id+'" data-idx="'+i+'">📝 Note</button>'+
           '</div>'+
@@ -5401,6 +5464,14 @@ function renderLivreur() {
   document.querySelectorAll('.lv-waze-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {
       var adresse = encodeURIComponent(btn.dataset.adresse);
+      // NOUVEAU : declencher SMS "en route" vers ce client (uniquement transporteur RANOU)
+      var _wcmdId = btn.dataset.cmdId || '';
+      if (_wcmdId) {
+        var _wcmd = commandes.find(function(x){ return x.id === _wcmdId; });
+        if (_wcmd && (_wcmd.transporteur || 'RANOU') === 'RANOU') {
+          sendCmdSmsAsync(_wcmdId, 'route');
+        }
+      }
       // Avertir le livreur de garder Maxiconfort ouvert
       toast('🚗 Waze ouvert — revenez sur Maxiconfort pour valider la livraison', 'info');
       // Ouverture en nouvel onglet + flags pour éviter de capturer le focus permanent
@@ -5922,6 +5993,24 @@ function setLvSt(tid, idx, st) {
   // v7.1.6 : Plus de popup d'alerte chargement ici (remplacé par le SAS bloquant à l'ouverture)
   // Marquer l'horodatage du changement de statut (pour détection 1er client du jour)
   if (s) s.heureStatut = new Date().toISOString();
+
+  // NOUVEAU : detection depart tournee = 1er stop passe a en-route ET aucun autre stop n'a encore bouge
+  // -> envoyer SMS depart a tous les clients RANOU de la tournee
+  if (st === 'en-route' && idx === 0 && s && s.statut === 'en-attente') {
+    var _ts = t.stops || [];
+    var _bouges = _ts.filter(function(x){
+      return ['en-route','arrivé','arrive','livré','livre','reporté','reporte','absent','problème','probleme'].includes(x.statut);
+    }).length;
+    if (_bouges === 0) {
+      _ts.forEach(function(sx) {
+        if (!sx.cmdId) return;
+        var _cmdR = commandes.find(function(x){ return x.id === sx.cmdId; });
+        if (_cmdR && (_cmdR.transporteur || 'RANOU') === 'RANOU') {
+          setTimeout(function(){ sendCmdSmsAsync(sx.cmdId, 'depart'); }, 100);
+        }
+      });
+    }
+  }
   if(st==='livré'){
     sigStopId={tid,idx};
     var _gsig_info=document.getElementById('sig-info'); if(_gsig_info) _gsig_info.textContent=`${s.client} · ${s.produit} · ${s.prix} €`;
