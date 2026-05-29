@@ -10857,14 +10857,18 @@ async function gpsEnvoyerPosition(position) {
   var now  = new Date();
   var heure = now.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
 
+  // NORMALISATION : nom du livreur toujours en MAJUSCULES (evite doublons "Ranou"/"RANOU")
+  var nomNorm = (livNom || '').trim().toUpperCase();
+  if (!nomNorm) return; // skip si pas de nom
+
   // Sauvegarder localement
-  gpsPositions[livNom] = {lat:lat, lng:lng, heure:heure, vitesse:spd, precision:acc};
+  gpsPositions[nomNorm] = {lat:lat, lng:lng, heure:heure, vitesse:spd, precision:acc};
 
   // Throttle : envoyer à Supabase max 1x toutes les 30 secondes
   var _now = Date.now();
   if (!window._lastGpsSend) window._lastGpsSend = {};
-  if (_now - (window._lastGpsSend[livNom] || 0) < 30000) return; // skip si < 30s
-  window._lastGpsSend[livNom] = _now;
+  if (_now - (window._lastGpsSend[nomNorm] || 0) < 30000) return; // skip si < 30s
+  window._lastGpsSend[nomNorm] = _now;
 
   // Envoyer à Supabase
   try {
@@ -10877,7 +10881,7 @@ async function gpsEnvoyerPosition(position) {
         'Prefer': 'resolution=merge-duplicates',
       },
       body: JSON.stringify({
-        livreur: livNom, lat: lat, lng: lng,
+        livreur: nomNorm, lat: lat, lng: lng,
         vitesse: spd, precision: acc, heure: heure,
         updated_at: now.toISOString(),
       })
@@ -10914,8 +10918,31 @@ async function gpsChargerPositions() {
     });
     var res = { data: _gpsResp.ok ? await _gpsResp.json() : [] };
     if (res.data) {
-      res.data.forEach(function(r) {
-        gpsPositions[r.livreur] = {
+      // FUSION variantes de casse + dedupe + on garde la plus recente par livreur
+      res.data.sort(function(a,b){
+        return new Date(a.updated_at || 0) - new Date(b.updated_at || 0);
+      });
+      var byNorm = {};
+      res.data.forEach(function(r){
+        if (!r.livreur) return;
+        var key = r.livreur.trim().toUpperCase();
+        byNorm[key] = r; // l'ecrasement = plus recent gagne (cause du sort)
+      });
+      // Retirer de gpsPositions les livreurs qui n'existent plus en BD (apres cleanup)
+      var nouvellesCles = Object.keys(byNorm);
+      Object.keys(gpsPositions).forEach(function(k){
+        if (nouvellesCles.indexOf(k) === -1) {
+          delete gpsPositions[k];
+          // Retirer aussi le marker de la carte
+          if (gpsMarkeursReels && gpsMarkeursReels[k] && window.gpsMapInstance) {
+            try { window.gpsMapInstance.removeLayer(gpsMarkeursReels[k]); } catch(e){}
+            delete gpsMarkeursReels[k];
+          }
+        }
+      });
+      Object.values(byNorm).forEach(function(r){
+        var nomNorm = r.livreur.trim().toUpperCase();
+        gpsPositions[nomNorm] = {
           lat:r.lat, lng:r.lng, heure:r.heure,
           vitesse:r.vitesse||0, precision:r.precision||0,
           updated_at: r.updated_at || null
