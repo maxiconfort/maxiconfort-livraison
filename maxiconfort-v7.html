@@ -10605,13 +10605,81 @@ document.addEventListener('visibilitychange', function() {
 });
 
 // ── Démarrer le GPS (appelé par le livreur) ──
-function gpsDemarrerReel() {
-  if (!navigator.geolocation) {
-    toast('GPS non disponible sur cet appareil', 'err');
-    return;
-  }
+// ════════════════════════════════════════════════════════════
+// 📡 GPS BACKGROUND VIA CAPACITOR (Android app native uniquement)
+// ════════════════════════════════════════════════════════════
+// Si l'app tourne dans Capacitor (= APK natif), utilise le plugin
+// BackgroundGeolocation natif qui marche meme tel verrouille en poche.
+// Sinon, fallback sur navigator.geolocation (PWA/browser, comportement actuel).
+window._gpsCapacitorWatcherId = null;
+
+async function startCapacitorBackgroundGPS() {
+  var isNative = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+  if (!isNative) return false;
+  var BG = window.Capacitor.Plugins && window.Capacitor.Plugins.BackgroundGeolocation;
+  if (!BG) { console.warn('Plugin BackgroundGeolocation indisponible'); return false; }
+  try {
+    var watcherId = await BG.addWatcher({
+      backgroundMessage: "Suivi GPS de tournee en cours",
+      backgroundTitle: "Maxiconfort Livraison Pro",
+      requestPermissions: true,
+      stale: false,
+      distanceFilter: 10
+    }, function(location, error) {
+      if (error) {
+        console.warn('GPS BG erreur:', error);
+        if (error.code === 'NOT_AUTHORIZED') {
+          if (typeof toast === 'function') toast('Permission GPS refusee - parametres Android', 'err');
+        }
+        return;
+      }
+      if (typeof gpsEnvoyerPosition === 'function') {
+        gpsEnvoyerPosition({
+          coords: {
+            latitude: location.latitude, longitude: location.longitude,
+            accuracy: location.accuracy, altitude: location.altitude,
+            altitudeAccuracy: location.altitudeAccuracy,
+            speed: location.speed, heading: location.bearing,
+          },
+          timestamp: location.time || Date.now()
+        });
+      }
+    });
+    window._gpsCapacitorWatcherId = watcherId;
+    return true;
+  } catch(e) { console.warn('Capacitor BG GPS exception:', e); return false; }
+}
+
+async function stopCapacitorBackgroundGPS() {
+  if (!window._gpsCapacitorWatcherId) return false;
+  var BG = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.BackgroundGeolocation;
+  if (!BG) return false;
+  try {
+    await BG.removeWatcher({ id: window._gpsCapacitorWatcherId });
+    window._gpsCapacitorWatcherId = null;
+    return true;
+  } catch(e) { console.warn(e); return false; }
+}
+
+async function gpsDemarrerReel() {
   if (gpsActif) {
     gpsArreterReel();
+    return;
+  }
+
+  // PRIORITE : si app native Capacitor disponible, utiliser le plugin BG natif
+  var capacitorOk = await startCapacitorBackgroundGPS();
+  if (capacitorOk) {
+    gpsActif = true;
+    var btnCap = document.getElementById('btn-gps-livreur');
+    if (btnCap) { btnCap.textContent = '⏹️ Arrêter ma journée'; btnCap.style.background = 'var(--red)'; }
+    toast('🚀 GPS background ACTIF — tu peux mettre le tel en poche !', 'ok');
+    return;
+  }
+
+  // FALLBACK : navigator.geolocation (PWA / browser web)
+  if (!navigator.geolocation) {
+    toast('GPS non disponible sur cet appareil', 'err');
     return;
   }
 
@@ -10654,7 +10722,11 @@ function gpsDemarrerReel() {
 }
 
 // ── Arrêter le GPS ──
-function gpsArreterReel() {
+async function gpsArreterReel() {
+  // Arreter watcher Capacitor natif (si actif)
+  if (window._gpsCapacitorWatcherId) {
+    try { await stopCapacitorBackgroundGPS(); } catch(e) {}
+  }
   if (gpsWatchId !== null) {
     navigator.geolocation.clearWatch(gpsWatchId);
     gpsWatchId = null;
