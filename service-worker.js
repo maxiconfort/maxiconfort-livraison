@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.3.0 - Refonte optimisation tournee : OSRM + 2-opt + carte Leaflet + Waze
+// v7.3.1 - Optimisation 1 clic depuis la fiche tournee admin
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-3-0';
+const CACHE_VERSION = 'maxiconfort-v7-3-1';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

@@ -598,8 +598,10 @@ textarea{resize:vertical;min-height:65px}
         <div style="display:flex;align-items:center;gap:10px">
           <div class="st" id="td-title">Tournée</div>
           <span class="bdg b-blue" id="td-badge">En cours</span>
+          <span id="td-optim-info" style="font-size:11px;color:var(--green);font-weight:700"></span>
         </div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-sm" id="btn-td-optimiser" onclick="optimiserTourneeRapide(currentTourneeId)" style="background:#185FA5;color:#fff;font-weight:800">🚀 Optimiser la tournée</button>
           <button class="btn btn-sm btn-p" onclick="ouvrirModifTournee(currentTourneeId)">✏️ Modifier</button>
           <button class="btn btn-sm" onclick="supprimerTournee(currentTourneeId)" style="background:var(--rl);color:var(--rd);border:1.5px solid var(--red)">🗑 Supprimer</button>
         </div>
@@ -8931,12 +8933,110 @@ function optimAppliquer() {
     if (orig) orig.num = i + 1;
     return orig;
   }).filter(Boolean);
+  t.optimisee_at = new Date().toISOString();
   sbSaveTournee(t); // Sync Supabase
   try { localStorage.setItem('mx_tournees_cache', JSON.stringify(tournees)); } catch(e) {}
   renderTournees();
   renderLivreur();
   toast('✅ Ordre appliqué à la tournée '+optimTourneeId+' et sauvegardé ✓', 'ok');
   goTo('tournees', document.querySelector('[data-p="tournees"]'));
+}
+
+// ════════════════════════════════════════════════════════════
+// 🚀 OPTIMISATION 1 CLIC — Workflow admin (2026-05-31)
+// ════════════════════════════════════════════════════════════
+// Appelable depuis n'importe ou (page Tournees admin).
+// Fait tout en silence : geocodage, OSRM, NNH+2-opt, sauvegarde DB.
+// Le livreur ouvre ensuite l'app et voit directement l'ordre final.
+async function optimiserTourneeRapide(tid) {
+  if (!tid) { toast('Aucune tournee selectionnee', 'err'); return; }
+  var t = tournees.find(function(x){ return x.id === tid; });
+  if (!t) { toast('Tournee introuvable', 'err'); return; }
+  if (!t.stops || t.stops.length < 2) {
+    toast('Il faut au moins 2 arrets pour optimiser', 'err');
+    return;
+  }
+  // Empecher d'optimiser une tournee deja partiellement livree (sinon on bouscule l'ordre)
+  var dejaLivres = t.stops.filter(function(s){ return s.statut === 'livré' || s.statut === 'livre'; }).length;
+  if (dejaLivres > 0) {
+    if (!confirm('Cette tournee a deja '+dejaLivres+' arret(s) livre(s). Optimiser quand meme ? Les arrets livres resteront en tete de liste.')) return;
+  }
+
+  var btn = document.getElementById('btn-td-optimiser');
+  var btnLabel = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Optimisation en cours...'; }
+
+  try {
+    // 1) Separer livres / a optimiser
+    var stopsLivres = t.stops.filter(function(s){ return s.statut === 'livré' || s.statut === 'livre'; });
+    var stopsAOptimiser = t.stops.filter(function(s){ return s.statut !== 'livré' && s.statut !== 'livre'; });
+
+    if (!stopsAOptimiser.length) {
+      toast('Tous les arrets sont deja livres, rien a optimiser', 'info');
+      return;
+    }
+
+    // 2) Geocoder toutes les adresses (cache localStorage)
+    toast('🌍 Geocodage de ' + stopsAOptimiser.length + ' adresses...', 'info');
+    var coords = await Promise.all(stopsAOptimiser.map(function(s){
+      return s.adresse ? geocoderAdresse(s.adresse) : Promise.resolve(COORDS_VILLES['default']);
+    }));
+    stopsAOptimiser.forEach(function(s, i){ s._lat = coords[i].lat; s._lng = coords[i].lng; });
+
+    // 3) Construire "tous" = [depot, ...stops] et matrice OSRM
+    toast('🛣 Calcul des trajets reels via OSRM...', 'info');
+    var tous = [OPTIM_DEPOT].concat(stopsAOptimiser.map(function(s){ return { lat: s._lat, lng: s._lng }; }));
+    var matrice = await optimMatriceOSRM(tous);
+    var matriceDuree;
+    var sourceMode = 'osrm';
+    if (matrice && matrice.durations && matrice.durations.length) {
+      matriceDuree = matrice.durations.map(function(row){ return row.map(function(v){ return v ? v/60 : 0; }); });
+    } else {
+      // Fallback Haversine
+      sourceMode = 'fallback';
+      matriceDuree = tous.map(function(a){ return tous.map(function(b){ return getTrajetMin(a.lat, a.lng, b.lat, b.lng); }); });
+    }
+
+    // 4) NNH + 2-opt sur tous les indices [1..N]
+    var depotIdx = 0;
+    var indices = [];
+    for (var i = 1; i < tous.length; i++) indices.push(i);
+    var ordreIdx = optimNearestNeighbor(indices, depotIdx, matriceDuree);
+    if (ordreIdx.length >= 4) ordreIdx = optim2opt(ordreIdx, matriceDuree, depotIdx);
+
+    // 5) Construire le nouvel ordre de stops (livres devant + optimises ensuite)
+    var nouvelOrdre = stopsLivres.slice();
+    ordreIdx.forEach(function(idxTous, position) {
+      var s = stopsAOptimiser[idxTous - 1]; // -1 car depot etait en 0
+      delete s._lat; delete s._lng; // nettoyer les champs temporaires
+      s.num = nouvelOrdre.length + 1;
+      nouvelOrdre.push(s);
+    });
+
+    // 6) Sauvegarder dans la tournee + flag local d'optimisation
+    t.stops = nouvelOrdre;
+    var nowIso = new Date().toISOString();
+    t.optimisee_at = nowIso;
+    try {
+      var flags = JSON.parse(localStorage.getItem('mx_optim_flags') || '{}');
+      flags[tid] = { at: nowIso, mode: sourceMode, nbStops: stopsAOptimiser.length };
+      localStorage.setItem('mx_optim_flags', JSON.stringify(flags));
+    } catch(e) {}
+    sbSaveTournee(t);
+    try { localStorage.setItem('mx_tournees_cache', JSON.stringify(tournees)); } catch(e) {}
+
+    // 7) Rafraichir UI
+    renderTournees();
+    renderLivreur();
+    afficherTournee(t.id);
+    var msgSrc = sourceMode === 'osrm' ? '(trajets reels OSRM)' : '(estimation - OSRM down)';
+    toast('🚀 Tournee ' + t.id + ' optimisee : ' + stopsAOptimiser.length + ' arrets ' + msgSrc, 'ok');
+  } catch(e) {
+    console.error('optimiserTourneeRapide:', e);
+    toast('❌ Erreur pendant l\'optimisation : ' + e.message, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = btnLabel || '🚀 Optimiser la tournée'; }
+  }
 }
 
 function optimExport() {
@@ -12756,6 +12856,24 @@ function afficherTournee(id) {
   const det = document.getElementById('tournee-detail');
   det.style.display = 'block';
   var _gtd_title=document.getElementById('td-title'); if(_gtd_title) _gtd_title.textContent=t.id + ' · ' + t.livreur;
+
+  // v7.3.1 : afficher le flag d'optimisation s'il existe (localStorage)
+  var infoEl = document.getElementById('td-optim-info');
+  if (infoEl) {
+    var flag = null;
+    try {
+      var flags = JSON.parse(localStorage.getItem('mx_optim_flags') || '{}');
+      flag = flags[id];
+    } catch(e) {}
+    if (flag && flag.at) {
+      var d = new Date(flag.at);
+      var dStr = d.toLocaleString('fr-FR', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'});
+      var srcSuffix = flag.mode === 'osrm' ? ' · OSRM' : (flag.mode === 'fallback' ? ' · estim.' : '');
+      infoEl.textContent = '✓ Optimisée le ' + dStr + srcSuffix;
+    } else {
+      infoEl.textContent = '';
+    }
+  }
 
   // Bouton modifier — visible seulement si tournée non terminée
   var btnModif = document.querySelector('#p-tournees .sh button');
