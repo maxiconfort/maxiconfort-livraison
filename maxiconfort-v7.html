@@ -1608,6 +1608,81 @@ Maxiconfort — {TEL_CONTACT}</textarea>
     </div>
   </div>
 
+  <!-- ─── PAGE SUIVI LOGISTIQUE ─── -->
+  <div class="page" id="p-suivi">
+    <!-- En-tete -->
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-size:20px;font-weight:900;color:var(--text)">📋 Suivi logistique</div>
+        <div style="font-size:12px;color:var(--t3);margin-top:2px">Recherche, filtres et export des commandes par transporteur et date de livraison</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick="suiviReset()" style="padding:9px 14px;border-radius:10px;border:1px solid var(--brd);background:var(--card);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">🗑 Effacer filtres</button>
+        <button class="btn btn-p" onclick="suiviExporterExcel()">📥 Exporter Excel</button>
+      </div>
+    </div>
+
+    <!-- Filtres rapides (boutons one-click) -->
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+      <button class="suivi-quick" data-preset="today"    onclick="suiviFiltreRapide('today')">📅 Aujourd'hui</button>
+      <button class="suivi-quick" data-preset="tomorrow" onclick="suiviFiltreRapide('tomorrow')">⏭ Demain</button>
+      <button class="suivi-quick" data-preset="week"     onclick="suiviFiltreRapide('week')">🗓 Cette semaine</button>
+      <button class="suivi-quick" data-preset="late"     onclick="suiviFiltreRapide('late')">⚠ En retard</button>
+      <button class="suivi-quick" data-preset="all"      onclick="suiviFiltreRapide('all')">🌐 Tout</button>
+    </div>
+
+    <!-- Filtres precis -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px;background:var(--bg2);padding:12px;border-radius:var(--rl)">
+      <div class="srch" style="margin:0"><span style="color:var(--t3)">🔍</span><input type="text" id="suivi-search" oninput="suiviAppliquerFiltres()" placeholder="Client, ID, ville..."></div>
+      <select id="suivi-transporteur" onchange="suiviAppliquerFiltres()" style="padding:9px 11px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
+        <option value="">🚚 Tous transporteurs</option>
+        <option value="RANOU">🟢 RANOU (interne)</option>
+        <option value="GLS">🟠 GLS</option>
+      </select>
+      <select id="suivi-statut" onchange="suiviAppliquerFiltres()" style="padding:9px 11px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
+        <option value="">📊 Tous statuts</option>
+        <option value="en-attente">⏳ En attente</option>
+        <option value="en-route">🚚 En route</option>
+        <option value="arrivé">📍 Arrivé</option>
+        <option value="livré">✅ Livré</option>
+        <option value="reporté">⏸ Reporté</option>
+        <option value="annulé">❌ Annulé</option>
+      </select>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <label style="font-size:10px;color:var(--t3);font-weight:700;text-transform:uppercase;letter-spacing:.4px">Date livraison du</label>
+        <input type="date" id="suivi-date-debut" onchange="suiviAppliquerFiltres()" style="padding:8px 10px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
+      </div>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <label style="font-size:10px;color:var(--t3);font-weight:700;text-transform:uppercase;letter-spacing:.4px">au</label>
+        <input type="date" id="suivi-date-fin" onchange="suiviAppliquerFiltres()" style="padding:8px 10px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
+      </div>
+    </div>
+
+    <!-- Compteur + recap -->
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+      <div id="suivi-compteur" style="font-size:13px;font-weight:700;color:var(--t2)">0 commande</div>
+      <div id="suivi-stats" style="font-size:12px;color:var(--t3)"></div>
+    </div>
+
+    <!-- Tableau resultats -->
+    <div class="tw">
+      <table>
+        <thead><tr>
+          <th style="cursor:pointer;user-select:none" onclick="suiviTrier('id')">#<span id="suivi-tri-id"></span></th>
+          <th style="cursor:pointer;user-select:none" onclick="suiviTrier('client')">Client<span id="suivi-tri-client"></span></th>
+          <th>Adresse</th>
+          <th style="cursor:pointer;user-select:none" onclick="suiviTrier('date')">🚚 Date livraison<span id="suivi-tri-date"></span></th>
+          <th style="cursor:pointer;user-select:none" onclick="suiviTrier('transporteur')">Transporteur<span id="suivi-tri-transporteur"></span></th>
+          <th>Tracking</th>
+          <th style="cursor:pointer;user-select:none" onclick="suiviTrier('statut')">Statut<span id="suivi-tri-statut"></span></th>
+          <th>Montant</th>
+          <th></th>
+        </tr></thead>
+        <tbody id="suivi-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- ─── PAGE PARAMÈTRES ─── -->
   <div class="page" id="p-pins">
 
@@ -3566,6 +3641,7 @@ const ROLES = {
       {p:'tournees',i:'🗺',l:'Tournées'},
       {p:'livreur',i:'🚚',l:'Vue livreur'},
       {s:'Suivi'},
+      {p:'suivi',i:'📋',l:'Suivi logistique'},
       {p:'gps',i:'📍',l:'Géolocalisation'},
       {p:'notifs',i:'🔔',l:'Notifications',badge:true},
       {p:'optim',i:'🧭',l:'Optimiser tournée'},
@@ -3592,6 +3668,7 @@ const ROLES = {
       {p:'dashboard',i:'📊',l:'Dashboard'},
       {p:'commandes',i:'📦',l:'Commandes'},
       {p:'tournees',i:'🗺',l:'Tournées'},
+      {p:'suivi',i:'📋',l:'Suivi logistique'},
       {p:'optim',i:'🧭',l:'Optimiser tournée'},
       {p:'notifs',i:'🔔',l:'Notifications'},
       {s:'Stock'},
@@ -3756,7 +3833,7 @@ function goTo(p, el) {
   document.getElementById('p-'+p).classList.add('on');
   document.querySelectorAll('.ni').forEach(x=>x.classList.remove('on','cv','lv'));
   if(el){el.classList.add('on');if(role==='collab')el.classList.add('cv');if(role==='livreur')el.classList.add('lv');}
-  const titles={dashboard:'Tableau de bord',commandes:'Commandes',tournees:'Tournées',livreur:'Ma tournée',finance:'Encaissements',pins:'Gestion des PINs',camion:'Contenu camion'};
+  const titles={dashboard:'Tableau de bord',commandes:'Commandes',tournees:'Tournées',livreur:'Ma tournée',finance:'Encaissements',pins:'Gestion des PINs',camion:'Contenu camion',suivi:'Suivi logistique'};
   var _gpage_title=document.getElementById('page-title'); if(_gpage_title) _gpage_title.textContent=titles[p]||p;
 
   if(p==='commandes') {
@@ -3776,6 +3853,7 @@ function goTo(p, el) {
   if(p==='optim') optimInit();
   if(p==='notifs') notifInit();
   if(p==='pins') initParams();
+  if(p==='suivi') { suiviInit(); }
 }
 
 // ════════════════════════════════════════
@@ -4399,6 +4477,265 @@ function filterCmd(q) {
   if(s)  list=list.filter(function(c){return c.statut===s;});
   if(or) list=list.filter(function(c){return c.origine===or;});
   renderCmds(list);
+}
+
+// ════════════════════════════════════════════════════════════
+// 📋 SUIVI LOGISTIQUE — recherche/filtres/tri/export (2026-05-31)
+// ════════════════════════════════════════════════════════════
+var suiviTriCol = 'date';
+var suiviTriDir = 'desc'; // 'asc' ou 'desc'
+var suiviPresetActif = '';
+
+function suiviInit() {
+  // Reset tri/filtres a l'ouverture
+  suiviPresetActif = '';
+  suiviTriCol = 'date';
+  suiviTriDir = 'desc';
+  // Pre-remplir aujourd'hui comme defaut pratique
+  var today = new Date().toISOString().split('T')[0];
+  var elDeb = document.getElementById('suivi-date-debut');
+  var elFin = document.getElementById('suivi-date-fin');
+  if (elDeb && !elDeb.value) elDeb.value = today;
+  if (elFin && !elFin.value) elFin.value = today;
+  suiviUpdateQuickBtns('today');
+  suiviPresetActif = 'today';
+  suiviAppliquerFiltres();
+}
+
+function suiviUpdateQuickBtns(active) {
+  document.querySelectorAll('.suivi-quick').forEach(function(b) {
+    var isActive = b.dataset.preset === active;
+    b.style.cssText = 'padding:9px 14px;border-radius:10px;border:1.5px solid '+(isActive?'var(--blue)':'var(--brd)')+';background:'+(isActive?'var(--blue)':'var(--card)')+';color:'+(isActive?'#fff':'var(--text)')+';font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .15s';
+  });
+}
+
+function suiviFiltreRapide(preset) {
+  suiviPresetActif = preset;
+  suiviUpdateQuickBtns(preset);
+  var elDeb = document.getElementById('suivi-date-debut');
+  var elFin = document.getElementById('suivi-date-fin');
+  var elStatut = document.getElementById('suivi-statut');
+  // Reset statut quand on change de preset (sauf pour "late" qui force exclusion des livrees)
+  if (elStatut && preset !== 'late') elStatut.value = '';
+
+  var d = new Date();
+  var pad = function(n){ return n<10?'0'+n:''+n; };
+  var iso = function(dt){ return dt.getFullYear()+'-'+pad(dt.getMonth()+1)+'-'+pad(dt.getDate()); };
+  if (preset === 'today') {
+    var t = iso(d);
+    if (elDeb) elDeb.value = t;
+    if (elFin) elFin.value = t;
+  } else if (preset === 'tomorrow') {
+    var dm = new Date(d.getTime() + 24*3600*1000);
+    var ts = iso(dm);
+    if (elDeb) elDeb.value = ts;
+    if (elFin) elFin.value = ts;
+  } else if (preset === 'week') {
+    // Semaine = lundi -> dimanche en cours
+    var day = d.getDay() || 7; // 1=lun .. 7=dim
+    var lundi = new Date(d.getTime() - (day-1)*24*3600*1000);
+    var dimanche = new Date(lundi.getTime() + 6*24*3600*1000);
+    if (elDeb) elDeb.value = iso(lundi);
+    if (elFin) elFin.value = iso(dimanche);
+  } else if (preset === 'late') {
+    // En retard = date livraison < aujourd'hui ET pas livre/annule
+    if (elDeb) elDeb.value = '';
+    if (elFin) elFin.value = iso(new Date(d.getTime() - 24*3600*1000));
+  } else if (preset === 'all') {
+    if (elDeb) elDeb.value = '';
+    if (elFin) elFin.value = '';
+  }
+  suiviAppliquerFiltres();
+}
+
+function suiviReset() {
+  suiviPresetActif = '';
+  suiviUpdateQuickBtns('');
+  ['suivi-search','suivi-date-debut','suivi-date-fin'].forEach(function(id){
+    var el = document.getElementById(id); if (el) el.value='';
+  });
+  var tr = document.getElementById('suivi-transporteur'); if (tr) tr.value='';
+  var st = document.getElementById('suivi-statut');       if (st) st.value='';
+  suiviAppliquerFiltres();
+}
+
+function suiviGetResultats() {
+  if (!Array.isArray(commandes)) return [];
+  var search = (document.getElementById('suivi-search')?.value || '').toLowerCase().trim();
+  var transporteur = document.getElementById('suivi-transporteur')?.value || '';
+  var statut = document.getElementById('suivi-statut')?.value || '';
+  var dateDeb = document.getElementById('suivi-date-debut')?.value || '';
+  var dateFin = document.getElementById('suivi-date-fin')?.value || '';
+  var preset = suiviPresetActif;
+
+  var rows = commandes.filter(function(c) {
+    if (!c) return false;
+    // recherche texte
+    if (search) {
+      var hay = [c.id, c.client, c.tel, c.adresse, c.produit, c.livreur, c.tracking_transporteur].map(function(v){ return (v||'').toString().toLowerCase(); }).join(' ');
+      if (!hay.includes(search)) return false;
+    }
+    // transporteur (default RANOU si vide)
+    if (transporteur) {
+      var t = c.transporteur || 'RANOU';
+      if (t !== transporteur) return false;
+    }
+    // statut
+    if (statut && c.statut !== statut) return false;
+    // dates livraison (c.date)
+    var dStr = c.date ? String(c.date).split('T')[0] : '';
+    if (dateDeb && (!dStr || dStr < dateDeb)) return false;
+    if (dateFin && (!dStr || dStr > dateFin)) return false;
+    // preset "late" : exclure livre/annule
+    if (preset === 'late') {
+      if (c.statut === 'livré' || c.statut === 'annulé') return false;
+      if (!dStr) return false;
+    }
+    return true;
+  });
+
+  // tri
+  var col = suiviTriCol, dir = suiviTriDir === 'asc' ? 1 : -1;
+  rows.sort(function(a, b) {
+    var va, vb;
+    if (col === 'date') {
+      va = a.date || ''; vb = b.date || '';
+    } else if (col === 'transporteur') {
+      va = a.transporteur || 'RANOU'; vb = b.transporteur || 'RANOU';
+    } else {
+      va = (a[col] || '').toString().toLowerCase();
+      vb = (b[col] || '').toString().toLowerCase();
+    }
+    if (va < vb) return -1 * dir;
+    if (va > vb) return 1 * dir;
+    return 0;
+  });
+  return rows;
+}
+
+function suiviAppliquerFiltres() {
+  var rows = suiviGetResultats();
+  var tbody = document.getElementById('suivi-tbody');
+  if (!tbody) return;
+  // Compteur + stats
+  document.getElementById('suivi-compteur').textContent = rows.length + ' commande' + (rows.length>1?'s':'');
+  var nbLivre = rows.filter(function(c){return c.statut==='livré';}).length;
+  var nbRetard = rows.filter(function(c){
+    if (c.statut==='livré' || c.statut==='annulé') return false;
+    if (!c.date) return false;
+    var todayStr = new Date().toISOString().split('T')[0];
+    return String(c.date).split('T')[0] < todayStr;
+  }).length;
+  var totalMontant = rows.reduce(function(s,c){return s + (parseFloat(c.prix)||0);}, 0);
+  document.getElementById('suivi-stats').textContent = '✅ ' + nbLivre + ' livrée(s) · ⚠ ' + nbRetard + ' en retard · 💶 ' + totalMontant.toFixed(2) + ' €';
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:40px 20px;color:var(--t3)"><div style="font-size:36px;margin-bottom:10px">🔍</div><div>Aucune commande trouvée avec ces filtres</div></td></tr>';
+    suiviRafraichirTriIndicateurs();
+    return;
+  }
+
+  var todayStr = new Date().toISOString().split('T')[0];
+  tbody.innerHTML = rows.map(function(c){
+    var transpo = c.transporteur || 'RANOU';
+    var transpoBdg = transpo === 'GLS'
+      ? '<span style="display:inline-block;padding:3px 9px;border-radius:999px;background:#FFE7C2;color:#7A4A00;font-size:11px;font-weight:800">🟠 GLS</span>'
+      : '<span style="display:inline-block;padding:3px 9px;border-radius:999px;background:#D6F0E0;color:#1F5A36;font-size:11px;font-weight:800">🟢 RANOU</span>';
+    var tracking = c.tracking_transporteur ? '<code style="font-size:11px;background:var(--bg2);padding:2px 6px;border-radius:4px">'+c.tracking_transporteur+'</code>' : '<span style="color:var(--t3)">—</span>';
+    var dStr = c.date ? String(c.date).split('T')[0] : '';
+    var isRetard = dStr && dStr < todayStr && c.statut !== 'livré' && c.statut !== 'annulé';
+    var dateAffich = c.date ? fmtDate(c.date) : '—';
+    if (isRetard) dateAffich = '<span style="color:var(--rd);font-weight:800">⚠ '+dateAffich+'</span>';
+    return '<tr onclick="ouvrirCmd(\''+c.id+'\')" style="cursor:pointer">'+
+      '<td style="color:var(--t3);font-size:12px">'+c.id+'</td>'+
+      '<td><div class="td-m">'+(c.client||'')+'</div><div class="td-s">'+(c.tel||'')+'</div></td>'+
+      '<td style="font-size:12px">'+(c.adresse||'')+'</td>'+
+      '<td style="font-size:12px;white-space:nowrap">'+dateAffich+'</td>'+
+      '<td>'+transpoBdg+'</td>'+
+      '<td>'+tracking+'</td>'+
+      '<td>'+stBdg(c.statut)+'</td>'+
+      '<td><strong>'+(c.prix||0)+' €</strong></td>'+
+      '<td style="color:var(--t3);font-size:16px">›</td>'+
+    '</tr>';
+  }).join('');
+  suiviRafraichirTriIndicateurs();
+}
+
+function suiviRafraichirTriIndicateurs() {
+  ['id','client','date','transporteur','statut'].forEach(function(col) {
+    var el = document.getElementById('suivi-tri-' + col);
+    if (!el) return;
+    if (col === suiviTriCol) {
+      el.textContent = suiviTriDir === 'asc' ? ' ▲' : ' ▼';
+    } else {
+      el.textContent = '';
+    }
+  });
+}
+
+function suiviTrier(col) {
+  if (suiviTriCol === col) {
+    suiviTriDir = suiviTriDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    suiviTriCol = col;
+    suiviTriDir = col === 'date' ? 'desc' : 'asc';
+  }
+  suiviAppliquerFiltres();
+}
+
+async function suiviChargerSheetJS() {
+  if (typeof XLSX !== 'undefined') return true;
+  return new Promise(function(resolve) {
+    var s = document.createElement('script');
+    s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+    s.onload = function(){ resolve(true); };
+    s.onerror = function(){ resolve(false); };
+    document.head.appendChild(s);
+  });
+}
+
+async function suiviExporterExcel() {
+  var rows = suiviGetResultats();
+  if (!rows.length) {
+    if (typeof toast === 'function') toast('Aucune commande à exporter — ajuste les filtres', 'err');
+    return;
+  }
+  if (typeof toast === 'function') toast('Génération du fichier Excel...', 'info');
+  var ok = await suiviChargerSheetJS();
+  if (!ok || typeof XLSX === 'undefined') {
+    if (typeof toast === 'function') toast('Impossible de charger le module Excel — vérifie ta connexion', 'err');
+    return;
+  }
+  var data = rows.map(function(c) {
+    return {
+      'ID': c.id || '',
+      'Client': c.client || '',
+      'Téléphone': c.tel || '',
+      'Adresse': c.adresse || '',
+      'Produit': c.produit || '',
+      'Montant (€)': parseFloat(c.prix) || 0,
+      'Date livraison': c.date ? new Date(c.date).toLocaleDateString('fr-FR') : '',
+      'Date commande': c.dateCmd ? new Date(c.dateCmd).toLocaleDateString('fr-FR') : '',
+      'Transporteur': c.transporteur || 'RANOU',
+      'N° colis (GLS)': c.tracking_transporteur || '',
+      'Statut livraison': c.statut || '',
+      'Paiement': c.stpaie || '',
+      'Mode paiement': c.paie || '',
+      'Livreur': c.livreur || '',
+      'Origine': c.origine || '',
+    };
+  });
+  var ws = XLSX.utils.json_to_sheet(data);
+  ws['!cols'] = [
+    {wch:10},{wch:25},{wch:14},{wch:38},{wch:32},{wch:12},
+    {wch:14},{wch:14},{wch:13},{wch:18},{wch:14},{wch:12},{wch:16},{wch:14},{wch:18}
+  ];
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Suivi logistique');
+  var todayIso = new Date().toISOString().split('T')[0];
+  var suffix = suiviPresetActif ? '-' + suiviPresetActif : '';
+  XLSX.writeFile(wb, 'Maxiconfort-Suivi' + suffix + '-' + todayIso + '.xlsx');
+  if (typeof toast === 'function') toast('✅ Export Excel terminé (' + rows.length + ' commandes)', 'ok');
 }
 
 function buildProduitOptions() {
