@@ -8437,23 +8437,24 @@ async function optimMatriceOSRM(points) {
 // Etant donne un ordre initial et une matrice de distances, fait
 // des swaps 2-opt jusqu'a ne plus pouvoir ameliorer.
 // Gain typique : 15-25% par rapport a Nearest Neighbor pur.
-function optim2opt(ordre, matrice, depotIdx) {
+// endpointIdx (optionnel) : si fourni, la fonction cout inclut le
+// trajet du dernier stop vers cet endpoint (utilise pour finir une
+// tournee a une adresse precise, ex : domicile livreur).
+function optim2opt(ordre, matrice, depotIdx, endpointIdx) {
   if (!ordre || ordre.length < 4) return ordre;
-  // matrice[i][j] = cout (duree) du noeud i au noeud j dans le tableau "tous" (depot + stops)
-  // ordre = [stopIdx1, stopIdx2, ...] indices dans "tous"
   function coutTotal(o) {
     var c = matrice[depotIdx][o[0]] || 0;
     for (var i = 0; i < o.length - 1; i++) c += matrice[o[i]][o[i+1]] || 0;
+    if (endpointIdx != null && o.length > 0) c += matrice[o[o.length-1]][endpointIdx] || 0;
     return c;
   }
   var ameliorable = true;
-  var iter = 0, maxIter = 50; // garde-fou
+  var iter = 0, maxIter = 50;
   while (ameliorable && iter < maxIter) {
     ameliorable = false;
     iter++;
     for (var i = 0; i < ordre.length - 1; i++) {
       for (var j = i + 1; j < ordre.length; j++) {
-        // Reverse segment [i..j]
         var nouveau = ordre.slice(0, i).concat(ordre.slice(i, j+1).reverse()).concat(ordre.slice(j+1));
         if (coutTotal(nouveau) < coutTotal(ordre) - 0.5) {
           ordre = nouveau;
@@ -8554,8 +8555,24 @@ async function optimCalculer() {
   if (!optimStops.length) return;
   const strat = document.getElementById('optim-strat').value;
 
-  // 1) Construire la liste "tous" = [depot, stop0, stop1, ...] avec indices 0..N
+  // 1) Construire la liste "tous" = [depot, stop0, stop1, ..., (domicile)] avec indices 0..N(+1)
+  // Recuperer le domicile du livreur de la tournee courante (si configure)
+  var endpointIdx = null;
+  var coordsDomicileOpt = null;
+  var nomLivreurOpt = '';
+  try {
+    var tCurrent = tournees.find(function(x){ return x.id === optimTourneeId; });
+    if (tCurrent && tCurrent.livreur) {
+      nomLivreurOpt = (tCurrent.livreur || '').toUpperCase().trim();
+      var domAdr = livreursDomiciles[nomLivreurOpt];
+      if (domAdr) coordsDomicileOpt = await geocoderAdresse(domAdr);
+    }
+  } catch(e) {}
   var tous = [OPTIM_DEPOT].concat(optimStops);
+  if (coordsDomicileOpt) {
+    tous.push({ lat: coordsDomicileOpt.lat, lng: coordsDomicileOpt.lng });
+    endpointIdx = tous.length - 1;
+  }
   var depotIdx = 0;
 
   // 2) Recuperer la matrice OSRM (vraies routes IDF)
@@ -8611,9 +8628,9 @@ async function optimCalculer() {
   }
   var ordreFlexiblesIdx = optimNearestNeighbor(flexiblesIdx, depotIdx, matriceScore);
 
-  // 5) 2-opt amelioration
+  // 5) 2-opt amelioration (endpoint = domicile livreur si configure)
   if (ordreFlexiblesIdx.length >= 4) {
-    ordreFlexiblesIdx = optim2opt(ordreFlexiblesIdx, matriceScore, depotIdx);
+    ordreFlexiblesIdx = optim2opt(ordreFlexiblesIdx, matriceScore, depotIdx, endpointIdx);
   }
 
   // 6) Construire l'ordre final (stops indexes dans "tous", -1 pour avoir l'index dans optimStops)
@@ -8976,16 +8993,25 @@ async function optimiserTourneeRapide(tid) {
       return;
     }
 
-    // 2) Geocoder toutes les adresses (cache localStorage)
-    toast('🌍 Geocodage de ' + stopsAOptimiser.length + ' adresses...', 'info');
-    var coords = await Promise.all(stopsAOptimiser.map(function(s){
+    // 2) Geocoder toutes les adresses (cache localStorage) + domicile si configure
+    var nomLiv = (t.livreur || '').toUpperCase().trim();
+    var adresseDomicile = livreursDomiciles[nomLiv] || null;
+    toast('🌍 Geocodage de ' + stopsAOptimiser.length + ' adresses' + (adresseDomicile ? ' + domicile' : '') + '...', 'info');
+    var coordsPromise = Promise.all(stopsAOptimiser.map(function(s){
       return s.adresse ? geocoderAdresse(s.adresse) : Promise.resolve(COORDS_VILLES['default']);
     }));
+    var domicilePromise = adresseDomicile ? geocoderAdresse(adresseDomicile) : Promise.resolve(null);
+    var [coords, coordsDomicile] = await Promise.all([coordsPromise, domicilePromise]);
     stopsAOptimiser.forEach(function(s, i){ s._lat = coords[i].lat; s._lng = coords[i].lng; });
 
-    // 3) Construire "tous" = [depot, ...stops] et matrice OSRM
+    // 3) Construire "tous" = [depot, ...stops, (domicile)] et matrice OSRM
     toast('🛣 Calcul des trajets reels via OSRM...', 'info');
     var tous = [OPTIM_DEPOT].concat(stopsAOptimiser.map(function(s){ return { lat: s._lat, lng: s._lng }; }));
+    var endpointIdx = null;
+    if (coordsDomicile) {
+      tous.push(coordsDomicile);
+      endpointIdx = tous.length - 1;
+    }
     var matrice = await optimMatriceOSRM(tous);
     var matriceDuree;
     var sourceMode = 'osrm';
@@ -8997,12 +9023,13 @@ async function optimiserTourneeRapide(tid) {
       matriceDuree = tous.map(function(a){ return tous.map(function(b){ return getTrajetMin(a.lat, a.lng, b.lat, b.lng); }); });
     }
 
-    // 4) NNH + 2-opt sur tous les indices [1..N]
+    // 4) NNH + 2-opt sur tous les stops (en excluant le depot et le domicile s'il existe)
     var depotIdx = 0;
     var indices = [];
-    for (var i = 1; i < tous.length; i++) indices.push(i);
+    var maxIdx = endpointIdx != null ? endpointIdx : tous.length;
+    for (var i = 1; i < maxIdx; i++) indices.push(i);
     var ordreIdx = optimNearestNeighbor(indices, depotIdx, matriceDuree);
-    if (ordreIdx.length >= 4) ordreIdx = optim2opt(ordreIdx, matriceDuree, depotIdx);
+    if (ordreIdx.length >= 4) ordreIdx = optim2opt(ordreIdx, matriceDuree, depotIdx, endpointIdx);
 
     // 5) Construire le nouvel ordre de stops (livres devant + optimises ensuite)
     var nouvelOrdre = stopsLivres.slice();
@@ -9030,7 +9057,8 @@ async function optimiserTourneeRapide(tid) {
     renderLivreur();
     afficherTournee(t.id);
     var msgSrc = sourceMode === 'osrm' ? '(trajets reels OSRM)' : '(estimation - OSRM down)';
-    toast('🚀 Tournee ' + t.id + ' optimisee : ' + stopsAOptimiser.length + ' arrets ' + msgSrc, 'ok');
+    var msgFin = endpointIdx != null ? ' · fin proche domicile ' + nomLiv : '';
+    toast('🚀 Tournee ' + t.id + ' optimisee : ' + stopsAOptimiser.length + ' arrets ' + msgSrc + msgFin, 'ok');
   } catch(e) {
     console.error('optimiserTourneeRapide:', e);
     toast('❌ Erreur pendant l\'optimisation : ' + e.message, 'err');
@@ -10007,6 +10035,23 @@ function optimAfficherCarte() {
     optimMapLayers.push(m);
     latlngs.push([s.lat, s.lng]);
   });
+
+  // Marker domicile livreur (si configure)
+  var tournee_actuelle = tournees.find(function(x){ return x.id === optimTourneeId; });
+  var nomLivreurCarte = tournee_actuelle && tournee_actuelle.livreur ? tournee_actuelle.livreur.toUpperCase().trim() : '';
+  var adrDom = livreursDomiciles[nomLivreurCarte];
+  if (adrDom && geocodeCache[adrDom.toLowerCase().trim()]) {
+    var coordsD = geocodeCache[adrDom.toLowerCase().trim()];
+    var iconDom = L.divIcon({
+      html: '<div style="background:#7A4A00;color:#fff;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:900;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.3)">🏡</div>',
+      iconSize: [30,30], iconAnchor: [15,15], className: ''
+    });
+    var mDom = L.marker([coordsD.lat, coordsD.lng], { icon: iconDom, title: 'Domicile '+nomLivreurCarte }).addTo(optimMap);
+    mDom.bindPopup('<strong>🏡 Domicile '+nomLivreurCarte+'</strong><br>'+adrDom+'<br><small>Fin de tournee optimisee ici</small>');
+    optimMapLayers.push(mDom);
+    // Ajouter le segment final dans la polyline
+    latlngs.push([coordsD.lat, coordsD.lng]);
+  }
 
   // Polyline trajet
   if (latlngs.length >= 2) {
@@ -10988,6 +11033,10 @@ setInterval(function() {
 // SUPABASE — SYNC PINs ET PARAMÈTRES
 // ════════════════════════════════════════
 
+// v7.3.2 : domicile par livreur (pour endpoint d'optimisation)
+var livreursDomiciles = {};
+try { livreursDomiciles = JSON.parse(localStorage.getItem('mx_livreurs_domiciles') || '{}'); } catch(e) { livreursDomiciles = {}; }
+
 async function sbLoadParametres() {
   try {
     var resp = await fetch(SUPABASE_URL + '/rest/v1/parametres?select=*', {
@@ -11005,7 +11054,13 @@ async function sbLoadParametres() {
       if (r.cle === 'soc_adresse') societe.adresse  = r.valeur;
       if (r.cle === 'soc_email')   societe.email    = r.valeur;
       if (r.cle === 'legal_text')  legalText        = r.valeur;
+      // v7.3.2 : parametres de domicile par livreur (livreur_XXX_domicile)
+      if (r.cle && r.cle.indexOf('livreur_') === 0 && r.cle.indexOf('_domicile') > 0) {
+        var nom = r.cle.slice(8, r.cle.indexOf('_domicile'));
+        if (nom) livreursDomiciles[nom.toUpperCase()] = r.valeur || '';
+      }
     });
+    try { localStorage.setItem('mx_livreurs_domiciles', JSON.stringify(livreursDomiciles)); } catch(e) {}
     // Sauvegarder en cache
     localStorage.setItem('mx_params_cache', JSON.stringify({pins:PINS, societe:societe, legalText:legalText}));
   } catch(e) { console.warn('sbLoadParametres:', e.message); }
