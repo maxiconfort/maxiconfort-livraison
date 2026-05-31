@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.1.8 - Support Capacitor BackgroundGeolocation natif
+// v7.1.9 - Demarrage auto GPS (Option 1 : plus besoin de cliquer)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-1-8';
+const CACHE_VERSION = 'maxiconfort-v7-1-9';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

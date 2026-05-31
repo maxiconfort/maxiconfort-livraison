@@ -5503,6 +5503,11 @@ function renderLivreur() {
   } else {
     sasCacher();
   }
+
+  // v7.1.9 : demarrage auto GPS si tournee du jour (Option 1)
+  if (typeof autoStartGpsIfTourneeToday === 'function') {
+    autoStartGpsIfTourneeToday();
+  }
 }
 
 // ── v7.1 : Compteur global chargement camion (header vue livreur) ──
@@ -10659,6 +10664,52 @@ async function stopCapacitorBackgroundGPS() {
     window._gpsCapacitorWatcherId = null;
     return true;
   } catch(e) { console.warn(e); return false; }
+}
+
+// ════════════════════════════════════════════════════════════
+// 🤖 DEMARRAGE AUTO GPS — Option 1 (2026-05-31)
+// ════════════════════════════════════════════════════════════
+// Le livreur n'a plus besoin de cliquer "Demarrer ma journee".
+// Des l'ouverture de l'app, si une tournee du jour existe pour lui
+// et qu'on est dans une plage horaire raisonnable, on lance le GPS.
+// Anti-spam : une seule tentative par session (flag _gpsAutoStartTentee).
+// Le bouton manuel reste dispo en backup.
+window._gpsAutoStartTentee = false;
+async function autoStartGpsIfTourneeToday() {
+  // 1. Une seule tentative par session
+  if (window._gpsAutoStartTentee) return;
+  // 2. Reserve au mode livreur connecte
+  if (typeof role === 'undefined' || role !== 'livreur') return;
+  if (!livNom) return;
+  // 3. GPS deja actif ? rien a faire
+  if (typeof gpsActif === 'undefined' || gpsActif) return;
+  // 4. Heure raisonnable : 6h-22h (pas la nuit)
+  var nowH = new Date().getHours();
+  if (nowH < 6 || nowH >= 22) return;
+  // 5. Tournee du jour pour ce livreur, non-terminee ?
+  if (typeof tournees === 'undefined' || !Array.isArray(tournees) || !tournees.length) return;
+  var todayStr = new Date().toISOString().split('T')[0];
+  var livNomLow = livNom.toLowerCase().trim();
+  var maTourneeDuJour = tournees.find(function(t) {
+    if (!t || !t.date) return false;
+    // t.date peut etre "YYYY-MM-DD" ou ISO complet ; on compare la date seule
+    var tDateStr = String(t.date).split('T')[0];
+    if (tDateStr !== todayStr) return false;
+    if (t.statut === 'terminée' || t.statut === 'terminee') return false;
+    if (!t.livreur) return false;
+    return t.livreur.toLowerCase().trim() === livNomLow;
+  });
+  if (!maTourneeDuJour) return;
+
+  // OK on lance le GPS
+  window._gpsAutoStartTentee = true;
+  console.log('🤖 [AUTO-GPS] Tournee du jour detectee (' + maTourneeDuJour.id + ') — demarrage GPS automatique');
+  // Petit delai pour laisser le bridge Capacitor s'initialiser au premier lancement
+  setTimeout(function() {
+    if (!gpsActif) {
+      try { gpsDemarrerReel(); } catch(e) { console.warn('Auto-GPS exception:', e); }
+    }
+  }, 1500);
 }
 
 async function gpsDemarrerReel() {
