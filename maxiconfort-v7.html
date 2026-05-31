@@ -1123,6 +1123,7 @@ textarea{resize:vertical;min-height:65px}
       <button class="btn" onclick="optimEnvoiAlertes()" id="btn-optim-alertes" style="display:none">
         📱 Envoyer alertes clients
       </button>
+      <span id="optim-status" style="font-size:12px;color:var(--blue);font-weight:700"></span>
     </div>
 
     <!-- Pas de tournée -->
@@ -1183,6 +1184,15 @@ textarea{resize:vertical;min-height:65px}
         </div>
       </div>
 
+      <!-- Carte interactive de la tournée -->
+      <div style="margin-bottom:18px">
+        <div style="font-size:12px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+          <span>🗺 Carte de la tournée</span>
+          <span style="font-weight:400;color:var(--t3);font-size:11px" id="optim-source-data">—</span>
+        </div>
+        <div id="optim-map" style="height:380px;width:100%;border-radius:var(--rl2);border:1px solid var(--brd);overflow:hidden;background:var(--bg2)"></div>
+      </div>
+
       <!-- Liste stops optimisés -->
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <div style="font-size:14px;font-weight:700">Ordre de passage optimisé</div>
@@ -1194,12 +1204,14 @@ textarea{resize:vertical;min-height:65px}
       <div id="optim-stops-list"></div>
 
       <!-- Boutons actions -->
-      <div style="display:flex;gap:10px;margin-top:16px;padding-top:16px;border-top:1px solid var(--brd)">
-        <button class="btn btn-p" onclick="optimAppliquer()" style="flex:1;justify-content:center;padding:12px">✅ Appliquer cet ordre à la tournée</button>
-        <button class="btn" onclick="ouvrirGoogleMaps()" style="justify-content:center;padding:12px;background:#4285F4;color:#fff">🗺️ Google Maps</button>
+      <div style="display:flex;gap:10px;margin-top:16px;padding-top:16px;border-top:1px solid var(--brd);flex-wrap:wrap">
+        <button class="btn btn-p" onclick="optimAppliquer()" style="flex:1 1 200px;justify-content:center;padding:12px">✅ Appliquer cet ordre</button>
+        <button class="btn" onclick="lancerWazeProchainStop()" style="justify-content:center;padding:12px;background:#1FCECA;color:#000;font-weight:900">🚗 Waze : prochain stop</button>
+        <button class="btn" onclick="ouvrirWazeTournee()" style="justify-content:center;padding:12px;background:#33CCFF;color:#000">🧭 Waze : tournée complète</button>
+        <button class="btn" onclick="ouvrirGoogleMaps()" style="justify-content:center;padding:12px;background:#4285F4;color:#fff">🗺 Google Maps</button>
         <button class="btn" id="btn-optim-manuel" onclick="toggleModeManuel()" style="justify-content:center;padding:12px">✋ Ordre manuel</button>
-        <button class="btn" onclick="optimEnvoiAlertes()" style="justify-content:center;padding:12px">📱 Envoyer alertes WhatsApp/SMS</button>
-        <button class="btn" onclick="optimExport()" style="justify-content:center;padding:12px">📄 Exporter feuille de route</button>
+        <button class="btn" onclick="optimEnvoiAlertes()" style="justify-content:center;padding:12px">📱 Alertes</button>
+        <button class="btn" onclick="optimExport()" style="justify-content:center;padding:12px">📄 Feuille de route</button>
       </div>
     </div>
   </div>
@@ -8361,24 +8373,94 @@ function getCoordsFromAdresse(adresse) {
   return COORDS_VILLES['default'];
 }
 
-// Géocodage réel via Nominatim — async
+// Géocodage réel via Nominatim — async avec cache persistant localStorage
 var geocodeCache = {};
+try { geocodeCache = JSON.parse(localStorage.getItem('mx_geocode_cache') || '{}'); } catch(e) { geocodeCache = {}; }
+function geocodeCacheSauver() {
+  try { localStorage.setItem('mx_geocode_cache', JSON.stringify(geocodeCache)); } catch(e) {}
+}
 async function geocoderAdresse(adresse) {
   if (!adresse) return COORDS_VILLES['default'];
-  if (geocodeCache[adresse]) return geocodeCache[adresse];
+  var key = String(adresse).trim().toLowerCase();
+  if (geocodeCache[key]) return geocodeCache[key];
   try {
     var query = encodeURIComponent(adresse + ', France');
     var resp = await fetch('https://nominatim.openstreetmap.org/search?format=json&q=' + query + '&limit=1&countrycodes=fr', {
-      headers: { 'Accept-Language': 'fr', 'User-Agent': 'Maxiconfort-Livraison/1.0' }
+      headers: { 'Accept-Language': 'fr' }
     });
     var data = await resp.json();
     if (data && data.length > 0) {
       var coords = {lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon)};
-      geocodeCache[adresse] = coords;
+      geocodeCache[key] = coords;
+      geocodeCacheSauver();
       return coords;
     }
   } catch(e) { console.warn('Geocode erreur:', e.message); }
   return getCoordsFromAdresse(adresse);
+}
+
+// ════════════════════════════════════════════════════════════
+// 🛣 MATRICE OSRM — Vraies distances/temps par la route
+// ════════════════════════════════════════════════════════════
+// API publique : https://router.project-osrm.org/table/v1/driving/lng1,lat1;...
+// Retourne {durations: matrice secondes, distances: matrice metres}
+var osrmCache = {};
+async function optimMatriceOSRM(points) {
+  // points = [{lat, lng}, ...]
+  if (!points || points.length < 2) return null;
+  var key = points.map(function(p){ return p.lat.toFixed(4)+','+p.lng.toFixed(4); }).join('|');
+  if (osrmCache[key]) return osrmCache[key];
+  var coords = points.map(function(p){ return p.lng+','+p.lat; }).join(';');
+  var url = 'https://router.project-osrm.org/table/v1/driving/' + coords + '?annotations=duration,distance';
+  try {
+    var resp = await fetch(url);
+    if (!resp.ok) throw new Error('OSRM HTTP ' + resp.status);
+    var data = await resp.json();
+    if (data.code !== 'Ok') throw new Error('OSRM ' + data.code);
+    var result = {
+      durations: data.durations || [], // matrice N x N en secondes
+      distances: data.distances || [], // matrice N x N en metres
+    };
+    osrmCache[key] = result;
+    return result;
+  } catch(e) {
+    console.warn('OSRM erreur (fallback Haversine):', e.message);
+    return null;
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// 🔄 ALGO 2-OPT — Amelioration iterative d'un ordre TSP
+// ════════════════════════════════════════════════════════════
+// Etant donne un ordre initial et une matrice de distances, fait
+// des swaps 2-opt jusqu'a ne plus pouvoir ameliorer.
+// Gain typique : 15-25% par rapport a Nearest Neighbor pur.
+function optim2opt(ordre, matrice, depotIdx) {
+  if (!ordre || ordre.length < 4) return ordre;
+  // matrice[i][j] = cout (duree) du noeud i au noeud j dans le tableau "tous" (depot + stops)
+  // ordre = [stopIdx1, stopIdx2, ...] indices dans "tous"
+  function coutTotal(o) {
+    var c = matrice[depotIdx][o[0]] || 0;
+    for (var i = 0; i < o.length - 1; i++) c += matrice[o[i]][o[i+1]] || 0;
+    return c;
+  }
+  var ameliorable = true;
+  var iter = 0, maxIter = 50; // garde-fou
+  while (ameliorable && iter < maxIter) {
+    ameliorable = false;
+    iter++;
+    for (var i = 0; i < ordre.length - 1; i++) {
+      for (var j = i + 1; j < ordre.length; j++) {
+        // Reverse segment [i..j]
+        var nouveau = ordre.slice(0, i).concat(ordre.slice(i, j+1).reverse()).concat(ordre.slice(j+1));
+        if (coutTotal(nouveau) < coutTotal(ordre) - 0.5) {
+          ordre = nouveau;
+          ameliorable = true;
+        }
+      }
+    }
+  }
+  return ordre;
 }
 
 // ── INIT PAGE ──
@@ -8393,7 +8475,7 @@ function optimInit() {
   if (optimTourneeId) { sel.value = optimTourneeId; optimCharger(); }
 }
 
-function optimCharger() {
+async function optimCharger() {
   const tid = document.getElementById('optim-tournee-sel').value;
   if (!tid) {
     document.getElementById('optim-empty').style.display = 'block';
@@ -8434,114 +8516,173 @@ function optimCharger() {
   });
   optimStopsOrig = optimStops.map(function(s){ return Object.assign({},s); });
 
-  // Géocodage réel en arrière-plan
-  optimStops.forEach(function(s, i) {
-    if (s.adresse) {
-      geocoderAdresse(s.adresse).then(function(coords) {
-        optimStops[i].lat = coords.lat;
-        optimStops[i].lng = coords.lng;
-      });
-    }
-  });
-
   document.getElementById('optim-empty').style.display = 'none';
   document.getElementById('optim-content').style.display = 'block';
   document.getElementById('btn-optim-lancer').style.display = '';
   document.getElementById('btn-optim-alertes').style.display = '';
 
-  optimCalculer();
+  // Geocoder TOUTES les adresses en parallele AVANT le calcul (vs apres en background avant)
+  toast('🌍 Géocodage des adresses en cours...', 'info');
+  optimSetStatus('🌍 Géocodage des '+optimStops.length+' adresses...');
+  var geoPromises = optimStops.map(function(s, i) {
+    if (!s.adresse) return Promise.resolve();
+    return geocoderAdresse(s.adresse).then(function(c) {
+      optimStops[i].lat = c.lat;
+      optimStops[i].lng = c.lng;
+    });
+  });
+  await Promise.all(geoPromises);
+  optimSetStatus('');
+  await optimCalculer();
 }
 
-// ── ALGORITHME OPTIMISATION ──
-function optimCalculer() {
+function optimSetStatus(msg) {
+  var el = document.getElementById('optim-status');
+  if (el) el.textContent = msg || '';
+}
+
+// ── ALGORITHME OPTIMISATION (refonte 2026-05-31 : OSRM + 2-opt) ──
+// Entrepot Villiers-sur-Marne (depart/arrivee)
+var OPTIM_DEPOT = {lat:48.829, lng:2.541};
+// Stocke la derniere matrice OSRM (durations[][]/distances[][]) pour reutilisation
+var optimDerniereMatrice = null;
+var optimDernierMode = null; // 'osrm' ou 'fallback'
+
+async function optimCalculer() {
   if (!optimStops.length) return;
   const strat = document.getElementById('optim-strat').value;
 
-  // Séparer impératifs et flexibles
-  const imperatifs = optimStops.filter(s => s.imperatif);
-  const flexibles  = optimStops.filter(s => !s.imperatif);
+  // 1) Construire la liste "tous" = [depot, stop0, stop1, ...] avec indices 0..N
+  var tous = [OPTIM_DEPOT].concat(optimStops);
+  var depotIdx = 0;
 
-  let ordreOptimise = [];
-
-  if (strat === 'imperatifs') {
-    // Impératifs en premier par heure, puis flexibles par distance
-    ordreOptimise = [
-      ...imperatifs.sort((a, b) => (a.creneauDebut||'99:99').localeCompare(b.creneauDebut||'99:99')),
-      ...optimiserNNH(flexibles, 'distance'),
-    ];
-  } else if (strat === 'temps') {
-    // Stratégie temps : NNH avec pondération heure de pointe IDF
-    // Poids trafic : 8h-9h30 et 17h-19h = x1.8 ; 9h30-11h30 = x1.2 ; 11h30-14h = x1.0 ; 14h-17h = x1.1
-    ordreOptimise = optimiserNNH(optimStops, 'temps');
+  // 2) Recuperer la matrice OSRM (vraies routes IDF)
+  optimSetStatus('🛣 Calcul des trajets reels (OSRM)...');
+  var matriceOSRM = await optimMatriceOSRM(tous);
+  var matriceDuree, matriceDist;
+  if (matriceOSRM) {
+    // OSRM renvoie secondes / metres -> convertir en minutes / km
+    matriceDuree = matriceOSRM.durations.map(function(row){ return row.map(function(v){ return v ? Math.round(v/60*10)/10 : 0; }); });
+    matriceDist  = matriceOSRM.distances.map(function(row){ return row.map(function(v){ return v ? Math.round(v/1000*100)/100 : 0; }); });
+    optimDernierMode = 'osrm';
   } else {
-    // Distance minimale
-    ordreOptimise = optimiserNNH(optimStops, 'distance');
+    // Fallback : Haversine + facteur urbain (ancien comportement)
+    matriceDuree = tous.map(function(a){ return tous.map(function(b){ return getTrajetMin(a.lat, a.lng, b.lat, b.lng); }); });
+    matriceDist  = tous.map(function(a){ return tous.map(function(b){
+      var R=111, dlat=(b.lat-a.lat)*R, dlng=(b.lng-a.lng)*R*Math.cos(a.lat*Math.PI/180);
+      return Math.round(Math.sqrt(dlat*dlat+dlng*dlng)*100)/100;
+    }); });
+    optimDernierMode = 'fallback';
   }
+  optimDerniereMatrice = { durations: matriceDuree, distances: matriceDist, tous: tous };
+  optimSetStatus('');
 
-  // Réinjecter les impératifs à leur position contrainte
-  if (strat !== 'imperatifs') {
-    imperatifs.forEach(imp => {
-      if (!imp.creneauDebut) return;
-      // Trouver position actuelle et position cible
-      const curIdx = ordreOptimise.findIndex(s => s.idx === imp.idx);
-      if (curIdx > -1) ordreOptimise.splice(curIdx, 1);
-      // Insérer au bon moment selon créneau
-      const targetTime = imp.creneauDebut;
-      let insertAt = 0;
-      for (let i = 0; i < ordreOptimise.length; i++) {
-        if ((ordreOptimise[i].etaDebut||'00:00') <= targetTime) insertAt = i + 1;
-      }
-      ordreOptimise.splice(insertAt, 0, imp);
+  // 3) Separer imperatifs / flexibles (on optimise SEULEMENT les flexibles, puis on injecte les imperatifs)
+  var imperatifs = [];
+  var flexiblesIdx = []; // indices dans "tous" (1..N)
+  optimStops.forEach(function(s, i) {
+    if (s.imperatif && s.creneauDebut) imperatifs.push(s);
+    else flexiblesIdx.push(i + 1); // +1 car depot est en 0
+  });
+
+  // 4) Nearest Neighbor sur les flexibles
+  var matriceScore = matriceDuree; // par defaut on minimise le temps
+  if (strat === 'distance') matriceScore = matriceDist;
+  else if (strat === 'temps') {
+    // Pondere les durees par le trafic IDF approximatif (heure de pointe)
+    var startMin = (parseInt((document.getElementById('optim-hstart')?.value||'08:00').split(':')[0]))*60;
+    var dureeStop = parseInt(document.getElementById('optim-duree')?.value)||15;
+    matriceScore = matriceDuree.map(function(row, i) {
+      return row.map(function(v, j) {
+        if (i === j) return 0;
+        // heure approximative d'arrivee = depart + duree non ponderee (rapide approx)
+        var hArr = (startMin + v) / 60;
+        var h = Math.floor(hArr) % 24;
+        var fac = 1.0;
+        if (h >= 8 && h < 10) fac = 1.8;
+        else if (h >= 10 && h < 12) fac = 1.2;
+        else if (h >= 12 && h < 14) fac = 1.1;
+        else if (h >= 16 && h < 19) fac = 1.9;
+        return v * fac;
+      });
     });
   }
+  var ordreFlexiblesIdx = optimNearestNeighbor(flexiblesIdx, depotIdx, matriceScore);
 
-  optimStops = ordreOptimise;
+  // 5) 2-opt amelioration
+  if (ordreFlexiblesIdx.length >= 4) {
+    ordreFlexiblesIdx = optim2opt(ordreFlexiblesIdx, matriceScore, depotIdx);
+  }
+
+  // 6) Construire l'ordre final (stops indexes dans "tous", -1 pour avoir l'index dans optimStops)
+  var ordreFinal = ordreFlexiblesIdx.map(function(idxTous){ return optimStops[idxTous - 1]; });
+
+  // 7) Injecter les imperatifs au bon endroit selon creneau horaire
+  imperatifs.sort(function(a,b){ return (a.creneauDebut||'99:99').localeCompare(b.creneauDebut||'99:99'); });
+  imperatifs.forEach(function(imp) {
+    var startH = parseInt((document.getElementById('optim-hstart')?.value||'08:00').split(':')[0]);
+    var startMin = startH * 60;
+    var dureeStop = parseInt(document.getElementById('optim-duree')?.value)||15;
+    // Estimer pour chaque position d'insertion l'heure d'arrivee
+    var [ih, im] = imp.creneauDebut.split(':').map(Number);
+    var targetMin = ih * 60 + im;
+    var courantMin = startMin;
+    var insertAt = 0;
+    // Cout : ajouter le depot pour la premiere etape
+    var prevIdx = depotIdx;
+    for (var k = 0; k < ordreFinal.length; k++) {
+      var curIdx = optimStops.indexOf(ordreFinal[k]) + 1;
+      courantMin += matriceDuree[prevIdx][curIdx] + dureeStop;
+      if (courantMin <= targetMin) insertAt = k + 1;
+      prevIdx = curIdx;
+    }
+    ordreFinal.splice(insertAt, 0, imp);
+  });
+
+  // 8) Recalculer trajetVersSuivant pour chaque stop dans l'ordre final
+  var prev = depotIdx;
+  for (var i2 = 0; i2 < ordreFinal.length; i2++) {
+    var cur = optimStops.indexOf(ordreFinal[i2]) + 1;
+    var d = matriceDuree[prev] && matriceDuree[prev][cur] != null ? matriceDuree[prev][cur] : 0;
+    ordreFinal[i2].trajetVersSuivant = Math.max(1, Math.round(d));
+    ordreFinal[i2].distKmVersSuivant = matriceDist[prev] && matriceDist[prev][cur] != null ? matriceDist[prev][cur] : 0;
+    prev = cur;
+  }
+
+  optimStops = ordreFinal;
   optimCalculerETAs();
   optimRendrePage();
+  // Re-afficher la carte une fois l'ordre fige
+  setTimeout(function(){ try { optimAfficherCarte(); } catch(e){} }, 100);
 }
 
-function optimiserNNH(stops, mode) {
-  if (!stops.length) return [];
-  mode = mode || 'distance';
-  // Entrepôt de départ : Villiers-sur-Marne
-  var depot = {lat:48.829, lng:2.541};
-  var restants = stops.slice();
+// Nearest Neighbor sur une liste d'indices "candidats" (indices dans "tous")
+function optimNearestNeighbor(candidats, depotIdx, matrice) {
+  if (!candidats.length) return [];
+  var restants = candidats.slice();
   var ordre = [];
-  var current = depot;
-
-  // Heure courante estimée (pour pondération trafic)
-  var startH = parseInt((document.getElementById('optim-hstart')?.value||'08:00').split(':')[0]);
-  var dureeStop = parseInt(document.getElementById('optim-duree')?.value)||15;
-  var currentMin = startH * 60;
-
+  var current = depotIdx;
   while (restants.length > 0) {
-    var best = null, bestScore = Infinity, bestIdx = -1;
-    restants.forEach(function(s, i) {
-      var trajet = getTrajetMin(current.lat, current.lng, s.lat, s.lng);
-      var score = trajet;
-      if (mode === 'temps') {
-        // Pondération trafic IDF selon heure estimée d'arrivée
-        var heureArrivee = currentMin + trajet;
-        var h = Math.floor(heureArrivee / 60) % 24;
-        var facteur = 1.0;
-        if (h >= 8  && h < 10) facteur = 1.8;  // pointe matin
-        else if (h >= 10 && h < 12) facteur = 1.2;  // circulation modérée
-        else if (h >= 12 && h < 14) facteur = 1.1;  // heure de déjeuner
-        else if (h >= 16 && h < 19) facteur = 1.9;  // pointe soir
-        score = trajet * facteur;
-      }
-      if (score < bestScore) { bestScore = score; best = s; bestIdx = i; }
-    });
-    if (best) {
-      var trajetReel = getTrajetMin(current.lat, current.lng, best.lat, best.lng);
-      best.trajetVersSuivant = trajetReel;
-      ordre.push(best);
-      current = best;
-      currentMin += trajetReel + dureeStop;
-      restants.splice(bestIdx, 1);
+    var bestPos = 0;
+    var bestCout = Infinity;
+    for (var i = 0; i < restants.length; i++) {
+      var c = matrice[current] && matrice[current][restants[i]] != null ? matrice[current][restants[i]] : Infinity;
+      if (c < bestCout) { bestCout = c; bestPos = i; }
     }
+    var pick = restants.splice(bestPos, 1)[0];
+    ordre.push(pick);
+    current = pick;
   }
   return ordre;
+}
+
+// Compatibilite : ancien optimiserNNH garde mais redirige (utilise par d'autres parties eventuellement)
+function optimiserNNH(stops, mode) {
+  if (!stops.length) return [];
+  var sorted = stops.slice().sort(function(a,b){
+    return getTrajetMin(OPTIM_DEPOT.lat, OPTIM_DEPOT.lng, a.lat, a.lng) - getTrajetMin(OPTIM_DEPOT.lat, OPTIM_DEPOT.lng, b.lat, b.lng);
+  });
+  return sorted;
 }
 
 function optimCalculerETAs() {
@@ -8728,8 +8869,8 @@ function optimRendrePage() {
 }
 
 // ── ACTIONS ──
-function optimLancer() {
-  optimCalculer();
+async function optimLancer() {
+  await optimCalculer();
   toast('Tournée optimisée — '+optimStops.length+' arrêts réorganisés ✓', 'ok');
 }
 
@@ -9640,34 +9781,157 @@ function exporterDepenses() {
 // GOOGLE MAPS — RÉCAPITULATIF TOURNÉE
 // ════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════
+// 🗺 GOOGLE MAPS — multi-segments si > 10 arrets
+// ════════════════════════════════════════════════════════════
 function ouvrirGoogleMaps() {
   if (!optimStops.length) { toast('Aucun arrêt à afficher', 'err'); return; }
-
-  // Point de départ : entrepôt Villiers-sur-Marne
   var depot = 'Villiers-sur-Marne,France';
+  // Construire la liste complete depot -> stops -> depot
+  var adresses = optimStops.filter(function(s){ return s.adresse; }).map(function(s){ return s.adresse.replace(/\s+/g,'+').replace(/,/g,'') + ',France'; });
+  if (!adresses.length) { toast('Aucune adresse exploitable', 'err'); return; }
 
-  // Construire l'URL Google Maps avec waypoints
-  var base = 'https://www.google.com/maps/dir/';
-  var points = [depot];
+  // Google Maps limite : ~9 waypoints intermediaires + origine + destination = 10 points par URL
+  // Strategie : segments chevauches (le dernier point d'un segment = origine du suivant)
+  var MAX_POINTS = 10;
+  var allPoints = [depot].concat(adresses);
+  var segments = [];
+  for (var i = 0; i < allPoints.length - 1; i += MAX_POINTS - 1) {
+    var seg = allPoints.slice(i, i + MAX_POINTS);
+    if (seg.length >= 2) segments.push(seg);
+  }
+  // Ouvrir un onglet par segment (mais limiter a 3 ouvertures pour pas spammer)
+  var nbOuverts = Math.min(segments.length, 3);
+  for (var k = 0; k < nbOuverts; k++) {
+    var url = 'https://www.google.com/maps/dir/' + segments[k].map(function(p){ return encodeURIComponent(p); }).join('/');
+    window.open(url, '_blank');
+  }
+  if (segments.length === 1) toast('🗺 Google Maps ouvert (' + (segments[0].length-1) + ' arrets)', 'ok');
+  else if (segments.length <= 3) toast('🗺 Tournée en ' + segments.length + ' segments Google Maps', 'ok');
+  else toast('⚠️ ' + segments.length + ' segments necessaires - les 3 premiers ouverts', 'info');
+}
 
-  optimStops.forEach(function(s) {
-    if (s.adresse) {
-      // Nettoyer l'adresse pour l'URL
-      var adr = s.adresse.replace(/\s+/g, '+').replace(/,/g, '');
-      points.push(adr + ',France');
-    }
+// ════════════════════════════════════════════════════════════
+// 🚗 WAZE — Lancer la navigation vers le prochain stop non-livre
+// ════════════════════════════════════════════════════════════
+function lancerWazeProchainStop() {
+  if (!optimStops.length) { toast('Aucun arret a afficher', 'err'); return; }
+  var prochain = optimStops.find(function(s){ return s.statut !== 'livre' && s.statut !== 'livré' && s.adresse; });
+  if (!prochain) { toast('🎉 Tous les arrets sont livres !', 'ok'); return; }
+  var adresse = encodeURIComponent(prochain.adresse + ', France');
+  window.open('https://waze.com/ul?q=' + adresse + '&navigate=yes', '_blank');
+  toast('🚗 Waze ouvert : ' + prochain.client, 'ok');
+}
+
+// ════════════════════════════════════════════════════════════
+// 🧭 WAZE — Ouvre Waze sur le premier stop puis copie le reste
+// ════════════════════════════════════════════════════════════
+// Waze ne supporte qu'une destination par URL. On ouvre le 1er stop
+// et on copie la liste des suivantes dans le presse-papier pour
+// que le livreur puisse coller au fur et a mesure.
+function ouvrirWazeTournee() {
+  if (!optimStops.length) { toast('Aucun arret a afficher', 'err'); return; }
+  var stopsRestants = optimStops.filter(function(s){ return s.statut !== 'livre' && s.statut !== 'livré' && s.adresse; });
+  if (!stopsRestants.length) { toast('🎉 Tous les arrets sont livres !', 'ok'); return; }
+  // Ouvrir le 1er stop dans Waze
+  var premier = stopsRestants[0];
+  var adresseP = encodeURIComponent(premier.adresse + ', France');
+  window.open('https://waze.com/ul?q=' + adresseP + '&navigate=yes', '_blank');
+  // Copier la liste complete dans le presse-papier pour referencement
+  var liste = stopsRestants.map(function(s, i){ return (i+1)+'. '+s.client+' — '+s.adresse; }).join('\n');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(liste).then(function(){
+      toast('🚗 Waze : '+premier.client+' lance. Liste copiee ('+stopsRestants.length+' stops)', 'ok');
+    }, function(){
+      toast('🚗 Waze ouvert sur '+premier.client+' ('+stopsRestants.length+' stops)', 'ok');
+    });
+  } else {
+    toast('🚗 Waze ouvert sur '+premier.client+' ('+stopsRestants.length+' stops)', 'ok');
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// 🗺 CARTE LEAFLET — Visualiser la tournee dans la page
+// ════════════════════════════════════════════════════════════
+var optimMap = null;
+var optimMapLayers = [];
+function optimAfficherCarte() {
+  if (typeof L === 'undefined') return;
+  var container = document.getElementById('optim-map');
+  if (!container) return;
+  if (!optimStops || !optimStops.length) return;
+
+  // Init la map si premiere fois
+  if (!optimMap) {
+    optimMap = L.map('optim-map', { zoomControl: true, attributionControl: true });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap',
+      maxZoom: 19
+    }).addTo(optimMap);
+  }
+  // Nettoyer les anciens layers
+  optimMapLayers.forEach(function(l){ optimMap.removeLayer(l); });
+  optimMapLayers = [];
+
+  var colorDepot = '#1F5A36';
+  var colorImp = '#A32D2D';
+  var colorFlex = '#185FA5';
+  var colorDone = '#5B7A2B';
+
+  // Marker depot
+  var iconDepot = L.divIcon({
+    html: '<div style="background:'+colorDepot+';color:#fff;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:900;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.3)">🏠</div>',
+    iconSize: [30,30], iconAnchor: [15,15], className: ''
+  });
+  var mDepot = L.marker([OPTIM_DEPOT.lat, OPTIM_DEPOT.lng], { icon: iconDepot, title: 'Entrepot Maxiconfort' }).addTo(optimMap);
+  mDepot.bindPopup('<strong>🏠 Entrepot Maxiconfort</strong><br>Villiers-sur-Marne');
+  optimMapLayers.push(mDepot);
+
+  // Markers stops + trace
+  var latlngs = [[OPTIM_DEPOT.lat, OPTIM_DEPOT.lng]];
+  optimStops.forEach(function(s, i) {
+    if (typeof s.lat !== 'number' || typeof s.lng !== 'number') return;
+    var done = s.statut === 'livré' || s.statut === 'livre';
+    var col = done ? colorDone : (s.imperatif ? colorImp : colorFlex);
+    var iconStop = L.divIcon({
+      html: '<div style="background:'+col+';color:#fff;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:900;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.3)">'+(done?'✓':(i+1))+'</div>',
+      iconSize: [30,30], iconAnchor: [15,15], className: ''
+    });
+    var m = L.marker([s.lat, s.lng], { icon: iconStop, title: s.client }).addTo(optimMap);
+    var popupHtml = '<strong>'+(i+1)+'. '+s.client+'</strong><br>'+
+      '<small>'+(s.adresse||'')+'</small><br>'+
+      (s.etaDebut?'🕐 ETA : <strong>'+s.etaDebut+'</strong><br>':'')+
+      (s.produit?'📦 '+s.produit+'<br>':'')+
+      '<button onclick="lancerWazeStop('+i+')" style="margin-top:6px;padding:5px 10px;background:#1FCECA;border:none;border-radius:6px;font-weight:700;cursor:pointer">🚗 Waze</button>';
+    m.bindPopup(popupHtml);
+    optimMapLayers.push(m);
+    latlngs.push([s.lat, s.lng]);
   });
 
-  // Google Maps supporte jusqu'à 10 waypoints
-  // Si plus de 10 arrêts, tronquer avec avertissement
-  if (points.length > 11) {
-    toast('⚠️ Google Maps : affichage des 10 premiers arrêts', 'info');
-    points = points.slice(0, 11);
+  // Polyline trajet
+  if (latlngs.length >= 2) {
+    var poly = L.polyline(latlngs, { color: '#185FA5', weight: 4, opacity: .65, dashArray: '8,6' }).addTo(optimMap);
+    optimMapLayers.push(poly);
+    optimMap.fitBounds(poly.getBounds(), { padding: [30, 30] });
   }
 
-  var url = base + points.map(function(p){ return encodeURIComponent(p); }).join('/');
-  window.open(url, '_blank');
-  toast('🗺️ Ouverture Google Maps...', 'ok');
+  // Indicateur source donnees
+  var elSrc = document.getElementById('optim-source-data');
+  if (elSrc) {
+    if (optimDernierMode === 'osrm') elSrc.textContent = '✓ Trajets reels via OSRM';
+    else if (optimDernierMode === 'fallback') elSrc.textContent = '⚠ Estimation (OSRM indisponible)';
+    else elSrc.textContent = '';
+  }
+
+  // Forcer un refresh apres ouverture (Leaflet bug courant en flex)
+  setTimeout(function(){ try { optimMap.invalidateSize(); } catch(e){} }, 200);
+}
+
+// Helper exposé pour popup carte
+function lancerWazeStop(i) {
+  var s = optimStops[i];
+  if (!s || !s.adresse) return;
+  window.open('https://waze.com/ul?q=' + encodeURIComponent(s.adresse + ', France') + '&navigate=yes', '_blank');
 }
 
 // ════════════════════════════════════════

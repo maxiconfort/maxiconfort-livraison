@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.2.1 - Fix Suivi logistique : detecter GLS via livreur (legacy)
+// v7.3.0 - Refonte optimisation tournee : OSRM + 2-opt + carte Leaflet + Waze
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-2-1';
+const CACHE_VERSION = 'maxiconfort-v7-3-0';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
