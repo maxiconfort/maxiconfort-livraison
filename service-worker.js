@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.2.0 - Menu Suivi logistique (filtres transporteur/date + export Excel)
+// v7.2.1 - Fix Suivi logistique : detecter GLS via livreur (legacy)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-2-0';
+const CACHE_VERSION = 'maxiconfort-v7-2-1';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
