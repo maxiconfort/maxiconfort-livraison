@@ -5191,6 +5191,9 @@ function saveCmd() {
 }
 
 // Appel Edge Function send-cmd-sms (non bloquant, dedupe cote serveur)
+// v7.3.8 : retire x-app-secret (l'Edge Function ne le liste pas en CORS
+// Access-Control-Allow-Headers -> preflight bloque). L'auth se fait via
+// le Bearer SUPABASE_KEY (anon) qui satisfait le Verify JWT de la fonction.
 async function sendCmdSmsAsync(cmdId, type) {
   if (!cmdId || !type) return;
   try {
@@ -5199,7 +5202,6 @@ async function sendCmdSmsAsync(cmdId, type) {
       headers: {
         'Authorization': 'Bearer ' + SUPABASE_KEY,
         'Content-Type': 'application/json',
-        'x-app-secret': APP_SECRET,
       },
       body: JSON.stringify({ cmdId: cmdId, type: type })
     });

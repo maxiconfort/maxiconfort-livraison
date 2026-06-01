@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.3.7 - Tracking GLS + SMS direct dans le panel detail commande
+// v7.3.8 - Retirer x-app-secret de sendCmdSmsAsync (CORS preflight)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-3-7';
+const CACHE_VERSION = 'maxiconfort-v7-3-8';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
