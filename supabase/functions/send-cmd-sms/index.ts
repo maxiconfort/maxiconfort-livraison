@@ -28,14 +28,16 @@ const sb = createClient(SB_URL, SB_SR_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
-// ── Templates SMS (caractères ≤ 160 = 1 segment de 0,07 €) ────────
+// ── Templates SMS (cibler ≤ 160 = 1 segment = 4,5 credits = 0,045 €) ────
+// Le sender "Maxiconfort" identifie l'expediteur, donc pas besoin de le
+// repeter dans le corps -> on gagne des caracteres.
 const TPL = {
   depart: (p: any) =>
-    `Bonjour ${p.prenom}, votre livreur Maxiconfort vient de partir pour les livraisons. Suivi en direct : ${p.lienSuivi}`,
+    `Bonjour ${p.prenom}, votre livreur vient de partir. Suivi : ${p.lienSuivi}`,
   route: (p: any) =>
-    `Bonjour ${p.prenom}, votre livreur Maxiconfort arrive dans environ 15 min. Pensez à être joignable. Suivi : ${p.lienSuivi}`,
+    `Bonjour ${p.prenom}, votre livreur arrive dans ~15 min. Soyez joignable. Suivi : ${p.lienSuivi}`,
   expedition: (p: any) =>
-    `Bonjour ${p.prenom}, votre commande Maxiconfort ${p.id} a été expédiée par GLS. Numéro : ${p.tracking}. Suivi : https://gls-group.eu/FR/fr/suivi-colis.html?match=${p.tracking}`,
+    `Bonjour ${p.prenom}, commande ${p.id} expediee par GLS. Tracking ${p.tracking}. Suivi : https://gls-group.eu/FR/fr/suivi-colis.html?match=${p.tracking}`,
 };
 
 function prenomDe(client: string): string {
@@ -65,7 +67,8 @@ async function envoyerSMSBrevo(tel: string, contenu: string): Promise<boolean> {
         'Accept': 'application/json',
       },
       body: JSON.stringify({
-        sender: 'Maxiconfor',
+        // 'Maxiconfort' = 11 caracteres (limite max Brevo). Plus visible que 'Maxiconfor'.
+        sender: 'Maxiconfort',
         recipient: num,
         content: contenu,
         type: 'transactional',
