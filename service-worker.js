@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.3.5 - Bouton Tester SMS dans Parametres > Societe
+// v7.3.6 - Fix CORS Edge Functions (exclure x-app-secret)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-3-5';
+const CACHE_VERSION = 'maxiconfort-v7-3-6';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

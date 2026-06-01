@@ -2219,13 +2219,16 @@ const SUPABASE_URL = 'https://jmvfjtnmebstkzcfnlgp.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImptdmZqdG5tZWJzdGt6Y2ZubGdwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg3OTYxODYsImV4cCI6MjA5NDM3MjE4Nn0.t_zyGmY96wUB_hk63WOSYZniBy_9oHwfpDvcxwl2s5U';
 const APP_SECRET = '9fefa508934706dba95559be02e2033f0df05f593a4b4d81da7d7aac307ce257';
 
-// Intercepteur fetch : injecte x-app-secret sur tous les appels vers Supabase
+// Intercepteur fetch : injecte x-app-secret sur les appels REST Supabase
+// v7.3.6 : EXCLURE les Edge Functions (/functions/v1/...) car elles ne listent
+// pas x-app-secret dans Access-Control-Allow-Headers -> preflight CORS bloque
 (function(){
   var orig = window.fetch;
   window.fetch = function(input, init){
     init = init || {};
     var url = typeof input === 'string' ? input : (input && input.url) || '';
-    if (url.indexOf(SUPABASE_URL) === 0) {
+    var isSupabaseRest = url.indexOf(SUPABASE_URL) === 0 && url.indexOf('/functions/') === -1;
+    if (isSupabaseRest) {
       var h = init.headers;
       if (h instanceof Headers) {
         h.set('x-app-secret', APP_SECRET);
