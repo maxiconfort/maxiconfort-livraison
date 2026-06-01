@@ -2162,6 +2162,16 @@ Maxiconfort — {TEL_CONTACT}</textarea>
           <button class="sig-mode-btn" onclick="sigSelectMode('Espèces')" data-mode="Espèces" style="padding:8px 14px;border-radius:20px;border:1.5px solid var(--brd);background:var(--bg);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">💵 Espèces</button>
           <button class="sig-mode-btn" onclick="sigSelectMode('CB')" data-mode="CB" style="padding:8px 14px;border-radius:20px;border:1.5px solid var(--brd);background:var(--bg);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">💳 CB (TPE)</button>
           <button class="sig-mode-btn" onclick="sigSelectMode('Virement')" data-mode="Virement" style="padding:8px 14px;border-radius:20px;border:1.5px solid var(--brd);background:var(--bg);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">🏦 Virement</button>
+          <button class="sig-mode-btn" onclick="sigSelectMode('Mixte')" data-mode="Mixte" style="padding:8px 14px;border-radius:20px;border:1.5px solid #BA7517;background:#FFF7E6;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);color:#7A4A00">🔀 Espèces + CB</button>
+        </div>
+        <!-- v7.3.4 : Zone Mixte (2 inputs) directement dans la signature -->
+        <div id="sig-mixte-wrap" style="display:none;margin-top:12px;padding:12px;background:#FFF7E6;border:1.5px solid #FFB347;border-radius:10px">
+          <div style="font-size:11px;font-weight:800;color:#7A4A00;margin-bottom:8px;text-transform:uppercase;letter-spacing:.3px">🔀 Répartition du paiement</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px">
+            <div><label style="font-size:10px;color:var(--t3);font-weight:700;display:block;margin-bottom:3px">💵 Espèces (€)</label><input type="number" inputmode="decimal" min="0" step="0.01" id="sig-paie-esp" value="0" oninput="sigMixteRecap()" style="width:100%;padding:9px;border:1.5px solid #BA7517;border-radius:8px;font-size:15px;font-weight:700;font-family:var(--font);text-align:right"></div>
+            <div><label style="font-size:10px;color:var(--t3);font-weight:700;display:block;margin-bottom:3px">💳 CB (€)</label><input type="number" inputmode="decimal" min="0" step="0.01" id="sig-paie-cb" value="0" oninput="sigMixteRecap()" style="width:100%;padding:9px;border:1.5px solid var(--blue);border-radius:8px;font-size:15px;font-weight:700;font-family:var(--font);text-align:right"></div>
+          </div>
+          <div id="sig-mixte-recap" style="font-size:12px;font-weight:700;text-align:center;padding:7px;border-radius:7px;background:var(--bg);color:var(--t2)">Saisir les 2 montants</div>
         </div>
       </div>
     </div>
@@ -6474,11 +6484,51 @@ function sigTogglePaie(encaisse) {
 function sigSelectMode(mode) {
   sigPaieMode = mode;
   document.querySelectorAll('.sig-mode-btn').forEach(function(btn) {
-    var isActive = btn.textContent.includes(mode.replace('é','e').replace('è','e')) || btn.textContent.includes(mode);
-    btn.style.background = isActive ? 'var(--blue)' : 'var(--bg)';
-    btn.style.color = isActive ? '#fff' : 'var(--text)';
-    btn.style.borderColor = isActive ? 'var(--blue)' : 'var(--brd)';
+    var bMode = btn.dataset.mode || '';
+    var isActive = bMode === mode;
+    var isMixteBtn = bMode === 'Mixte';
+    if (isActive) {
+      btn.style.background = isMixteBtn ? '#FFE7C2' : 'var(--blue)';
+      btn.style.color      = isMixteBtn ? '#7A4A00' : '#fff';
+      btn.style.borderColor= isMixteBtn ? '#BA7517' : 'var(--blue)';
+    } else {
+      btn.style.background = isMixteBtn ? '#FFF7E6' : 'var(--bg)';
+      btn.style.color      = isMixteBtn ? '#7A4A00' : 'var(--text)';
+      btn.style.borderColor= isMixteBtn ? '#BA7517' : 'var(--brd)';
+    }
   });
+  // v7.3.4 : afficher / cacher la zone Mixte
+  var wrapMx = document.getElementById('sig-mixte-wrap');
+  if (wrapMx) wrapMx.style.display = (mode === 'Mixte') ? 'block' : 'none';
+  if (mode === 'Mixte') sigMixteRecap();
+}
+
+// v7.3.4 : recap live des montants Mixte dans la modale signature
+function sigMixteRecap() {
+  var esp = parseFloat(document.getElementById('sig-paie-esp')?.value) || 0;
+  var cb  = parseFloat(document.getElementById('sig-paie-cb')?.value)  || 0;
+  var total = esp + cb;
+  var prix = sigStopId ? (function(){
+    var t = tournees.find(function(x){ return x.id === sigStopId.tid; });
+    if (!t || !t.stops[sigStopId.idx]) return 0;
+    return parseFloat(t.stops[sigStopId.idx].prix) || 0;
+  })() : 0;
+  var diff = total - prix;
+  var recap = document.getElementById('sig-mixte-recap');
+  if (!recap) return;
+  var msg, bg, fg;
+  if (total === 0) {
+    msg = 'Saisir les 2 montants ci-dessus'; bg = 'var(--bg)'; fg = 'var(--t2)';
+  } else if (Math.abs(diff) < 0.01) {
+    msg = '✅ Total : ' + total.toFixed(2) + ' € · MATCH parfait'; bg = 'var(--gl)'; fg = 'var(--gd)';
+  } else if (diff > 0) {
+    msg = '⚠️ Total : ' + total.toFixed(2) + ' € · +' + diff.toFixed(2) + ' € de trop'; bg = 'var(--ol)'; fg = 'var(--od)';
+  } else {
+    msg = '⏳ Total : ' + total.toFixed(2) + ' € · manque ' + Math.abs(diff).toFixed(2) + ' €'; bg = '#FFE9E2'; fg = '#A32D2D';
+  }
+  recap.textContent = msg;
+  recap.style.background = bg;
+  recap.style.color = fg;
 }
 
 function validerNote() {
@@ -6635,16 +6685,48 @@ function validerSig(){
   const s=t.stops[idx];
   const heure=new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
   s.statut='livré'; s.heure=heure; s.signataire=nom;
+  // v7.3.4 : recuperer les montants Mixte si applicable
+  var sigPaieEsp = 0, sigPaieCb = 0, sigStatut = 'Payé';
+  if (sigPaieEncaisse && sigPaieMode === 'Mixte') {
+    sigPaieEsp = parseFloat(document.getElementById('sig-paie-esp')?.value) || 0;
+    sigPaieCb  = parseFloat(document.getElementById('sig-paie-cb')?.value)  || 0;
+    if (sigPaieEsp + sigPaieCb <= 0) {
+      toast('Saisir au moins un montant > 0 (Espèces ou CB)', 'err');
+      return;
+    }
+    var prixStop = parseFloat(s.prix) || 0;
+    var diffStop = (sigPaieEsp + sigPaieCb) - prixStop;
+    sigStatut = (Math.abs(diffStop) < 0.01) ? 'Payé' : 'Partiel';
+  }
   // Enregistrer paiement si encaissé
   if (sigPaieEncaisse) {
     s.paie = sigPaieMode;
-    s.stpaie = 'Payé';
+    s.stpaie = sigStatut;
+    if (sigPaieMode === 'Mixte') {
+      s.paie_especes = sigPaieEsp;
+      s.paie_cb      = sigPaieCb;
+    } else {
+      delete s.paie_especes;
+      delete s.paie_cb;
+    }
   }
   if(t.stops.every(x=>['livré','annulé'].includes(x.statut))) t.statut='terminée';
   const cmd=commandes.find(c=>c.id===s.cmdId);
   if(cmd){
     cmd.statut='livré';
-    if (sigPaieEncaisse) { cmd.paie = sigPaieMode; cmd.stpaie = 'Payé'; }
+    if (sigPaieEncaisse) {
+      cmd.paie = sigPaieMode;
+      cmd.stpaie = sigStatut;
+      if (sigPaieMode === 'Mixte') {
+        cmd.montantEnc = sigPaieEsp + sigPaieCb;
+        cmd.paie_especes = sigPaieEsp;
+        cmd.paie_cb      = sigPaieCb;
+      } else {
+        cmd.montantEnc = (sigStatut === 'Payé') ? cmd.prix : 0;
+        delete cmd.paie_especes;
+        delete cmd.paie_cb;
+      }
+    }
     stkDeduireStock(cmd.id);
     sbSaveCommande(cmd); // ✅ Sync commande Supabase → Realtime admin
   }
@@ -6680,6 +6762,11 @@ function validerSig(){
   var oui=document.getElementById('sig-paie-oui'); if(oui){oui.style.background='';oui.style.borderColor='';oui.style.color='';}
   var non=document.getElementById('sig-paie-non'); if(non){non.style.background='';non.style.borderColor='';non.style.color='';}
   var wrap=document.getElementById('sig-paie-mode-wrap'); if(wrap) wrap.style.display='none';
+  // v7.3.4 : reset Mixte
+  var wrapMx = document.getElementById('sig-mixte-wrap'); if (wrapMx) wrapMx.style.display = 'none';
+  var inpEsp = document.getElementById('sig-paie-esp');   if (inpEsp) inpEsp.value = 0;
+  var inpCb  = document.getElementById('sig-paie-cb');    if (inpCb)  inpCb.value  = 0;
+  var recap  = document.getElementById('sig-mixte-recap'); if (recap) { recap.textContent='Saisir les 2 montants'; recap.style.background='var(--bg)'; recap.style.color='var(--t2)'; }
 }
 
 // ════════════════════════════════════════

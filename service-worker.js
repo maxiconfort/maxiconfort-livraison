@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.3.3 - Fix sync paiement + paiements Mixte (Especes + CB)
+// v7.3.4 - Mode Mixte directement dans la signature livreur
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-3-3';
+const CACHE_VERSION = 'maxiconfort-v7-3-4';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
