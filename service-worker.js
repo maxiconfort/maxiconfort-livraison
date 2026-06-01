@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.3.6 - Fix CORS Edge Functions (exclure x-app-secret)
+// v7.3.7 - Tracking GLS + SMS direct dans le panel detail commande
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-3-6';
+const CACHE_VERSION = 'maxiconfort-v7-3-7';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

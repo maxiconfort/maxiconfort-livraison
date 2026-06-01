@@ -5283,11 +5283,29 @@ function ouvrirCmd(id) {
     '<div class="psec">Changer le statut</div>'+
     '<div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px">'+statutBtns+'</div>'+
     '<div class="psec">Assigner un livreur</div>'+
-    '<div style="display:flex;gap:8px">'+
+    '<div style="display:flex;gap:8px;margin-bottom:14px">'+
       '<select id="pa-liv" style="flex:1;padding:9px 11px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">'+
         '<option value="">— Non assigné —</option>'+livOpts+
       '</select>'+
       '<button id="pa-liv-btn" data-cmdid="'+c.id+'" class="btn btn-p">Assigner</button>'+
+    '</div>' +
+    // v7.3.7 : Bloc Transporteur + tracking GLS direct dans le panel
+    '<div class="psec">🚚 Transporteur & suivi</div>' +
+    '<div style="background:var(--bg);border-radius:var(--r);padding:12px;margin-bottom:14px">' +
+      '<div style="display:flex;gap:8px;margin-bottom:10px">' +
+        '<select id="pa-transporteur" style="flex:1;padding:9px 11px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font);font-weight:700">' +
+          '<option value="RANOU"' + ((c.transporteur||'RANOU')==='RANOU'?' selected':'') + '>🟢 RANOU (livraison interne)</option>' +
+          '<option value="GLS"' +   ((c.transporteur||'RANOU')==='GLS'?' selected':'')   + '>🟠 GLS (transporteur national)</option>' +
+        '</select>' +
+      '</div>' +
+      '<div id="pa-tracking-wrap" style="display:' + ((c.transporteur||'RANOU')==='GLS'?'block':'none') + '">' +
+        '<label style="font-size:11px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;display:block">📦 N° de suivi GLS</label>' +
+        '<div style="display:flex;gap:8px">' +
+          '<input id="pa-tracking" placeholder="ex: ABC123456789" value="' + ((c.trackingTransporteur||c.tracking_transporteur||'').replace(/"/g,'&quot;')) + '" style="flex:1;padding:9px 11px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font);font-weight:600">' +
+          '<button id="pa-tracking-btn" data-cmdid="'+c.id+'" class="btn btn-p" style="white-space:nowrap">💾 + 📱 SMS</button>' +
+        '</div>' +
+        '<div style="font-size:11px;color:var(--t3);margin-top:6px">💡 Enregistre le tracking et envoie automatiquement un SMS au client avec le lien de suivi GLS.</div>' +
+      '</div>' +
     '</div>';
 
   var isLivree = c.statut === 'livré' || c.statut === 'annulé';
@@ -5308,6 +5326,14 @@ function ouvrirCmd(id) {
   });
   var livBtn = document.getElementById('pa-liv-btn');
   if (livBtn) livBtn.addEventListener('click', function(){ assignerLiv(livBtn.dataset.cmdid); });
+  // v7.3.7 : Transporteur + Tracking GLS direct dans le panel
+  var transpSel = document.getElementById('pa-transporteur');
+  if (transpSel) transpSel.addEventListener('change', function(){
+    var w = document.getElementById('pa-tracking-wrap');
+    if (w) w.style.display = (transpSel.value === 'GLS') ? 'block' : 'none';
+  });
+  var trackBtn = document.getElementById('pa-tracking-btn');
+  if (trackBtn) trackBtn.addEventListener('click', function(){ panelEnregistrerTracking(trackBtn.dataset.cmdid); });
   var tBtn = document.getElementById('pa-tournee-btn');
   if (tBtn) tBtn.addEventListener('click', function(){ ajouterTournee(tBtn.dataset.cmdid); });
 
@@ -5355,6 +5381,50 @@ function assignerLiv(id) {
   renderCmds(); renderDash(); renderLivreur();
   toast(l?`Assigné à ${l} ✓`:'Livreur retiré','ok');
   closePanel(); ouvrirCmd(id);
+}
+
+// v7.3.7 : Enregistrer le transporteur + tracking GLS depuis le panel detail
+// + envoie automatiquement le SMS expedition au client si tracking GLS rempli
+async function panelEnregistrerTracking(cmdId) {
+  var c = commandes.find(function(x){ return x.id === cmdId; });
+  if (!c) { toast('Commande introuvable', 'err'); return; }
+  var transp = document.getElementById('pa-transporteur')?.value || 'RANOU';
+  var tracking = (document.getElementById('pa-tracking')?.value || '').trim();
+  // Validation : si GLS sans tracking, on demande confirmation
+  if (transp === 'GLS' && !tracking) {
+    if (!confirm('Aucun numéro de tracking saisi. Enregistrer quand même (sans SMS) ?')) return;
+  }
+  var trackChange = (tracking !== (c.trackingTransporteur || c.tracking_transporteur || ''));
+  var transpChange = (transp !== (c.transporteur || 'RANOU'));
+  c.transporteur = transp;
+  c.trackingTransporteur = tracking;
+
+  var btn = document.getElementById('pa-tracking-btn');
+  var labelOrig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Enregistrement...'; }
+
+  try {
+    await sbSaveCommande(c);
+    try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(e) {}
+    renderCmds();
+    // Envoyer le SMS expedition seulement si : GLS + tracking saisi + (tracking change OU transporteur vient de passer en GLS)
+    if (transp === 'GLS' && tracking && (trackChange || transpChange)) {
+      if (typeof sendCmdSmsAsync === 'function') {
+        sendCmdSmsAsync(cmdId, 'expedition');
+        toast('✅ Tracking enregistré + 📱 SMS expedition envoyé à ' + (c.client || 'client'), 'ok');
+      } else {
+        toast('✅ Tracking enregistré (SMS non disponible)', 'ok');
+      }
+    } else if (transp === 'GLS' && tracking && !trackChange && !transpChange) {
+      toast('Tracking identique, aucun changement', 'info');
+    } else {
+      toast('✅ Transporteur enregistré', 'ok');
+    }
+  } catch(e) {
+    toast('❌ Erreur enregistrement : ' + e.message, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = labelOrig || '💾 + 📱 SMS'; }
+  }
 }
 
 function ajouterTournee(id) {
