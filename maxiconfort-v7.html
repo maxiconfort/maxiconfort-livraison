@@ -7261,12 +7261,51 @@ function finRender() {
     var depCaisseCb  = deps.filter(function(d){ return (d.livreur||'').toUpperCase()==='CAISSE' && d.modePaie==='CB'; })
                            .reduce(function(s,d){ return s+d.montant; }, 0);
 
+    // ════════════════════════════════════════════════════════════
+    // v7.3.9 : SOLDE CAISSE PERMANENT (ignore le filtre periode)
+    // ════════════════════════════════════════════════════════════
+    // Le contenu PHYSIQUE du tiroir caisse est cumule sur toute l'histoire.
+    // Au passage au mois suivant, le solde ne doit PAS retomber a zero.
+    // Donc on calcule un solde "permanent" non filtre par la periode courante.
+    var especesRemisesPermanent = 0;
+    Object.keys(caissesRemises||{}).forEach(function(key){
+      if (!key.startsWith('t_')) return;
+      var rem = caissesRemises[key];
+      if (!rem || !rem.validee) return;
+      var tIdP = key.replace('t_','');
+      var tP = tournees.find(function(tt){ return tt.id === tIdP; });
+      if (!tP) return;
+      var cmdIdsP = (tP.stops||[]).map(function(s){ return s.cmdId; }).filter(Boolean);
+      var stopClientsP = (tP.stops||[]).map(function(s){ return (s.client||'').toLowerCase(); }).filter(Boolean);
+      var cmdsTP;
+      if (cmdIdsP.length > 0) {
+        cmdsTP = commandes.filter(function(c){ return cmdIdsP.includes(c.id) && c.statut==='livré'; });
+      } else if (stopClientsP.length > 0) {
+        cmdsTP = commandes.filter(function(c){
+          return c.livreur===tP.livreur && c.statut==='livré' && stopClientsP.includes((c.client||'').toLowerCase());
+        });
+      } else {
+        cmdsTP = commandes.filter(function(c){ return c.livreur===tP.livreur && c.date===tP.date && c.statut==='livré'; });
+      }
+      var espTP = (cmdsTP||[]).reduce(function(s,c){ return s + getMontantEspecesCmd(c); }, 0);
+      var depEspTP = (depenses||[]).filter(function(d){
+        var matchTP = d.tourneeId ? d.tourneeId === tP.id : d.date === tP.date;
+        return (d.livreur||'').toLowerCase() === (tP.livreur||'').toLowerCase()
+               && (d.livreur||'').toUpperCase() !== 'CAISSE'
+               && d.modePaie !== 'CB' && matchTP;
+      }).reduce(function(s,d){ return s+d.montant; }, 0);
+      especesRemisesPermanent += Math.max(0, espTP - depEspTP);
+    });
+    var depCaisseEspPermanent = (depenses||[]).filter(function(d){ return (d.livreur||'').toUpperCase()==='CAISSE' && d.modePaie==='Espèces'; })
+                                              .reduce(function(s,d){ return s+d.montant; }, 0);
+
     // Bloc Caisse générale (v7.1 - 3 cases distinctes)
     var blocCaisseGen = '';
-    // Afficher le bloc dès qu'il y a des espèces collectées OU des dépenses caisse
-    if (especesCollectees > 0 || depCaisseEsp > 0 || depCaisseCb > 0) {
+    // Afficher le bloc dès qu'il y a des espèces collectées OU des dépenses caisse OU un solde permanent
+    if (especesCollectees > 0 || depCaisseEsp > 0 || depCaisseCb > 0 || especesRemisesPermanent > 0 || depCaisseEspPermanent > 0) {
       var pctRemis = especesCollectees > 0 ? Math.round(especesRemises / especesCollectees * 100) : 0;
-      var soldeReel = Math.max(0, especesRemises - depCaisseEsp);
+      // v7.3.9 : solde PERMANENT (tout l'historique), pas filtre par periode
+      var soldeReel = Math.max(0, especesRemisesPermanent - depCaisseEspPermanent);
 
       blocCaisseGen = '<div style="background:var(--card);border:1.5px solid var(--brd);border-radius:16px;padding:18px;margin-bottom:12px">' +
         '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">' +
@@ -7319,11 +7358,11 @@ function finRender() {
             '<div style="font-size:10px;color:var(--bd)">Dép. CB société</div>' +
           '</div>' : '') +
         '</div>' : '') +
-        // ── SOLDE RÉEL CAISSE ──
+        // ── SOLDE RÉEL CAISSE (permanent — toutes périodes confondues) ──
         '<div style="background:var(--green);border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center">' +
           '<div style="color:#fff">' +
             '<div style="font-size:14px;font-weight:700">💰 Solde caisse réel</div>' +
-            '<div style="font-size:11px;opacity:0.9">Remises − Dépenses caisse espèces</div>' +
+            '<div style="font-size:11px;opacity:0.9">Permanent : ' + especesRemisesPermanent.toLocaleString('fr-FR') + ' € remis − ' + depCaisseEspPermanent.toLocaleString('fr-FR') + ' € dép. (depuis le début)</div>' +
           '</div>' +
           '<div style="color:#fff;font-size:24px;font-weight:900">' + soldeReel.toLocaleString('fr-FR') + ' €</div>' +
         '</div>' +

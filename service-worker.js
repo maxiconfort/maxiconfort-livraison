@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.3.8 - Retirer x-app-secret de sendCmdSmsAsync (CORS preflight)
+// v7.3.9 - Solde caisse PERMANENT (ignore le filtre periode)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-3-8';
+const CACHE_VERSION = 'maxiconfort-v7-3-9';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
