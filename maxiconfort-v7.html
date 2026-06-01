@@ -4930,11 +4930,19 @@ function recalcTotal() {
     const stEl    = div.querySelector('.ligne-sous-total');
     if (!selProd || !selProd.value) { if(stEl) stEl.textContent='—'; return; }
     const prod  = produits.find(p => p.id === selProd.value);
-    if (!prod) return;
+    // v7.4.0 : fallback sur prixUnit stocke dans le dataset si le produit n'est plus en catalogue
+    let prixUnit = prod ? prod.prix : null;
+    if (prixUnit == null) {
+      const opt = selProd.selectedOptions && selProd.selectedOptions[0];
+      if (opt && opt.dataset && opt.dataset.prixUnit) {
+        prixUnit = parseFloat(opt.dataset.prixUnit) || 0;
+      }
+    }
+    if (prixUnit == null) return;
     const qte   = parseInt(inpQte?.value)||1;
     const remV  = parseFloat(inpRem?.value)||0;
     const remT  = selRT?.value||'pct';
-    const prix  = prod.prix * qte;
+    const prix  = prixUnit * qte;
     const rem   = remT==='pct' ? prix*remV/100 : Math.min(remV, prix);
     const st    = Math.max(0, prix - rem);
     if (stEl) { stEl.textContent = st.toLocaleString('fr-FR')+' €'; stEl.style.color = rem>0?'var(--orange)':'var(--green)'; }
@@ -4962,13 +4970,23 @@ function getLignesData() {
     const selRT   = div.querySelector('.ligne-remise-type');
     if (!selProd?.value) return;
     const prod  = produits.find(p => p.id === selProd.value);
-    if (!prod) return;
+    // v7.4.0 : si le produit n'est plus en catalogue, reconstruire les valeurs depuis dataset
+    let produitId, produitNom, prixUnit;
+    if (prod) {
+      produitId = prod.id; produitNom = prod.nom; prixUnit = prod.prix;
+    } else {
+      const opt = selProd.selectedOptions && selProd.selectedOptions[0];
+      if (!opt) return;
+      produitId = opt.value;
+      produitNom = (opt.dataset && opt.dataset.customNom) || opt.textContent.split(' — ')[0];
+      prixUnit = opt.dataset && opt.dataset.prixUnit ? parseFloat(opt.dataset.prixUnit) || 0 : 0;
+    }
     const qte   = parseInt(inpQte?.value)||1;
     const remV  = parseFloat(inpRem?.value)||0;
     const remT  = selRT?.value||'pct';
-    const prix  = prod.prix * qte;
+    const prix  = prixUnit * qte;
     const rem   = remT==='pct' ? prix*remV/100 : Math.min(remV, prix);
-    lignes.push({ produitId:prod.id, produit:prod.nom, qte, prixUnit:prod.prix, prixBrut:prix, remiseLigne:rem, remiseVal:remV, remiseType:remT, sousTotal:Math.max(0,prix-rem) });
+    lignes.push({ produitId:produitId, produit:produitNom, qte, prixUnit:prixUnit, prixBrut:prix, remiseLigne:rem, remiseVal:remV, remiseType:remT, sousTotal:Math.max(0,prix-rem) });
   });
   return lignes;
 }
@@ -5061,8 +5079,11 @@ function ouvrirEditionCommande(id) {
       // Trouver le produit par nom dans la liste
       var sel = document.querySelector('#lignes-produits > div:last-child .ligne-produit');
       if (sel) {
-        // Chercher l'id produit correspondant
-        var prod = produits.find(function(p){ return p.nom === l.produit; });
+        // v7.4.0 : matching plus tolerant (case-insensitive + normalisation × ↔ x)
+        var normNom = function(s){ return (s||'').toLowerCase().replace(/\s+/g,' ').replace(/[×x]/g,'x').trim(); };
+        var ln = normNom(l.produit);
+        var prod = produits.find(function(p){ return p.nom === l.produit; })
+                || produits.find(function(p){ return normNom(p.nom) === ln; });
         if (prod) sel.value = prod.id;
         else {
           // Produit non trouvé dans catalogue — afficher quand même le nom
@@ -5070,6 +5091,9 @@ function ouvrirEditionCommande(id) {
           opt.value = '_custom_' + l.produit;
           opt.textContent = l.produit + ' — ' + l.prixUnit + ' €';
           opt.selected = true;
+          // v7.4.0 : stocker le prixUnit dans le dataset pour recalcTotal et getLignesData
+          opt.dataset.prixUnit = l.prixUnit || 0;
+          opt.dataset.customNom = l.produit;
           sel.appendChild(opt);
         }
       }

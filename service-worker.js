@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.3.9 - Solde caisse PERMANENT (ignore le filtre periode)
+// v7.4.0 - Fix total 0 EUR en edition (produits renommes / × vs x)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-3-9';
+const CACHE_VERSION = 'maxiconfort-v7-4-0';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
