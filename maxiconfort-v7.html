@@ -1943,6 +1943,78 @@ Maxiconfort — {TEL_CONTACT}</textarea>
   <div class="pf" id="panel-footer"></div>
 </div>
 
+<!-- MODAL NOUVEAU SAV (v7.4.1) -->
+<div class="mbd" id="m-sav">
+  <div class="modal" style="max-width:680px">
+    <div class="mh">
+      <div class="mt">🔧 Nouveau SAV / Échange</div>
+      <button class="mx" onclick="closeModal('m-sav')">✕</button>
+    </div>
+    <!-- Recap commande origine -->
+    <div id="sav-cmd-info" style="background:var(--bg2);border-radius:var(--r);padding:12px 14px;margin-bottom:16px;font-size:13px">
+      <div style="font-size:11px;font-weight:800;color:var(--t3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Commande d'origine</div>
+      <div id="sav-cmd-recap" style="color:var(--text);font-weight:600">—</div>
+    </div>
+
+    <!-- Type SAV -->
+    <div style="margin-bottom:16px">
+      <div style="font-size:12px;font-weight:800;color:var(--t2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">Type d'intervention</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+        <button type="button" class="sav-type-btn" data-type="echange" onclick="savSelectType('echange')" style="padding:14px 10px;border-radius:12px;border:2px solid var(--brd);background:var(--card);font-family:var(--font);font-size:13px;font-weight:700;cursor:pointer;text-align:center">
+          <div style="font-size:22px;margin-bottom:4px">🔄</div>
+          <div>Échange</div>
+          <div style="font-size:10px;font-weight:500;color:var(--t3);margin-top:2px">Livre neuf + reprend défectueux</div>
+        </button>
+        <button type="button" class="sav-type-btn" data-type="reprise" onclick="savSelectType('reprise')" style="padding:14px 10px;border-radius:12px;border:2px solid var(--brd);background:var(--card);font-family:var(--font);font-size:13px;font-weight:700;cursor:pointer;text-align:center">
+          <div style="font-size:22px;margin-bottom:4px">↩</div>
+          <div>Reprise</div>
+          <div style="font-size:10px;font-weight:500;color:var(--t3);margin-top:2px">Juste reprendre le défectueux</div>
+        </button>
+        <button type="button" class="sav-type-btn" data-type="oubli" onclick="savSelectType('oubli')" style="padding:14px 10px;border-radius:12px;border:2px solid var(--brd);background:var(--card);font-family:var(--font);font-size:13px;font-weight:700;cursor:pointer;text-align:center">
+          <div style="font-size:22px;margin-bottom:4px">📦</div>
+          <div>Livraison oubli</div>
+          <div style="font-size:10px;font-weight:500;color:var(--t3);margin-top:2px">Livrer produit manquant</div>
+        </button>
+      </div>
+    </div>
+
+    <!-- Produit à livrer (echange ou oubli) -->
+    <div id="sav-livre-wrap" style="display:none;margin-bottom:16px">
+      <label style="font-size:12px;font-weight:800;color:var(--t2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:6px">Produit à livrer (neuf)</label>
+      <select id="sav-produit-livre" style="width:100%;padding:10px 12px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)"></select>
+    </div>
+
+    <!-- Produit à reprendre (echange ou reprise) -->
+    <div id="sav-repris-wrap" style="display:none;margin-bottom:16px">
+      <label style="font-size:12px;font-weight:800;color:var(--t2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:6px">Produit à reprendre (description)</label>
+      <input id="sav-produit-repris" placeholder="ex: Matelas DODOCONFORT 140×190 — bosse au centre" style="width:100%;padding:10px 12px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
+    </div>
+
+    <!-- Motif -->
+    <div style="margin-bottom:16px">
+      <label style="font-size:12px;font-weight:800;color:var(--t2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:6px">Motif / Note interne</label>
+      <textarea id="sav-motif" rows="2" placeholder="Décrit le problème (visible par le livreur)" style="width:100%;padding:10px 12px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font);resize:vertical;font-family:var(--font)"></textarea>
+    </div>
+
+    <!-- Date + Frais -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+      <div>
+        <label style="font-size:12px;font-weight:800;color:var(--t2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:6px">📅 Date prévue</label>
+        <input type="date" id="sav-date" style="width:100%;padding:10px 12px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
+      </div>
+      <div>
+        <label style="font-size:12px;font-weight:800;color:var(--t2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:6px">💶 Frais à encaisser (€)</label>
+        <input type="number" id="sav-frais" value="0" min="0" step="0.01" style="width:100%;padding:10px 12px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;padding-top:14px;border-top:1px solid var(--brd)">
+      <button class="btn btn-p" style="flex:1;justify-content:center" onclick="savCreer()">✅ Créer le SAV</button>
+      <button class="btn" onclick="closeModal('m-sav')">Annuler</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL NOUVELLE COMMANDE -->
 <div class="mbd" id="m-cmd">
   <div class="modal" style="max-width:720px">
@@ -4563,9 +4635,14 @@ function renderCmds(list) {
     }
     return;
   }
-  document.getElementById('cmd-tbody').innerHTML=list.map(c=>`
-    <tr onclick="ouvrirCmd('${c.id}')">
-      <td style="color:var(--t3);font-size:12px">${c.id}</td>
+  document.getElementById('cmd-tbody').innerHTML=list.map(c=>{
+    var isSAV = c.origine && c.origine.indexOf('SAV') === 0;
+    var idCell = isSAV
+      ? '<span style="display:inline-block;padding:2px 7px;border-radius:8px;background:#FFE7C2;color:#7A4A00;font-size:11px;font-weight:800;border:1px solid #BA7517">🔧 '+c.id+'</span>'
+      : '<span style="color:var(--t3);font-size:12px">'+c.id+'</span>';
+    return `
+    <tr onclick="ouvrirCmd('${c.id}')" style="${isSAV?'background:rgba(255,180,71,.06)':''}">
+      <td>${idCell}</td>
       <td><div class="td-m">${c.client}</div><div class="td-s">${c.tel}</div></td>
       <td style="font-size:12px">${c.adresse}</td>
       <td style="font-size:12px">${c.produit}</td>
@@ -4577,7 +4654,8 @@ function renderCmds(list) {
       <td style="font-size:12px">${c.livreur||'—'}</td>
       <td>${stBdg(c.statut)}</td>
       <td style="color:var(--t3);font-size:16px">›</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
   // Mise à jour bouton pagination
   var pag = document.getElementById('cmd-pagination');
   var pagInfo = document.getElementById('cmd-pagination-info');
@@ -5335,10 +5413,13 @@ function ouvrirCmd(id) {
     '</div>';
 
   var isLivree = c.statut === 'livré' || c.statut === 'annulé';
+  var isSAV = c.origine && c.origine.indexOf('SAV') === 0;
   document.getElementById('panel-footer').innerHTML =
     (!isLivree ? '<button id="pa-edit-btn" data-cmdid="'+c.id+'" class="btn btn-p" style="justify-content:center">✏️ Modifier</button>' :
                  '<span style="font-size:12px;color:var(--t3);align-self:center;padding:0 6px">🔒 '+c.statut+'</span>')+
     '<button id="pa-tournee-btn" data-cmdid="'+c.id+'" class="btn" style="flex:1;justify-content:center">+ Tournée</button>'+
+    // v7.4.1 : bouton "Creer SAV" (sauf si la commande EST deja un SAV)
+    (!isSAV ? '<button onclick="savOuvrir(\'' + c.id + '\')" class="btn" style="justify-content:center;background:#FFE7C2;color:#7A4A00;border:1.5px solid #BA7517;font-weight:800">🔧 SAV</button>' : '') +
     '<button onclick="genererBonLivraison(\'' + c.id + '\')" class="btn" style="justify-content:center;background:var(--blue);color:#fff">🖨️ Bon</button>' +
     '<button onclick="genererRecuPaiement(\'' + c.id + '\')" class="btn" style="justify-content:center">🧾 Reçu</button>' +
     (role === 'admin' ? '<button onclick="supprimerCommande(\'' + c.id + '\')" class="btn" style="justify-content:center;background:var(--red);color:#fff">🗑️</button>' : '') +
@@ -5451,6 +5532,167 @@ async function panelEnregistrerTracking(cmdId) {
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = labelOrig || '💾 + 📱 SMS'; }
   }
+}
+
+// ════════════════════════════════════════════════════════════
+// 🔧 SAV — Echange / Reprise / Livraison oubli (v7.4.1 — 2026-06-01)
+// ════════════════════════════════════════════════════════════
+// Cree une nouvelle "commande SAV" liee a une commande d'origine.
+// La nouvelle commande herite client/tel/adresse et utilise :
+//   - cmd.origine = 'SAV - Echange' / 'SAV - Reprise' / 'SAV - Livraison oubli'
+//   - cmd.ref_marketplace = id commande origine
+//   - cmd.instr = recap structure lisible par le livreur
+//   - cmd.lignes = produit a livrer (echange / oubli) ou vide (reprise)
+//   - cmd.prix = frais a encaisser (0 par defaut)
+// Elle apparait dans la liste commandes et peut etre ajoutee a une tournee.
+
+var _savOrigineCmdId = null;
+var _savTypeSelected = null;
+
+function savOuvrir(cmdOrigineId) {
+  var c = commandes.find(function(x){ return x.id === cmdOrigineId; });
+  if (!c) { toast('Commande origine introuvable', 'err'); return; }
+  _savOrigineCmdId = cmdOrigineId;
+  _savTypeSelected = null;
+  // Reset UI
+  document.querySelectorAll('.sav-type-btn').forEach(function(b){
+    b.style.borderColor = 'var(--brd)';
+    b.style.background = 'var(--card)';
+    b.style.color = 'var(--text)';
+  });
+  document.getElementById('sav-livre-wrap').style.display = 'none';
+  document.getElementById('sav-repris-wrap').style.display = 'none';
+  document.getElementById('sav-produit-repris').value = '';
+  document.getElementById('sav-motif').value = '';
+  document.getElementById('sav-frais').value = 0;
+  document.getElementById('sav-date').value = new Date().toISOString().split('T')[0];
+  // Recap commande origine
+  var recap = document.getElementById('sav-cmd-recap');
+  if (recap) {
+    recap.innerHTML = '<div><strong>' + c.client + '</strong> · <span style="color:var(--t3)">' + (c.tel||'') + '</span></div>' +
+                      '<div style="font-size:12px;color:var(--t2);margin-top:4px">' + c.id + ' · ' + (c.adresse||'') + '</div>' +
+                      '<div style="font-size:12px;color:var(--t3);margin-top:2px">' + (c.produit||'') + ' · ' + (c.prix||0) + ' €</div>';
+  }
+  // Peupler le select produit a livrer (catalogue)
+  var sel = document.getElementById('sav-produit-livre');
+  if (sel) {
+    sel.innerHTML = '<option value="">— Choisir un produit —</option>' +
+      (typeof buildProduitOptions === 'function' ? buildProduitOptions() : '');
+  }
+  closePanel();
+  openModal('m-sav');
+}
+
+function savSelectType(type) {
+  _savTypeSelected = type;
+  // Visuel : marquer le bouton actif
+  document.querySelectorAll('.sav-type-btn').forEach(function(b){
+    var act = b.dataset.type === type;
+    b.style.borderColor = act ? '#BA7517' : 'var(--brd)';
+    b.style.background  = act ? '#FFE7C2' : 'var(--card)';
+    b.style.color       = act ? '#7A4A00' : 'var(--text)';
+  });
+  // Afficher/cacher les champs selon le type
+  var livreWrap = document.getElementById('sav-livre-wrap');
+  var reprisWrap = document.getElementById('sav-repris-wrap');
+  if (type === 'echange') {
+    livreWrap.style.display = 'block';
+    reprisWrap.style.display = 'block';
+  } else if (type === 'reprise') {
+    livreWrap.style.display = 'none';
+    reprisWrap.style.display = 'block';
+  } else if (type === 'oubli') {
+    livreWrap.style.display = 'block';
+    reprisWrap.style.display = 'none';
+  }
+}
+
+async function savCreer() {
+  if (!_savOrigineCmdId) { toast('Aucune commande d\'origine', 'err'); return; }
+  if (!_savTypeSelected) { toast('Choisis un type d\'intervention', 'err'); return; }
+  var cmdOrigine = commandes.find(function(x){ return x.id === _savOrigineCmdId; });
+  if (!cmdOrigine) { toast('Commande origine introuvable', 'err'); return; }
+
+  var type = _savTypeSelected;
+  var produitReprisInput = document.getElementById('sav-produit-repris').value.trim();
+  var motif = document.getElementById('sav-motif').value.trim();
+  var dateSav = document.getElementById('sav-date').value || new Date().toISOString().split('T')[0];
+  var frais = parseFloat(document.getElementById('sav-frais').value) || 0;
+
+  // Recup du produit a livrer (echange ou oubli)
+  var lignes = [];
+  var produitLabel = '';
+  if (type === 'echange' || type === 'oubli') {
+    var prodId = document.getElementById('sav-produit-livre').value;
+    if (!prodId) { toast('Choisis le produit à livrer', 'err'); return; }
+    var prod = produits.find(function(p){ return p.id === prodId; });
+    if (!prod) { toast('Produit invalide', 'err'); return; }
+    lignes.push({
+      produitId: prod.id, produit: prod.nom, qte: 1,
+      prixUnit: 0, prixBrut: 0, // SAV gratuit par defaut (sauf frais explicites)
+      remiseLigne: 0, remiseVal: 0, remiseType: 'pct',
+      sousTotal: 0
+    });
+    produitLabel = prod.nom;
+  }
+
+  if ((type === 'echange' || type === 'reprise') && !produitReprisInput) {
+    toast('Décris le produit à reprendre', 'err'); return;
+  }
+
+  // Construire le label origine
+  var typeLabel = type === 'echange' ? 'Échange' : (type === 'reprise' ? 'Reprise' : 'Livraison oubli');
+  var origineLabel = 'SAV - ' + typeLabel;
+
+  // Construire instr lisible par le livreur
+  var instrLignes = ['🔧 SAV ' + typeLabel.toUpperCase() + ' (cmd origine ' + cmdOrigine.id + ')'];
+  if (produitLabel) instrLignes.push('À LIVRER : ' + produitLabel);
+  if (produitReprisInput) instrLignes.push('À REPRENDRE : ' + produitReprisInput);
+  if (motif) instrLignes.push('Motif : ' + motif);
+  if (frais > 0) instrLignes.push('Frais à encaisser : ' + frais + ' €');
+  var instr = instrLignes.join('\n');
+
+  // Generer un id SAV unique
+  var savId = '#SAV' + Date.now().toString().slice(-7);
+
+  // Construire la nouvelle commande SAV
+  var newCmd = {
+    id: savId,
+    client: cmdOrigine.client,
+    tel: cmdOrigine.tel,
+    email: cmdOrigine.email,
+    adresse: cmdOrigine.adresse,
+    etage: cmdOrigine.etage,
+    asc: cmdOrigine.asc,
+    code: cmdOrigine.code,
+    produit: produitLabel || (typeLabel + ' — ' + (produitReprisInput || '')),
+    lignes: lignes,
+    qte: 1,
+    prix: frais,
+    prixBrut: frais,
+    remiseGlobale: 0, remiseGlobaleVal: 0, remiseGlobaleType: 'pct',
+    paie: frais > 0 ? 'Espèces' : 'Déjà payé',
+    stpaie: frais > 0 ? 'Non payé' : 'Payé',
+    montantEnc: 0,
+    livreur: cmdOrigine.livreur || '',
+    statut: 'en-attente',
+    date: dateSav,
+    dateCmd: new Date().toISOString().split('T')[0],
+    instr: instr,
+    origine: origineLabel,
+    refMarketplace: cmdOrigine.id, // garder le lien vers la commande origine
+    transporteur: 'RANOU', // SAV interne par defaut
+    trackingTransporteur: ''
+  };
+
+  commandes.unshift(newCmd);
+  try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(e) {}
+  await sbSaveCommande(newCmd);
+  closeModal('m-sav');
+  renderCmds(); renderDash();
+  toast('🔧 SAV ' + typeLabel + ' créé (' + savId + ') — à ajouter à une tournée', 'ok');
+  // Re-ouvrir la nouvelle commande SAV pour pouvoir l'ajouter a une tournee direct
+  setTimeout(function(){ ouvrirCmd(savId); }, 300);
 }
 
 function ajouterTournee(id) {
