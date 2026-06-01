@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.3.2 - Optim avec endpoint domicile livreur (RANOU -> Conflans)
+// v7.3.3 - Fix sync paiement + paiements Mixte (Especes + CB)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-3-2';
+const CACHE_VERSION = 'maxiconfort-v7-3-3';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

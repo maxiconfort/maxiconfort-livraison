@@ -2304,6 +2304,49 @@ window.addEventListener('offline', function() {
   toast('📵 Mode hors ligne — les modifications seront sauvegardées à la reconnexion', 'info');
 });
 
+// ════════════════════════════════════════════════════════════
+// 💰 HELPERS PAIEMENT MIXTE (v7.3.3 — 2026-05-31)
+// ════════════════════════════════════════════════════════════
+// Quand c.paie === 'Mixte', les montants Espèces/CB sont stockés
+// dans le stop de la tournée (s.paie_especes / s.paie_cb).
+// Ces helpers les retrouvent et permettent de cumuler proprement.
+
+function findStopForCmd(cmdId) {
+  if (!cmdId || typeof tournees === 'undefined' || !Array.isArray(tournees)) return null;
+  for (var i = 0; i < tournees.length; i++) {
+    var t = tournees[i];
+    if (!t || !t.stops) continue;
+    for (var j = 0; j < t.stops.length; j++) {
+      if (t.stops[j].cmdId === cmdId) return t.stops[j];
+    }
+  }
+  return null;
+}
+
+function getMontantEspecesCmd(c) {
+  if (!c) return 0;
+  if (c.stpaie !== 'Payé' && c.stpaie !== 'Partiel') return 0;
+  if (c.paie === 'Mixte') {
+    if (c.paie_especes != null) return parseFloat(c.paie_especes) || 0;
+    var s = findStopForCmd(c.id);
+    return s && s.paie_especes != null ? (parseFloat(s.paie_especes) || 0) : 0;
+  }
+  if (c.paie === 'Espèces') return parseFloat(c.montantEnc || c.prix) || 0;
+  return 0;
+}
+
+function getMontantCBCmd(c) {
+  if (!c) return 0;
+  if (c.stpaie !== 'Payé' && c.stpaie !== 'Partiel') return 0;
+  if (c.paie === 'Mixte') {
+    if (c.paie_cb != null) return parseFloat(c.paie_cb) || 0;
+    var s = findStopForCmd(c.id);
+    return s && s.paie_cb != null ? (parseFloat(s.paie_cb) || 0) : 0;
+  }
+  if (c.paie === 'CB') return parseFloat(c.montantEnc || c.prix) || 0;
+  return 0;
+}
+
 async function sbSaveCommande(cmd) {
   // Toujours tenter Supabase d'abord, queue seulement si fetch échoue
   try {
@@ -5456,8 +5499,19 @@ function renderLivreurCaisse(t) {
   }
 
   var stopsLivres = t.stops.filter(function(s){ return s.statut === 'livré'; });
-  var caisseEsp = stopsLivres.filter(function(s){ return s.paie==='Espèces'  && s.stpaie==='Payé'; }).reduce(function(a,s){ return a+(s.prix||0); },0);
-  var caisseCB  = stopsLivres.filter(function(s){ return s.paie==='CB'        && s.stpaie==='Payé'; }).reduce(function(a,s){ return a+(s.prix||0); },0);
+  // v7.3.3 : prend en compte les paiements Mixte (Espèces + CB) via s.paie_especes / s.paie_cb
+  var caisseEsp = 0, caisseCB = 0;
+  stopsLivres.forEach(function(s){
+    if (s.stpaie !== 'Payé' && s.stpaie !== 'Partiel') return;
+    if (s.paie === 'Mixte') {
+      caisseEsp += parseFloat(s.paie_especes) || 0;
+      caisseCB  += parseFloat(s.paie_cb)      || 0;
+    } else if (s.paie === 'Espèces') {
+      caisseEsp += parseFloat(s.prix) || 0;
+    } else if (s.paie === 'CB') {
+      caisseCB  += parseFloat(s.prix) || 0;
+    }
+  });
   var caisseVir = stopsLivres.filter(function(s){ return s.paie==='Virement'  && s.stpaie==='Payé'; }).reduce(function(a,s){ return a+(s.prix||0); },0);
   var caissePrepaye = stopsLivres.filter(function(s){
     return ['Site web','Amazon','Cdiscount','Manomano','LeBonCoin','Fnac Darty','Rakuten','Rue du Commerce','Autre plateforme','Déjà payé'].includes(s.paie)
@@ -6183,29 +6237,47 @@ function lvModifierPaie(tid, idx) {
   var existing = document.getElementById(bsId);
   if (existing) existing.remove();
 
-  var modes = ['Espèces', 'CB', 'Virement', 'Déjà payé'];
+  var modes = ['Espèces', 'CB', 'Virement', 'Déjà payé', 'Mixte'];
   var statuts = ['Payé', 'Non payé', 'Partiel'];
   var currentMode = (cmd ? cmd.paie : s.paie) || 'Espèces';
   var currentStatut = (cmd ? cmd.stpaie : s.stpaie) || 'Non payé';
+  // v7.3.3 : paiement mixte (Espèces + CB)
+  var currentEsp = (s.paie_especes != null) ? s.paie_especes : (cmd && cmd.paie_especes != null ? cmd.paie_especes : 0);
+  var currentCb  = (s.paie_cb      != null) ? s.paie_cb      : (cmd && cmd.paie_cb      != null ? cmd.paie_cb      : 0);
+  var prixTotal = (cmd ? cmd.prix : s.prix) || 0;
 
   var sheet = document.createElement('div');
   sheet.id = bsId;
-  sheet.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:999;background:var(--card);border-radius:20px 20px 0 0;padding:20px;box-shadow:0 -4px 24px rgba(0,0,0,.2);font-family:var(--font)';
-  // Construction DOM propre sans quotes imbriquées
-  sheet.dataset.mode   = currentMode;
-  sheet.dataset.statut = currentStatut;
-  sheet.dataset.tid    = tid;
-  sheet.dataset.idx    = String(idx);
+  sheet.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:999;background:var(--card);border-radius:20px 20px 0 0;padding:20px;box-shadow:0 -4px 24px rgba(0,0,0,.2);font-family:var(--font);max-height:90vh;overflow-y:auto';
+  sheet.dataset.mode      = currentMode;
+  sheet.dataset.statut    = currentStatut;
+  sheet.dataset.tid       = tid;
+  sheet.dataset.idx       = String(idx);
+  sheet.dataset.prixTotal = String(prixTotal);
 
   var html = '<div style="width:40px;height:4px;background:var(--brd);border-radius:2px;margin:0 auto 16px"></div>';
   html += '<div style="font-size:16px;font-weight:800;margin-bottom:6px">Modifier le paiement</div>';
-  html += '<div style="font-size:13px;color:var(--t2);margin-bottom:16px">' + (s.client||'Client') + '</div>';
+  html += '<div style="font-size:13px;color:var(--t2);margin-bottom:4px">' + (s.client||'Client') + '</div>';
+  html += '<div style="font-size:12px;color:var(--t3);margin-bottom:16px">Montant total : <strong style="color:var(--green)">' + prixTotal + ' €</strong></div>';
   html += '<div style="font-size:12px;font-weight:700;color:var(--t3);margin-bottom:8px">MODE DE PAIEMENT</div>';
   html += '<div id="lv-modes-wrap" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">';
   modes.forEach(function(m) {
     var sel = (m === currentMode);
-    html += '<button class="lv-mode-btn" data-val="' + m + '" style="padding:8px 14px;border-radius:20px;border:2px solid ' + (sel ? 'var(--blue)' : 'var(--brd)') + ';background:' + (sel ? 'var(--bl)' : 'var(--card)') + ';font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);color:' + (sel ? 'var(--bd)' : 'var(--text)') + '">' + m + '</button>';
+    var bgC = m === 'Mixte' ? (sel ? '#FFE7C2' : 'var(--card)') : (sel ? 'var(--bl)' : 'var(--card)');
+    var brC = m === 'Mixte' ? (sel ? '#BA7517' : 'var(--brd)') : (sel ? 'var(--blue)' : 'var(--brd)');
+    var clC = m === 'Mixte' ? (sel ? '#7A4A00' : 'var(--text)') : (sel ? 'var(--bd)' : 'var(--text)');
+    var label = m === 'Mixte' ? '🔀 Espèces + CB' : m;
+    html += '<button class="lv-mode-btn" data-val="' + m + '" style="padding:8px 14px;border-radius:20px;border:2px solid ' + brC + ';background:' + bgC + ';font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);color:' + clC + '">' + label + '</button>';
   });
+  html += '</div>';
+  // Zone Mixte : 2 inputs (visible seulement si Mixte sélectionné)
+  html += '<div id="lv-paie-mixte-wrap" style="display:' + (currentMode === 'Mixte' ? 'block' : 'none') + ';margin-bottom:16px;padding:14px;background:#FFF7E6;border:1.5px solid #FFB347;border-radius:12px">';
+  html += '<div style="font-size:12px;font-weight:800;color:#7A4A00;margin-bottom:10px;text-transform:uppercase;letter-spacing:.3px">🔀 Répartition du paiement</div>';
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px">';
+  html += '  <div><label style="font-size:11px;color:var(--t3);font-weight:700;display:block;margin-bottom:4px">💵 Espèces (€)</label><input type="number" inputmode="decimal" min="0" step="0.01" id="lv-paie-esp" value="' + currentEsp + '" style="width:100%;padding:10px;border:1.5px solid #BA7517;border-radius:8px;font-size:16px;font-weight:700;font-family:var(--font);text-align:right"></div>';
+  html += '  <div><label style="font-size:11px;color:var(--t3);font-weight:700;display:block;margin-bottom:4px">💳 CB (€)</label><input type="number" inputmode="decimal" min="0" step="0.01" id="lv-paie-cb" value="' + currentCb + '" style="width:100%;padding:10px;border:1.5px solid var(--blue);border-radius:8px;font-size:16px;font-weight:700;font-family:var(--font);text-align:right"></div>';
+  html += '</div>';
+  html += '<div id="lv-paie-mixte-recap" style="font-size:13px;font-weight:700;text-align:center;padding:8px;border-radius:8px;background:var(--bg);color:var(--t2)"></div>';
   html += '</div>';
   html += '<div style="font-size:12px;font-weight:700;color:var(--t3);margin-bottom:8px">STATUT</div>';
   html += '<div id="lv-statuts-wrap" style="display:flex;gap:8px;margin-bottom:20px">';
@@ -6226,6 +6298,12 @@ function lvModifierPaie(tid, idx) {
   sheet.querySelectorAll('.lv-statut-btn').forEach(function(b) {
     b.addEventListener('click', function() { lvPaieSelectStatut(b, b.dataset.val); });
   });
+  // v7.3.3 : inputs paiement mixte avec recap live
+  var inpEsp = document.getElementById('lv-paie-esp');
+  var inpCb  = document.getElementById('lv-paie-cb');
+  if (inpEsp) inpEsp.addEventListener('input', lvPaieMixteRecap);
+  if (inpCb)  inpCb.addEventListener('input', lvPaieMixteRecap);
+  lvPaieMixteRecap();
   document.getElementById('lv-paie-valider').addEventListener('click', lvPaieValider);
   document.getElementById('lv-paie-annuler').addEventListener('click', function() {
     var el = document.getElementById('lv-paie-sheet'); if (el) el.remove();
@@ -6236,13 +6314,60 @@ function lvPaieSelectMode(btn, mode) {
   var sheet = document.getElementById('lv-paie-sheet');
   if (sheet) sheet.dataset.mode = mode;
   btn.parentElement.querySelectorAll('button').forEach(function(b) {
+    var v = b.dataset.val;
     b.style.borderColor = 'var(--brd)';
     b.style.background = 'var(--card)';
     b.style.color = 'var(--text)';
   });
-  btn.style.borderColor = 'var(--blue)';
-  btn.style.background = 'var(--bl)';
-  btn.style.color = 'var(--bd)';
+  var isMixte = mode === 'Mixte';
+  btn.style.borderColor = isMixte ? '#BA7517' : 'var(--blue)';
+  btn.style.background  = isMixte ? '#FFE7C2' : 'var(--bl)';
+  btn.style.color       = isMixte ? '#7A4A00' : 'var(--bd)';
+  // Show / hide la zone Mixte
+  var wrap = document.getElementById('lv-paie-mixte-wrap');
+  if (wrap) wrap.style.display = isMixte ? 'block' : 'none';
+  if (isMixte) lvPaieMixteRecap();
+}
+
+// v7.3.3 : recap live des montants saisies + auto-statut
+function lvPaieMixteRecap() {
+  var sheet = document.getElementById('lv-paie-sheet');
+  if (!sheet || sheet.dataset.mode !== 'Mixte') return;
+  var esp = parseFloat(document.getElementById('lv-paie-esp')?.value) || 0;
+  var cb  = parseFloat(document.getElementById('lv-paie-cb')?.value)  || 0;
+  var total = esp + cb;
+  var prixTotal = parseFloat(sheet.dataset.prixTotal) || 0;
+  var recap = document.getElementById('lv-paie-mixte-recap');
+  if (!recap) return;
+  var diff = total - prixTotal;
+  var msg, bg, fg;
+  if (total === 0) {
+    msg = 'Saisir les 2 montants ci-dessus';
+    bg = 'var(--bg)'; fg = 'var(--t2)';
+  } else if (Math.abs(diff) < 0.01) {
+    msg = '✅ Total : ' + total.toFixed(2) + ' € · MATCH parfait';
+    bg = 'var(--gl)'; fg = 'var(--gd)';
+  } else if (diff > 0) {
+    msg = '⚠️ Total : ' + total.toFixed(2) + ' € · +' + diff.toFixed(2) + ' € de trop';
+    bg = 'var(--ol)'; fg = 'var(--od)';
+  } else {
+    msg = '⏳ Total : ' + total.toFixed(2) + ' € · manque ' + Math.abs(diff).toFixed(2) + ' €';
+    bg = '#FFE9E2'; fg = '#A32D2D';
+  }
+  recap.textContent = msg;
+  recap.style.background = bg;
+  recap.style.color = fg;
+  // Auto statut : Payé si total >= prix, Partiel sinon (>0)
+  var newStatut = (total > 0 && Math.abs(diff) < 0.01) ? 'Payé' : (total > 0 ? 'Partiel' : 'Non payé');
+  sheet.dataset.statut = newStatut;
+  // Refresh visuel des boutons statut
+  document.querySelectorAll('.lv-statut-btn').forEach(function(b) {
+    var sel = b.dataset.val === newStatut;
+    var col = b.dataset.val === 'Payé' ? 'green' : b.dataset.val === 'Partiel' ? 'orange' : 'red';
+    b.style.borderColor = sel ? 'var(--' + col + ')' : 'var(--brd)';
+    b.style.background  = sel ? 'var(--' + col + 'l)' : 'var(--card)';
+    b.style.color       = sel ? 'var(--' + col + 'd)' : 'var(--text)';
+  });
 }
 
 function lvPaieSelectStatut(btn, statut) {
@@ -6266,6 +6391,17 @@ async function lvPaieValider() {
   var newStatut = sheet.dataset.statut || 'Payé';
   var tid = sheet.dataset.tid;
   var stopIdx = parseInt(sheet.dataset.idx);
+
+  // v7.3.3 : recuperer les montants Mixte si applicable
+  var paieEsp = 0, paieCb = 0;
+  if (newMode === 'Mixte') {
+    paieEsp = parseFloat(document.getElementById('lv-paie-esp')?.value) || 0;
+    paieCb  = parseFloat(document.getElementById('lv-paie-cb')?.value)  || 0;
+    if (paieEsp + paieCb <= 0) {
+      toast('Saisir au moins un montant > 0', 'err');
+      return;
+    }
+  }
   sheet.remove();
 
   var t = tournees.find(function(x){ return x.id === tid; });
@@ -6276,6 +6412,14 @@ async function lvPaieValider() {
   // Mettre à jour le stop
   s.paie   = newMode;
   s.stpaie = newStatut;
+  if (newMode === 'Mixte') {
+    s.paie_especes = paieEsp;
+    s.paie_cb      = paieCb;
+  } else {
+    // Nettoyer les anciens splits si on change pour un mode simple
+    delete s.paie_especes;
+    delete s.paie_cb;
+  }
 
   // Mettre à jour la commande liée
   var cmd = null;
@@ -6285,15 +6429,30 @@ async function lvPaieValider() {
   if (cmd) {
     cmd.paie   = newMode;
     cmd.stpaie = newStatut;
-    if (newStatut === 'Payé') cmd.montantEnc = cmd.prix;
-    if (newStatut === 'Non payé') cmd.montantEnc = 0;
+    if (newMode === 'Mixte') {
+      cmd.montantEnc = paieEsp + paieCb;
+      // En memoire (non envoye a la DB - retrouve via tournee)
+      cmd.paie_especes = paieEsp;
+      cmd.paie_cb      = paieCb;
+    } else if (newStatut === 'Payé') {
+      cmd.montantEnc = cmd.prix;
+      delete cmd.paie_especes; delete cmd.paie_cb;
+    } else if (newStatut === 'Non payé') {
+      cmd.montantEnc = 0;
+      delete cmd.paie_especes; delete cmd.paie_cb;
+    }
     await sbSaveCommande(cmd);
   }
 
-  // Sauvegarder la tournée
+  // Sauvegarder la tournée (les paie_especes/paie_cb sont dans stops JSONB)
   sbSaveTournee(t);
+  try { localStorage.setItem('mx_tournees_cache', JSON.stringify(tournees)); } catch(e) {}
   renderLivreur();
-  toast('✅ Paiement mis à jour : ' + newMode + ' · ' + newStatut, 'ok');
+  if (document.getElementById('p-finance')?.classList.contains('on')) { renderFinance(); finRender(); }
+  var msg = newMode === 'Mixte'
+    ? '✅ Paiement Mixte : 💵 ' + paieEsp + ' € + 💳 ' + paieCb + ' € · ' + newStatut
+    : '✅ Paiement mis à jour : ' + newMode + ' · ' + newStatut;
+  toast(msg, 'ok');
 }
 
 function sigTogglePaie(encaisse) {
@@ -6344,9 +6503,15 @@ function chgStopPaie(tid, idx, val) {
   if (!t || !t.stops[idx]) return;
   t.stops[idx].paie = val;
   const cmd = commandes.find(c => c.id === t.stops[idx].cmdId);
-  if (cmd) cmd.paie = val;
+  if (cmd) {
+    cmd.paie = val;
+    sbSaveCommande(cmd); // ✅ Bug 1 fix : sync commande vers admin
+  }
+  sbSaveTournee(t); // ✅ Bug 1 fix : sync tournee vers admin
+  try { localStorage.setItem('mx_tournees_cache', JSON.stringify(tournees)); } catch(e) {}
   toast('Mode de règlement : ' + val + ' ✓', 'ok');
   if (document.getElementById('p-finance')?.classList.contains('on')) finRender();
+  if (document.getElementById('p-commandes')?.classList.contains('on')) renderCmds();
 }
 
 function changerTourneeVue(tid) {
@@ -6739,9 +6904,13 @@ function finRender() {
           // v7.1.1 : utiliser date RÉELLE de livraison (cohérent avec parJour ci-dessus)
           var d = cmdIdToDateReelle[c.id] || c.date || '';
           if (d !== j.date) return;
-          if (c.stpaie !== 'Payé') return;
+          if (c.stpaie !== 'Payé' && c.stpaie !== 'Partiel') return;
           var v = c.montantEnc || c.prix || 0;
-          if (c.paie === 'Espèces') j.mEsp += v;
+          // v7.3.3 : helpers gèrent Mixte (split Espèces + CB stocké dans stop)
+          if (c.paie === 'Mixte') {
+            j.mEsp += getMontantEspecesCmd(c);
+            j.mCB  += getMontantCBCmd(c);
+          } else if (c.paie === 'Espèces') j.mEsp += v;
           else if (c.paie === 'CB') j.mCB += v;
           else if (c.paie === 'Virement') j.mVir += v;
           else if (modesPrepaye.includes(c.paie)) j.mPlatf += v;
@@ -6792,9 +6961,8 @@ function finRender() {
     var periodeKey = range.du;
 
     // ── CAISSE GÉNÉRALE - 3 INDICATEURS DISTINCTS (v7.1) ──
-    // 1) ESPÈCES COLLECTÉES (terrain - toutes commandes livrées payées espèces)
-    var especesCollectees = livrees.filter(function(c){ return c.paie==='Espèces' && c.stpaie==='Payé'; })
-                                  .reduce(function(s,c){ return s+(c.montantEnc||c.prix); }, 0);
+    // 1) ESPÈCES COLLECTÉES (terrain - toutes commandes livrées payées espèces, inclut Mixte)
+    var especesCollectees = livrees.reduce(function(s,c){ return s + getMontantEspecesCmd(c); }, 0);
 
     // 2) ESPÈCES REMISES EN CAISSE (uniquement tournées avec remise validée)
     var especesRemises = 0;
@@ -6863,8 +7031,8 @@ function finRender() {
           return c.livreur===t.livreur && c.date===t.date && c.statut==='livré';
         });
       }
-      var espT = (cmdsT||[]).filter(function(c){ return c.paie==='Espèces' && c.stpaie==='Payé'; })
-                            .reduce(function(s,c){ return s+(c.montantEnc||c.prix); }, 0);
+      // v7.3.3 : inclut les paiements Mixte via getMontantEspecesCmd
+      var espT = (cmdsT||[]).reduce(function(s,c){ return s + getMontantEspecesCmd(c); }, 0);
       var depEspT = deps.filter(function(d){
         var matchTournee = d.tourneeId ? d.tourneeId === t.id : d.date === t.date;
         return (d.livreur||'').toLowerCase() === (t.livreur||'').toLowerCase()
@@ -6975,8 +7143,9 @@ function finRender() {
           });
         }
         cmdsLv = cmdsLv || [];
-        var especes  = cmdsLv.filter(function(c){ return c.paie==='Espèces' && c.stpaie==='Payé'; }).reduce(function(s,c){ return s+(c.montantEnc||c.prix); },0);
-        var cb       = cmdsLv.filter(function(c){ return c.paie==='CB' && c.stpaie==='Payé'; }).reduce(function(s,c){ return s+(c.montantEnc||c.prix); },0);
+        // v7.3.3 : helpers gèrent le mode Mixte (split Espèces + CB)
+        var especes  = cmdsLv.reduce(function(s,c){ return s + getMontantEspecesCmd(c); }, 0);
+        var cb       = cmdsLv.reduce(function(s,c){ return s + getMontantCBCmd(c); }, 0);
         var virement = cmdsLv.filter(function(c){ return c.paie==='Virement' && c.stpaie==='Payé'; }).reduce(function(s,c){ return s+(c.montantEnc||c.prix); },0);
         var prepaye  = cmdsLv.filter(function(c){ return MODES_PAIE.filter(function(m){return m.cat==='prepaye';}).map(function(m){ return m.id; }).includes(c.paie) && c.stpaie==='Payé'; }).reduce(function(s,c){ return s+(c.montantEnc||c.prix); },0);
         var nonEnc   = cmdsLv.filter(function(c){ return c.stpaie!=='Payé'; }).reduce(function(s,c){ return s+c.prix; },0);
