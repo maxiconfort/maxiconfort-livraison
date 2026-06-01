@@ -1914,6 +1914,17 @@ Maxiconfort — {TEL_CONTACT}</textarea>
           <button class="btn btn-p" onclick="saveSociete()">💾 Enregistrer</button>
         </div>
       </div>
+      <!-- v7.3.5 : Test SMS Brevo -->
+      <div class="card" style="margin-top:14px;border:1.5px solid #BA7517;background:linear-gradient(135deg,#FFF7E6 0%,#FFEFD1 100%)">
+        <div class="card-t" style="color:#7A4A00">📱 Tester l'envoi SMS Brevo</div>
+        <div style="font-size:13px;color:var(--t2);margin-bottom:14px;line-height:1.5">
+          Envoie un SMS de test au numéro saisi dans <strong>"Téléphone contact"</strong> ci-dessus pour vérifier que le système Brevo fonctionne — particulièrement utile <strong>après une recharge de crédits</strong> ou si tu as un doute.
+        </div>
+        <button id="btn-test-sms" class="btn" onclick="testerSMS()" style="background:#BA7517;color:#fff;font-weight:800;padding:12px 20px">📱 Envoyer un SMS test à mon numéro</button>
+        <div style="font-size:11px;color:var(--t3);margin-top:10px;display:flex;align-items:center;gap:6px">
+          <span>💡</span><span>Un SMS test consomme 1 crédit Brevo (~0,045 € pour la France). Le résultat s'affiche dans un toast en haut de l'écran.</span>
+        </div>
+      </div>
     </div>
 
   </div>
@@ -3456,6 +3467,43 @@ async function brevoSendSMS(tel, message) {
   } catch(e) {
     console.warn('❌ SMS exception:', e.message);
     return false;
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// 📱 TESTER L'ENVOI SMS — Param Société (v7.3.5 — 2026-06-01)
+// ════════════════════════════════════════════════════════════
+async function testerSMS() {
+  // Recuperer le numero saisi (input prioritaire, sinon variable globale)
+  var tel = (document.getElementById('soc-tel')?.value || societe?.tel || '').trim();
+  if (!tel || tel.length < 8) {
+    toast('❌ Saisis ton numéro dans "Téléphone contact" d\'abord et enregistre', 'err');
+    return;
+  }
+  var btn = document.getElementById('btn-test-sms');
+  var labelOrig = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Envoi en cours...';
+    btn.style.opacity = '0.7';
+  }
+  var hms = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  var msg = '🧪 Test Maxiconfort Livraison - ' + hms + '. Si tu lis ce SMS, le systeme Brevo fonctionne ! - Maxiconfort';
+  try {
+    var ok = await brevoSendSMS(tel, msg);
+    if (ok) {
+      toast('✅ SMS test envoyé à ' + tel + ' — regarde ton tel dans 5-10 sec !', 'ok');
+    } else {
+      toast('❌ Échec envoi SMS — vérifie le crédit Brevo ou le format du numéro', 'err');
+    }
+  } catch(e) {
+    toast('❌ Erreur SMS : ' + e.message, 'err');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = labelOrig || '📱 Envoyer un SMS test à mon numéro';
+      btn.style.opacity = '1';
+    }
   }
 }
 
