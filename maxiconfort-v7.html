@@ -285,7 +285,7 @@ textarea{resize:vertical;min-height:65px}
 .panel.on{transform:translateX(0)}
 .ph{padding:18px 20px;border-bottom:1px solid var(--brd);display:flex;justify-content:space-between;align-items:flex-start}
 .pb{flex:1;overflow-y:auto;padding:20px}
-.pf{padding:14px 20px;border-top:1px solid var(--brd);display:flex;gap:8px;flex-wrap:wrap}
+.pf{padding:14px 20px;border-top:1px solid var(--brd);display:flex;gap:6px;flex-direction:column}
 .psec{font-size:11px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin:0 0 10px}
 .prow{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--brd);font-size:13px}
 .prow:last-child{border-bottom:none}
@@ -5596,16 +5596,22 @@ function ouvrirCmd(id) {
 
   var isLivree = c.statut === 'livré' || c.statut === 'annulé';
   var isSAV = c.origine && c.origine.indexOf('SAV') === 0;
+  // v7.4.7 : footer compact en 2 lignes explicites avec boutons icones
+  // Ligne 1 = actions principales, ligne 2 = secondaires + admin
+  var btnStyleSm = 'justify-content:center;padding:8px 10px;font-size:12px;flex:0 0 auto';
   document.getElementById('panel-footer').innerHTML =
-    (!isLivree ? '<button id="pa-edit-btn" data-cmdid="'+c.id+'" class="btn btn-p" style="justify-content:center">✏️ Modifier</button>' :
-                 '<span style="font-size:12px;color:var(--t3);align-self:center;padding:0 6px">🔒 '+c.statut+'</span>')+
-    '<button id="pa-tournee-btn" data-cmdid="'+c.id+'" class="btn" style="justify-content:center">+ Tournée</button>'+
-    // v7.4.1 : bouton "Creer SAV" (sauf si la commande EST deja un SAV)
-    (!isSAV ? '<button onclick="savOuvrir(\'' + c.id + '\')" class="btn" style="justify-content:center;background:#FFE7C2;color:#7A4A00;border:1.5px solid #BA7517;font-weight:800">🔧 SAV</button>' : '') +
-    '<button onclick="genererBonLivraison(\'' + c.id + '\')" class="btn" style="justify-content:center;background:var(--blue);color:#fff">🖨️ Bon</button>' +
-    '<button onclick="genererRecuPaiement(\'' + c.id + '\')" class="btn" style="justify-content:center">🧾 Reçu</button>' +
-    (role === 'admin' ? '<button onclick="supprimerCommande(\'' + c.id + '\')" class="btn" style="justify-content:center;background:var(--red);color:#fff">🗑️</button>' : '') +
-    '<button onclick="closePanel()" class="btn" style="justify-content:center">Fermer</button>';
+    '<div style="display:flex;gap:6px;flex-wrap:wrap;width:100%;margin-bottom:6px">' +
+      (!isLivree ? '<button id="pa-edit-btn" data-cmdid="'+c.id+'" class="btn btn-p" style="'+btnStyleSm+'">✏️ Modifier</button>' :
+                   '<span style="font-size:12px;color:var(--t3);align-self:center;padding:0 6px">🔒 '+c.statut+'</span>') +
+      '<button id="pa-tournee-btn" data-cmdid="'+c.id+'" class="btn" style="'+btnStyleSm+'">+ Tournée</button>' +
+      (!isSAV ? '<button onclick="savOuvrir(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+';background:#FFE7C2;color:#7A4A00;border:1.5px solid #BA7517;font-weight:800">🔧 SAV</button>' : '') +
+    '</div>' +
+    '<div style="display:flex;gap:6px;flex-wrap:wrap;width:100%">' +
+      '<button onclick="genererBonLivraison(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+';background:var(--blue);color:#fff">🖨️ Bon</button>' +
+      '<button onclick="genererRecuPaiement(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+'">🧾 Reçu</button>' +
+      (role === 'admin' ? '<button onclick="supprimerCommande(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+';background:var(--red);color:#fff" title="Supprimer la commande">🗑️ Supprimer</button>' : '') +
+      '<button onclick="closePanel()" class="btn" style="'+btnStyleSm+';margin-left:auto">Fermer</button>' +
+    '</div>';
 
   // Event delegation — avoids inline quotes issues
   var editBtn = document.getElementById('pa-edit-btn');

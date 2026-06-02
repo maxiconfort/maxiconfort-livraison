@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.4.6 - Fix bouton supprimer caché dans le panel détail
+// v7.4.7 - Refonte footer panel détail en 2 lignes explicites
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-4-6';
+const CACHE_VERSION = 'maxiconfort-v7-4-7';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
