@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.4.7 - Refonte footer panel détail en 2 lignes explicites
+// v7.4.8 - Vrai sélecteur de date + filtre livreur pour Tournées existantes
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-4-7';
+const CACHE_VERSION = 'maxiconfort-v7-4-8';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

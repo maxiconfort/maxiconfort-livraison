@@ -614,10 +614,16 @@ textarea{resize:vertical;min-height:65px}
         <button class="btn btn-p btn-full" onclick="creerTournee()">🗺 Créer la tournée</button>
       </div>
       <div class="card">
-        <div class="card-t" style="display:flex;justify-content:space-between;align-items:center">
+        <div class="card-t" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
           <span>Tournées existantes</span>
-          <input id="tour-search" placeholder="🔍 Date ou livreur..." oninput="filtrerTournees()"
-            style="padding:7px 11px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--bg);color:var(--text);font-size:13px;font-family:var(--font);width:180px">
+          <div style="display:flex;gap:6px;align-items:center">
+            <!-- v7.4.8 : vrai selecteur de date + champ livreur separes -->
+            <input type="date" id="tour-search-date" onchange="filtrerTournees()" title="Filtrer par date"
+              style="padding:6px 8px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--bg);color:var(--text);font-size:12px;font-family:var(--font);width:140px">
+            <input type="text" id="tour-search" placeholder="🔍 Livreur..." oninput="filtrerTournees()" title="Filtrer par texte (livreur, ID...)"
+              style="padding:6px 8px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--bg);color:var(--text);font-size:12px;font-family:var(--font);width:110px">
+            <button onclick="resetFiltreTournees()" title="Effacer les filtres" style="padding:6px 8px;border:1px solid var(--brd);border-radius:var(--r);background:var(--card);color:var(--t2);font-size:12px;cursor:pointer;font-family:var(--font)">🗑</button>
+          </div>
         </div>
         <div id="tournees-actives"><div style="text-align:center;padding:20px;color:var(--t3);font-size:13px">Aucune tournée créée</div></div>
       </div>
@@ -13786,13 +13792,29 @@ document.addEventListener('DOMContentLoaded', function(){ var td=document.getEle
 // ════════════════════════════════════════
 let currentTourneeId = null;
 
+// v7.4.8 : filtre tournees par DATE (input type="date") + texte (livreur)
 function filtrerTournees() {
-  var q = (document.getElementById('tour-search')?.value||'').toLowerCase().trim();
-  var cards = document.querySelectorAll('#tournees-actives .tour-card, #tournees-actives > div');
+  var dateFiltre = (document.getElementById('tour-search-date')?.value || '').trim();
+  var qTexte = (document.getElementById('tour-search')?.value || '').toLowerCase().trim();
+  var cards = document.querySelectorAll('#tournees-actives > div');
+  // Convertir la date YYYY-MM-DD en format affiche DD/MM/YYYY pour le match
+  var dateAffich = '';
+  if (dateFiltre && /^\d{4}-\d{2}-\d{2}$/.test(dateFiltre)) {
+    var parts = dateFiltre.split('-');
+    dateAffich = parts[2] + '/' + parts[1] + '/' + parts[0];
+  }
   cards.forEach(function(card) {
     var txt = card.textContent.toLowerCase();
-    card.style.display = (!q || txt.includes(q)) ? '' : 'none';
+    var matchTexte = !qTexte || txt.includes(qTexte);
+    var matchDate = !dateAffich || txt.includes(dateAffich);
+    card.style.display = (matchTexte && matchDate) ? '' : 'none';
   });
+}
+
+function resetFiltreTournees() {
+  var dEl = document.getElementById('tour-search-date'); if (dEl) dEl.value = '';
+  var tEl = document.getElementById('tour-search');      if (tEl) tEl.value = '';
+  filtrerTournees();
 }
 function afficherTournee(id) {
   currentTourneeId = id;
