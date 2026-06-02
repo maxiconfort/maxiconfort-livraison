@@ -600,7 +600,7 @@ textarea{resize:vertical;min-height:65px}
     <div class="g2" style="margin-bottom:16px">
       <div class="card">
         <div class="card-t">Créer une nouvelle tournée</div>
-        <div class="fg" style="margin-bottom:10px"><label>Date de la tournée</label><input type="date" id="t-date"></div>
+        <div class="fg" style="margin-bottom:10px"><label>Date de la tournée</label><input type="date" id="t-date" onclick="try{this.showPicker&&this.showPicker()}catch(e){}" style="cursor:pointer"></div>
         <div class="fg" style="margin-bottom:10px"><label>Livreur assigné</label>
           <select id="t-livreur">
             <option value="">— Choisir un livreur —</option>
@@ -4078,7 +4078,12 @@ function goTo(p, el) {
     if (typeof cmdPeuplerFiltresSelects === 'function') cmdPeuplerFiltresSelects();
     if (typeof cmdAppliquerFiltres === 'function') cmdAppliquerFiltres(); else renderCmds();
   }
-  if(p==='tournees'){renderTournees();populateCmdChecklist();}
+  if(p==='tournees'){
+    renderTournees();populateCmdChecklist();
+    // v7.4.9 : pre-remplir la date avec aujourd'hui si vide
+    var _tdate = document.getElementById('t-date');
+    if (_tdate && !_tdate.value) _tdate.value = new Date().toISOString().split('T')[0];
+  }
   if(p==='livreur') renderLivreur();
   if(p==='finance') { renderFinance(); finRender(); }
   if(p==='stock') { stkRender(); stkApplyRoleVisibility(); }

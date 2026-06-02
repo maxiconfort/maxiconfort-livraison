@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.4.8 - Vrai sélecteur de date + filtre livreur pour Tournées existantes
+// v7.4.9 - Fix calendrier Date tournée (showPicker + pré-rempli aujourd'hui)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-4-8';
+const CACHE_VERSION = 'maxiconfort-v7-4-9';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
