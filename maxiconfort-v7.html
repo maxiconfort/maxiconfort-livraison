@@ -2507,8 +2507,12 @@ async function sbSaveCommande(cmd) {
       ref_marketplace: cmd.refMarketplace||'',
       transporteur: cmd.transporteur || 'RANOU',
       tracking_transporteur: cmd.trackingTransporteur || null,
-      updated_at: new Date().toISOString(),
-      created_at: new Date().toISOString()
+      updated_at: new Date().toISOString()
+      // v7.4.5 : created_at retire du payload - sinon UPSERT le remettait
+      // a maintenant a chaque modif, faisant remonter la commande en tete
+      // de liste (le tri se fait par created_at DESC). Pour les INSERT,
+      // Supabase utilise le DEFAULT NOW() de la colonne. Pour les UPDATE,
+      // created_at n'est plus touche -> ordre stable.
     };
     // UPSERT — POST avec Prefer: resolution=merge-duplicates
     // Crée si n'existe pas, met à jour si existe → une seule opération fiable
