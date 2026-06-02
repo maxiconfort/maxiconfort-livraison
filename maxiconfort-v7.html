@@ -7517,8 +7517,26 @@ function finRender() {
       }).reduce(function(s,d){ return s+d.montant; }, 0);
       especesEnAttente += Math.max(0, espT - depEspT);
     });
-    // Calcul des espèces orphelines (collectées mais pas trouvées dans les tournées)
-    especesOrphelines = Math.max(0, especesCollectees - especesRemises - especesEnAttente);
+    // v7.4.2 : vraies espèces orphelines = commandes Espèces (ou Mixte) livrées
+    // payées qui n'ont AUCUN stop dans une tournée (pas un faux positif lié
+    // aux dépenses qui faisait apparaitre les dep tournée comme orphelines).
+    especesOrphelines = 0;
+    livrees.forEach(function(c) {
+      if (!c) return;
+      var montantEsp = getMontantEspecesCmd(c);
+      if (montantEsp <= 0) return;
+      // Verifier si la commande a un stop dans une tournée
+      var trouvee = (tournees||[]).some(function(t) {
+        if (!t || !t.stops) return false;
+        return t.stops.some(function(s) {
+          if (s.cmdId && s.cmdId === c.id) return true;
+          if (!s.cmdId && s.client && c.client && t.livreur === c.livreur &&
+              (s.client||'').toLowerCase() === (c.client||'').toLowerCase()) return true;
+          return false;
+        });
+      });
+      if (!trouvee) especesOrphelines += montantEsp;
+    });
 
     // Alias pour compatibilité avec le reste du code
     var especesTotalMois = especesRemises; // ← ne compte QUE les remises validées

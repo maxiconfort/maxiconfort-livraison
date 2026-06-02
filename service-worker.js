@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.4.1 - Module SAV (echange/reprise/livraison oubli)
+// v7.4.2 - Fix faux positif orphelines (depenses tournee mal comptees)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-4-1';
+const CACHE_VERSION = 'maxiconfort-v7-4-2';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
