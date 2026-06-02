@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.4.3 - Barre filtres riche Commandes (presets date + selects)
+// v7.4.4 - Ajout TikTok Shop comme mode paiement prepaye
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-4-3';
+const CACHE_VERSION = 'maxiconfort-v7-4-4';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
