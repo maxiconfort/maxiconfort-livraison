@@ -535,20 +535,49 @@ textarea{resize:vertical;min-height:65px}
 
   <!-- ─── PAGE COMMANDES ─── -->
   <div class="page" id="p-commandes">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="display:flex;gap:8px;align-items:center">
-        <div class="srch" style="width:240px"><span style="color:var(--t3)">🔍</span><input type="text" placeholder="Rechercher..." oninput="filterCmd(this.value)" id="cmd-search"></div>
-        <select id="cmd-filter-statut" style="padding:7px 10px;border:1px solid var(--brd);border-radius:var(--r);background:var(--bg);font-size:13px;font-family:var(--font);color:var(--t2)" onchange="filterCmd(document.getElementById('cmd-search').value)">
-          <option value="">Tous les statuts</option>
-          <option value="en-attente">En attente</option>
-          <option value="en-route">En route</option>
-          <option value="arrivé">Arrivé</option>
-          <option value="livré">Livré</option>
-          <option value="reporté">Reporté</option>
-          <option value="annulé">Annulé</option>
+    <!-- v7.4.3 : Barre de filtres enrichie -->
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;align-items:center;flex:1;min-width:280px">
+        <div class="srch" style="flex:1;max-width:320px"><span style="color:var(--t3)">🔍</span><input type="text" placeholder="Rechercher client, ID, ville, tel..." oninput="cmdAppliquerFiltres()" id="cmd-search"></div>
+        <select id="cmd-filter-statut" style="padding:7px 10px;border:1px solid var(--brd);border-radius:var(--r);background:var(--bg);font-size:13px;font-family:var(--font);color:var(--t2)" onchange="cmdAppliquerFiltres()">
+          <option value="">📊 Tous statuts</option>
+          <option value="en-attente">⏳ En attente</option>
+          <option value="en-route">🚚 En route</option>
+          <option value="arrivé">📍 Arrivé</option>
+          <option value="livré">✅ Livré</option>
+          <option value="reporté">⏸ Reporté</option>
+          <option value="annulé">❌ Annulé</option>
         </select>
       </div>
       <button class="btn btn-p" onclick="openNewCmd()">+ Nouvelle commande</button>
+    </div>
+
+    <!-- Filtres rapides date (one-click) -->
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <button class="cmd-quick" data-preset="today"    onclick="cmdFiltreRapide('today')">📅 Aujourd'hui</button>
+      <button class="cmd-quick" data-preset="tomorrow" onclick="cmdFiltreRapide('tomorrow')">⏭ Demain</button>
+      <button class="cmd-quick" data-preset="week"     onclick="cmdFiltreRapide('week')">🗓 Cette semaine</button>
+      <button class="cmd-quick" data-preset="late"     onclick="cmdFiltreRapide('late')">⚠ En retard</button>
+      <button class="cmd-quick" data-preset="all"      onclick="cmdFiltreRapide('all')">🌐 Tout</button>
+      <button onclick="cmdResetFiltres()" style="padding:9px 14px;border-radius:10px;border:1px solid var(--brd);background:var(--card);color:var(--t2);font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font);margin-left:auto">🗑 Effacer</button>
+    </div>
+
+    <!-- Filtres precis (selects) -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin-bottom:14px;background:var(--bg2);padding:10px;border-radius:var(--rl)">
+      <select id="cmd-filter-transporteur" onchange="cmdAppliquerFiltres()" style="padding:8px 10px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
+        <option value="">🚚 Tous transporteurs</option>
+        <option value="RANOU">🟢 RANOU (interne)</option>
+        <option value="GLS">🟠 GLS</option>
+      </select>
+      <select id="cmd-filter-origine" onchange="cmdAppliquerFiltres()" style="padding:8px 10px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
+        <option value="">🛒 Toutes origines</option>
+      </select>
+      <select id="cmd-filter-ville" onchange="cmdAppliquerFiltres()" style="padding:8px 10px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
+        <option value="">🏙 Toutes villes</option>
+      </select>
+      <select id="cmd-filter-produit" onchange="cmdAppliquerFiltres()" style="padding:8px 10px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
+        <option value="">📦 Tous produits</option>
+      </select>
     </div>
     <div class="tw" id="cmd-table-wrap" style="overflow:visible">
       <table>
@@ -4032,7 +4061,11 @@ function goTo(p, el) {
     if (searchEl) searchEl.value = '';
     var filterEl = document.getElementById('cmd-filter-statut');
     if (filterEl) filterEl.value = '';
-    renderCmds();
+    // v7.4.3 : reset preset + peupler les selects dynamiques
+    if (typeof cmdPresetActif !== 'undefined') cmdPresetActif = '';
+    if (typeof cmdUpdateQuickBtns === 'function') cmdUpdateQuickBtns('');
+    if (typeof cmdPeuplerFiltresSelects === 'function') cmdPeuplerFiltresSelects();
+    if (typeof cmdAppliquerFiltres === 'function') cmdAppliquerFiltres(); else renderCmds();
   }
   if(p==='tournees'){renderTournees();populateCmdChecklist();}
   if(p==='livreur') renderLivreur();
@@ -4665,13 +4698,157 @@ function renderCmds(list) {
   if (btnMore && !cmdAllLoaded) btnMore.textContent = '📂 Charger plus (' + Math.max(0, cmdTotalCount - commandes.length) + ' restantes)';
 }
 
-function filterCmd(q) {
-  var s  = document.getElementById('cmd-filter-statut')?.value||'';
-  var or = document.getElementById('cmd-filter-origine')?.value||'';
-  var list = commandes;
-  if(q)  list=list.filter(function(c){return c.client.toLowerCase().includes(q.toLowerCase())||c.produit.toLowerCase().includes(q.toLowerCase())||c.id.includes(q);});
-  if(s)  list=list.filter(function(c){return c.statut===s;});
-  if(or) list=list.filter(function(c){return c.origine===or;});
+// v7.4.3 : ancienne fonction conservée pour compat (appels inline existants)
+function filterCmd(q) { cmdAppliquerFiltres(); }
+
+// ════════════════════════════════════════════════════════════
+// 🔍 BARRE DE FILTRES COMMANDES — v7.4.3 (2026-06-02)
+// ════════════════════════════════════════════════════════════
+var cmdPresetActif = '';
+
+function cmdGetTransporteur(c) {
+  if (!c) return 'RANOU';
+  if (c.transporteur === 'GLS') return 'GLS';
+  if (c.livreur && c.livreur.toString().trim().toUpperCase() === 'GLS') return 'GLS';
+  return c.transporteur || 'RANOU';
+}
+
+function cmdExtraireVille(adresse) {
+  if (!adresse) return '';
+  // Cherche CP (5 chiffres) + ville après
+  var m = adresse.match(/(\d{5})\s+([A-Za-zÀ-ÿ\s\-]+?)(?:\s*$|,)/);
+  if (m && m[2]) return m[2].trim().replace(/\s+/g, ' ');
+  // Fallback : dernier token alphabétique
+  var parts = adresse.split(/[\s,]+/).filter(Boolean);
+  for (var i = parts.length - 1; i >= 0; i--) {
+    if (/^[A-Za-zÀ-ÿ\-]{3,}$/.test(parts[i])) return parts[i];
+  }
+  return '';
+}
+
+function cmdPeuplerFiltresSelects() {
+  if (!Array.isArray(commandes)) return;
+  // Origines uniques
+  var origines = [...new Set(commandes.map(function(c){ return c.origine || ''; }).filter(Boolean))].sort();
+  var selOr = document.getElementById('cmd-filter-origine');
+  if (selOr) {
+    var valSauv = selOr.value;
+    selOr.innerHTML = '<option value="">🛒 Toutes origines</option>' +
+      origines.map(function(o){
+        var icon = o.indexOf('SAV') === 0 ? '🔧' : (o === 'LeBonCoin' ? '📌' : (o.indexOf('Maxiconfort') >= 0 || o.indexOf('Site') === 0 ? '🌐' : '📍'));
+        return '<option value="'+o+'">'+icon+' '+o+'</option>';
+      }).join('');
+    selOr.value = valSauv;
+  }
+  // Villes uniques
+  var villes = [...new Set(commandes.map(function(c){ return cmdExtraireVille(c.adresse||''); }).filter(Boolean))].sort();
+  var selV = document.getElementById('cmd-filter-ville');
+  if (selV) {
+    var valV = selV.value;
+    selV.innerHTML = '<option value="">🏙 Toutes villes ('+villes.length+')</option>' +
+      villes.map(function(v){ return '<option value="'+v+'">'+v+'</option>'; }).join('');
+    selV.value = valV;
+  }
+  // Produits uniques (depuis les commandes + catalogue)
+  var prodSet = new Set();
+  commandes.forEach(function(c){ if (c.produit) prodSet.add(c.produit); });
+  if (Array.isArray(produits)) produits.forEach(function(p){ if (p.nom) prodSet.add(p.nom); });
+  var produitList = [...prodSet].sort();
+  var selP = document.getElementById('cmd-filter-produit');
+  if (selP) {
+    var valP = selP.value;
+    selP.innerHTML = '<option value="">📦 Tous produits ('+produitList.length+')</option>' +
+      produitList.map(function(p){
+        // Tronquer si trop long pour le dropdown
+        var lbl = p.length > 60 ? p.slice(0, 57) + '...' : p;
+        return '<option value="'+p.replace(/"/g,'&quot;')+'">'+lbl+'</option>';
+      }).join('');
+    selP.value = valP;
+  }
+}
+
+function cmdUpdateQuickBtns(active) {
+  document.querySelectorAll('.cmd-quick').forEach(function(b){
+    var isAct = b.dataset.preset === active;
+    b.style.cssText = 'padding:9px 14px;border-radius:10px;border:1.5px solid '+(isAct?'var(--blue)':'var(--brd)')+';background:'+(isAct?'var(--blue)':'var(--card)')+';color:'+(isAct?'#fff':'var(--text)')+';font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .15s';
+  });
+}
+
+function cmdFiltreRapide(preset) {
+  cmdPresetActif = preset;
+  cmdUpdateQuickBtns(preset);
+  cmdAppliquerFiltres();
+}
+
+function cmdResetFiltres() {
+  cmdPresetActif = '';
+  cmdUpdateQuickBtns('');
+  ['cmd-search','cmd-filter-statut','cmd-filter-transporteur','cmd-filter-origine','cmd-filter-ville','cmd-filter-produit'].forEach(function(id){
+    var el = document.getElementById(id); if (el) el.value = '';
+  });
+  cmdAppliquerFiltres();
+}
+
+function cmdAppliquerFiltres() {
+  if (!Array.isArray(commandes)) { renderCmds([]); return; }
+  cmdPeuplerFiltresSelects();
+  var q = (document.getElementById('cmd-search')?.value || '').toLowerCase().trim();
+  var statut = document.getElementById('cmd-filter-statut')?.value || '';
+  var transp = document.getElementById('cmd-filter-transporteur')?.value || '';
+  var origine = document.getElementById('cmd-filter-origine')?.value || '';
+  var ville = document.getElementById('cmd-filter-ville')?.value || '';
+  var produit = document.getElementById('cmd-filter-produit')?.value || '';
+
+  // Preset date (rapide)
+  var todayStr = new Date().toISOString().split('T')[0];
+  var pad = function(n){ return n<10?'0'+n:''+n; };
+  var iso = function(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); };
+  var d = new Date();
+  var dateDeb = '', dateFin = '';
+  var excludeLivreAnnule = false;
+  if (cmdPresetActif === 'today') {
+    dateDeb = todayStr; dateFin = todayStr;
+  } else if (cmdPresetActif === 'tomorrow') {
+    var dm = iso(new Date(d.getTime() + 24*3600*1000));
+    dateDeb = dm; dateFin = dm;
+  } else if (cmdPresetActif === 'week') {
+    var day = d.getDay() || 7;
+    var lundi = new Date(d.getTime() - (day-1)*24*3600*1000);
+    var dimanche = new Date(lundi.getTime() + 6*24*3600*1000);
+    dateDeb = iso(lundi); dateFin = iso(dimanche);
+  } else if (cmdPresetActif === 'late') {
+    dateFin = iso(new Date(d.getTime() - 24*3600*1000));
+    excludeLivreAnnule = true;
+  }
+
+  var list = commandes.filter(function(c) {
+    if (!c) return false;
+    if (q) {
+      var hay = [c.id, c.client, c.tel, c.adresse, c.produit, c.livreur, c.trackingTransporteur, c.tracking_transporteur].map(function(v){ return (v||'').toString().toLowerCase(); }).join(' ');
+      if (!hay.includes(q)) return false;
+    }
+    if (statut && c.statut !== statut) return false;
+    if (transp && cmdGetTransporteur(c) !== transp) return false;
+    if (origine && (c.origine || '') !== origine) return false;
+    if (ville) {
+      var v = cmdExtraireVille(c.adresse || '');
+      if (v !== ville) return false;
+    }
+    if (produit) {
+      // Match dans produit ou lignes
+      var matchProd = (c.produit || '').indexOf(produit) >= 0;
+      if (!matchProd && Array.isArray(c.lignes)) {
+        matchProd = c.lignes.some(function(l){ return (l.produit||'').indexOf(produit) >= 0; });
+      }
+      if (!matchProd) return false;
+    }
+    // Filtres date (livraison)
+    var dStr = c.date ? String(c.date).split('T')[0] : '';
+    if (dateDeb && (!dStr || dStr < dateDeb)) return false;
+    if (dateFin && (!dStr || dStr > dateFin)) return false;
+    if (excludeLivreAnnule && (c.statut === 'livré' || c.statut === 'annulé')) return false;
+    return true;
+  });
   renderCmds(list);
 }
 
