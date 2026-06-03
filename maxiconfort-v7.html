@@ -5033,58 +5033,25 @@ function pBdg(s){
   return '<span class="bdg b-red">Non payé</span>';
 }
 
-// v7.5.10 : Indicateur des commandes prises aujourd'hui (toutes origines)
+// v7.5.10 : Indicateur des commandes prises aujourd'hui (mini-encart 1 ligne)
 function renderCmdStatsJour() {
   var box = document.getElementById('cmd-stats-jour');
   if (!box) return;
   if (!Array.isArray(commandes) || commandes.length === 0) { box.style.display = 'none'; return; }
   var today = new Date().toISOString().split('T')[0];
-  // Filtrer par dateCmd (date de prise commande)
   var prisesJour = commandes.filter(function(c){
     if (!c) return false;
     var d = (c.dateCmd || '').substring(0, 10);
     return d === today;
   });
-  if (prisesJour.length === 0) {
-    box.innerHTML = '<div style="background:var(--bg2);border:1px dashed var(--brd);border-radius:12px;padding:12px 16px;text-align:center;font-size:12px;color:var(--t3)">📊 Aucune commande prise aujourd\'hui (' + new Date().toLocaleDateString('fr-FR') + ')</div>';
-    box.style.display = 'block';
-    return;
-  }
+  if (prisesJour.length === 0) { box.style.display = 'none'; return; }
   var total = prisesJour.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
-  var panierMoy = total / prisesJour.length;
-  // Repartition par origine
-  var parOrigine = {};
-  prisesJour.forEach(function(c){
-    var o = c.origine || 'Autre';
-    if (!parOrigine[o]) parOrigine[o] = { nb: 0, total: 0 };
-    parOrigine[o].nb++;
-    parOrigine[o].total += (parseFloat(c.prix)||0);
-  });
-  var origineLignes = Object.keys(parOrigine).sort(function(a,b){ return parOrigine[b].total - parOrigine[a].total; }).map(function(o){
-    var iconO = (o.indexOf('LeBon') >= 0 || o.indexOf('LBC') >= 0) ? '📌'
-              : (o.indexOf('axiconfort') >= 0) ? '🌐'
-              : (o.indexOf('TikTok') >= 0) ? '🎵'
-              : (o.indexOf('Amazon') >= 0) ? '📦'
-              : (o.indexOf('Cdiscount') >= 0) ? '🛒'
-              : (o.indexOf('Manomano') >= 0) ? '🔨'
-              : (o.indexOf('WhatsApp') >= 0) ? '💬'
-              : (o.indexOf('SAV') === 0) ? '🛠'
-              : '🏪';
-    return '<span style="display:inline-flex;align-items:center;gap:4px;background:var(--bg);padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;color:var(--t2);margin-right:6px;margin-top:4px"><span>' + iconO + '</span>' + o + ' <strong style="color:var(--text)">' + parOrigine[o].nb + '</strong> · ' + parOrigine[o].total.toLocaleString('fr-FR') + ' €</span>';
-  }).join('');
   box.style.display = 'block';
-  box.innerHTML = '<div style="background:linear-gradient(135deg,#E6F3FF 0%,#DCEEFC 100%);border:1.5px solid #185FA5;border-radius:12px;padding:14px 16px;box-shadow:0 2px 6px rgba(24,95,165,.08)">' +
-    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:8px">' +
-      '<div style="flex:1;min-width:200px">' +
-        '<div style="font-size:11px;font-weight:800;color:#185FA5;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">📊 Commandes prises aujourd\'hui</div>' +
-        '<div style="font-size:13px;color:var(--t2)">' + new Date().toLocaleDateString('fr-FR',{weekday:'long',day:'2-digit',month:'long',year:'numeric'}) + '</div>' +
-      '</div>' +
-      '<div style="text-align:right">' +
-        '<div style="font-size:24px;font-weight:900;color:#185FA5">' + total.toLocaleString('fr-FR') + ' €</div>' +
-        '<div style="font-size:12px;color:var(--t2);font-weight:700">' + prisesJour.length + ' cmd' + (prisesJour.length>1?'s':'') + ' · panier moy. ' + Math.round(panierMoy).toLocaleString('fr-FR') + ' €</div>' +
-      '</div>' +
-    '</div>' +
-    '<div style="padding-top:8px;border-top:1px solid rgba(24,95,165,.15)">' + origineLignes + '</div>' +
+  box.innerHTML = '<div style="background:var(--bl);border:1px solid var(--blue);border-radius:8px;padding:7px 12px;display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:var(--bd)">' +
+    '<span>📊 Aujourd\'hui :</span>' +
+    '<span><strong>' + prisesJour.length + '</strong> cmd' + (prisesJour.length>1?'s':'') + '</span>' +
+    '<span style="color:var(--t3)">·</span>' +
+    '<span style="font-weight:900">' + total.toLocaleString('fr-FR') + ' €</span>' +
   '</div>';
 }
 
