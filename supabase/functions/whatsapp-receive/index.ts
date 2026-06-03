@@ -340,9 +340,13 @@ Deno.serve(async (req: Request) => {
     from = String(form.get('From') || '');
     body = String(form.get('Body') || '');
   } catch { return twiml('❌ Format de requete invalide'); }
-  if (ALLOWED && from !== ALLOWED) {
-    console.warn('Refuse from:', from);
-    return twiml('🚫 Numero non autorise');
+  // v2 : Liste de numeros autorises (separes par virgule)
+  if (ALLOWED) {
+    const autorisees = ALLOWED.split(',').map(s => s.trim()).filter(Boolean);
+    if (!autorisees.includes(from)) {
+      console.warn('Refuse from:', from, 'autorises:', autorisees);
+      return twiml('🚫 Numero non autorise');
+    }
   }
 
   // Commande "?" -> template

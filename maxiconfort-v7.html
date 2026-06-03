@@ -2889,10 +2889,36 @@ async function logMouvementStock(type, produitLib, qte, source, destination, cmd
 }
 
 // Obtenir le contenu du camion d'un livreur
+// v7.5.4 : si la checklist chargement n'est pas utilisee, fallback automatique
+// sur les commandes assignees au livreur ET non livrees (= marchandise dans le camion)
 function getContenuCamion(livreur) {
-  return stockCamion.filter(function(s){
+  var explicite = stockCamion.filter(function(s){
     return s.status === 'en_camion' && (s.livreur||'').toLowerCase() === (livreur||'').toLowerCase();
   });
+  if (explicite.length > 0) return explicite;
+  // Fallback : derive depuis les commandes RANOU assignees au livreur, statut != livre/annule
+  if (!Array.isArray(commandes)) return [];
+  var auto = [];
+  commandes.forEach(function(c){
+    if (!c) return;
+    if ((c.livreur||'').toLowerCase() !== (livreur||'').toLowerCase()) return;
+    if (c.statut === 'livré' || c.statut === 'annulé') return;
+    if ((c.transporteur||'RANOU') !== 'RANOU') return; // ignore GLS (deja parti)
+    var lignes = (c.lignes && c.lignes.length) ? c.lignes : [{produit: c.produit, qte: c.qte || 1}];
+    lignes.forEach(function(l, li){
+      auto.push({
+        id: 'auto_' + c.id + '_' + li,
+        livreur: livreur,
+        produit_libelle: l.produit || l.nom || c.produit || '?',
+        quantite: l.qte || 1,
+        source_cmd_id: c.id,
+        charge_at: c.dateCmd || c.date || null,
+        status: 'en_camion',
+        auto: true // marqueur : item derive (non issu de la checklist)
+      });
+    });
+  });
+  return auto;
 }
 
 // Compter le nombre de produits dans un camion
@@ -2956,6 +2982,13 @@ function renderCamionContenu() {
 
   var contenu = getContenuCamion(livreurCible);
   var totalProduits = contenu.reduce(function(s, c){ return s + (c.quantite || 1); }, 0);
+  // v7.5.4 : detection mode auto (derive des commandes) vs explicite (checklist)
+  var isAutoMode = contenu.length > 0 && contenu.every(function(c){ return c.auto === true; });
+  // Valeur marchandise totale
+  var valeurMarch = contenu.reduce(function(s, c){
+    var cmd = (commandes||[]).find(function(cm){ return cm.id === c.source_cmd_id; });
+    return s + (cmd ? (parseFloat(cmd.prix)||0) * (c.quantite||1) / Math.max(1,(cmd.lignes&&cmd.lignes.length)||1) : 0);
+  }, 0);
 
   // Résumé
   resumeEl.innerHTML =
@@ -2963,9 +2996,11 @@ function renderCamionContenu() {
       '<div>' +
         '<div style="font-size:32px;font-weight:900;color:'+(totalProduits>0?'var(--orange)':'var(--green)')+'">🚛 ' + totalProduits + '</div>' +
         '<div style="font-size:13px;color:var(--t2);margin-top:4px">' + (totalProduits>1?'produits dans le camion':totalProduits===1?'produit dans le camion':'camion vide') + '</div>' +
+        (valeurMarch > 0 ? '<div style="font-size:13px;color:var(--green);font-weight:800;margin-top:4px">💰 ' + valeurMarch.toLocaleString('fr-FR',{maximumFractionDigits:0}) + ' € de marchandise</div>' : '') +
       '</div>' +
       '<div style="font-size:48px">' + (totalProduits>0?'📦':'✅') + '</div>' +
-    '</div>';
+    '</div>' +
+    (isAutoMode ? '<div style="margin-top:10px;padding:9px 12px;background:#FFF7E6;border:1.5px dashed #BA7517;border-radius:10px;font-size:11px;color:#7A4A00;line-height:1.45">ℹ️ <strong>Mode auto</strong> — contenu déduit des commandes assignées non livrées. Pour un suivi précis chargement/déchargement, utilise la <strong>checklist chargement</strong> dans Tournées.</div>' : '');
 
   if (totalProduits === 0) {
     listeEl.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--t3)"><div style="font-size:64px;margin-bottom:12px">✅</div><div style="font-size:16px;font-weight:700">Camion vide</div><div style="font-size:13px;margin-top:6px">Tout est en stock dépôt ou a été livré</div></div>';
@@ -2997,18 +3032,26 @@ function renderCamionContenu() {
       '</div>';
     items.forEach(function(item) {
       var dateCh = item.charge_at ? new Date(item.charge_at).toLocaleString('fr-FR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+      // v7.5.4 : si item auto (derive), pas de bouton Retour depot (rien a retirer en base)
+      var actionHtml = item.auto
+        ? '<div style="font-size:11px;color:var(--t3);background:var(--bg);border:1px dashed var(--brd);border-radius:8px;padding:6px 10px;white-space:nowrap">📍 En attente</div>'
+        : '<button onclick="retourDepotUnique(\''+item.id+'\')" style="background:var(--orange);color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);white-space:nowrap">📥 Retour dépôt</button>';
+      var dateLabel = item.auto
+        ? 'Auto-déduit (cmd ' + (item.source_cmd_id||'?') + ')'
+        : 'Chargé le ' + dateCh + (item.charge_par ? ' par ' + item.charge_par : '');
       html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid var(--bg2)">' +
         '<div style="flex:1">' +
           '<div style="font-size:14px;font-weight:700;color:var(--text)">📦 ' + (item.quantite>1?'×'+item.quantite+' ':'') + item.produit_libelle + '</div>' +
-          '<div style="font-size:11px;color:var(--t3);margin-top:2px">Chargé le ' + dateCh + (item.charge_par ? ' par ' + item.charge_par : '') + '</div>' +
+          '<div style="font-size:11px;color:var(--t3);margin-top:2px">' + dateLabel + '</div>' +
         '</div>' +
-        '<button onclick="retourDepotUnique(\''+item.id+'\')" style="background:var(--orange);color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);white-space:nowrap">📥 Retour dépôt</button>' +
+        actionHtml +
       '</div>';
     });
     html += '</div>';
   });
   listeEl.innerHTML = html;
-  if (actionsEl) actionsEl.style.display = 'block';
+  // v7.5.4 : cacher bouton "Vider le camion" en mode auto (rien a vider en base)
+  if (actionsEl) actionsEl.style.display = isAutoMode ? 'none' : 'block';
 }
 
 // Retour d'un produit unique au dépôt
@@ -3405,9 +3448,11 @@ function startPolling() {
             };
             if (idx > -1) {
               // Commande existante — mettre à jour si changement
+              // v7.5.4 : ajout de c.paie dans le check (BUG : changement CB par livreur ne remontait pas)
               var c = commandes[idx];
               if (c.statut !== mapped.statut || c.stpaie !== mapped.stpaie ||
-                  c.livreur !== mapped.livreur || c.montantEnc !== mapped.montantEnc) {
+                  c.livreur !== mapped.livreur || c.montantEnc !== mapped.montantEnc ||
+                  c.paie !== mapped.paie) {
                 commandes[idx] = mapped;
                 updated = true;
               }

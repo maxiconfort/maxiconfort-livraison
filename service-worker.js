@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.3 - SAV Reprise+Remboursement avec impact comptable auto
+// v7.5.4 - Fix sync paie CB livreur + marchandise camion auto
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-3';
+const CACHE_VERSION = 'maxiconfort-v7-5-4';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
