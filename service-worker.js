@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.2 - Marketplaces : support jours ouvrés (Site Maxiconfort J+3 ouvrés)
+// v7.5.3 - SAV Reprise+Remboursement avec impact comptable auto
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-2';
+const CACHE_VERSION = 'maxiconfort-v7-5-3';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
