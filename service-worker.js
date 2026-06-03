@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.6 - Encours plateformes : inclure non-livré payés
+// v7.5.7 - Multi-comptes bancaires (CIC + Qonto + Legal Place)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-6';
+const CACHE_VERSION = 'maxiconfort-v7-5-7';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

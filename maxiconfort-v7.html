@@ -1808,31 +1808,22 @@ Maxiconfort — {TEL_CONTACT}</textarea>
     </div>
   </div>
 
-  <!-- MODAL MODIFIER SOLDE BANQUE -->
+  <!-- MODAL MODIFIER SOLDES BANQUE (v7.5.7 : multi-comptes) -->
   <div class="mbd" id="m-solde-banque">
-    <div class="modal" style="max-width:480px">
+    <div class="modal" style="max-width:560px">
       <div class="mh">
-        <div class="mt">🏦 Mettre à jour le solde banque</div>
+        <div class="mt">🏦 Mes comptes bancaires</div>
         <button class="mx" onclick="closeModal('m-solde-banque')">✕</button>
       </div>
-      <div style="background:var(--bg2);border-radius:var(--r);padding:12px;margin-bottom:14px;font-size:13px">
-        <div style="color:var(--t3);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Solde précédent</div>
-        <div id="sb-precedent" style="font-weight:700;color:var(--text)">— € (jamais saisi)</div>
-      </div>
-      <div class="fg" style="margin-bottom:14px">
-        <label style="font-size:12px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.4px">Nouveau solde (€)</label>
-        <input type="number" id="sb-montant" step="0.01" placeholder="ex: 5300" style="font-size:24px;font-weight:800;padding:14px 16px">
-      </div>
-      <div class="fg" style="margin-bottom:14px">
-        <label style="font-size:12px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.4px">📅 Date de saisie</label>
-        <input type="date" id="sb-date">
-      </div>
-      <div class="fg" style="margin-bottom:18px">
-        <label style="font-size:12px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.4px">📝 Note (optionnel)</label>
-        <input type="text" id="sb-note" placeholder="ex: virement Amazon reçu, achat fournisseur, etc.">
+      <div style="font-size:12px;color:var(--t3);margin-bottom:14px">Mets à jour le solde de chacun de tes comptes. Le total sera reporté sur ta page Santé.</div>
+      <div id="sb-comptes-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px"></div>
+      <button onclick="comptesBancairesAjouter()" style="width:100%;padding:11px;border-radius:10px;border:1.5px dashed var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);color:var(--t2);margin-bottom:14px">+ Ajouter un compte</button>
+      <div style="background:var(--gl);border:1.5px solid var(--green);border-radius:10px;padding:12px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:12px;color:var(--gd);font-weight:700;text-transform:uppercase;letter-spacing:.4px">💰 Total banque</div>
+        <div id="sb-total-final" style="font-size:22px;font-weight:900;color:var(--gd)">0 €</div>
       </div>
       <div style="display:flex;gap:10px">
-        <button class="btn btn-p" style="flex:1;justify-content:center" onclick="enregistrerSoldeBanque()">💾 Enregistrer</button>
+        <button class="btn btn-p" style="flex:1;justify-content:center" onclick="enregistrerComptesBancaires()">💾 Enregistrer</button>
         <button class="btn" onclick="closeModal('m-solde-banque')">Annuler</button>
       </div>
     </div>
@@ -5422,32 +5413,66 @@ function ajouterJoursOuvres(dateMs, nbJours) {
 
 // Etat global Sante
 var santeMarketplaces = []; // liste plateformes actuelles
-var santeSoldeBanque = 0;
-var santeSoldeBanqueDate = '';
-var santeSoldeBanqueHisto = []; // array des saisies
+var santeSoldeBanque = 0;       // total agrege (somme des comptes)
+var santeSoldeBanqueDate = '';  // date la plus recente parmi les comptes
+var santeSoldeBanqueHisto = []; // array des saisies (legacy)
+// v7.5.7 : multi-comptes bancaires
+var santeComptesBancaires = []; // [{id, nom, montant, dateSaisie, note}]
+var SANTE_COMPTES_DEFAUT = [
+  { id: 'cic', nom: 'CIC', montant: 0, dateSaisie: '', note: '' },
+  { id: 'qonto', nom: 'Qonto', montant: 0, dateSaisie: '', note: '' },
+  { id: 'legalplace', nom: 'Legal Place', montant: 0, dateSaisie: '', note: '' }
+];
+function santeRecalcTotalBanque() {
+  santeSoldeBanque = santeComptesBancaires.reduce(function(s,c){ return s + (parseFloat(c.montant)||0); }, 0);
+  var dates = santeComptesBancaires.map(function(c){ return c.dateSaisie; }).filter(Boolean);
+  santeSoldeBanqueDate = dates.length ? dates.sort().reverse()[0] : '';
+}
 
 // Charger les params Sante depuis Supabase
 async function santeLoadParams() {
   try {
-    var resp = await fetch(SUPABASE_URL + '/rest/v1/parametres?cle=in.(marketplaces,solde_banque,solde_banque_historique)&select=*', {
+    var resp = await fetch(SUPABASE_URL + '/rest/v1/parametres?cle=in.(marketplaces,solde_banque,solde_banque_historique,comptes_bancaires)&select=*', {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     var data = await resp.json();
+    var ancienSolde = 0;
+    var ancienSoldeDate = '';
     data.forEach(function(r) {
       if (r.cle === 'marketplaces') {
         try { santeMarketplaces = JSON.parse(r.valeur); } catch(e) { santeMarketplaces = PLATEFORMES_DEFAUT.slice(); }
       } else if (r.cle === 'solde_banque') {
-        santeSoldeBanque = parseFloat(r.valeur) || 0;
-        santeSoldeBanqueDate = r.updated_at || '';
+        ancienSolde = parseFloat(r.valeur) || 0;
+        ancienSoldeDate = r.updated_at || '';
       } else if (r.cle === 'solde_banque_historique') {
         try { santeSoldeBanqueHisto = JSON.parse(r.valeur); } catch(e) { santeSoldeBanqueHisto = []; }
+      } else if (r.cle === 'comptes_bancaires') {
+        try { santeComptesBancaires = JSON.parse(r.valeur); } catch(e) { santeComptesBancaires = []; }
       }
     });
     if (!santeMarketplaces.length) santeMarketplaces = PLATEFORMES_DEFAUT.slice();
+    // v7.5.7 : migration auto / init des comptes bancaires
+    if (!Array.isArray(santeComptesBancaires) || santeComptesBancaires.length === 0) {
+      if (ancienSolde > 0) {
+        // Migration : ancien solde unique -> compte "Banque principale"
+        santeComptesBancaires = [{
+          id: 'principal', nom: 'Banque principale',
+          montant: ancienSolde,
+          dateSaisie: ancienSoldeDate ? ancienSoldeDate.substring(0,10) : new Date().toISOString().split('T')[0],
+          note: ''
+        }];
+      } else {
+        // Init avec CIC / Qonto / Legal Place
+        santeComptesBancaires = SANTE_COMPTES_DEFAUT.map(function(c){ return Object.assign({}, c); });
+      }
+    }
+    santeRecalcTotalBanque();
   } catch(e) {
     console.warn('santeLoadParams:', e.message);
     if (!santeMarketplaces.length) santeMarketplaces = PLATEFORMES_DEFAUT.slice();
+    if (!santeComptesBancaires.length) santeComptesBancaires = SANTE_COMPTES_DEFAUT.map(function(c){ return Object.assign({}, c); });
+    santeRecalcTotalBanque();
   }
 }
 
@@ -5664,17 +5689,21 @@ async function santeRender() {
   // Bloc 1 : 3 cases
   var caisse = santeCalculerCaisseEspeces();
   document.getElementById('sante-caisse').textContent = caisse.toLocaleString('fr-FR') + ' €';
+  // v7.5.7 : recalcul total des comptes avant affichage
+  santeRecalcTotalBanque();
   document.getElementById('sante-banque').textContent = santeSoldeBanque.toLocaleString('fr-FR') + ' €';
   var bInfoEl = document.getElementById('sante-banque-info');
+  var nbComptes = santeComptesBancaires.length;
+  var suffixeComptes = nbComptes > 0 ? (nbComptes === 1 ? '1 compte' : nbComptes + ' comptes') : '';
   if (santeSoldeBanqueDate) {
     var d = new Date(santeSoldeBanqueDate);
     var ageJours = Math.floor((Date.now() - d.getTime()) / 86400000);
     var dateAffich = d.toLocaleDateString('fr-FR', {day:'2-digit', month:'2-digit'});
     var icon = ageJours <= 7 ? '✅' : '⚠';
-    var label = ageJours <= 7 ? 'Saisi ' + dateAffich : 'Saisi ' + dateAffich + ' (' + ageJours + 'j)';
-    bInfoEl.innerHTML = icon + ' ' + label;
+    var label = ageJours <= 7 ? 'Maj ' + dateAffich : 'Maj ' + dateAffich + ' (' + ageJours + 'j)';
+    bInfoEl.innerHTML = icon + ' ' + (suffixeComptes ? suffixeComptes + ' · ' : '') + label;
   } else {
-    bInfoEl.textContent = '⚠ Pas encore saisi';
+    bInfoEl.innerHTML = '⚠ ' + (suffixeComptes ? suffixeComptes + ' · ' : '') + 'Pas encore saisi';
   }
 
   var encoursData = santeCalculerEncours();
@@ -5738,37 +5767,110 @@ async function santeRender() {
   if (updateEl) updateEl.textContent = 'Mis à jour ' + new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
 }
 
-// MODAL SOLDE BANQUE
+// v7.5.7 : MODAL COMPTES BANCAIRES (multi-comptes)
 function ouvrirModalSoldeBanque() {
-  var precEl = document.getElementById('sb-precedent');
-  if (precEl) {
-    if (santeSoldeBanqueDate && santeSoldeBanque > 0) {
-      var d = new Date(santeSoldeBanqueDate);
-      precEl.textContent = santeSoldeBanque.toLocaleString('fr-FR') + ' € (' + d.toLocaleDateString('fr-FR') + ')';
-    } else {
-      precEl.textContent = 'Jamais saisi';
-    }
+  // S'assurer que les comptes sont charges
+  if (!santeComptesBancaires.length) {
+    santeComptesBancaires = SANTE_COMPTES_DEFAUT.map(function(c){ return Object.assign({}, c); });
   }
-  var dateEl = document.getElementById('sb-date');
-  if (dateEl) dateEl.value = new Date().toISOString().split('T')[0];
-  var noteEl = document.getElementById('sb-note');
-  if (noteEl) noteEl.value = '';
-  var mEl = document.getElementById('sb-montant');
-  if (mEl) { mEl.value = ''; setTimeout(function(){ mEl.focus(); }, 100); }
+  comptesBancairesRender();
   openModal('m-solde-banque');
 }
 
-async function enregistrerSoldeBanque() {
-  var montant = parseFloat(document.getElementById('sb-montant').value);
-  if (isNaN(montant) || montant < 0) {
-    toast('Saisis un montant valide', 'err');
+function comptesBancairesRender() {
+  var listEl = document.getElementById('sb-comptes-list');
+  if (!listEl) return;
+  if (santeComptesBancaires.length === 0) {
+    listEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--t3);font-size:12px">Aucun compte. Clic "+ Ajouter un compte" pour commencer.</div>';
+  } else {
+    listEl.innerHTML = santeComptesBancaires.map(function(c, i){
+      var dateAff = c.dateSaisie ? new Date(c.dateSaisie).toLocaleDateString('fr-FR', {day:'2-digit',month:'2-digit'}) : '—';
+      return '<div style="background:var(--bg2);border:1px solid var(--brd);border-radius:10px;padding:12px" data-cid="' + c.id + '">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">' +
+          '<input type="text" value="' + (c.nom||'').replace(/"/g,'&quot;') + '" oninput="comptesBancairesSetNom(' + i + ', this.value)" placeholder="Nom du compte" style="flex:1;padding:8px 10px;border:1px solid var(--brd);border-radius:8px;background:var(--card);font-size:13px;font-weight:700;font-family:var(--font);color:var(--text)">' +
+          '<button onclick="comptesBancairesSupprimer(' + i + ')" title="Supprimer ce compte" style="background:var(--rl);color:var(--rd);border:1px solid var(--red);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;font-family:var(--font);font-weight:700">🗑</button>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;align-items:center">' +
+          '<input type="number" step="0.01" min="0" value="' + (c.montant||0) + '" oninput="comptesBancairesSetMontant(' + i + ', this.value)" placeholder="0" style="flex:2;padding:10px 12px;border:1.5px solid var(--brd);border-radius:8px;background:var(--card);font-size:16px;font-weight:800;font-family:var(--font);color:var(--text);text-align:right">' +
+          '<span style="font-size:14px;font-weight:800;color:var(--t2)">€</span>' +
+        '</div>' +
+        '<div style="font-size:10px;color:var(--t3);margin-top:6px">Dernière maj : ' + dateAff + '</div>' +
+      '</div>';
+    }).join('');
+  }
+  comptesBancairesRecalcTotalModal();
+}
+
+function comptesBancairesRecalcTotalModal() {
+  var t = santeComptesBancaires.reduce(function(s,c){ return s + (parseFloat(c.montant)||0); }, 0);
+  var el = document.getElementById('sb-total-final');
+  if (el) el.textContent = t.toLocaleString('fr-FR') + ' €';
+}
+
+function comptesBancairesSetNom(idx, val) {
+  if (santeComptesBancaires[idx]) santeComptesBancaires[idx].nom = val;
+}
+
+function comptesBancairesSetMontant(idx, val) {
+  if (santeComptesBancaires[idx]) {
+    var ancien = santeComptesBancaires[idx].montant;
+    santeComptesBancaires[idx].montant = parseFloat(val) || 0;
+    if (santeComptesBancaires[idx].montant !== ancien) {
+      santeComptesBancaires[idx].dateSaisie = new Date().toISOString().split('T')[0];
+    }
+  }
+  comptesBancairesRecalcTotalModal();
+}
+
+function comptesBancairesAjouter() {
+  santeComptesBancaires.push({
+    id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
+    nom: '', montant: 0, dateSaisie: '', note: ''
+  });
+  comptesBancairesRender();
+}
+
+function comptesBancairesSupprimer(idx) {
+  if (!santeComptesBancaires[idx]) return;
+  var nom = santeComptesBancaires[idx].nom || 'ce compte';
+  if (!confirm('Supprimer "' + nom + '" ? Cette action est irréversible.')) return;
+  santeComptesBancaires.splice(idx, 1);
+  comptesBancairesRender();
+}
+
+async function enregistrerComptesBancaires() {
+  // Validation : au moins 1 compte avec nom non-vide
+  var valides = santeComptesBancaires.filter(function(c){ return (c.nom||'').trim() !== ''; });
+  if (valides.length === 0) {
+    toast('Saisis au moins 1 compte avec un nom', 'err');
     return;
   }
-  var date = document.getElementById('sb-date').value;
-  var note = document.getElementById('sb-note').value.trim();
-  await santeSaveSoldeBanque(montant, date, note);
+  santeComptesBancaires = valides;
+  santeRecalcTotalBanque();
+  // Sauvegarder dans Supabase parametres
+  try {
+    await fetch(SUPABASE_URL + '/rest/v1/parametres', {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates,return=minimal'
+      },
+      body: JSON.stringify({ cle: 'comptes_bancaires', valeur: JSON.stringify(santeComptesBancaires) })
+    });
+    // Aussi mettre a jour solde_banque (total) pour compat retro
+    await fetch(SUPABASE_URL + '/rest/v1/parametres', {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates,return=minimal'
+      },
+      body: JSON.stringify({ cle: 'solde_banque', valeur: String(santeSoldeBanque) })
+    });
+  } catch(e) { console.warn('enregistrerComptesBancaires:', e.message); }
   closeModal('m-solde-banque');
-  toast('💾 Solde banque enregistré : ' + montant.toLocaleString('fr-FR') + ' €', 'ok');
+  toast('💾 ' + santeComptesBancaires.length + ' compte(s) enregistré(s) — Total : ' + santeSoldeBanque.toLocaleString('fr-FR') + ' €', 'ok');
   santeRender();
 }
 
