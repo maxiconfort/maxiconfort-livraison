@@ -5539,7 +5539,10 @@ function santeDateLivraison(cmd) {
       }
     }
   }
-  // Fallback : si statut = livré, utiliser updated_at (approximation)
+  // v7.5.6 : pour les non-livré, utiliser la date_livraison prévue (saisie Borhen)
+  // ou la date_commande en fallback (encours commence depuis prise de commande)
+  if (cmd.date) return cmd.date;
+  if (cmd.dateCmd) return cmd.dateCmd;
   return null;
 }
 
@@ -5558,8 +5561,14 @@ function santeCalculerEncours() {
   if (!Array.isArray(commandes)) return { parPlatform: parPlatform, total: 0, virementsSemaine: [] };
 
   commandes.forEach(function(c) {
-    if (!c || c.statut !== 'livré') return;
+    if (!c) return;
+    // v7.5.6 : inclure aussi les non-livre (en-attente, en-route, etc.) car les marketplaces
+    // payent souvent des l'expedition (LBC GLS) ou des la commande (Shopify). Ignorer seulement
+    // les annulees et les SAV qui ne sont pas des ventes nettes a recevoir.
+    if (c.statut === 'annulé' || c.statut === 'annule') return;
     if (c.stpaie !== 'Payé') return; // Pas encore paye sur la plateforme
+    // Exclure les SAV (origines commencent par "SAV")
+    if ((c.origine || '').toUpperCase().indexOf('SAV') === 0) return;
     var platformId = santeOrigineVersPlatform(c.origine);
     if (!platformId) return; // Non-marketplace ignore
     // Exception LeBoncoin IDF : paye a la livraison, pas d'encours
