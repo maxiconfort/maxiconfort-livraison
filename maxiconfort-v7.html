@@ -995,13 +995,30 @@ textarea{resize:vertical;min-height:65px}
         </div>
       </div>
 
-      <!-- Dépenses -->
+      <!-- Dépenses (v7.5.13 : refonte UI claire) -->
       <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <div class="card-t" style="margin:0">Dépenses</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
+          <div>
+            <div class="card-t" style="margin:0">🧾 Dépenses</div>
+            <div id="fin-dep-soustitre" style="font-size:11px;color:var(--t3);margin-top:2px">—</div>
+          </div>
           <button class="btn btn-sm btn-p" onclick="ouvrirAjoutDepense()">+ Ajouter</button>
         </div>
-        <div id="fin-dep-list" style="max-height:200px;overflow-y:auto"></div>
+        <!-- Mini-recap par categorie -->
+        <div id="fin-dep-cats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+        <!-- Filtres rapides -->
+        <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+          <input type="text" id="fin-dep-search" placeholder="🔍 Rechercher..." oninput="finRender()" style="flex:1;min-width:120px;padding:6px 10px;border:1px solid var(--brd);border-radius:8px;background:var(--bg);font-size:12px;font-family:var(--font);color:var(--text)">
+          <select id="fin-dep-filter-cat" onchange="finRender()" style="padding:6px 10px;border:1px solid var(--brd);border-radius:8px;background:var(--bg);font-size:12px;font-family:var(--font);color:var(--text)">
+            <option value="">📂 Toutes catégories</option>
+          </select>
+          <select id="fin-dep-filter-mode" onchange="finRender()" style="padding:6px 10px;border:1px solid var(--brd);border-radius:8px;background:var(--bg);font-size:12px;font-family:var(--font);color:var(--text)">
+            <option value="">💳 Tous modes</option>
+            <option value="Espèces">💵 Espèces</option>
+            <option value="CB">💳 CB</option>
+          </select>
+        </div>
+        <div id="fin-dep-list" style="max-height:340px;overflow-y:auto"></div>
         <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--brd);display:flex;justify-content:space-between">
           <span style="font-size:13px;font-weight:700">Total dépenses</span>
           <span style="font-size:15px;font-weight:800;color:var(--red)" id="fin-dep-total">0 €</span>
@@ -8531,19 +8548,92 @@ function finRender() {
     </div>`;
   }).filter(Boolean).join('');
 
-  // Dépenses
-  document.getElementById('fin-dep-list').innerHTML = deps.length
-    ? deps.map(d => `
-      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--brd)">
-        <div style="flex:1">
-          <div style="font-size:13px;font-weight:600">${d.cat}${(d.livreur||'').toUpperCase()==='CAISSE'?' <span style="font-size:11px;background:var(--vl);color:var(--vd);padding:1px 6px;border-radius:8px;font-weight:700">🏦 Caisse</span>':''}</div>
-          <div style="font-size:11px;color:var(--t3)">${fmtDate(d.date)}${d.livreur?' · '+d.livreur:''}${d.modePaie==='CB'?' · <span style="color:var(--blue);font-weight:600">💳 CB société</span>':' · <span style="color:var(--od);font-weight:600">💵 Espèces</span>'}${d.comment?' · '+d.comment:''}</div>
-        </div>
-        <strong style="color:var(--red);white-space:nowrap">− ${d.montant} €</strong>
-        <button onclick="supprimerDepense('${d.id}')" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--brd2);background:var(--rl);color:var(--rd);font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center">✕</button>
-      </div>`).join('')
-    : '<div style="padding:12px;font-size:13px;color:var(--t3);text-align:center">Aucune dépense sur cette période</div>';
-  var _gfin_dep_total=document.getElementById('fin-dep-total'); if(_gfin_dep_total) _gfin_dep_total.textContent=totalDep.toLocaleString('fr-FR') + ' €';
+  // Dépenses (v7.5.13 : refonte UI - filtres + dates claires + modifier)
+  // Sous-titre période
+  var moisLabel = mois[new Date(du).getMonth()] + ' ' + new Date(du).getFullYear();
+  var stEl = document.getElementById('fin-dep-soustitre');
+  if (stEl) stEl.textContent = deps.length + ' entrée' + (deps.length > 1 ? 's' : '') + ' · période ' + (du === au ? fmtD(du) : fmtD(du) + ' → ' + fmtD(au));
+  // Mini-recap par categorie (avec total par cat)
+  var parCat = {};
+  deps.forEach(function(d){
+    var c = d.cat || '?';
+    if (!parCat[c]) parCat[c] = 0;
+    parCat[c] += d.montant;
+  });
+  var catsEl = document.getElementById('fin-dep-cats');
+  if (catsEl) {
+    catsEl.innerHTML = Object.keys(parCat).sort(function(a,b){ return parCat[b] - parCat[a]; }).map(function(c){
+      return '<span style="background:var(--rl);color:var(--rd);border:1px solid rgba(220,20,60,.2);padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700">' + c + ' <strong>' + parCat[c].toLocaleString('fr-FR') + ' €</strong></span>';
+    }).join('');
+  }
+  // Remplir select catégorie (une fois, garde la valeur)
+  var selCat = document.getElementById('fin-dep-filter-cat');
+  if (selCat) {
+    var catsUniques = Object.keys(parCat).sort();
+    var current = selCat.value;
+    if (selCat.options.length <= 1 + catsUniques.length) {
+      var optsHtml = '<option value="">📂 Toutes catégories</option>';
+      catsUniques.forEach(function(c){ optsHtml += '<option value="' + c.replace(/"/g,'&quot;') + '"' + (c === current ? ' selected' : '') + '>' + c + '</option>'; });
+      selCat.innerHTML = optsHtml;
+    }
+  }
+  // Appliquer filtres de la liste
+  var searchVal = (document.getElementById('fin-dep-search')?.value || '').toLowerCase().trim();
+  var filterCat = document.getElementById('fin-dep-filter-cat')?.value || '';
+  var filterMode = document.getElementById('fin-dep-filter-mode')?.value || '';
+  var depsFiltered = deps.filter(function(d){
+    if (filterCat && d.cat !== filterCat) return false;
+    if (filterMode && d.modePaie !== filterMode) return false;
+    if (searchVal) {
+      var hay = ((d.cat||'') + ' ' + (d.livreur||'') + ' ' + (d.comment||'') + ' ' + (d.modePaie||'')).toLowerCase();
+      if (hay.indexOf(searchVal) === -1) return false;
+    }
+    return true;
+  }).sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); }); // tri date desc
+
+  // Détecter dates suspectes (dans le futur)
+  var todayIso = new Date().toISOString().split('T')[0];
+
+  document.getElementById('fin-dep-list').innerHTML = depsFiltered.length
+    ? depsFiltered.map(function(d){
+        var dateStr = '';
+        try {
+          var dt = new Date(d.date);
+          dateStr = dt.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+        } catch(e) { dateStr = d.date || '?'; }
+        var isFuture = (d.date || '') > todayIso;
+        var modeIcon = d.modePaie === 'CB' ? '💳' : '💵';
+        var modeBadge = d.modePaie === 'CB' ? '<span style="color:var(--blue);font-weight:700">💳 CB</span>' : '<span style="color:var(--od);font-weight:700">💵 Espèces</span>';
+        var caisseBadge = (d.livreur||'').toUpperCase()==='CAISSE' ? ' <span style="font-size:10px;background:var(--vl);color:var(--vd);padding:1px 6px;border-radius:8px;font-weight:700">🏦 Caisse</span>' : '';
+        var futureBadge = isFuture ? '<span style="background:#FFE7C2;color:#7A4A00;border:1px solid #BA7517;padding:2px 7px;border-radius:8px;font-size:10px;font-weight:800;margin-left:6px">⚠️ FUTURE</span>' : '';
+        return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--brd)">' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:3px">' + d.cat + caisseBadge + futureBadge + '</div>' +
+            '<div style="font-size:11px;color:var(--t2);margin-bottom:2px">📅 <strong>' + dateStr + '</strong>' + (d.livreur ? ' · ' + d.livreur : '') + ' · ' + modeBadge + '</div>' +
+            (d.comment ? '<div style="font-size:11px;color:var(--t3);font-style:italic">💬 ' + d.comment + '</div>' : '') +
+          '</div>' +
+          '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;white-space:nowrap">' +
+            '<strong style="color:var(--red);font-size:15px">− ' + d.montant + ' €</strong>' +
+            '<div style="display:flex;gap:4px">' +
+              '<button onclick="modifierDepense(\'' + d.id + '\')" title="Modifier" style="width:26px;height:26px;border-radius:50%;border:1px solid var(--brd);background:var(--bl);color:var(--bd);font-size:11px;cursor:pointer;display:flex;align-items:center;justify-content:center">✏️</button>' +
+              '<button onclick="supprimerDepense(\'' + d.id + '\')" title="Supprimer" style="width:26px;height:26px;border-radius:50%;border:1px solid var(--brd);background:var(--rl);color:var(--rd);font-size:11px;cursor:pointer;display:flex;align-items:center;justify-content:center">🗑</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      }).join('')
+    : '<div style="padding:20px 12px;font-size:13px;color:var(--t3);text-align:center">' +
+        (deps.length === 0 ? '📭 Aucune dépense sur ' + moisLabel : '🔍 Aucun résultat avec ces filtres') +
+        '<div style="margin-top:6px;font-size:11px">' +
+          (deps.length === 0 ? 'Change le mois en haut pour voir d\'autres périodes' : 'Modifie/efface les filtres') +
+        '</div>' +
+      '</div>';
+  // Recalculer le total des filtrés
+  var totalFiltered = depsFiltered.reduce(function(s,d){ return s + d.montant; }, 0);
+  var _gfin_dep_total = document.getElementById('fin-dep-total');
+  if (_gfin_dep_total) {
+    var hasFilter = searchVal || filterCat || filterMode;
+    _gfin_dep_total.textContent = (hasFilter ? totalFiltered.toLocaleString('fr-FR') + ' € (filtré sur ' + totalDep.toLocaleString('fr-FR') + ' €)' : totalDep.toLocaleString('fr-FR') + ' €');
+  }
 
   // Par livreur
   const livs = livreurs.filter(function(l){ return l.actif; }).map(function(l){ return l.nom; });
@@ -9344,6 +9434,12 @@ function depSelectMode(mode) {
   }
 }
 function ouvrirAjoutDepense() {
+  // v7.5.13 : reset mode edition
+  window._depEditMode = null;
+  var _titre = document.querySelector('#m-depense .mt');
+  if (_titre) _titre.textContent = '🧾 Ajouter une dépense';
+  var _btnAdd = document.querySelector('#m-depense .btn-p');
+  if (_btnAdd) _btnAdd.textContent = '💾 Enregistrer la dépense';
   document.getElementById('dep-date').value    = new Date().toISOString().split('T')[0];
   document.getElementById('dep-montant').value = '';
   document.getElementById('dep-comment').value = '';
@@ -9377,6 +9473,8 @@ function lockBtn(btn, ms) {
 }
 
 function sauvegarderDepense() {
+  // v7.5.13 : si mode edition, dispatcher vers sauvegarderDepenseEdit
+  if (window._depEditMode) { sauvegarderDepenseEdit(); return; }
   var _btn = document.querySelector('#m-depense .btn-p');
   lockBtn(_btn, 2000);
   const montant = parseFloat(document.getElementById('dep-montant').value);
@@ -9431,6 +9529,87 @@ function sauvegarderDepense() {
   if (lastDep) sbSaveDepense(lastDep).then(function(){ showSync('✅ Dépense sauvegardée', 'ok'); }).catch(function(){ showSync('⚠️ Erreur sync', 'err'); });
   toast('Dépense ajoutée ✓ (' + depModePaie + ')', 'ok');
 }
+
+// v7.5.13 : Modifier une dépense existante (ouvre la même modale m-depense en mode édition)
+function modifierDepense(id) {
+  var dep = depenses.find(function(d){ return d.id === id; });
+  if (!dep) { toast('Dépense introuvable', 'err'); return; }
+  // Pré-remplir comme un ajout puis basculer en mode édition
+  ouvrirAjoutDepense();
+  window._depEditMode = id;
+  document.getElementById('dep-date').value = (dep.date || '').substring(0, 10);
+  document.getElementById('dep-montant').value = dep.montant || '';
+  document.getElementById('dep-comment').value = dep.comment || '';
+  // Catégorie : retrouver l'option par valeur ou texte
+  var catSel = document.getElementById('dep-cat');
+  if (catSel) {
+    for (var i = 0; i < catSel.options.length; i++) {
+      if (catSel.options[i].value === dep.cat || catSel.options[i].text === dep.cat) {
+        catSel.selectedIndex = i; break;
+      }
+    }
+  }
+  // Livreur (peut nécessiter d'ajouter une option si valeur custom)
+  var livSel = document.getElementById('dep-livreur');
+  if (livSel) {
+    var found = false;
+    for (var j = 0; j < livSel.options.length; j++) {
+      if (livSel.options[j].value === (dep.livreur||'').toUpperCase()) { livSel.selectedIndex = j; found = true; break; }
+    }
+    if (!found && dep.livreur) {
+      var opt = document.createElement('option');
+      opt.value = dep.livreur.toUpperCase(); opt.text = dep.livreur.toUpperCase();
+      opt.selected = true; livSel.appendChild(opt);
+    }
+  }
+  // Mode paiement
+  if (dep.modePaie === 'CB') depSelectMode('CB');
+  else depSelectMode('Espèces');
+  // Bascule UI en mode édition
+  var titre = document.querySelector('#m-depense .mt');
+  if (titre) titre.textContent = '✏️ Modifier la dépense';
+  var btn = document.querySelector('#m-depense .btn-p');
+  if (btn) btn.textContent = '💾 Mettre à jour';
+}
+
+async function sauvegarderDepenseEdit() {
+  var id = window._depEditMode;
+  var idx = depenses.findIndex(function(d){ return d.id === id; });
+  if (idx < 0) { toast('Dépense introuvable', 'err'); window._depEditMode = null; return; }
+  var _btn = document.querySelector('#m-depense .btn-p');
+  lockBtn(_btn, 2000);
+  var montant = parseFloat(document.getElementById('dep-montant').value);
+  var date = document.getElementById('dep-date').value;
+  var cat = document.getElementById('dep-cat').value;
+  var livreur = (document.getElementById('dep-livreur').value || '').toUpperCase();
+  var comment = document.getElementById('dep-comment').value;
+  var modePaie = window._depModePaie || 'Espèces';
+  if (!date || isNaN(montant) || montant <= 0 || !cat) {
+    toast('Remplis tous les champs requis', 'err');
+    return;
+  }
+  // Update local en mémoire
+  depenses[idx] = Object.assign({}, depenses[idx], { date: date, cat: cat, montant: montant, livreur: livreur, comment: comment, modePaie: modePaie });
+  // PATCH Supabase
+  try {
+    var resp = await fetch(SUPABASE_URL + '/rest/v1/depenses?id=eq.' + encodeURIComponent(id), {
+      method: 'PATCH',
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date_depense: date, cat: cat, montant: montant, livreur: livreur, comment: comment, mode_paie: modePaie })
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    showSync('✅ Dépense mise à jour', 'ok');
+  } catch(e) {
+    console.warn('PATCH depense fail:', e.message);
+    showSync('⚠️ Erreur sync', 'err');
+  }
+  closeModal('m-depense');
+  try { localStorage.removeItem('mx_depenses_cache'); } catch(e) {}
+  window._depEditMode = null;
+  finRender();
+  toast('✏️ Dépense modifiée — ' + date + ' · ' + montant + ' € · ' + modePaie, 'ok');
+}
+
 function supprimerCommande(id) {
   if (role !== 'admin') { toast('⛔ Réservé à l\'admin', 'err'); return; }
   var cmd = commandes.find(function(c){ return c.id === id; });
