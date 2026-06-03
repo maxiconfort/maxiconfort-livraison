@@ -451,6 +451,8 @@ textarea{resize:vertical;min-height:65px}
 
   <!-- ─── PAGE DASHBOARD ─── -->
   <div class="page on" id="p-dashboard">
+    <!-- v7.5.8 : Alerte colis GLS en attente de validation -->
+    <div id="dash-gls-retard" style="display:none;margin-bottom:18px"></div>
     <div class="g4" id="dash-kpis"></div>
     <div class="g2">
       <div class="card">
@@ -4541,7 +4543,83 @@ function renderCanauxVente() {
   }).join('') : '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--t3)">Aucune donnée sur cette période</td></tr>';
 }
 
-function renderDash() { try { _renderDashCore(); } catch(e) { console.warn('renderDash:',e.message); } }
+function renderDash() { try { _renderDashCore(); renderDashGLSRetard(); } catch(e) { console.warn('renderDash:',e.message); } }
+
+// v7.5.8 : Detection des colis GLS expediés mais pas marqués livré (date_livraison passée +3j)
+function getGLSEnRetard() {
+  if (!Array.isArray(commandes)) return [];
+  var maintenant = Date.now();
+  var seuilMs = 3 * 86400 * 1000; // 3 jours
+  return commandes.filter(function(c){
+    if (!c) return false;
+    // Doit être GLS
+    var estGLS = (c.transporteur === 'GLS') || (c.livreur === 'GLS');
+    if (!estGLS) return false;
+    // Doit avoir un tracking saisi
+    if (!c.trackingTransporteur && !c.tracking_transporteur) return false;
+    // Pas déjà livré ni annulé
+    if (c.statut === 'livré' || c.statut === 'annulé') return false;
+    // date_livraison prévue dépassée depuis +3 jours
+    var d = c.date;
+    if (!d) return false;
+    var dMs = new Date(d).getTime();
+    if (isNaN(dMs)) return false;
+    return (maintenant - dMs) > seuilMs;
+  }).sort(function(a,b){
+    return new Date(a.date).getTime() - new Date(b.date).getTime();
+  });
+}
+
+function renderDashGLSRetard() {
+  var box = document.getElementById('dash-gls-retard');
+  if (!box) return;
+  // Visible seulement pour admin
+  if (typeof role !== 'undefined' && role !== 'admin') { box.style.display = 'none'; return; }
+  var liste = getGLSEnRetard();
+  if (liste.length === 0) { box.style.display = 'none'; return; }
+  var total = liste.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
+  var html = '<div style="background:linear-gradient(135deg,#FFE4E1 0%,#FFD4D4 100%);border:2px solid #DC143C;border-radius:14px;padding:16px;box-shadow:0 4px 12px rgba(220,20,60,.15)">' +
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;gap:12px;flex-wrap:wrap">' +
+      '<div style="flex:1;min-width:200px">' +
+        '<div style="font-size:14px;font-weight:900;color:#8B0000;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">🚨 Colis GLS à valider</div>' +
+        '<div style="font-size:12px;color:#8B0000;line-height:1.4">' + liste.length + ' colis expédié(s) avec tracking — date livraison dépassée depuis +3 jours.<br>Vérifie le tracking GLS, et si arrivés → clique "Marquer livré". <strong>CA à débloquer : ' + total.toLocaleString('fr-FR') + ' €</strong></div>' +
+      '</div>' +
+      '<div style="background:#8B0000;color:#fff;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:800;white-space:nowrap">' + liste.length + ' à traiter</div>' +
+    '</div>' +
+    '<div style="display:flex;flex-direction:column;gap:8px">';
+  liste.forEach(function(c){
+    var dAff = c.date ? new Date(c.date).toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'}) : '?';
+    var jours = c.date ? Math.floor((Date.now() - new Date(c.date).getTime())/86400000) : '?';
+    var tk = c.trackingTransporteur || c.tracking_transporteur || '';
+    html += '<div style="background:#fff;border:1px solid rgba(139,0,0,.2);border-radius:10px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">' +
+      '<div style="flex:1;min-width:180px">' +
+        '<div style="font-size:13px;font-weight:800;color:#333">#' + c.id + ' · ' + (c.client||'?') + ' · ' + (parseFloat(c.prix)||0).toLocaleString('fr-FR') + ' €</div>' +
+        '<div style="font-size:11px;color:#666;margin-top:2px">📅 Livraison prévue ' + dAff + ' · <span style="color:#8B0000;font-weight:700">J+' + jours + '</span> · 📦 ' + tk + '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px">' +
+        '<a href="https://gls-group.eu/FR/fr/suivi-colis.html?match=' + encodeURIComponent(tk) + '" target="_blank" style="background:#185FA5;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:700;text-decoration:none;font-family:var(--font);white-space:nowrap">🔍 Tracking GLS</a>' +
+        '<button onclick="marquerLivreGLS(\'' + c.id + '\')" style="background:#28a745;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);white-space:nowrap">✅ Livré</button>' +
+      '</div>' +
+    '</div>';
+  });
+  html += '</div></div>';
+  box.innerHTML = html;
+  box.style.display = 'block';
+}
+
+async function marquerLivreGLS(cmdId) {
+  var cmd = commandes.find(function(c){ return c.id === cmdId; });
+  if (!cmd) { toast('Commande introuvable', 'err'); return; }
+  if (!confirm('✅ Marquer comme livré ?\n\n' + cmd.id + ' — ' + cmd.client + '\n' + cmd.prix + ' €\n\nLe statut passera à "livré" et la commande entrera dans le CA Finance.')) return;
+  cmd.statut = 'livré';
+  // Si paie déjà saisie mais stpaie pas Payé, on laisse comme c'est. Sinon laisser stpaie tel quel.
+  // Pour LBC GLS le statut paie est généralement déjà OK.
+  await sbSaveCommande(cmd);
+  toast('✅ ' + cmd.id + ' marqué livré', 'ok');
+  renderDash(); renderCmds(); renderTournees();
+  if (document.getElementById('p-finance')?.classList.contains('on')) finRender();
+}
+
 function _renderDashCore() {
   // ── KPIs principaux ──
   const livrees    = commandes.filter(c=>c.statut==='livré');
