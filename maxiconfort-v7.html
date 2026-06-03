@@ -2891,6 +2891,7 @@ async function logMouvementStock(type, produitLib, qte, source, destination, cmd
 // Obtenir le contenu du camion d'un livreur
 // v7.5.4 : si la checklist chargement n'est pas utilisee, fallback automatique
 // sur les commandes assignees au livreur ET non livrees (= marchandise dans le camion)
+// v7.5.5 : option B - filtre par date_livraison = aujourd'hui (tournee du jour)
 function getContenuCamion(livreur) {
   var explicite = stockCamion.filter(function(s){
     return s.status === 'en_camion' && (s.livreur||'').toLowerCase() === (livreur||'').toLowerCase();
@@ -2898,12 +2899,19 @@ function getContenuCamion(livreur) {
   if (explicite.length > 0) return explicite;
   // Fallback : derive depuis les commandes RANOU assignees au livreur, statut != livre/annule
   if (!Array.isArray(commandes)) return [];
+  var todayStr = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
   var auto = [];
   commandes.forEach(function(c){
     if (!c) return;
     if ((c.livreur||'').toLowerCase() !== (livreur||'').toLowerCase()) return;
     if (c.statut === 'livré' || c.statut === 'annulé') return;
     if ((c.transporteur||'RANOU') !== 'RANOU') return; // ignore GLS (deja parti)
+    // v7.5.5 : filtrer sur la tournee du jour (date_livraison = aujourd'hui)
+    var dateLiv = (c.date || '').substring(0,10);
+    if (dateLiv !== todayStr) return;
+    // Exclure les SAV de type Remboursement (rien a transporter)
+    var produitTxt = (c.produit || '').toUpperCase();
+    if (produitTxt.indexOf('REMBOURSEMENT') === 0 || produitTxt.indexOf('AVOIR') === 0) return;
     var lignes = (c.lignes && c.lignes.length) ? c.lignes : [{produit: c.produit, qte: c.qte || 1}];
     lignes.forEach(function(l, li){
       auto.push({
@@ -3000,7 +3008,7 @@ function renderCamionContenu() {
       '</div>' +
       '<div style="font-size:48px">' + (totalProduits>0?'📦':'✅') + '</div>' +
     '</div>' +
-    (isAutoMode ? '<div style="margin-top:10px;padding:9px 12px;background:#FFF7E6;border:1.5px dashed #BA7517;border-radius:10px;font-size:11px;color:#7A4A00;line-height:1.45">ℹ️ <strong>Mode auto</strong> — contenu déduit des commandes assignées non livrées. Pour un suivi précis chargement/déchargement, utilise la <strong>checklist chargement</strong> dans Tournées.</div>' : '');
+    (isAutoMode ? '<div style="margin-top:10px;padding:9px 12px;background:#FFF7E6;border:1.5px dashed #BA7517;border-radius:10px;font-size:11px;color:#7A4A00;line-height:1.45">ℹ️ <strong>Mode auto</strong> — commandes RANOU non livrées de <strong>la tournée du jour</strong> (' + new Date().toLocaleDateString('fr-FR') + '). Pour un suivi précis charge/décharge, utilise la <strong>checklist chargement</strong> dans Tournées.</div>' : '');
 
   if (totalProduits === 0) {
     listeEl.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--t3)"><div style="font-size:64px;margin-bottom:12px">✅</div><div style="font-size:16px;font-weight:700">Camion vide</div><div style="font-size:13px;margin-top:6px">Tout est en stock dépôt ou a été livré</div></div>';
