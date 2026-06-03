@@ -3282,7 +3282,7 @@ async function sbLoadAll() {
           paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
           montantEnc:parseFloat(r.montant_enc)||0,
           livreur:r.livreur||'', statut:r.statut||'en-attente',
-          date:r.date_livraison||'', dateCmd:r.date_commande||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'',
+          date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'',
           origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
         };
       });
@@ -3398,7 +3398,7 @@ async function sbChargerPlusCommandes() {
           paie:r2.paie||'Espèces', stpaie:r2.stpaie||'Non payé',
           montantEnc:parseFloat(r2.montant_enc)||0,
           livreur:r2.livreur||'', statut:r2.statut||'en-attente',
-          date:r2.date_livraison||'', dateCmd:r2.date_commande||'', instr:r2.instr||'', tracking_token:r2.tracking_token||'', transporteur:r2.transporteur||'RANOU', trackingTransporteur:r2.tracking_transporteur||'',
+          date:r2.date_livraison||'', dateCmd:r2.date_commande||'', createdAt:r2.created_at||'', instr:r2.instr||'', tracking_token:r2.tracking_token||'', transporteur:r2.transporteur||'RANOU', trackingTransporteur:r2.tracking_transporteur||'',
           origine:r2.origine||'', refMarketplace:r2.ref_marketplace||'',
           modePaie:r2.mode_paie||'Espèces',
         };
@@ -3457,7 +3457,7 @@ function startPolling() {
               paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
               montantEnc:parseFloat(r.montant_enc)||0,
               livreur:r.livreur||'', statut:r.statut||'en-attente',
-              date:r.date_livraison||'', dateCmd:r.date_commande||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'',
+              date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'',
               origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
               modePaie:r.mode_paie||'Espèces',
             };
@@ -3562,7 +3562,7 @@ function sbStartRealtime() {
         remiseGlobaleVal:r.remise_globale_val, remiseGlobaleType:r.remise_globale_type,
         remiseMotif:r.remise_motif, paie:r.paie, stpaie:r.stpaie,
         montantEnc:r.montant_enc, livreur:r.livreur, statut:r.statut,
-        date:r.date_livraison, dateCmd:r.date_commande||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'',
+        date:r.date_livraison, dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'',
         refMarketplace:r.ref_marketplace,
       };
       if (idx > -1) commandes[idx] = mapped;
@@ -5033,16 +5033,18 @@ function pBdg(s){
   return '<span class="bdg b-red">Non payé</span>';
 }
 
-// v7.5.10 : Indicateur des commandes prises aujourd'hui (mini-encart 1 ligne)
+// v7.5.12 : Indicateur des commandes prises aujourd'hui (created_at = today, vraie date d'entree)
 function renderCmdStatsJour() {
   var box = document.getElementById('cmd-stats-jour');
   if (!box) return;
   if (!Array.isArray(commandes) || commandes.length === 0) { box.style.display = 'none'; return; }
   var today = new Date().toISOString().split('T')[0];
+  // Utiliser createdAt (vraie date d'entree dans le systeme, jamais editee par le user)
+  // Fallback sur dateCmd si createdAt manquant (cas anciennes commandes / cache pre-v7.5.12)
   var prisesJour = commandes.filter(function(c){
     if (!c) return false;
-    var d = (c.dateCmd || '').substring(0, 10);
-    return d === today;
+    var src = c.createdAt || c.dateCmd || '';
+    return src.substring(0, 10) === today;
   });
   if (prisesJour.length === 0) { box.style.display = 'none'; return; }
   var total = prisesJour.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);

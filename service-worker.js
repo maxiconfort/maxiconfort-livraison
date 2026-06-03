@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.11 - Mini-encart cmds prises du jour (version compact)
+// v7.5.12 - Fix : filtre cmds du jour utilise created_at (vraie date)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-11';
+const CACHE_VERSION = 'maxiconfort-v7-5-12';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
