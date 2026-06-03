@@ -1853,9 +1853,15 @@ Maxiconfort — {TEL_CONTACT}</textarea>
         <label>Nom de la plateforme</label>
         <input type="text" id="ap-nom" placeholder="ex: Etsy, Wish, Vinted...">
       </div>
-      <div class="fg" style="margin-bottom:18px">
-        <label>Délai paiement (jours après livraison)</label>
+      <div class="fg" style="margin-bottom:10px">
+        <label>Délai paiement (en jours)</label>
         <input type="number" id="ap-delai" value="14" min="0" max="90">
+      </div>
+      <div class="fg" style="margin-bottom:18px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="ap-ouvres" style="cursor:pointer">
+          <span>Délai en <strong>jours ouvrés</strong> (skip samedi/dimanche)</span>
+        </label>
       </div>
       <div style="display:flex;gap:10px">
         <button class="btn btn-p" style="flex:1;justify-content:center" onclick="marketplaceAjouter()">✅ Ajouter</button>
@@ -5303,18 +5309,31 @@ async function suiviExporterExcel() {
 // - Encours = calcule auto depuis commandes livrees + delai plateforme
 
 // Plateformes par defaut (utilisees si parametre marketplaces vide)
+// v7.5.2 : joursOuvres = true -> delai calcule en jours ouvres (skip we)
 var PLATEFORMES_DEFAUT = [
-  {id:'leboncoin', nom:'LeBoncoin', icon:'📌', delai:10, isDefault:false},
-  {id:'tiktok', nom:'TikTok Shop', icon:'🎵', delai:7, isDefault:false},
-  {id:'site', nom:'Site Maxiconfort', icon:'🌐', delai:0, isDefault:false},
-  {id:'amazon', nom:'Amazon', icon:'📦', delai:14, isDefault:false},
-  {id:'cdiscount', nom:'Cdiscount', icon:'🛒', delai:15, isDefault:false},
-  {id:'manomano', nom:'Manomano', icon:'🔨', delai:14, isDefault:false},
-  {id:'fnac', nom:'Fnac Darty', icon:'🛍', delai:15, isDefault:false},
-  {id:'rakuten', nom:'Rakuten', icon:'🛒', delai:15, isDefault:false},
-  {id:'rdc', nom:'Rue du Commerce', icon:'🏪', delai:30, isDefault:false},
-  {id:'autres', nom:'Autres', icon:'🏪', delai:14, isDefault:true}
+  {id:'leboncoin', nom:'LeBoncoin', icon:'📌', delai:10, joursOuvres:false, isDefault:false},
+  {id:'tiktok', nom:'TikTok Shop', icon:'🎵', delai:7, joursOuvres:false, isDefault:false},
+  {id:'site', nom:'Site Maxiconfort', icon:'🌐', delai:3, joursOuvres:true, isDefault:false},
+  {id:'amazon', nom:'Amazon', icon:'📦', delai:14, joursOuvres:false, isDefault:false},
+  {id:'cdiscount', nom:'Cdiscount', icon:'🛒', delai:15, joursOuvres:false, isDefault:false},
+  {id:'manomano', nom:'Manomano', icon:'🔨', delai:14, joursOuvres:false, isDefault:false},
+  {id:'fnac', nom:'Fnac Darty', icon:'🛍', delai:15, joursOuvres:false, isDefault:false},
+  {id:'rakuten', nom:'Rakuten', icon:'🛒', delai:15, joursOuvres:false, isDefault:false},
+  {id:'rdc', nom:'Rue du Commerce', icon:'🏪', delai:30, joursOuvres:false, isDefault:false},
+  {id:'autres', nom:'Autres', icon:'🏪', delai:14, joursOuvres:false, isDefault:true}
 ];
+
+// v7.5.2 : ajouter N jours ouvres a une date (skip samedi/dimanche)
+function ajouterJoursOuvres(dateMs, nbJours) {
+  var d = new Date(dateMs);
+  var restants = nbJours;
+  while (restants > 0) {
+    d.setDate(d.getDate() + 1);
+    var j = d.getDay(); // 0=dim, 6=sam
+    if (j !== 0 && j !== 6) restants--;
+  }
+  return d.getTime();
+}
 
 // Etat global Sante
 var santeMarketplaces = []; // liste plateformes actuelles
@@ -5470,8 +5489,14 @@ function santeCalculerEncours() {
     }
     var dLivMs = new Date(dateLiv).getTime();
     if (isNaN(dLivMs)) return;
-    var delai = parPlatform[platformId] ? parPlatform[platformId].delai : 14;
-    var dateVirementMs = dLivMs + delai * 86400 * 1000;
+    var pp = parPlatform[platformId] || { delai: 14, joursOuvres: false };
+    var delai = pp.delai;
+    var dateVirementMs;
+    if (pp.joursOuvres) {
+      dateVirementMs = ajouterJoursOuvres(dLivMs, delai);
+    } else {
+      dateVirementMs = dLivMs + delai * 86400 * 1000;
+    }
     // Si la date virement est PASSEE, l'argent est deja recu : pas d'encours
     if (dateVirementMs < maintenant) return;
     var montant = parseFloat(c.prix) || 0;
@@ -5658,18 +5683,28 @@ async function marketplaceRender() {
   if (!santeMarketplaces.length) await santeLoadParams();
   var listEl = document.getElementById('marketplaces-list');
   if (!listEl) return;
-  var html = '<div style="display:grid;grid-template-columns:60px 1fr 130px 80px;gap:10px;padding:8px 12px;font-size:11px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.4px;border-bottom:1.5px solid var(--brd)">' +
-    '<div>Icône</div><div>Nom</div><div>Délai (jours)</div><div></div>' +
+  var html = '<div style="display:grid;grid-template-columns:60px 1fr 90px 90px 80px;gap:10px;padding:8px 12px;font-size:11px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.4px;border-bottom:1.5px solid var(--brd)">' +
+    '<div>Icône</div><div>Nom</div><div>Délai</div><div>Ouvrés ?</div><div></div>' +
   '</div>';
   html += santeMarketplaces.map(function(p, idx) {
-    return '<div style="display:grid;grid-template-columns:60px 1fr 130px 80px;gap:10px;padding:10px 12px;align-items:center;border-bottom:1px solid var(--brd);background:' + (idx % 2 === 0 ? 'var(--bg)' : 'transparent') + '">' +
+    return '<div style="display:grid;grid-template-columns:60px 1fr 90px 90px 80px;gap:10px;padding:10px 12px;align-items:center;border-bottom:1px solid var(--brd);background:' + (idx % 2 === 0 ? 'var(--bg)' : 'transparent') + '">' +
       '<div style="font-size:24px;text-align:center">' + p.icon + '</div>' +
       '<div style="font-weight:700;font-size:14px">' + p.nom + (p.isDefault ? ' <span style="font-size:10px;color:var(--t3);font-weight:500">(défaut)</span>' : '') + '</div>' +
-      '<input type="number" min="0" max="90" value="' + p.delai + '" data-pid="' + p.id + '" onchange="marketplaceUpdateDelai(this)" style="padding:7px 9px;border:1px solid var(--brd2);border-radius:var(--r);font-size:13px;width:100%;font-family:var(--font)">' +
+      '<input type="number" min="0" max="90" value="' + p.delai + '" data-pid="' + p.id + '" onchange="marketplaceUpdateDelai(this)" style="padding:7px 9px;border:1px solid var(--brd2);border-radius:var(--r);font-size:13px;width:100%;font-family:var(--font)" title="Délai en jours">' +
+      '<label style="display:flex;align-items:center;justify-content:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" data-pid="' + p.id + '" onchange="marketplaceToggleOuvres(this)" ' + (p.joursOuvres ? 'checked' : '') + ' style="cursor:pointer">ouvrés</label>' +
       '<div style="text-align:right">' + (!p.isDefault ? '<button onclick="marketplaceSupprimer(\'' + p.id + '\')" style="padding:5px 10px;border-radius:6px;border:1px solid var(--red);background:var(--rl);color:var(--rd);cursor:pointer;font-size:12px;font-family:var(--font)">🗑</button>' : '') + '</div>' +
     '</div>';
   }).join('');
   listEl.innerHTML = html;
+}
+
+async function marketplaceToggleOuvres(checkbox) {
+  var pid = checkbox.dataset.pid;
+  var p = santeMarketplaces.find(function(x){ return x.id === pid; });
+  if (!p) return;
+  p.joursOuvres = checkbox.checked;
+  await santeSaveMarketplaces();
+  toast('✅ ' + p.nom + ' : ' + (p.joursOuvres ? 'jours ouvrés' : 'jours calendaires'), 'ok');
 }
 
 async function marketplaceUpdateDelai(input) {
@@ -5695,6 +5730,7 @@ async function marketplaceAjouter() {
   var icon = (document.getElementById('ap-icon').value || '🛒').trim();
   var nom = (document.getElementById('ap-nom').value || '').trim();
   var delai = parseInt(document.getElementById('ap-delai').value) || 14;
+  var ouvres = !!document.getElementById('ap-ouvres').checked;
   if (!nom) { toast('Saisis un nom', 'err'); return; }
   // ID auto : slug du nom
   var id = nom.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
@@ -5704,7 +5740,7 @@ async function marketplaceAjouter() {
   }
   // Inserer AVANT "Autres" (qui doit rester en dernier)
   var idxAutres = santeMarketplaces.findIndex(function(x){ return x.isDefault; });
-  var nouvelle = { id: id, nom: nom, icon: icon, delai: delai, isDefault: false };
+  var nouvelle = { id: id, nom: nom, icon: icon, delai: delai, joursOuvres: ouvres, isDefault: false };
   if (idxAutres >= 0) santeMarketplaces.splice(idxAutres, 0, nouvelle);
   else santeMarketplaces.push(nouvelle);
   await santeSaveMarketplaces();
