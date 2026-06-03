@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.0 - Panel detail commande responsive mobile (largeur 100%)
+// v7.5.1 - Module Santé société (trésorerie globale + marketplaces)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-0';
+const CACHE_VERSION = 'maxiconfort-v7-5-1';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

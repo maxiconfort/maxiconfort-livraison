@@ -1739,15 +1739,141 @@ Maxiconfort — {TEL_CONTACT}</textarea>
     </div>
   </div>
 
+  <!-- ─── PAGE SANTÉ SOCIÉTÉ ─── -->
+  <div class="page" id="p-sante">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-size:22px;font-weight:900;color:var(--text)">🏥 Santé Maxiconfort</div>
+        <div style="font-size:12px;color:var(--t3);margin-top:2px" id="sante-update">Mis à jour en temps réel</div>
+      </div>
+      <button class="btn btn-p" onclick="santeRender()">🔄 Rafraîchir</button>
+    </div>
+
+    <!-- BLOC 1 : TRÉSORERIE GLOBALE -->
+    <div style="background:var(--card);border:1px solid var(--brd);border-radius:var(--rl2);padding:18px;margin-bottom:16px">
+      <div style="font-size:14px;font-weight:800;color:var(--text);margin-bottom:14px;display:flex;align-items:center;gap:8px">
+        💼 <span>Trésorerie globale</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:14px">
+        <!-- CAISSE ESPÈCES -->
+        <div style="background:var(--ol);border:1.5px solid var(--orange);border-radius:var(--rl);padding:16px">
+          <div style="font-size:11px;font-weight:800;color:var(--od);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">💵 Caisse Espèces</div>
+          <div style="font-size:28px;font-weight:900;color:var(--od)" id="sante-caisse">0 €</div>
+          <div style="font-size:11px;color:var(--t2);margin-top:4px">Tiroir physique · ✅ Permanent</div>
+        </div>
+        <!-- BANQUE -->
+        <div style="background:var(--bl);border:1.5px solid var(--blue);border-radius:var(--rl);padding:16px">
+          <div style="font-size:11px;font-weight:800;color:var(--bd);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center">
+            <span>🏦 Compte Banque</span>
+            <button onclick="ouvrirModalSoldeBanque()" style="font-size:10px;padding:3px 8px;border-radius:6px;border:none;background:var(--blue);color:#fff;font-weight:700;cursor:pointer">📝 Modifier</button>
+          </div>
+          <div style="font-size:28px;font-weight:900;color:var(--bd)" id="sante-banque">0 €</div>
+          <div style="font-size:11px;color:var(--t2);margin-top:4px" id="sante-banque-info">Pas encore saisi</div>
+        </div>
+        <!-- ENCOURS -->
+        <div style="background:var(--gl);border:1.5px solid var(--green);border-radius:var(--rl);padding:16px">
+          <div style="font-size:11px;font-weight:800;color:var(--gd);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">⏳ Encours plateformes</div>
+          <div style="font-size:28px;font-weight:900;color:var(--gd)" id="sante-encours">0 €</div>
+          <div style="font-size:11px;color:var(--t2);margin-top:4px">À recevoir sous 15j · ✅ Auto</div>
+        </div>
+      </div>
+      <!-- TOTAL -->
+      <div style="background:linear-gradient(135deg,var(--green) 0%,#27500A 100%);border-radius:var(--rl);padding:16px;color:#fff;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <div>
+          <div style="font-size:13px;font-weight:700;opacity:.9">💎 SOLDE TOTAL</div>
+          <div style="font-size:11px;opacity:.85;margin-top:2px" id="sante-total-detail">— € dispo + — € à venir</div>
+        </div>
+        <div style="font-size:34px;font-weight:900" id="sante-total">0 €</div>
+      </div>
+    </div>
+
+    <!-- BLOC 2 : DÉTAIL ENCOURS -->
+    <div style="background:var(--card);border:1px solid var(--brd);border-radius:var(--rl2);padding:18px;margin-bottom:16px">
+      <div style="font-size:14px;font-weight:800;color:var(--text);margin-bottom:14px;display:flex;align-items:center;gap:8px">
+        ⏳ <span>Détail encours plateformes</span>
+      </div>
+      <div id="sante-encours-detail">
+        <div style="text-align:center;padding:30px 20px;color:var(--t3)">Chargement...</div>
+      </div>
+    </div>
+
+    <!-- BLOC 3 : PROCHAINS VIREMENTS -->
+    <div style="background:var(--card);border:1px solid var(--brd);border-radius:var(--rl2);padding:18px;margin-bottom:16px">
+      <div style="font-size:14px;font-weight:800;color:var(--text);margin-bottom:14px;display:flex;align-items:center;gap:8px">
+        📅 <span>Prochains virements (7 jours)</span>
+      </div>
+      <div id="sante-prochains-virements">
+        <div style="text-align:center;padding:30px 20px;color:var(--t3)">Chargement...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL MODIFIER SOLDE BANQUE -->
+  <div class="mbd" id="m-solde-banque">
+    <div class="modal" style="max-width:480px">
+      <div class="mh">
+        <div class="mt">🏦 Mettre à jour le solde banque</div>
+        <button class="mx" onclick="closeModal('m-solde-banque')">✕</button>
+      </div>
+      <div style="background:var(--bg2);border-radius:var(--r);padding:12px;margin-bottom:14px;font-size:13px">
+        <div style="color:var(--t3);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Solde précédent</div>
+        <div id="sb-precedent" style="font-weight:700;color:var(--text)">— € (jamais saisi)</div>
+      </div>
+      <div class="fg" style="margin-bottom:14px">
+        <label style="font-size:12px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.4px">Nouveau solde (€)</label>
+        <input type="number" id="sb-montant" step="0.01" placeholder="ex: 5300" style="font-size:24px;font-weight:800;padding:14px 16px">
+      </div>
+      <div class="fg" style="margin-bottom:14px">
+        <label style="font-size:12px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.4px">📅 Date de saisie</label>
+        <input type="date" id="sb-date">
+      </div>
+      <div class="fg" style="margin-bottom:18px">
+        <label style="font-size:12px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.4px">📝 Note (optionnel)</label>
+        <input type="text" id="sb-note" placeholder="ex: virement Amazon reçu, achat fournisseur, etc.">
+      </div>
+      <div style="display:flex;gap:10px">
+        <button class="btn btn-p" style="flex:1;justify-content:center" onclick="enregistrerSoldeBanque()">💾 Enregistrer</button>
+        <button class="btn" onclick="closeModal('m-solde-banque')">Annuler</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL AJOUTER PLATEFORME (Paramètres > Marketplaces) -->
+  <div class="mbd" id="m-add-platform">
+    <div class="modal" style="max-width:440px">
+      <div class="mh">
+        <div class="mt">➕ Nouvelle plateforme</div>
+        <button class="mx" onclick="closeModal('m-add-platform')">✕</button>
+      </div>
+      <div class="fg" style="margin-bottom:14px">
+        <label>Icône (1 emoji)</label>
+        <input type="text" id="ap-icon" placeholder="🛒" maxlength="3" value="🛒">
+      </div>
+      <div class="fg" style="margin-bottom:14px">
+        <label>Nom de la plateforme</label>
+        <input type="text" id="ap-nom" placeholder="ex: Etsy, Wish, Vinted...">
+      </div>
+      <div class="fg" style="margin-bottom:18px">
+        <label>Délai paiement (jours après livraison)</label>
+        <input type="number" id="ap-delai" value="14" min="0" max="90">
+      </div>
+      <div style="display:flex;gap:10px">
+        <button class="btn btn-p" style="flex:1;justify-content:center" onclick="marketplaceAjouter()">✅ Ajouter</button>
+        <button class="btn" onclick="closeModal('m-add-platform')">Annuler</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── PAGE PARAMÈTRES ─── -->
   <div class="page" id="p-pins">
 
-    <div style="display:flex;gap:2px;background:var(--bg2);border-radius:var(--r);padding:3px;width:fit-content;margin-bottom:20px">
+    <div style="display:flex;gap:2px;background:var(--bg2);border-radius:var(--r);padding:3px;width:fit-content;margin-bottom:20px;flex-wrap:wrap">
       <div class="tab active" onclick="paramTab('pins',this)">🔐 Codes PIN</div>
       <div class="tab" onclick="paramTab('livreurs',this)">🚚 Livreurs</div>
       <div class="tab" onclick="paramTab('vehicules',this)">🚛 Véhicules</div>
       <div class="tab" onclick="paramTab('legal',this)">📄 Texte légal</div>
       <div class="tab" onclick="paramTab('societe',this)">🏢 Société</div>
+      <div class="tab" onclick="paramTab('marketplaces',this)">🛒 Marketplaces</div>
     </div>
 
     <!-- ── ONGLET PINS ── -->
@@ -1965,6 +2091,26 @@ Maxiconfort — {TEL_CONTACT}</textarea>
         <button id="btn-test-sms" class="btn" onclick="testerSMS()" style="background:#BA7517;color:#fff;font-weight:800;padding:12px 20px">📱 Envoyer un SMS test à mon numéro</button>
         <div style="font-size:11px;color:var(--t3);margin-top:10px;display:flex;align-items:center;gap:6px">
           <span>💡</span><span>Un SMS test consomme 1 crédit Brevo (~0,045 € pour la France). Le résultat s'affiche dans un toast en haut de l'écran.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── ONGLET MARKETPLACES (Module Santé) ── -->
+    <div id="param-tab-marketplaces" style="display:none">
+      <div class="card">
+        <div class="card-t">🛒 Délais de paiement plateformes</div>
+        <div style="font-size:13px;color:var(--t2);margin-bottom:14px;line-height:1.5">
+          Configure ici le délai (en jours) entre la <strong>livraison</strong> et le <strong>virement réel</strong> sur ton compte bancaire. Sert au calcul des encours dans le module <strong>🏥 Santé société</strong>.
+        </div>
+        <div style="display:flex;gap:10px;margin-bottom:14px">
+          <button class="btn btn-p" onclick="ouvrirModalAjoutPlatform()">➕ Ajouter une plateforme</button>
+          <button class="btn" onclick="marketplaceReset()" style="color:var(--t2)" title="Restaurer les plateformes par défaut">🔄 Réinitialiser</button>
+        </div>
+        <div id="marketplaces-list">
+          <div style="text-align:center;padding:20px;color:var(--t3)">Chargement...</div>
+        </div>
+        <div style="margin-top:14px;padding:12px;background:var(--bg2);border-radius:var(--r);font-size:12px;color:var(--t2)">
+          💡 <strong>Astuce :</strong> les modifications sont enregistrées <strong>automatiquement</strong> dès que tu changes une valeur ou ajoutes/supprimes une plateforme.
         </div>
       </div>
     </div>
@@ -3874,6 +4020,7 @@ const ROLES = {
     name:'Admin',label:'Accès total',ico:'🔑',ibg:'#E6F1FB',icl:'#0C447C',sub:'Administration',
     nav:[
       {p:'dashboard',i:'📊',l:'Dashboard'},
+      {p:'sante',i:'🏥',l:'Santé société'},
       {p:'commandes',i:'📦',l:'Commandes'},
       {p:'tournees',i:'🗺',l:'Tournées'},
       {p:'livreur',i:'🚚',l:'Vue livreur'},
@@ -4070,7 +4217,7 @@ function goTo(p, el) {
   document.getElementById('p-'+p).classList.add('on');
   document.querySelectorAll('.ni').forEach(x=>x.classList.remove('on','cv','lv'));
   if(el){el.classList.add('on');if(role==='collab')el.classList.add('cv');if(role==='livreur')el.classList.add('lv');}
-  const titles={dashboard:'Tableau de bord',commandes:'Commandes',tournees:'Tournées',livreur:'Ma tournée',finance:'Encaissements',pins:'Gestion des PINs',camion:'Contenu camion',suivi:'Suivi logistique'};
+  const titles={dashboard:'Tableau de bord',commandes:'Commandes',tournees:'Tournées',livreur:'Ma tournée',finance:'Encaissements',pins:'Gestion des PINs',camion:'Contenu camion',suivi:'Suivi logistique',sante:'Santé société'};
   var _gpage_title=document.getElementById('page-title'); if(_gpage_title) _gpage_title.textContent=titles[p]||p;
 
   if(p==='commandes') {
@@ -4100,6 +4247,7 @@ function goTo(p, el) {
   if(p==='notifs') notifInit();
   if(p==='pins') initParams();
   if(p==='suivi') { suiviInit(); }
+  if(p==='sante') { santeRender(); }
 }
 
 // ════════════════════════════════════════
@@ -5144,6 +5292,444 @@ async function suiviExporterExcel() {
   var suffix = suiviPresetActif ? '-' + suiviPresetActif : '';
   XLSX.writeFile(wb, 'Maxiconfort-Suivi' + suffix + '-' + todayIso + '.xlsx');
   if (typeof toast === 'function') toast('✅ Export Excel terminé (' + rows.length + ' commandes)', 'ok');
+}
+
+// ════════════════════════════════════════════════════════════
+// 🏥 MODULE SANTÉ SOCIÉTÉ — v7.5.1 (2026-06-03)
+// ════════════════════════════════════════════════════════════
+// Tresorerie globale = Caisse especes + Compte banque + Encours plateformes
+// - Caisse = formule deja codee dans finRender (especesRemisesPermanent - depCaisseEspPermanent)
+// - Banque = saisie manuelle stockee dans parametres.solde_banque
+// - Encours = calcule auto depuis commandes livrees + delai plateforme
+
+// Plateformes par defaut (utilisees si parametre marketplaces vide)
+var PLATEFORMES_DEFAUT = [
+  {id:'leboncoin', nom:'LeBoncoin', icon:'📌', delai:10, isDefault:false},
+  {id:'tiktok', nom:'TikTok Shop', icon:'🎵', delai:7, isDefault:false},
+  {id:'site', nom:'Site Maxiconfort', icon:'🌐', delai:0, isDefault:false},
+  {id:'amazon', nom:'Amazon', icon:'📦', delai:14, isDefault:false},
+  {id:'cdiscount', nom:'Cdiscount', icon:'🛒', delai:15, isDefault:false},
+  {id:'manomano', nom:'Manomano', icon:'🔨', delai:14, isDefault:false},
+  {id:'fnac', nom:'Fnac Darty', icon:'🛍', delai:15, isDefault:false},
+  {id:'rakuten', nom:'Rakuten', icon:'🛒', delai:15, isDefault:false},
+  {id:'rdc', nom:'Rue du Commerce', icon:'🏪', delai:30, isDefault:false},
+  {id:'autres', nom:'Autres', icon:'🏪', delai:14, isDefault:true}
+];
+
+// Etat global Sante
+var santeMarketplaces = []; // liste plateformes actuelles
+var santeSoldeBanque = 0;
+var santeSoldeBanqueDate = '';
+var santeSoldeBanqueHisto = []; // array des saisies
+
+// Charger les params Sante depuis Supabase
+async function santeLoadParams() {
+  try {
+    var resp = await fetch(SUPABASE_URL + '/rest/v1/parametres?cle=in.(marketplaces,solde_banque,solde_banque_historique)&select=*', {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    var data = await resp.json();
+    data.forEach(function(r) {
+      if (r.cle === 'marketplaces') {
+        try { santeMarketplaces = JSON.parse(r.valeur); } catch(e) { santeMarketplaces = PLATEFORMES_DEFAUT.slice(); }
+      } else if (r.cle === 'solde_banque') {
+        santeSoldeBanque = parseFloat(r.valeur) || 0;
+        santeSoldeBanqueDate = r.updated_at || '';
+      } else if (r.cle === 'solde_banque_historique') {
+        try { santeSoldeBanqueHisto = JSON.parse(r.valeur); } catch(e) { santeSoldeBanqueHisto = []; }
+      }
+    });
+    if (!santeMarketplaces.length) santeMarketplaces = PLATEFORMES_DEFAUT.slice();
+  } catch(e) {
+    console.warn('santeLoadParams:', e.message);
+    if (!santeMarketplaces.length) santeMarketplaces = PLATEFORMES_DEFAUT.slice();
+  }
+}
+
+// Sauver les marketplaces dans Supabase
+async function santeSaveMarketplaces() {
+  try {
+    var body = { cle: 'marketplaces', valeur: JSON.stringify(santeMarketplaces) };
+    await fetch(SUPABASE_URL + '/rest/v1/parametres', {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates,return=minimal'
+      },
+      body: JSON.stringify(body)
+    });
+  } catch(e) { console.warn('santeSaveMarketplaces:', e.message); }
+}
+
+// Sauver solde banque + historique
+async function santeSaveSoldeBanque(montant, date, note) {
+  try {
+    var nowIso = new Date().toISOString();
+    var ancienSolde = santeSoldeBanque;
+    santeSoldeBanque = montant;
+    santeSoldeBanqueDate = nowIso;
+    // Ajouter a l'historique (max 50 entries)
+    santeSoldeBanqueHisto.unshift({
+      montant: montant, date: date || new Date().toISOString().split('T')[0],
+      ancienSolde: ancienSolde, note: note || '', saisie_at: nowIso
+    });
+    if (santeSoldeBanqueHisto.length > 50) santeSoldeBanqueHisto = santeSoldeBanqueHisto.slice(0, 50);
+    // Save les 2 cles en parallele
+    await Promise.all([
+      fetch(SUPABASE_URL + '/rest/v1/parametres', {
+        method: 'POST',
+        headers: {
+          'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-duplicates,return=minimal'
+        },
+        body: JSON.stringify({ cle: 'solde_banque', valeur: String(montant) })
+      }),
+      fetch(SUPABASE_URL + '/rest/v1/parametres', {
+        method: 'POST',
+        headers: {
+          'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-duplicates,return=minimal'
+        },
+        body: JSON.stringify({ cle: 'solde_banque_historique', valeur: JSON.stringify(santeSoldeBanqueHisto) })
+      })
+    ]);
+  } catch(e) { console.warn('santeSaveSoldeBanque:', e.message); }
+}
+
+// Match origine commande -> id plateforme
+function santeOrigineVersPlatform(origine) {
+  if (!origine) return null;
+  var o = origine.toLowerCase();
+  if (o.indexOf('boncoin') >= 0 || o.indexOf('lbc') >= 0) return 'leboncoin';
+  if (o.indexOf('tiktok') >= 0 || o.indexOf('tik tok') >= 0) return 'tiktok';
+  if (o.indexOf('maxiconfort') >= 0 || o.indexOf('site web') >= 0 || o === 'site') return 'site';
+  if (o.indexOf('amazon') >= 0) return 'amazon';
+  if (o.indexOf('cdiscount') >= 0) return 'cdiscount';
+  if (o.indexOf('manomano') >= 0) return 'manomano';
+  if (o.indexOf('fnac') >= 0 || o.indexOf('darty') >= 0) return 'fnac';
+  if (o.indexOf('rakuten') >= 0) return 'rakuten';
+  if (o.indexOf('rue du commerce') >= 0) return 'rdc';
+  // Origine prepayee non listee -> "autres"
+  var prepayeKnown = ['leboncoin', 'tiktok shop', 'site maxiconfort', 'amazon', 'cdiscount', 'manomano', 'fnac darty', 'rakuten', 'rue du commerce', 'autre plateforme'];
+  if (prepayeKnown.indexOf(o) >= 0) return 'autres';
+  return null; // Non-marketplace (appel direct, email, whatsapp...)
+}
+
+// Date de livraison reelle d'une commande (depuis updated_at ou tournee)
+function santeDateLivraison(cmd) {
+  if (!cmd) return null;
+  // Chercher dans les tournees : stop avec ce cmdId + statut=livré + heureStatut
+  if (Array.isArray(tournees)) {
+    for (var i = 0; i < tournees.length; i++) {
+      var t = tournees[i];
+      if (!t.stops) continue;
+      for (var j = 0; j < t.stops.length; j++) {
+        var s = t.stops[j];
+        if (s.cmdId === cmd.id && s.statut === 'livré' && s.heureStatut) {
+          return s.heureStatut; // ISO timestamp
+        }
+      }
+    }
+  }
+  // Fallback : si statut = livré, utiliser updated_at (approximation)
+  return null;
+}
+
+// Calculer les encours plateformes (renvoie {parPlatform, total, virementsSemaine})
+function santeCalculerEncours() {
+  var parPlatform = {}; // {leboncoin: {total, cmds: []}}
+  var totalGlobal = 0;
+  var virementsSemaine = []; // commandes dont le virement arrive dans les 7 prochains jours
+  var maintenant = Date.now();
+  var dans7j = maintenant + 7 * 86400 * 1000;
+
+  santeMarketplaces.forEach(function(p) {
+    parPlatform[p.id] = { id: p.id, nom: p.nom, icon: p.icon, delai: p.delai, total: 0, cmds: [] };
+  });
+
+  if (!Array.isArray(commandes)) return { parPlatform: parPlatform, total: 0, virementsSemaine: [] };
+
+  commandes.forEach(function(c) {
+    if (!c || c.statut !== 'livré') return;
+    if (c.stpaie !== 'Payé') return; // Pas encore paye sur la plateforme
+    var platformId = santeOrigineVersPlatform(c.origine);
+    if (!platformId) return; // Non-marketplace ignore
+    // Exception LeBoncoin IDF : paye a la livraison, pas d'encours
+    if (platformId === 'leboncoin') {
+      var cp = (c.adresse || '').match(/\b(\d{5})\b/);
+      if (cp && ['75','77','78','91','92','93','94','95'].indexOf(cp[1].substring(0,2)) >= 0) return;
+    }
+    var dateLiv = santeDateLivraison(c);
+    if (!dateLiv) {
+      // Pas de date livraison precise, utiliser created_at - estimation 2j
+      dateLiv = c.created_at || c.dateCmd || new Date().toISOString();
+    }
+    var dLivMs = new Date(dateLiv).getTime();
+    if (isNaN(dLivMs)) return;
+    var delai = parPlatform[platformId] ? parPlatform[platformId].delai : 14;
+    var dateVirementMs = dLivMs + delai * 86400 * 1000;
+    // Si la date virement est PASSEE, l'argent est deja recu : pas d'encours
+    if (dateVirementMs < maintenant) return;
+    var montant = parseFloat(c.prix) || 0;
+    if (montant <= 0) return;
+    parPlatform[platformId].total += montant;
+    parPlatform[platformId].cmds.push({
+      id: c.id, client: c.client, montant: montant,
+      dateVirement: new Date(dateVirementMs).toISOString().split('T')[0],
+      dateVirementMs: dateVirementMs
+    });
+    totalGlobal += montant;
+    // Virements dans 7j
+    if (dateVirementMs <= dans7j) {
+      virementsSemaine.push({
+        id: c.id, client: c.client, platform: platformId,
+        platformNom: parPlatform[platformId].nom, platformIcon: parPlatform[platformId].icon,
+        montant: montant, dateVirement: new Date(dateVirementMs).toISOString().split('T')[0],
+        dateVirementMs: dateVirementMs
+      });
+    }
+  });
+  virementsSemaine.sort(function(a,b){ return a.dateVirementMs - b.dateVirementMs; });
+  return { parPlatform: parPlatform, total: totalGlobal, virementsSemaine: virementsSemaine };
+}
+
+// Calculer la caisse especes permanente (formule v7.3.9)
+function santeCalculerCaisseEspeces() {
+  // Reuse de la logique de finRender : especesRemisesPermanent - depCaisseEspPermanent
+  if (!Array.isArray(commandes) || !Array.isArray(tournees)) return 0;
+  var caissesRem = (typeof caissesRemises !== 'undefined' ? caissesRemises : {}) || {};
+  var depAll = (typeof depenses !== 'undefined' ? depenses : []) || [];
+  var especesRemisesPerm = 0;
+  Object.keys(caissesRem).forEach(function(key){
+    if (!key.startsWith('t_')) return;
+    var rem = caissesRem[key];
+    if (!rem || !rem.validee) return;
+    var tIdP = key.replace('t_','');
+    var tP = tournees.find(function(tt){ return tt.id === tIdP; });
+    if (!tP) return;
+    var cmdIdsP = (tP.stops||[]).map(function(s){ return s.cmdId; }).filter(Boolean);
+    var stopClientsP = (tP.stops||[]).map(function(s){ return (s.client||'').toLowerCase(); }).filter(Boolean);
+    var cmdsTP;
+    if (cmdIdsP.length > 0) {
+      cmdsTP = commandes.filter(function(c){ return cmdIdsP.includes(c.id) && c.statut==='livré'; });
+    } else if (stopClientsP.length > 0) {
+      cmdsTP = commandes.filter(function(c){
+        return c.livreur===tP.livreur && c.statut==='livré' && stopClientsP.includes((c.client||'').toLowerCase());
+      });
+    } else {
+      cmdsTP = commandes.filter(function(c){ return c.livreur===tP.livreur && c.date===tP.date && c.statut==='livré'; });
+    }
+    var espTP = (cmdsTP||[]).reduce(function(s,c){ return s + getMontantEspecesCmd(c); }, 0);
+    var depEspTP = depAll.filter(function(d){
+      var matchTP = d.tourneeId ? d.tourneeId === tP.id : d.date === tP.date;
+      return (d.livreur||'').toLowerCase() === (tP.livreur||'').toLowerCase()
+             && (d.livreur||'').toUpperCase() !== 'CAISSE'
+             && d.modePaie !== 'CB' && matchTP;
+    }).reduce(function(s,d){ return s+d.montant; }, 0);
+    especesRemisesPerm += Math.max(0, espTP - depEspTP);
+  });
+  var depCaisseEspPerm = depAll.filter(function(d){ return (d.livreur||'').toUpperCase()==='CAISSE' && d.modePaie==='Espèces'; })
+                               .reduce(function(s,d){ return s+d.montant; }, 0);
+  return Math.max(0, especesRemisesPerm - depCaisseEspPerm);
+}
+
+// Rendu principal Sante
+async function santeRender() {
+  // Charger les params si pas deja fait
+  if (!santeMarketplaces.length) await santeLoadParams();
+
+  // Bloc 1 : 3 cases
+  var caisse = santeCalculerCaisseEspeces();
+  document.getElementById('sante-caisse').textContent = caisse.toLocaleString('fr-FR') + ' €';
+  document.getElementById('sante-banque').textContent = santeSoldeBanque.toLocaleString('fr-FR') + ' €';
+  var bInfoEl = document.getElementById('sante-banque-info');
+  if (santeSoldeBanqueDate) {
+    var d = new Date(santeSoldeBanqueDate);
+    var ageJours = Math.floor((Date.now() - d.getTime()) / 86400000);
+    var dateAffich = d.toLocaleDateString('fr-FR', {day:'2-digit', month:'2-digit'});
+    var icon = ageJours <= 7 ? '✅' : '⚠';
+    var label = ageJours <= 7 ? 'Saisi ' + dateAffich : 'Saisi ' + dateAffich + ' (' + ageJours + 'j)';
+    bInfoEl.innerHTML = icon + ' ' + label;
+  } else {
+    bInfoEl.textContent = '⚠ Pas encore saisi';
+  }
+
+  var encoursData = santeCalculerEncours();
+  var encoursTotal = encoursData.total;
+  document.getElementById('sante-encours').textContent = encoursTotal.toLocaleString('fr-FR') + ' €';
+
+  var dispo = caisse + santeSoldeBanque;
+  var total = dispo + encoursTotal;
+  document.getElementById('sante-total').textContent = total.toLocaleString('fr-FR') + ' €';
+  document.getElementById('sante-total-detail').textContent = dispo.toLocaleString('fr-FR') + ' € dispo + ' + encoursTotal.toLocaleString('fr-FR') + ' € à venir';
+
+  // Bloc 2 : Detail par plateforme
+  var detailEl = document.getElementById('sante-encours-detail');
+  var lignes = [];
+  santeMarketplaces.forEach(function(p) {
+    var d = encoursData.parPlatform[p.id] || { total: 0, cmds: [] };
+    if (d.total > 0 || !p.isDefault) {
+      lignes.push('<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--brd);font-size:13px">' +
+        '<div style="display:flex;align-items:center;gap:10px;flex:1">' +
+          '<span style="font-size:20px">' + p.icon + '</span>' +
+          '<div><div style="font-weight:700">' + p.nom + '</div>' +
+          '<div style="font-size:11px;color:var(--t3)">J+' + p.delai + ' jours · ' + d.cmds.length + ' cmd' + (d.cmds.length > 1 ? 's' : '') + '</div></div>' +
+        '</div>' +
+        '<div style="font-weight:800;color:' + (d.total > 0 ? 'var(--green)' : 'var(--t3)') + ';font-size:15px">' + d.total.toLocaleString('fr-FR') + ' €</div>' +
+      '</div>');
+    }
+  });
+  if (lignes.length === 0) {
+    detailEl.innerHTML = '<div style="text-align:center;padding:30px;color:var(--t3)">Aucune commande en encours actuellement.</div>';
+  } else {
+    detailEl.innerHTML = lignes.join('');
+  }
+
+  // Bloc 3 : Prochains virements
+  var virEl = document.getElementById('sante-prochains-virements');
+  var vs = encoursData.virementsSemaine;
+  if (vs.length === 0) {
+    virEl.innerHTML = '<div style="text-align:center;padding:30px;color:var(--t3)">Aucun virement attendu dans les 7 prochains jours.</div>';
+  } else {
+    var totalSemaine = vs.reduce(function(s,v){ return s + v.montant; }, 0);
+    var rows = vs.map(function(v) {
+      var dateAffich = new Date(v.dateVirement).toLocaleDateString('fr-FR', {weekday:'short', day:'2-digit', month:'2-digit'});
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--brd);font-size:13px">' +
+        '<div style="display:flex;align-items:center;gap:10px;flex:1">' +
+          '<span style="font-size:18px">' + v.platformIcon + '</span>' +
+          '<div><div style="font-weight:700">' + dateAffich + '</div>' +
+          '<div style="font-size:11px;color:var(--t3)">' + v.platformNom + ' · ' + v.id + ' ' + (v.client||'') + '</div></div>' +
+        '</div>' +
+        '<div style="font-weight:800;color:var(--green);font-size:15px">' + v.montant.toLocaleString('fr-FR') + ' €</div>' +
+      '</div>';
+    }).join('');
+    rows += '<div style="display:flex;justify-content:space-between;padding:14px 0 0;border-top:2px solid var(--green);margin-top:6px;font-size:14px">' +
+      '<div style="font-weight:800">💰 Total à recevoir cette semaine</div>' +
+      '<div style="font-weight:900;color:var(--green);font-size:18px">' + totalSemaine.toLocaleString('fr-FR') + ' €</div>' +
+    '</div>';
+    virEl.innerHTML = rows;
+  }
+
+  // Timestamp dernière maj
+  var updateEl = document.getElementById('sante-update');
+  if (updateEl) updateEl.textContent = 'Mis à jour ' + new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+}
+
+// MODAL SOLDE BANQUE
+function ouvrirModalSoldeBanque() {
+  var precEl = document.getElementById('sb-precedent');
+  if (precEl) {
+    if (santeSoldeBanqueDate && santeSoldeBanque > 0) {
+      var d = new Date(santeSoldeBanqueDate);
+      precEl.textContent = santeSoldeBanque.toLocaleString('fr-FR') + ' € (' + d.toLocaleDateString('fr-FR') + ')';
+    } else {
+      precEl.textContent = 'Jamais saisi';
+    }
+  }
+  var dateEl = document.getElementById('sb-date');
+  if (dateEl) dateEl.value = new Date().toISOString().split('T')[0];
+  var noteEl = document.getElementById('sb-note');
+  if (noteEl) noteEl.value = '';
+  var mEl = document.getElementById('sb-montant');
+  if (mEl) { mEl.value = ''; setTimeout(function(){ mEl.focus(); }, 100); }
+  openModal('m-solde-banque');
+}
+
+async function enregistrerSoldeBanque() {
+  var montant = parseFloat(document.getElementById('sb-montant').value);
+  if (isNaN(montant) || montant < 0) {
+    toast('Saisis un montant valide', 'err');
+    return;
+  }
+  var date = document.getElementById('sb-date').value;
+  var note = document.getElementById('sb-note').value.trim();
+  await santeSaveSoldeBanque(montant, date, note);
+  closeModal('m-solde-banque');
+  toast('💾 Solde banque enregistré : ' + montant.toLocaleString('fr-FR') + ' €', 'ok');
+  santeRender();
+}
+
+// MARKETPLACES (Parametres > Marketplaces)
+async function marketplaceRender() {
+  if (!santeMarketplaces.length) await santeLoadParams();
+  var listEl = document.getElementById('marketplaces-list');
+  if (!listEl) return;
+  var html = '<div style="display:grid;grid-template-columns:60px 1fr 130px 80px;gap:10px;padding:8px 12px;font-size:11px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.4px;border-bottom:1.5px solid var(--brd)">' +
+    '<div>Icône</div><div>Nom</div><div>Délai (jours)</div><div></div>' +
+  '</div>';
+  html += santeMarketplaces.map(function(p, idx) {
+    return '<div style="display:grid;grid-template-columns:60px 1fr 130px 80px;gap:10px;padding:10px 12px;align-items:center;border-bottom:1px solid var(--brd);background:' + (idx % 2 === 0 ? 'var(--bg)' : 'transparent') + '">' +
+      '<div style="font-size:24px;text-align:center">' + p.icon + '</div>' +
+      '<div style="font-weight:700;font-size:14px">' + p.nom + (p.isDefault ? ' <span style="font-size:10px;color:var(--t3);font-weight:500">(défaut)</span>' : '') + '</div>' +
+      '<input type="number" min="0" max="90" value="' + p.delai + '" data-pid="' + p.id + '" onchange="marketplaceUpdateDelai(this)" style="padding:7px 9px;border:1px solid var(--brd2);border-radius:var(--r);font-size:13px;width:100%;font-family:var(--font)">' +
+      '<div style="text-align:right">' + (!p.isDefault ? '<button onclick="marketplaceSupprimer(\'' + p.id + '\')" style="padding:5px 10px;border-radius:6px;border:1px solid var(--red);background:var(--rl);color:var(--rd);cursor:pointer;font-size:12px;font-family:var(--font)">🗑</button>' : '') + '</div>' +
+    '</div>';
+  }).join('');
+  listEl.innerHTML = html;
+}
+
+async function marketplaceUpdateDelai(input) {
+  var pid = input.dataset.pid;
+  var newDelai = parseInt(input.value);
+  if (isNaN(newDelai) || newDelai < 0) { input.value = 14; return; }
+  var p = santeMarketplaces.find(function(x){ return x.id === pid; });
+  if (!p) return;
+  p.delai = newDelai;
+  await santeSaveMarketplaces();
+  toast('✅ Délai ' + p.nom + ' : J+' + newDelai, 'ok');
+}
+
+function ouvrirModalAjoutPlatform() {
+  document.getElementById('ap-icon').value = '🛒';
+  document.getElementById('ap-nom').value = '';
+  document.getElementById('ap-delai').value = 14;
+  openModal('m-add-platform');
+  setTimeout(function(){ document.getElementById('ap-nom').focus(); }, 100);
+}
+
+async function marketplaceAjouter() {
+  var icon = (document.getElementById('ap-icon').value || '🛒').trim();
+  var nom = (document.getElementById('ap-nom').value || '').trim();
+  var delai = parseInt(document.getElementById('ap-delai').value) || 14;
+  if (!nom) { toast('Saisis un nom', 'err'); return; }
+  // ID auto : slug du nom
+  var id = nom.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  if (santeMarketplaces.some(function(x){ return x.id === id; })) {
+    toast('Cette plateforme existe déjà', 'err');
+    return;
+  }
+  // Inserer AVANT "Autres" (qui doit rester en dernier)
+  var idxAutres = santeMarketplaces.findIndex(function(x){ return x.isDefault; });
+  var nouvelle = { id: id, nom: nom, icon: icon, delai: delai, isDefault: false };
+  if (idxAutres >= 0) santeMarketplaces.splice(idxAutres, 0, nouvelle);
+  else santeMarketplaces.push(nouvelle);
+  await santeSaveMarketplaces();
+  closeModal('m-add-platform');
+  toast('✅ Plateforme ' + nom + ' ajoutée', 'ok');
+  marketplaceRender();
+}
+
+async function marketplaceSupprimer(pid) {
+  var p = santeMarketplaces.find(function(x){ return x.id === pid; });
+  if (!p) return;
+  if (p.isDefault) { toast('Impossible de supprimer la plateforme par défaut', 'err'); return; }
+  if (!confirm('Supprimer la plateforme "' + p.nom + '" ?')) return;
+  santeMarketplaces = santeMarketplaces.filter(function(x){ return x.id !== pid; });
+  await santeSaveMarketplaces();
+  toast('✅ Plateforme supprimée', 'ok');
+  marketplaceRender();
+}
+
+async function marketplaceReset() {
+  if (!confirm('Restaurer les plateformes par défaut ? Tes plateformes personnalisées seront perdues.')) return;
+  santeMarketplaces = PLATEFORMES_DEFAUT.slice();
+  await santeSaveMarketplaces();
+  toast('🔄 Plateformes réinitialisées', 'ok');
+  marketplaceRender();
 }
 
 function buildProduitOptions() {
@@ -13497,7 +14083,7 @@ function initParams() {
 
 // ── ONGLETS ──
 function paramTab(tab, el) {
-  ['pins','livreurs','vehicules','legal','societe'].forEach(function(t){
+  ['pins','livreurs','vehicules','legal','societe','marketplaces'].forEach(function(t){
     var el2 = document.getElementById('param-tab-'+t);
     if (el2) el2.style.display = 'none';
   });
@@ -13505,6 +14091,8 @@ function paramTab(tab, el) {
   if (target) target.style.display = 'block';
   document.querySelectorAll('#p-pins .tab').forEach(function(t){ t.classList.remove('active'); });
   if (el) el.classList.add('active');
+  // v7.5.1 : init onglet marketplaces
+  if (tab === 'marketplaces') marketplaceRender();
   if (tab === 'vehicules') {
     renderVehiculesList();
     sbLoadEntretiens();
