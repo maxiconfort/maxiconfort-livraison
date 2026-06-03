@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.13 - Refonte Dépenses : filtres + dates claires + édition
+// v7.5.14 - Navigation rapide mois précédent/suivant Dépenses
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-13';
+const CACHE_VERSION = 'maxiconfort-v7-5-14';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

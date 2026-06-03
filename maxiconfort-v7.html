@@ -995,7 +995,7 @@ textarea{resize:vertical;min-height:65px}
         </div>
       </div>
 
-      <!-- Dépenses (v7.5.13 : refonte UI claire) -->
+      <!-- Dépenses (v7.5.13 : refonte UI claire / v7.5.14 : navigation mois) -->
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
           <div>
@@ -1003,6 +1003,13 @@ textarea{resize:vertical;min-height:65px}
             <div id="fin-dep-soustitre" style="font-size:11px;color:var(--t3);margin-top:2px">—</div>
           </div>
           <button class="btn btn-sm btn-p" onclick="ouvrirAjoutDepense()">+ Ajouter</button>
+        </div>
+        <!-- v7.5.14 : navigation rapide mois precedent / suivant -->
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;background:var(--bg2);padding:6px 8px;border-radius:8px">
+          <button onclick="finNavMois(-1)" title="Mois précédent" style="background:var(--card);border:1px solid var(--brd);border-radius:6px;padding:5px 10px;font-size:14px;cursor:pointer;font-weight:700;color:var(--text);font-family:var(--font)">◀</button>
+          <span id="fin-dep-mois-label" style="flex:1;text-align:center;font-size:13px;font-weight:800;color:var(--text)">—</span>
+          <button onclick="finNavMois(1)" title="Mois suivant" style="background:var(--card);border:1px solid var(--brd);border-radius:6px;padding:5px 10px;font-size:14px;cursor:pointer;font-weight:700;color:var(--text);font-family:var(--font)">▶</button>
+          <button onclick="finNavMois('today')" title="Revenir au mois en cours" style="background:var(--bl);border:1px solid var(--blue);border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;color:var(--bd);font-family:var(--font)">📅 Aujourd'hui</button>
         </div>
         <!-- Mini-recap par categorie -->
         <div id="fin-dep-cats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
@@ -8550,9 +8557,13 @@ function finRender() {
 
   // Dépenses (v7.5.13 : refonte UI - filtres + dates claires + modifier)
   // Sous-titre période
-  var moisLabel = mois[new Date(du).getMonth()] + ' ' + new Date(du).getFullYear();
+  var moisFr = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+  var moisLabel = moisFr[new Date(du).getMonth()] + ' ' + new Date(du).getFullYear();
   var stEl = document.getElementById('fin-dep-soustitre');
   if (stEl) stEl.textContent = deps.length + ' entrée' + (deps.length > 1 ? 's' : '') + ' · période ' + (du === au ? fmtD(du) : fmtD(du) + ' → ' + fmtD(au));
+  // v7.5.14 : label de navigation mois
+  var navLbl = document.getElementById('fin-dep-mois-label');
+  if (navLbl) navLbl.textContent = moisLabel;
   // Mini-recap par categorie (avec total par cat)
   var parCat = {};
   deps.forEach(function(d){
@@ -9433,6 +9444,36 @@ function depSelectMode(mode) {
     btnEsp.style.color = 'var(--text)';
   }
 }
+// v7.5.14 : Navigation rapide entre mois pour la section Depenses
+function finNavMois(direction) {
+  var modeSel = document.getElementById('fin-mode');
+  var moisSel = document.getElementById('fin-mois');
+  var anneeSel = document.getElementById('fin-annee');
+  if (!moisSel || !anneeSel || !modeSel) return;
+  // Forcer le mode "mois" pour que les navigations marchent toujours
+  modeSel.value = 'mois';
+  if (typeof finChangerMode === 'function') finChangerMode();
+  var now = new Date();
+  if (direction === 'today') {
+    moisSel.value = String(now.getMonth());
+    anneeSel.value = String(now.getFullYear());
+  } else {
+    var mois = parseInt(moisSel.value, 10) || 0;
+    var annee = parseInt(anneeSel.value, 10) || now.getFullYear();
+    mois += direction;
+    if (mois < 0) { mois = 11; annee--; }
+    if (mois > 11) { mois = 0; annee++; }
+    // Borne dans les annees disponibles du select
+    var opts = Array.from(anneeSel.options).map(function(o){ return parseInt(o.value,10); });
+    var minA = Math.min.apply(null, opts), maxA = Math.max.apply(null, opts);
+    if (annee < minA) annee = minA;
+    if (annee > maxA) annee = maxA;
+    moisSel.value = String(mois);
+    anneeSel.value = String(annee);
+  }
+  finRender();
+}
+
 function ouvrirAjoutDepense() {
   // v7.5.13 : reset mode edition
   window._depEditMode = null;
