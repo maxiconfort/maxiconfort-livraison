@@ -453,7 +453,18 @@ textarea{resize:vertical;min-height:65px}
   <div class="page on" id="p-dashboard">
     <!-- v7.5.8 : Alerte colis GLS en attente de validation -->
     <div id="dash-gls-retard" style="display:none;margin-bottom:18px"></div>
-    <div class="g4" id="dash-kpis"></div>
+    <!-- v7.5.9 : Selecteur de periode pour KPIs Dashboard -->
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap;background:var(--card);border:1px solid var(--brd);border-radius:12px;padding:10px 14px">
+      <div style="font-size:12px;color:var(--t2);font-weight:700;text-transform:uppercase;letter-spacing:.4px">📅 Période d'analyse</div>
+      <select id="dash-periode" onchange="renderDash()" style="padding:7px 14px;border:1.5px solid var(--brd);border-radius:8px;background:var(--bg);font-size:13px;font-weight:700;font-family:var(--font);color:var(--text);cursor:pointer">
+        <option value="jour">Aujourd'hui</option>
+        <option value="semaine">Cette semaine</option>
+        <option value="mois" selected>Ce mois</option>
+        <option value="annee">Cette année</option>
+        <option value="all">Total cumulé</option>
+      </select>
+    </div>
+    <div id="dash-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px"></div>
     <div class="g2">
       <div class="card">
         <div class="card-t">Statuts du jour</div>
@@ -4621,30 +4632,80 @@ async function marquerLivreGLS(cmdId) {
 }
 
 function _renderDashCore() {
-  // ── KPIs principaux ──
-  const livrees    = commandes.filter(c=>c.statut==='livré');
+  // ── v7.5.9 : Periode d'analyse selectionnee par l'utilisateur ──
+  var periodeMode = document.getElementById('dash-periode')?.value || 'mois';
+  var nowD = new Date();
+  var range = null; // { du, au } ou null pour "all"
+  if (periodeMode === 'jour') {
+    var d0 = nowD.toISOString().split('T')[0];
+    range = { du: d0, au: d0 };
+  } else if (periodeMode === 'semaine') {
+    var dow = nowD.getDay() === 0 ? 6 : nowD.getDay() - 1;
+    var ds = new Date(nowD); ds.setDate(nowD.getDate() - dow);
+    range = { du: ds.toISOString().split('T')[0], au: nowD.toISOString().split('T')[0] };
+  } else if (periodeMode === 'mois') {
+    var dm = new Date(nowD.getFullYear(), nowD.getMonth(), 1).toISOString().split('T')[0];
+    var fm = new Date(nowD.getFullYear(), nowD.getMonth()+1, 0).toISOString().split('T')[0];
+    range = { du: dm, au: fm };
+  } else if (periodeMode === 'annee') {
+    range = {
+      du: new Date(nowD.getFullYear(), 0, 1).toISOString().split('T')[0],
+      au: new Date(nowD.getFullYear(), 11, 31).toISOString().split('T')[0]
+    };
+  }
+  // Mois en cours toujours calculé (pour le KPI "CA Mois" qui reste indépendant)
+  var moisDebut = new Date(nowD.getFullYear(), nowD.getMonth(), 1).toISOString().split('T')[0];
+  var moisFin = new Date(nowD.getFullYear(), nowD.getMonth()+1, 0).toISOString().split('T')[0];
+  var dateInRange = function(c, r) {
+    if (!r) return true;
+    var d = c.date || '';
+    return d >= r.du && d <= r.au;
+  };
+
+  // ── KPIs ──
+  const livreesTout = commandes.filter(c=>c.statut==='livré');
+  const livreesPeriode = livreesTout.filter(function(c){ return dateInRange(c, range); });
+  const livreesMois = livreesTout.filter(function(c){ return dateInRange(c, { du: moisDebut, au: moisFin }); });
+
   const enAttente  = commandes.filter(c=>c.statut==='en-attente');
-  const enRoute    = commandes.filter(c=>['en-route','arrivé'].includes(c.statut));
-  const ca         = livrees.reduce((s,c)=>s+c.prix, 0);
-  const encaisse   = livrees.filter(c=>c.stpaie==='Payé').reduce((s,c)=>s+(c.montantEnc||c.prix),0);
-  const tauxLiv    = commandes.length ? Math.round(livrees.length/commandes.length*100) : 0;
+  const enAttenteP = enAttente.filter(function(c){ return dateInRange(c, range); });
+
+  const caCumule   = livreesTout.reduce((s,c)=>s+c.prix, 0);
+  const caMois     = livreesMois.reduce((s,c)=>s+c.prix, 0);
+  const caPeriode  = livreesPeriode.reduce((s,c)=>s+c.prix, 0);
+  const encaisseP  = livreesPeriode.filter(c=>c.stpaie==='Payé').reduce((s,c)=>s+(c.montantEnc||c.prix),0);
+  const tauxLiv    = commandes.length ? Math.round(livreesTout.length/commandes.length*100) : 0;
+
+  // Labels période pour les KPIs filtrés
+  var lblP = periodeMode === 'jour' ? 'Aujourd\'hui'
+           : periodeMode === 'semaine' ? 'Cette semaine'
+           : periodeMode === 'mois' ? 'Ce mois'
+           : periodeMode === 'annee' ? 'Cette année'
+           : 'Total cumulé';
 
   // ── Injection KPIs dans dash-kpis ──
-  var _kpi = function(color, ico, val, label, trendHtml) {
+  var _kpi = function(ico, val, label, sublabel, trendHtml) {
     return '<div style="background:var(--card);border:1px solid var(--brd);border-radius:14px;padding:16px;text-align:center">' +
-      '<div style="font-size:24px;margin-bottom:6px">' + ico + '</div>' +
-      '<div style="font-size:22px;font-weight:900;color:var(--text);margin-bottom:2px">' + val + '</div>' +
-      '<div style="font-size:12px;color:var(--t3);margin-bottom:6px">' + label + '</div>' +
+      '<div style="font-size:22px;margin-bottom:4px">' + ico + '</div>' +
+      '<div style="font-size:20px;font-weight:900;color:var(--text);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + val + '</div>' +
+      '<div style="font-size:12px;color:var(--t2);font-weight:700;margin-bottom:2px">' + label + '</div>' +
+      (sublabel ? '<div style="font-size:10px;color:var(--t3);margin-bottom:4px">' + sublabel + '</div>' : '<div style="height:14px"></div>') +
       '<div style="min-height:18px">' + (trendHtml||'') + '</div>' +
     '</div>';
   };
   var kpisEl = document.getElementById('dash-kpis');
   if (kpisEl) {
     kpisEl.innerHTML =
-      _kpi('gr', '💶', role==='admin' ? ca.toLocaleString('fr-FR')+' €' : '—', 'CA Total', role==='admin'?'<span id="dash-ca-trend"></span>':'') +
-      _kpi('bl', '✅', livrees.length, 'Livrées', '<span id="dash-livrees-trend"></span>') +
-      _kpi('or', '⏳', enAttente.length, 'En attente', '') +
-      _kpi('re', '💳', role==='admin' ? encaisse.toLocaleString('fr-FR')+' €' : '—', 'Encaissé', role==='admin'?'<span id="dash-enc-trend"></span>':'');
+      // KPI 1 : CA Cumulé (toujours total, indépendant du sélecteur)
+      _kpi('📊', role==='admin' ? caCumule.toLocaleString('fr-FR')+' €' : '—', 'CA Cumulé', 'Depuis le début', '') +
+      // KPI 2 : CA Mois (toujours mois en cours, indépendant)
+      _kpi('💶', role==='admin' ? caMois.toLocaleString('fr-FR')+' €' : '—', 'CA Mois', new Date().toLocaleDateString('fr-FR',{month:'long',year:'numeric'}), '<span id="dash-ca-trend"></span>') +
+      // KPI 3 : Livrées (selon période)
+      _kpi('✅', livreesPeriode.length, 'Livrées', lblP, '<span id="dash-livrees-trend"></span>') +
+      // KPI 4 : En attente (selon période)
+      _kpi('⏳', enAttenteP.length, 'En attente', lblP, '') +
+      // KPI 5 : Encaissé (selon période)
+      _kpi('💳', role==='admin' ? encaisseP.toLocaleString('fr-FR')+' €' : '—', 'Encaissé', lblP, '<span id="dash-enc-trend"></span>');
   }
 
   // ── TENDANCES semaine actuelle vs semaine précédente ──
@@ -4657,8 +4718,8 @@ function _renderDashCore() {
   var _inSem  = function(c) { return (c.date||'') >= _fmtD(_debutSem) && (c.date||'') <= _fmtD(_today); };
   var _inPrev = function(c) { return (c.date||'') >= _fmtD(_debutPrev) && (c.date||'') <= _fmtD(_finPrev); };
 
-  var _livSem   = livrees.filter(_inSem);
-  var _livPrev  = livrees.filter(_inPrev);
+  var _livSem   = livreesTout.filter(_inSem);
+  var _livPrev  = livreesTout.filter(_inPrev);
   var _caSem    = _livSem.reduce(function(s,c){ return s+c.prix; }, 0);
   var _caPrev   = _livPrev.reduce(function(s,c){ return s+c.prix; }, 0);
   var _encSem   = _livSem.filter(function(c){ return c.stpaie==='Payé'; }).reduce(function(s,c){ return s+(c.montantEnc||c.prix); }, 0);
@@ -4711,12 +4772,12 @@ function _renderDashCore() {
     }).join('');
   }
 
-  // Livreurs perf
+  // Livreurs perf (v7.5.9 : filtre selon période sélectionnée)
   const lvEl=document.getElementById('dash-livreurs');
   if(lvEl){
     const actifs=livreurs.filter(l=>l.actif);
     lvEl.innerHTML=actifs.map(l=>{
-      const lv=livrees.filter(c=>c.livreur===l.nom);
+      const lv=livreesPeriode.filter(c=>c.livreur===l.nom);
       const lca=lv.reduce((s,c)=>s+c.prix,0);
       return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
         <div style="width:30px;height:30px;border-radius:50%;background:${l.couleur};color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;flex-shrink:0">${l.nom.split(' ').map(n=>n[0]).join('')}</div>

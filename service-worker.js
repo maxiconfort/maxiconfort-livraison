@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.8 - Alerte colis GLS en attente de validation (CA caché)
+// v7.5.9 - Dashboard : sélecteur période + CA Cumulé + CA Mois
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-8';
+const CACHE_VERSION = 'maxiconfort-v7-5-9';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
