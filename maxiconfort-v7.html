@@ -5846,18 +5846,8 @@ function santeCalculerCaisseEspeces() {
     var tIdP = key.replace('t_','');
     var tP = tournees.find(function(tt){ return tt.id === tIdP; });
     if (!tP) return;
-    var cmdIdsP = (tP.stops||[]).map(function(s){ return s.cmdId; }).filter(Boolean);
-    var stopClientsP = (tP.stops||[]).map(function(s){ return (s.client||'').toLowerCase(); }).filter(Boolean);
-    var cmdsTP;
-    if (cmdIdsP.length > 0) {
-      cmdsTP = commandes.filter(function(c){ return cmdIdsP.includes(c.id) && c.statut==='livré'; });
-    } else if (stopClientsP.length > 0) {
-      cmdsTP = commandes.filter(function(c){
-        return c.livreur===tP.livreur && c.statut==='livré' && stopClientsP.includes((c.client||'').toLowerCase());
-      });
-    } else {
-      cmdsTP = commandes.filter(function(c){ return c.livreur===tP.livreur && c.date===tP.date && c.statut==='livré'; });
-    }
+    // v7.5.15 : utilise getCmdsLivresParTournee pour eviter le double comptage
+    var cmdsTP = getCmdsLivresParTournee(tP);
     var espTP = (cmdsTP||[]).reduce(function(s,c){ return s + getMontantEspecesCmd(c); }, 0);
     var depEspTP = depAll.filter(function(d){
       var matchTP = d.tourneeId ? d.tourneeId === tP.id : d.date === tP.date;
@@ -8505,6 +8495,30 @@ function finFiltrerDep(du, au) {
   return depenses.filter(d => d.date >= du && d.date <= au);
 }
 
+// v7.5.15 : Helper pour eviter double comptage des cmds presentes dans plusieurs tournees.
+// Quand une cmd est reportee dans T-A puis relivree dans T-B, son statut global est "livré"
+// mais le stop dans T-A est "reporté" et celui dans T-B est "livré". Le calcul des especes
+// doit donc utiliser le statut du STOP dans la tournee concernee, pas le statut global.
+function getCmdsLivresParTournee(t) {
+  if (!t || !Array.isArray(t.stops)) return [];
+  // 1) Stops livres avec cmdId : matcher par cmdId
+  var stopLivresIds = t.stops.filter(function(s){ return s.statut === 'livré'; }).map(function(s){ return s.cmdId; }).filter(Boolean);
+  if (stopLivresIds.length > 0) {
+    return commandes.filter(function(c){ return stopLivresIds.includes(c.id) && c.statut === 'livré'; });
+  }
+  // 2) Fallback par client name (legacy : stops sans cmdId)
+  var stopLivresClients = t.stops.filter(function(s){ return s.statut === 'livré'; }).map(function(s){ return (s.client||'').toLowerCase(); }).filter(Boolean);
+  if (stopLivresClients.length > 0) {
+    return commandes.filter(function(c){
+      return c.livreur === t.livreur && c.statut === 'livré' && stopLivresClients.includes((c.client||'').toLowerCase());
+    });
+  }
+  // 3) Fallback final : par date+livreur (cas tournees tres anciennes sans stops detailles)
+  return commandes.filter(function(c){
+    return c.livreur === t.livreur && c.date === t.date && c.statut === 'livré';
+  });
+}
+
 function finRender() {
   // Guard allégé : continuer même si page finance pas visible
 
@@ -8793,22 +8807,8 @@ function finRender() {
       if (!t) return;
       // Vérifier que la tournée est dans la période courante
       if (t.date < range.du || t.date > range.au) return;
-      // Calcul des espèces nettes de cette tournée
-      var cmdIds = (t.stops||[]).map(function(s){ return s.cmdId; }).filter(Boolean);
-      var stopClients = (t.stops||[]).map(function(s){ return (s.client||'').toLowerCase(); }).filter(Boolean);
-      var cmdsT;
-      if (cmdIds.length > 0) {
-        cmdsT = commandes.filter(function(c){ return cmdIds.includes(c.id) && c.statut==='livré'; });
-      } else if (stopClients.length > 0) {
-        cmdsT = commandes.filter(function(c){
-          return c.livreur===t.livreur && c.statut==='livré' &&
-                 stopClients.includes((c.client||'').toLowerCase());
-        });
-      } else {
-        cmdsT = commandes.filter(function(c){
-          return c.livreur===t.livreur && c.date===t.date && c.statut==='livré';
-        });
-      }
+      // v7.5.15 : utilise le statut du STOP pour eviter le double comptage
+      var cmdsT = getCmdsLivresParTournee(t);
       var espT = (cmdsT||[]).filter(function(c){ return c.paie==='Espèces' && c.stpaie==='Payé'; })
                             .reduce(function(s,c){ return s+(c.montantEnc||c.prix); }, 0);
       var depEspT = deps.filter(function(d){
@@ -8833,22 +8833,8 @@ function finRender() {
       var remise = caissesRemises[key];
       // Ignorer les tournées déjà validées (elles sont dans especesRemises)
       if (remise && remise.validee) return;
-      // Calculer espèces nettes de cette tournée
-      var cmdIds = (t.stops||[]).map(function(s){ return s.cmdId; }).filter(Boolean);
-      var stopClients = (t.stops||[]).map(function(s){ return (s.client||'').toLowerCase(); }).filter(Boolean);
-      var cmdsT;
-      if (cmdIds.length > 0) {
-        cmdsT = commandes.filter(function(c){ return cmdIds.includes(c.id) && c.statut==='livré'; });
-      } else if (stopClients.length > 0) {
-        cmdsT = commandes.filter(function(c){
-          return c.livreur===t.livreur && c.statut==='livré' &&
-                 stopClients.includes((c.client||'').toLowerCase());
-        });
-      } else {
-        cmdsT = commandes.filter(function(c){
-          return c.livreur===t.livreur && c.date===t.date && c.statut==='livré';
-        });
-      }
+      // v7.5.15 : utilise le statut du STOP pour eviter le double comptage
+      var cmdsT = getCmdsLivresParTournee(t);
       // v7.3.3 : inclut les paiements Mixte via getMontantEspecesCmd
       var espT = (cmdsT||[]).reduce(function(s,c){ return s + getMontantEspecesCmd(c); }, 0);
       var depEspT = deps.filter(function(d){
@@ -9000,24 +8986,9 @@ function finRender() {
     } else {
       caisseEl.innerHTML = blocCaisseGen + tourneesLv.map(function(t) {
         var lv = t.livreur || '';
-        // Commandes de cette tournée (via stops ou par livreur+date)
-        // Liaison commandes → tournée via stops (client name ou cmdId)
-        var cmdIds = (t.stops||[]).map(function(s){ return s.cmdId; }).filter(Boolean);
-        var stopClients = (t.stops||[]).map(function(s){ return (s.client||'').toLowerCase(); }).filter(Boolean);
-        var cmdsLv;
-        if (cmdIds.length > 0) {
-          cmdsLv = commandes.filter(function(c){ return cmdIds.includes(c.id) && c.statut==='livré'; });
-        } else if (stopClients.length > 0) {
-          cmdsLv = commandes.filter(function(c){
-            return c.livreur===lv && c.statut==='livré' &&
-                   stopClients.includes((c.client||'').toLowerCase());
-          });
-        } else {
-          cmdsLv = commandes.filter(function(c){
-            return c.livreur===lv && c.date===t.date && c.statut==='livré';
-          });
-        }
-        cmdsLv = cmdsLv || [];
+        // v7.5.15 : utilise le statut du STOP pour eviter le double comptage des cmds presentes
+        // dans plusieurs tournees (reporte dans T-A puis relivre dans T-B).
+        var cmdsLv = getCmdsLivresParTournee(t) || [];
         // v7.3.3 : helpers gèrent le mode Mixte (split Espèces + CB)
         var especes  = cmdsLv.reduce(function(s,c){ return s + getMontantEspecesCmd(c); }, 0);
         var cb       = cmdsLv.reduce(function(s,c){ return s + getMontantCBCmd(c); }, 0);

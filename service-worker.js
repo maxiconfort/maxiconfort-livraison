@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.14 - Navigation rapide mois précédent/suivant Dépenses
+// v7.5.15 - Fix double comptage espèces (cmd reportée + relivrée)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-14';
+const CACHE_VERSION = 'maxiconfort-v7-5-15';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
