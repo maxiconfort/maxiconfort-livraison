@@ -3892,7 +3892,7 @@ async function testerSMS() {
   }
 }
 
-// ── Sauvegarder SMS dans Supabase ──
+// ── Sauvegarder SMS dans Supabase (v7.5.19 : fix colonne msg + id obligatoire) ──
 async function sbSaveSmsHistorique(client, tel, type, message, statut) {
   try {
     var now = new Date();
@@ -3905,10 +3905,11 @@ async function sbSaveSmsHistorique(client, tel, type, message, statut) {
         'Prefer': 'return=minimal'
       },
       body: JSON.stringify({
+        id: 'sms_' + Date.now() + '_' + Math.random().toString(36).slice(2,8),
         client: client || '—',
         tel: tel || '',
         type_sms: type || 'autre',
-        contenu: message || '',
+        msg: message || '',
         statut: statut || 'envoyé',
         date_sms: now.toISOString().split('T')[0],
         heure: now.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})

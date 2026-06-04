@@ -345,6 +345,7 @@ async function afficherCarte(adresse) {
 }
 
 // v7.5.17 : Récupérer + afficher la position GPS du livreur en temps réel
+// v7.5.19 : ajout ETA OSRM (temps de trajet livreur -> client)
 async function rafraichirPositionLivreur() {
   var token = getToken();
   if (!token || !_trackMap || !_trackClientLatLng) return;
@@ -357,9 +358,11 @@ async function rafraichirPositionLivreur() {
     if (!resp.ok) return;
     var d = await resp.json();
     if (!d || !d.ok) {
-      // Pas en cours → enlever marker si présent
+      // Pas en cours → enlever marker + ETA si présents
       if (_trackLivreurMarker) { _trackMap.removeLayer(_trackLivreurMarker); _trackLivreurMarker = null; }
       if (_trackLivreurPolyline) { _trackMap.removeLayer(_trackLivreurPolyline); _trackLivreurPolyline = null; }
+      var etaBox = document.getElementById('eta-box');
+      if (etaBox) etaBox.style.display = 'none';
       return;
     }
     var lat = parseFloat(d.lat), lng = parseFloat(d.lng);
@@ -384,7 +387,50 @@ async function rafraichirPositionLivreur() {
     // Ajuster zoom pour voir les 2 markers
     var bounds = L.latLngBounds([[lat, lng], _trackClientLatLng]);
     _trackMap.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+    // v7.5.19 : calculer ETA via OSRM (durée + distance trajet)
+    calculerEtaLivreur(lat, lng, _trackClientLatLng[0], _trackClientLatLng[1]);
   } catch(e) { console.warn('Position livreur:', e.message); }
+}
+
+// v7.5.19 : calcul ETA via OSRM public puis affichage dans encart
+async function calculerEtaLivreur(latLiv, lngLiv, latCli, lngCli) {
+  try {
+    var url = 'https://router.project-osrm.org/route/v1/driving/' +
+              lngLiv + ',' + latLiv + ';' + lngCli + ',' + latCli +
+              '?overview=false&alternatives=false';
+    var r = await fetch(url);
+    if (!r.ok) return;
+    var data = await r.json();
+    if (!data || !data.routes || !data.routes[0]) return;
+    var dureeSec = data.routes[0].duration;
+    var distMetres = data.routes[0].distance;
+    var minutes = Math.max(1, Math.round(dureeSec / 60));
+    var km = (distMetres / 1000).toFixed(1);
+    var heureArrivee = new Date(Date.now() + dureeSec * 1000)
+                       .toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    var etaBox = document.getElementById('eta-box');
+    if (!etaBox) {
+      // Creer l'encart ETA juste au-dessus de la carte
+      var mapEl = document.getElementById('map');
+      if (!mapEl || !mapEl.parentNode) return;
+      etaBox = document.createElement('div');
+      etaBox.id = 'eta-box';
+      etaBox.className = 'card';
+      etaBox.style.cssText = 'background:linear-gradient(135deg,#FFF7E6 0%,#FFE7C2 100%);border:1.5px solid #BA7517;padding:14px 16px;margin-bottom:12px;text-align:center';
+      mapEl.parentNode.insertBefore(etaBox, mapEl);
+    }
+    etaBox.style.display = 'block';
+    etaBox.innerHTML =
+      '<div style="font-size:11px;font-weight:800;color:#7A4A00;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">🚚 Votre livreur arrive</div>' +
+      '<div style="display:flex;justify-content:space-around;align-items:baseline;gap:10px;flex-wrap:wrap">' +
+        '<div><div style="font-size:28px;font-weight:900;color:#BA7517;line-height:1">~' + minutes + ' min</div>' +
+          '<div style="font-size:11px;color:#7A4A00;margin-top:2px">temps estimé</div></div>' +
+        '<div><div style="font-size:18px;font-weight:800;color:#7A4A00;line-height:1.2">' + km + ' km</div>' +
+          '<div style="font-size:11px;color:#7A4A00">distance</div></div>' +
+        '<div><div style="font-size:18px;font-weight:800;color:#7A4A00;line-height:1.2">' + heureArrivee + '</div>' +
+          '<div style="font-size:11px;color:#7A4A00">arrivée prévue</div></div>' +
+      '</div>';
+  } catch(e) { /* silent */ }
 }
 
 // Lancer
