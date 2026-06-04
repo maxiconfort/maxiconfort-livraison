@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.15 - Fix double comptage espèces (cmd reportée + relivrée)
+// v7.5.16 - SMS départ auto via géofence sortie entrepôt
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-15';
+const CACHE_VERSION = 'maxiconfort-v7-5-16';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

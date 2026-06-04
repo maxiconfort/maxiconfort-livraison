@@ -13808,7 +13808,7 @@ function geofenceTraiterPosition(pos) {
 // ── Déclencher le départ : sortie de zone détectée ──
 function geofenceDeclencherDepart() {
   console.log('🚀 [GÉOFENCE] Sortie entrepôt détectée — démarrage GPS auto');
-  
+
   // Anti-spam : pas 2 alertes en moins de 5 min
   const now = Date.now();
   if (now - geofenceDerniereAlerte < 300000) return;
@@ -13821,6 +13821,37 @@ function geofenceDeclencherDepart() {
     }
     gpsDemarrerReel();
   }
+
+  // v7.5.16 : Envoyer automatiquement les SMS "départ" à tous les clients RANOU
+  // de la tournée du jour. La dedupe est gérée côté Edge Function via cmd.sms_envoyes,
+  // donc pas de risque de double envoi (et si on rentre/sort plusieurs fois, OK).
+  try {
+    var livreur = geofenceGetLivreurActuel();
+    if (livreur) {
+      var today = new Date().toISOString().split('T')[0];
+      var tourneeJour = (typeof tournees !== 'undefined' ? tournees : []).find(function(t){
+        return (t.livreur||'').toUpperCase() === livreur.toUpperCase() && t.date === today;
+      });
+      if (tourneeJour && Array.isArray(tourneeJour.stops)) {
+        var nbEnvoyes = 0;
+        tourneeJour.stops.forEach(function(s){
+          if (!s.cmdId) return;
+          var cmd = (typeof commandes !== 'undefined' ? commandes : []).find(function(c){ return c.id === s.cmdId; });
+          if (!cmd) return;
+          if ((cmd.transporteur || 'RANOU') !== 'RANOU') return;
+          if (!cmd.tel || cmd.tel.length < 8) return;
+          // Throttle 200ms entre chaque envoi pour eviter rate-limit Brevo
+          setTimeout(function(){
+            if (typeof sendCmdSmsAsync === 'function') sendCmdSmsAsync(s.cmdId, 'depart');
+          }, nbEnvoyes * 200);
+          nbEnvoyes++;
+        });
+        if (nbEnvoyes > 0 && typeof toast === 'function') {
+          toast('📱 ' + nbEnvoyes + ' SMS de départ envoyés aux clients ' + livreur, 'ok');
+        }
+      }
+    }
+  } catch(e) { console.warn('[GEOFENCE] Erreur envoi SMS depart:', e); }
 
   // Log Supabase pour audit
   geofenceLogEvenement('sortie_entrepot');
