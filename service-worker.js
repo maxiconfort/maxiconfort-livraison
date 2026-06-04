@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.20 - ETA dans SMS départ + notif auto "RANOU à 1 km"
+// v7.5.21 - Fix chgStopPaie : ajuster montantEnc si Payé sans Mixte
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-20';
+const CACHE_VERSION = 'maxiconfort-v7-5-21';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

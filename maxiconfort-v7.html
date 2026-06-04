@@ -8203,6 +8203,11 @@ function chgStopPaie(tid, idx, val) {
   const cmd = commandes.find(c => c.id === t.stops[idx].cmdId);
   if (cmd) {
     cmd.paie = val;
+    // v7.5.21 : si la cmd est marquee Payée et qu'on change le mode, ajuster montantEnc
+    // pour eviter le bug "CB Paye mais montantEnc=0" (sinon non comptabilise dans Encaisse)
+    if (cmd.stpaie === 'Payé' && (!cmd.montantEnc || cmd.montantEnc === 0) && val !== 'Mixte') {
+      cmd.montantEnc = cmd.prix || 0;
+    }
     sbSaveCommande(cmd); // ✅ Bug 1 fix : sync commande vers admin
   }
   sbSaveTournee(t); // ✅ Bug 1 fix : sync tournee vers admin
