@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.19 - Fix sms_historique (colonne msg) + ETA OSRM track.html
+// v7.5.20 - ETA dans SMS départ + notif auto "RANOU à 1 km"
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-19';
+const CACHE_VERSION = 'maxiconfort-v7-5-20';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

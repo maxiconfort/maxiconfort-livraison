@@ -1,14 +1,18 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : send-cmd-sms
+// Edge Function : send-cmd-sms (v2 — 04/06/2026)
 // ════════════════════════════════════════════════════════════════════
 // Envoie un SMS automatique au client pour une commande, selon le type :
-//   - "depart"     : SMS départ tournée (RANOU)
+//   - "depart"     : SMS départ tournée (RANOU) — accepte heureArrivee optionnelle
 //   - "route"      : SMS livreur en route vers ce client (RANOU)
+//   - "proche"     : SMS livreur à <1km (NOUVEAU v7.5.20)
 //   - "expedition" : SMS expédition + n° tracking (GLS)
 //
 // Dedupe via commandes.sms_envoyes (ne renvoie pas 2 fois le même type).
 //
-// Body attendu : { cmdId: string, type: "depart"|"route"|"expedition" }
+// Body attendu :
+//   { cmdId: string,
+//     type: "depart"|"route"|"proche"|"expedition",
+//     heureArrivee?: string (HH:MM, optionnel pour depart) }
 //
 // Secrets requis :
 //   - BREVO_API_KEY (déjà configuré pour send-sms / sms-veille)
@@ -33,9 +37,13 @@ const sb = createClient(SB_URL, SB_SR_KEY, {
 // repeter dans le corps -> on gagne des caracteres.
 const TPL = {
   depart: (p: any) =>
-    `Bonjour ${p.prenom}, votre livreur vient de partir. Suivi : ${p.lienSuivi}`,
+    p.heureArrivee
+      ? `Bonjour ${p.prenom}, livreur en route ! Arrivee prevue vers ${p.heureArrivee}. Suivi : ${p.lienSuivi}`
+      : `Bonjour ${p.prenom}, votre livreur vient de partir. Suivi : ${p.lienSuivi}`,
   route: (p: any) =>
     `Bonjour ${p.prenom}, votre livreur arrive dans ~15 min. Soyez joignable. Suivi : ${p.lienSuivi}`,
+  proche: (p: any) =>
+    `Bonjour ${p.prenom}, votre livreur arrive ! Soyez pret. Suivi : ${p.lienSuivi}`,
   expedition: (p: any) =>
     `Bonjour ${p.prenom}, commande ${p.id} expediee par GLS. Tracking ${p.tracking}. Suivi : https://gls-group.eu/FR/fr/suivi-colis.html?match=${p.tracking}`,
 };
@@ -67,7 +75,6 @@ async function envoyerSMSBrevo(tel: string, contenu: string): Promise<boolean> {
         'Accept': 'application/json',
       },
       body: JSON.stringify({
-        // 'Maxiconfort' = 11 caracteres (limite max Brevo). Plus visible que 'Maxiconfor'.
         sender: 'Maxiconfort',
         recipient: num,
         content: contenu,
@@ -88,15 +95,16 @@ async function envoyerSMSBrevo(tel: string, contenu: string): Promise<boolean> {
 async function logHistorique(c: any, type: string, contenu: string, statut: string) {
   try {
     await sb.from('sms_historique').insert({
+      id: 'sms_' + Date.now() + '_' + Math.random().toString(36).slice(2,8),
       client: c.client || '',
       tel: c.tel || '',
       type_sms: type,
-      contenu: contenu,
+      msg: contenu,
       statut: statut,
       date_sms: new Date().toISOString().split('T')[0],
       heure: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
     });
-  } catch (e) { /* silent */ }
+  } catch (_e) { /* silent */ }
 }
 
 Deno.serve(async (req: Request) => {
@@ -107,13 +115,13 @@ Deno.serve(async (req: Request) => {
   let body: any;
   try { body = await req.json(); } catch { body = {}; }
 
-  const { cmdId, type } = body;
+  const { cmdId, type, heureArrivee } = body;
   if (!cmdId || !type) {
     return new Response(JSON.stringify({ error: 'cmdId et type requis' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
-  if (!['depart', 'route', 'expedition'].includes(type)) {
-    return new Response(JSON.stringify({ error: 'type doit être : depart, route, expedition' }),
+  if (!['depart', 'route', 'proche', 'expedition'].includes(type)) {
+    return new Response(JSON.stringify({ error: 'type doit être : depart, route, proche, expedition' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
@@ -148,7 +156,7 @@ Deno.serve(async (req: Request) => {
     : APP_BASE;
   const tracking = cmd.tracking_transporteur || '';
   const contenu = TPL[type as keyof typeof TPL]({
-    prenom, lienSuivi, tracking, id: cmd.id,
+    prenom, lienSuivi, tracking, id: cmd.id, heureArrivee,
   });
 
   // Envoi Brevo

@@ -6496,16 +6496,19 @@ function saveCmd() {
 // v7.3.8 : retire x-app-secret (l'Edge Function ne le liste pas en CORS
 // Access-Control-Allow-Headers -> preflight bloque). L'auth se fait via
 // le Bearer SUPABASE_KEY (anon) qui satisfait le Verify JWT de la fonction.
-async function sendCmdSmsAsync(cmdId, type) {
+// v7.5.20 : params optionnels (ex : heureArrivee pour SMS depart avec ETA)
+async function sendCmdSmsAsync(cmdId, type, params) {
   if (!cmdId || !type) return;
   try {
+    var body = { cmdId: cmdId, type: type };
+    if (params && params.heureArrivee) body.heureArrivee = params.heureArrivee;
     var resp = await fetch(SUPABASE_URL + '/functions/v1/send-cmd-sms', {
       method: 'POST',
       headers: {
         'Authorization': 'Bearer ' + SUPABASE_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ cmdId: cmdId, type: type })
+      body: JSON.stringify(body)
     });
     var data = await resp.json().catch(function(){ return {}; });
     if (data.sent) {
@@ -13795,6 +13798,46 @@ function geofenceTraiterPosition(pos) {
     }
   }
   geofenceDansZone = nouvelEtat;
+  // v7.5.20 : à chaque update GPS, vérifier proximité avec les clients non livrés
+  // pour déclencher SMS "votre livreur arrive !" si distance < 1 km
+  try { verifierProximiteClients(lat, lng); } catch(e) { console.warn('[GEOFENCE] proximite check:', e); }
+}
+
+// v7.5.20 : Détecte si RANOU est à moins de 1 km d'un client non livré + non encore notifié,
+// et déclenche un SMS "proche" automatique. Dedupe géré côté Edge Function via sms_envoyes.
+var _gfProximityCache = {}; // {cmdId: lastNotifMs} anti-spam local
+function verifierProximiteClients(latLiv, lngLiv) {
+  if (!latLiv || !lngLiv) return;
+  var livreur = geofenceGetLivreurActuel();
+  if (!livreur) return;
+  var today = new Date().toISOString().split('T')[0];
+  var tourneeJour = (typeof tournees !== 'undefined' ? tournees : []).find(function(t){
+    return (t.livreur||'').toUpperCase() === livreur.toUpperCase() && t.date === today;
+  });
+  if (!tourneeJour || !Array.isArray(tourneeJour.stops)) return;
+  var nowMs = Date.now();
+  tourneeJour.stops.forEach(function(s){
+    if (!s.cmdId) return;
+    // Skip livrés/annulés/reportés
+    if (['livré','annulé','reporté'].includes(s.statut)) return;
+    var cmd = (typeof commandes !== 'undefined' ? commandes : []).find(function(c){ return c.id === s.cmdId; });
+    if (!cmd) return;
+    if ((cmd.transporteur || 'RANOU') !== 'RANOU') return;
+    if (!cmd.tel || cmd.tel.length < 8) return;
+    // Anti-spam local : pas 2x dans la même heure
+    var lastNotif = _gfProximityCache[s.cmdId] || 0;
+    if (nowMs - lastNotif < 3600 * 1000) return;
+    // Coords du client : prendre la position si déjà géocodée, sinon skip
+    var latC = s._lat || s.lat;
+    var lngC = s._lng || s.lng;
+    if (!latC || !lngC) return;
+    var dist = geofenceDistance(latLiv, lngLiv, latC, lngC);
+    if (dist > 1000) return;
+    // < 1 km : trigger SMS proche
+    _gfProximityCache[s.cmdId] = nowMs;
+    console.log('[PROXIMITE] ' + s.client + ' a ' + Math.round(dist) + 'm -> SMS proche');
+    if (typeof sendCmdSmsAsync === 'function') sendCmdSmsAsync(s.cmdId, 'proche');
+  });
 }
 
 // ── Déclencher le départ : sortie de zone détectée ──
@@ -13815,8 +13858,7 @@ function geofenceDeclencherDepart() {
   }
 
   // v7.5.16 : Envoyer automatiquement les SMS "départ" à tous les clients RANOU
-  // de la tournée du jour. La dedupe est gérée côté Edge Function via cmd.sms_envoyes,
-  // donc pas de risque de double envoi (et si on rentre/sort plusieurs fois, OK).
+  // v7.5.20 : avec heure d'arrivée estimée pour chaque client (ETA = depart + (index+1) * 18 min)
   try {
     var livreur = geofenceGetLivreurActuel();
     if (livreur) {
@@ -13825,21 +13867,28 @@ function geofenceDeclencherDepart() {
         return (t.livreur||'').toUpperCase() === livreur.toUpperCase() && t.date === today;
       });
       if (tourneeJour && Array.isArray(tourneeJour.stops)) {
-        var nbEnvoyes = 0;
-        tourneeJour.stops.forEach(function(s){
-          if (!s.cmdId) return;
+        // Filtrer les stops RANOU valides
+        var stopsRanou = tourneeJour.stops.filter(function(s){
+          if (!s.cmdId) return false;
           var cmd = (typeof commandes !== 'undefined' ? commandes : []).find(function(c){ return c.id === s.cmdId; });
-          if (!cmd) return;
-          if ((cmd.transporteur || 'RANOU') !== 'RANOU') return;
-          if (!cmd.tel || cmd.tel.length < 8) return;
-          // Throttle 200ms entre chaque envoi pour eviter rate-limit Brevo
+          if (!cmd) return false;
+          if ((cmd.transporteur || 'RANOU') !== 'RANOU') return false;
+          if (!cmd.tel || cmd.tel.length < 8) return false;
+          return true;
+        });
+        var nbEnvoyes = 0;
+        var startMs = Date.now();
+        stopsRanou.forEach(function(s, idx){
+          // ETA approximative : 1er client = depart + 25 min, puis +18 min par stop
+          var etaMs = startMs + (25 + idx * 18) * 60 * 1000;
+          var heureArrivee = new Date(etaMs).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
           setTimeout(function(){
-            if (typeof sendCmdSmsAsync === 'function') sendCmdSmsAsync(s.cmdId, 'depart');
+            if (typeof sendCmdSmsAsync === 'function') sendCmdSmsAsync(s.cmdId, 'depart', { heureArrivee: heureArrivee });
           }, nbEnvoyes * 200);
           nbEnvoyes++;
         });
         if (nbEnvoyes > 0 && typeof toast === 'function') {
-          toast('📱 ' + nbEnvoyes + ' SMS de départ envoyés aux clients ' + livreur, 'ok');
+          toast('📱 ' + nbEnvoyes + ' SMS de départ envoyés (avec ETA) aux clients ' + livreur, 'ok');
         }
       }
     }
