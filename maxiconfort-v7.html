@@ -1760,10 +1760,22 @@ Maxiconfort — {TEL_CONTACT}</textarea>
       <div id="suivi-stats" style="font-size:12px;color:var(--t3)"></div>
     </div>
 
+    <!-- v7.5.30 : Barre d'action sélection multi (apparaît si 1+ ligne cochée) -->
+    <div id="suivi-action-bar" style="display:none;background:linear-gradient(135deg,#1FCECA,#185FA5);color:#fff;padding:12px 16px;border-radius:var(--rl);margin-bottom:10px;box-shadow:0 2px 8px rgba(31,206,202,.25);align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+      <div style="font-size:14px;font-weight:800">
+        <span id="suivi-sel-count">0</span> commande(s) sélectionnée(s)
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick="suiviOuvrirModalTournee()" style="padding:9px 14px;border-radius:8px;border:none;background:#fff;color:#185FA5;font-weight:800;font-size:13px;cursor:pointer;font-family:var(--font)">📦 Ajouter à une tournée RANOU</button>
+        <button onclick="suiviClearSelection()" style="padding:9px 14px;border-radius:8px;border:1.5px solid rgba(255,255,255,.5);background:transparent;color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:var(--font)">❌ Tout décocher</button>
+      </div>
+    </div>
+
     <!-- Tableau resultats -->
     <div class="tw">
       <table>
         <thead><tr>
+          <th style="width:32px;text-align:center" title="Cocher / décocher tout"><input type="checkbox" id="suivi-chk-all" onclick="suiviToggleAll(this)" style="cursor:pointer;width:16px;height:16px"></th>
           <th style="cursor:pointer;user-select:none" onclick="suiviTrier('id')">#<span id="suivi-tri-id"></span></th>
           <th style="cursor:pointer;user-select:none" onclick="suiviTrier('client')">Client<span id="suivi-tri-client"></span></th>
           <th>Adresse</th>
@@ -1776,6 +1788,21 @@ Maxiconfort — {TEL_CONTACT}</textarea>
         </tr></thead>
         <tbody id="suivi-tbody"></tbody>
       </table>
+    </div>
+
+    <!-- v7.5.30 : Modal "Ajouter à tournée RANOU" -->
+    <div id="suivi-modal-tournee" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center;padding:14px">
+      <div style="background:var(--card);border-radius:var(--rl2);padding:22px;max-width:520px;width:100%;max-height:88vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.25)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div style="font-size:18px;font-weight:900;color:var(--text)">📦 Ajouter à une tournée</div>
+          <button onclick="suiviFermerModalTournee()" style="background:none;border:none;font-size:24px;color:var(--t3);cursor:pointer;line-height:1">&times;</button>
+        </div>
+        <div id="suivi-modal-body" style="font-size:13px;color:var(--t2)"></div>
+        <div style="display:flex;gap:8px;margin-top:18px;justify-content:flex-end">
+          <button onclick="suiviFermerModalTournee()" style="padding:9px 16px;border-radius:8px;border:1px solid var(--brd);background:var(--bg);color:var(--text);font-weight:700;font-size:13px;cursor:pointer;font-family:var(--font)">Annuler</button>
+          <button onclick="suiviValiderAjoutTournee()" id="suivi-modal-valider" class="btn btn-p" style="padding:9px 18px">✅ Valider</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -5531,12 +5558,23 @@ function suiviAppliquerFiltres() {
   document.getElementById('suivi-stats').textContent = '✅ ' + nbLivre + ' livrée(s) · ⚠ ' + nbRetard + ' en retard · 💶 ' + totalMontant.toFixed(2) + ' €';
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:40px 20px;color:var(--t3)"><div style="font-size:36px;margin-bottom:10px">🔍</div><div>Aucune commande trouvée avec ces filtres</div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:40px 20px;color:var(--t3)"><div style="font-size:36px;margin-bottom:10px">🔍</div><div>Aucune commande trouvée avec ces filtres</div></td></tr>';
     suiviRafraichirTriIndicateurs();
+    suiviUpdateActionBar();
     return;
   }
 
   var todayStr = new Date().toISOString().split('T')[0];
+  // v7.5.30 : detection commandes deja dans une tournee pour disable la checkbox
+  var cmdsDansTournee = new Set();
+  if (typeof tournees !== 'undefined' && Array.isArray(tournees)) {
+    tournees.forEach(function(t){
+      if (Array.isArray(t.stops)) t.stops.forEach(function(s){
+        if (s.cmdId) cmdsDansTournee.add(s.cmdId);
+      });
+    });
+  }
+
   tbody.innerHTML = rows.map(function(c){
     var transpo = suiviGetTransporteur(c);
     var transpoBdg = transpo === 'GLS'
@@ -5548,7 +5586,19 @@ function suiviAppliquerFiltres() {
     var isRetard = dStr && dStr < todayStr && c.statut !== 'livré' && c.statut !== 'annulé';
     var dateAffich = c.date ? fmtDate(c.date) : '—';
     if (isRetard) dateAffich = '<span style="color:var(--rd);font-weight:800">⚠ '+dateAffich+'</span>';
-    return '<tr onclick="ouvrirCmd(\''+c.id+'\')" style="cursor:pointer">'+
+    // v7.5.30 : checkbox sélection — désactivée si livré/annulé/déjà dans tournée
+    var dejaDansTournee = cmdsDansTournee.has(c.id);
+    var isLivree = c.statut === 'livré' || c.statut === 'annulé';
+    var isEligible = !isLivree && !dejaDansTournee && transpo === 'RANOU'; // RANOU uniquement (GLS pas de tournée interne)
+    var isChecked = (typeof suiviSelection !== 'undefined' && suiviSelection.has(c.id)) ? 'checked' : '';
+    var chkTitle = !isEligible
+      ? (isLivree ? 'Commande déjà ' + c.statut : (dejaDansTournee ? 'Déjà dans une tournée' : 'GLS — pas de tournée RANOU'))
+      : 'Sélectionner pour ajout à tournée';
+    var chkHtml = isEligible
+      ? '<input type="checkbox" class="suivi-row-chk" data-cmdid="'+c.id+'" '+isChecked+' onclick="event.stopPropagation();suiviToggleSelection(\''+c.id+'\', this.checked)" title="'+chkTitle+'" style="cursor:pointer;width:16px;height:16px">'
+      : '<span title="'+chkTitle+'" style="color:var(--t3);font-size:12px">—</span>';
+    return '<tr onclick="ouvrirCmd(\''+c.id+'\')" style="cursor:pointer" data-cmdid="'+c.id+'">'+
+      '<td style="text-align:center;padding:4px 8px" onclick="event.stopPropagation()">'+chkHtml+'</td>'+
       '<td style="color:var(--t3);font-size:12px">'+c.id+'</td>'+
       '<td><div class="td-m">'+(c.client||'')+'</div><div class="td-s">'+(c.tel||'')+'</div></td>'+
       '<td style="font-size:12px">'+(c.adresse||'')+'</td>'+
@@ -5561,6 +5611,7 @@ function suiviAppliquerFiltres() {
     '</tr>';
   }).join('');
   suiviRafraichirTriIndicateurs();
+  suiviUpdateActionBar();
 }
 
 function suiviRafraichirTriIndicateurs() {
@@ -5583,6 +5634,210 @@ function suiviTrier(col) {
     suiviTriDir = col === 'date' ? 'desc' : 'asc';
   }
   suiviAppliquerFiltres();
+}
+
+// ════════════════════════════════════════════════════════════
+// v7.5.30 : Selection multi + ajout a tournee RANOU depuis Suivi
+// ────────────────────────────────────────────────────────────
+// State global de la selection (Set de cmdId)
+var suiviSelection = new Set();
+var suiviModalCmdIds = []; // commandes en cours d'ajout (snapshot au moment d'ouverture modal)
+
+function suiviToggleSelection(cmdId, isChecked) {
+  if (isChecked) suiviSelection.add(cmdId);
+  else suiviSelection.delete(cmdId);
+  suiviUpdateActionBar();
+}
+
+function suiviClearSelection() {
+  suiviSelection.clear();
+  document.querySelectorAll('.suivi-row-chk').forEach(function(cb){ cb.checked = false; });
+  var chkAll = document.getElementById('suivi-chk-all');
+  if (chkAll) chkAll.checked = false;
+  suiviUpdateActionBar();
+}
+
+function suiviToggleAll(checkbox) {
+  // Coche/decoche toutes les checkbox eligibles visibles
+  var cbs = document.querySelectorAll('.suivi-row-chk');
+  cbs.forEach(function(cb){
+    cb.checked = checkbox.checked;
+    var id = cb.dataset.cmdid;
+    if (checkbox.checked) suiviSelection.add(id);
+    else suiviSelection.delete(id);
+  });
+  suiviUpdateActionBar();
+}
+
+function suiviUpdateActionBar() {
+  var bar = document.getElementById('suivi-action-bar');
+  var cnt = document.getElementById('suivi-sel-count');
+  if (!bar || !cnt) return;
+  var n = suiviSelection.size;
+  cnt.textContent = n;
+  bar.style.display = n > 0 ? 'flex' : 'none';
+  // Synchronise checkbox "tout" si toutes les visibles sont cochees
+  var chkAll = document.getElementById('suivi-chk-all');
+  if (chkAll) {
+    var cbs = document.querySelectorAll('.suivi-row-chk');
+    var allChecked = cbs.length > 0 && Array.from(cbs).every(function(cb){ return cb.checked; });
+    chkAll.checked = allChecked;
+    chkAll.indeterminate = !allChecked && n > 0;
+  }
+}
+
+// ── MODAL : Ajouter selection a une tournee
+function suiviOuvrirModalTournee() {
+  if (suiviSelection.size === 0) { toast('Aucune commande sélectionnée', 'err'); return; }
+  // Snapshot des cmdIds (la selection peut bouger entre temps)
+  suiviModalCmdIds = Array.from(suiviSelection);
+  // Filtre : ne garder que les commandes valides (existent encore + statut OK)
+  suiviModalCmdIds = suiviModalCmdIds.filter(function(id){
+    var c = commandes.find(function(x){ return x.id === id; });
+    return c && c.statut !== 'livré' && c.statut !== 'annulé';
+  });
+  if (suiviModalCmdIds.length === 0) {
+    toast('Aucune commande éligible dans la sélection', 'err');
+    return;
+  }
+  // Date par défaut = date la plus représentée dans la sélection (sinon demain)
+  var dateCounts = {};
+  suiviModalCmdIds.forEach(function(id){
+    var c = commandes.find(function(x){ return x.id === id; });
+    var d = c && c.date ? String(c.date).split('T')[0] : null;
+    if (d) dateCounts[d] = (dateCounts[d] || 0) + 1;
+  });
+  var defaultDate;
+  var keys = Object.keys(dateCounts);
+  if (keys.length > 0) {
+    defaultDate = keys.sort(function(a,b){ return dateCounts[b] - dateCounts[a]; })[0];
+  } else {
+    var demain = new Date(); demain.setDate(demain.getDate() + 1);
+    defaultDate = demain.toISOString().split('T')[0];
+  }
+  suiviRenderModalBody(defaultDate);
+  document.getElementById('suivi-modal-tournee').style.display = 'flex';
+}
+
+function suiviRenderModalBody(selectedDate) {
+  var body = document.getElementById('suivi-modal-body');
+  if (!body) return;
+  // Tournees existantes pour cette date (RANOU uniquement)
+  var tourneesDate = (typeof tournees !== 'undefined' ? tournees : []).filter(function(t){
+    return t.date === selectedDate && (t.livreur || '').toUpperCase() === 'RANOU' && t.statut !== 'terminée';
+  });
+  // Recap des commandes selectionnees
+  var cmds = suiviModalCmdIds.map(function(id){ return commandes.find(function(x){ return x.id === id; }); }).filter(Boolean);
+  var totalMontant = cmds.reduce(function(s,c){ return s + (parseFloat(c.prix) || 0); }, 0);
+
+  var html = '';
+  html += '<div style="background:var(--bg2);padding:11px 13px;border-radius:8px;margin-bottom:14px">';
+  html += '<div style="font-size:12px;font-weight:700;color:var(--t2);margin-bottom:4px">📋 Sélection</div>';
+  html += '<div style="font-size:14px;font-weight:800;color:var(--text)">' + cmds.length + ' commande(s) — ' + totalMontant.toFixed(0) + ' €</div>';
+  html += '<div style="font-size:11px;color:var(--t3);margin-top:4px">' + cmds.slice(0, 4).map(function(c){ return c.client; }).join(', ') + (cmds.length > 4 ? ' + ' + (cmds.length - 4) + ' autres' : '') + '</div>';
+  html += '</div>';
+
+  html += '<div style="margin-bottom:14px">';
+  html += '<label style="font-size:11px;font-weight:800;color:var(--t2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px;display:block">📅 Date de tournée</label>';
+  html += '<input type="date" id="suivi-modal-date" value="' + selectedDate + '" onchange="suiviRenderModalBody(this.value)" style="width:100%;padding:9px 11px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font);font-weight:700">';
+  html += '</div>';
+
+  html += '<div style="margin-bottom:8px">';
+  html += '<label style="font-size:11px;font-weight:800;color:var(--t2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px;display:block">🎯 Cible</label>';
+  html += '<div style="display:flex;flex-direction:column;gap:6px">';
+  // Option nouvelle tournée
+  html += '<label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1.5px solid var(--brd2);border-radius:8px;cursor:pointer;background:var(--bg);transition:all .15s" onmouseover="this.style.borderColor=\'var(--blue)\'" onmouseout="this.style.borderColor=\'var(--brd2)\'">';
+  html += '<input type="radio" name="suivi-modal-target" value="nouvelle" checked style="cursor:pointer">';
+  html += '<div style="flex:1"><div style="font-weight:800;color:var(--text);font-size:13px">+ Créer une nouvelle tournée RANOU</div><div style="font-size:11px;color:var(--t3);margin-top:2px">Date = ' + selectedDate + ' · Livreur = RANOU</div></div>';
+  html += '</label>';
+  // Options tournées existantes
+  tourneesDate.forEach(function(t){
+    var nb = (t.stops || []).length;
+    var nonLivres = (t.stops || []).filter(function(s){ return s.statut !== 'livré' && s.statut !== 'annulé'; }).length;
+    html += '<label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1.5px solid var(--brd2);border-radius:8px;cursor:pointer;background:var(--bg);transition:all .15s" onmouseover="this.style.borderColor=\'var(--blue)\'" onmouseout="this.style.borderColor=\'var(--brd2)\'">';
+    html += '<input type="radio" name="suivi-modal-target" value="' + t.id + '" style="cursor:pointer">';
+    html += '<div style="flex:1"><div style="font-weight:800;color:var(--text);font-size:13px">' + t.id + ' — ' + t.statut + '</div><div style="font-size:11px;color:var(--t3);margin-top:2px">' + nb + ' arrêts · ' + nonLivres + ' restants</div></div>';
+    html += '</label>';
+  });
+  html += '</div></div>';
+
+  body.innerHTML = html;
+}
+
+function suiviFermerModalTournee() {
+  document.getElementById('suivi-modal-tournee').style.display = 'none';
+  suiviModalCmdIds = [];
+}
+
+async function suiviValiderAjoutTournee() {
+  var date = document.getElementById('suivi-modal-date').value;
+  var targetRadio = document.querySelector('input[name="suivi-modal-target"]:checked');
+  if (!date) { toast('Choisis une date', 'err'); return; }
+  if (!targetRadio) { toast('Choisis une cible', 'err'); return; }
+  var target = targetRadio.value;
+  var cmds = suiviModalCmdIds.map(function(id){ return commandes.find(function(x){ return x.id === id; }); }).filter(Boolean);
+  if (!cmds.length) { toast('Aucune commande valide', 'err'); return; }
+
+  var btn = document.getElementById('suivi-modal-valider');
+  var labelOrig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Ajout...'; }
+
+  try {
+    var t;
+    if (target === 'nouvelle') {
+      // Nouvelle tournée RANOU
+      t = {
+        id: 'T-' + (tournees.length + 1),
+        date: date,
+        livreur: 'RANOU',
+        stops: cmds.map(function(c, i){
+          return {
+            num: i + 1, cmdId: c.id, client: c.client, tel: c.tel,
+            adresse: c.adresse, etage: c.etage || '', asc: c.asc || 'Non', code: c.code || '',
+            produit: c.produit, prix: c.prix, paie: c.paie,
+            instr: c.instr || '', statut: 'en-attente', heure: '',
+          };
+        }),
+        statut: 'préparée',
+      };
+      tournees.push(t);
+    } else {
+      // Tournée existante : on append
+      t = tournees.find(function(x){ return x.id === target; });
+      if (!t) { toast('Tournée introuvable', 'err'); return; }
+      if (!Array.isArray(t.stops)) t.stops = [];
+      var startNum = t.stops.length + 1;
+      cmds.forEach(function(c, i){
+        // Eviter doublon (si déjà dans la tournée, skip)
+        if (t.stops.some(function(s){ return s.cmdId === c.id; })) return;
+        t.stops.push({
+          num: startNum + i, cmdId: c.id, client: c.client, tel: c.tel,
+          adresse: c.adresse, etage: c.etage || '', asc: c.asc || 'Non', code: c.code || '',
+          produit: c.produit, prix: c.prix, paie: c.paie,
+          instr: c.instr || '', statut: 'en-attente', heure: '',
+        });
+      });
+    }
+    // Assigner livreur = RANOU sur les commandes
+    cmds.forEach(function(c){ c.livreur = 'RANOU'; });
+    // Sauvegarde
+    await sbSaveTournee(t);
+    for (var k = 0; k < cmds.length; k++) {
+      try { await sbSaveCommande(cmds[k]); } catch (_e) {}
+    }
+    try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(_e) {}
+    // Reset selection + UI
+    suiviSelection.clear();
+    suiviFermerModalTournee();
+    if (typeof renderTournees === 'function') renderTournees();
+    if (typeof renderCmds === 'function') renderCmds();
+    suiviAppliquerFiltres();
+    toast('✅ ' + cmds.length + ' commande(s) ajoutée(s) à ' + t.id, 'ok');
+  } catch (e) {
+    toast('❌ Erreur : ' + e.message, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = labelOrig || '✅ Valider'; }
+  }
 }
 
 async function suiviChargerSheetJS() {
