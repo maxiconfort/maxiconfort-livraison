@@ -81,37 +81,51 @@ async function getOAuth2Token(): Promise<string> {
 // L'URL exacte peut varier selon la doc — adapté si erreur 404.
 // v1.1 : ajoute ContactId dans header + query au cas où GLS l'exige.
 async function trackParcel(trackId: string, token: string): Promise<any> {
+  const t = encodeURIComponent(trackId);
   const ctParam = GLS_CONTACT_ID ? `?contactId=${encodeURIComponent(GLS_CONTACT_ID)}` : '';
+  // 14 candidats Track & Trace (sera coupe des qu'un repond OK ou 401/403)
   const candidates = [
-    `${GLS_API_BASE}/track-and-trace/v1/parcels/${encodeURIComponent(trackId)}${ctParam}`,
-    `${GLS_API_BASE}/tracking/v1/references/${encodeURIComponent(trackId)}${ctParam}`,
-    `${GLS_API_BASE}/shipit-farm/v1/parcels/${encodeURIComponent(trackId)}/tracking${ctParam}`,
+    `${GLS_API_BASE}/track-and-trace/v1/parcels/${t}`,
+    `${GLS_API_BASE}/track-and-trace/v1/parcels/${t}${ctParam}`,
+    `${GLS_API_BASE}/track-and-trace/v1/parcels?trackingNumber=${t}`,
+    `${GLS_API_BASE}/track-and-trace/v1/references/${t}`,
+    `${GLS_API_BASE}/track-and-trace/v1/parcel/${t}/events`,
+    `${GLS_API_BASE}/shipit-farm/v1/parcels/${t}`,
+    `${GLS_API_BASE}/shipit-farm/v1/parcels/${t}/tracking`,
+    `${GLS_API_BASE}/shipit-farm/v1/parcels/${t}/events`,
+    `${GLS_API_BASE}/shipit-farm/v1/tracking/${t}`,
+    `${GLS_API_BASE}/shipit-farm/v1/track-and-trace/${t}`,
+    `${GLS_API_BASE}/tracking/v1/parcels/${t}`,
+    `${GLS_API_BASE}/tracking/v1/track/${t}`,
+    `${GLS_API_BASE}/v1/parcels/${t}/tracking`,
+    `${GLS_API_BASE}/v1/track/${t}`,
   ];
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${token}`,
     'Accept': 'application/json',
   };
   if (GLS_CONTACT_ID) {
-    // GLS exige souvent le ContactId comme header custom
-    headers['X-Contact-ID']  = GLS_CONTACT_ID;
-    headers['ContactId']     = GLS_CONTACT_ID;
+    headers['X-Contact-ID']   = GLS_CONTACT_ID;
+    headers['ContactId']      = GLS_CONTACT_ID;
     headers['Gls-Contact-Id'] = GLS_CONTACT_ID;
   }
-  let lastError: any = null;
+  const attempts: any[] = [];
   for (const url of candidates) {
     try {
       const resp = await fetch(url, { headers });
+      const bodyText = (await resp.text()).substring(0, 200);
+      attempts.push({ url, status: resp.status, bodySnippet: bodyText });
       if (resp.ok) {
-        return { ok: true, url, data: await resp.json() };
+        let data: any = null;
+        try { data = JSON.parse(bodyText); } catch { data = { raw: bodyText }; }
+        return { ok: true, url, data, attempts };
       }
-      lastError = { status: resp.status, url, body: (await resp.text()).substring(0, 300) };
-      // Si 401/403 inutile de continuer (problème d'auth)
       if (resp.status === 401 || resp.status === 403) break;
     } catch (e: any) {
-      lastError = { url, error: e.message };
+      attempts.push({ url, error: e.message });
     }
   }
-  return { ok: false, error: lastError };
+  return { ok: false, attempts };
 }
 
 // Détecte si un colis est "livré" depuis la réponse GLS
