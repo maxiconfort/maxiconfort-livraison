@@ -5059,26 +5059,59 @@ function pBdg(s){
 }
 
 // v7.5.12 : Indicateur des commandes prises aujourd'hui (created_at = today, vraie date d'entree)
+// v7.5.22 : 3 encarts : Aujourd'hui / Semaine / Mois (cote a cote)
 function renderCmdStatsJour() {
   var box = document.getElementById('cmd-stats-jour');
   if (!box) return;
   if (!Array.isArray(commandes) || commandes.length === 0) { box.style.display = 'none'; return; }
-  var today = new Date().toISOString().split('T')[0];
-  // Utiliser createdAt (vraie date d'entree dans le systeme, jamais editee par le user)
-  // Fallback sur dateCmd si createdAt manquant (cas anciennes commandes / cache pre-v7.5.12)
-  var prisesJour = commandes.filter(function(c){
-    if (!c) return false;
+  var now = new Date();
+  var todayStr = now.toISOString().split('T')[0];
+  // Debut de la semaine (lundi) au format YYYY-MM-DD
+  var dow = now.getDay() === 0 ? 6 : now.getDay() - 1;
+  var debutSem = new Date(now); debutSem.setDate(now.getDate() - dow); debutSem.setHours(0,0,0,0);
+  var debutSemStr = debutSem.toISOString().split('T')[0];
+  // Debut du mois
+  var debutMoisStr = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+
+  // Pour chaque cmd : determiner la vraie date d'entree (createdAt en priorite)
+  function getDateEntree(c) {
     var src = c.createdAt || c.dateCmd || '';
-    return src.substring(0, 10) === today;
+    return src.substring(0, 10);
+  }
+  var prisesJour    = commandes.filter(function(c){ return c && getDateEntree(c) === todayStr; });
+  var prisesSemaine = commandes.filter(function(c){
+    var d = getDateEntree(c);
+    return d && d >= debutSemStr && d <= todayStr;
   });
-  if (prisesJour.length === 0) { box.style.display = 'none'; return; }
-  var total = prisesJour.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
+  var prisesMois    = commandes.filter(function(c){
+    var d = getDateEntree(c);
+    return d && d >= debutMoisStr && d <= todayStr;
+  });
+  // Si rien d'aujourd'hui ET rien de la semaine -> cacher (peu probable)
+  if (prisesJour.length === 0 && prisesSemaine.length === 0 && prisesMois.length === 0) {
+    box.style.display = 'none'; return;
+  }
+  var totalJour    = prisesJour.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
+  var totalSemaine = prisesSemaine.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
+  var totalMois    = prisesMois.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
+
+  var moisFr = ['Janv','Fev','Mars','Avr','Mai','Juin','Juil','Aout','Sept','Oct','Nov','Dec'];
+  var lblMois = moisFr[now.getMonth()];
+
+  function mini(ico, lbl, nb, total, bgClass, brdColor, textColor) {
+    return '<div style="background:' + bgClass + ';border:1px solid ' + brdColor + ';border-radius:8px;padding:7px 12px;display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:' + textColor + '">' +
+      '<span>' + ico + ' ' + lbl + ' :</span>' +
+      '<span><strong>' + nb + '</strong> cmd' + (nb>1?'s':'') + '</span>' +
+      '<span style="opacity:.5">·</span>' +
+      '<span style="font-weight:900">' + total.toLocaleString('fr-FR') + ' €</span>' +
+    '</div>';
+  }
+
   box.style.display = 'block';
-  box.innerHTML = '<div style="background:var(--bl);border:1px solid var(--blue);border-radius:8px;padding:7px 12px;display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:var(--bd)">' +
-    '<span>📊 Aujourd\'hui :</span>' +
-    '<span><strong>' + prisesJour.length + '</strong> cmd' + (prisesJour.length>1?'s':'') + '</span>' +
-    '<span style="color:var(--t3)">·</span>' +
-    '<span style="font-weight:900">' + total.toLocaleString('fr-FR') + ' €</span>' +
+  box.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+    mini('📊', "Aujourd'hui", prisesJour.length, totalJour, 'var(--bl)', 'var(--blue)', 'var(--bd)') +
+    mini('📅', 'Semaine', prisesSemaine.length, totalSemaine, 'var(--gl)', 'var(--green)', 'var(--gd)') +
+    mini('📆', lblMois, prisesMois.length, totalMois, 'var(--ol)', 'var(--orange)', 'var(--od)') +
   '</div>';
 }
 

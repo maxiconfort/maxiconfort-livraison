@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.21 - Fix chgStopPaie : ajuster montantEnc si Payé sans Mixte
+// v7.5.22 - Mini-encarts Commandes : Aujourd'hui + Semaine + Mois
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-21';
+const CACHE_VERSION = 'maxiconfort-v7-5-22';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
