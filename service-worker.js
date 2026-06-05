@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.22 - Mini-encarts Commandes : Aujourd'hui + Semaine + Mois
+// v7.5.23 - Mini-encarts Commandes : chiffres exacts via Supabase
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-22';
+const CACHE_VERSION = 'maxiconfort-v7-5-23';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

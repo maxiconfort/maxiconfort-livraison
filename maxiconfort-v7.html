@@ -5060,10 +5060,10 @@ function pBdg(s){
 
 // v7.5.12 : Indicateur des commandes prises aujourd'hui (created_at = today, vraie date d'entree)
 // v7.5.22 : 3 encarts : Aujourd'hui / Semaine / Mois (cote a cote)
-function renderCmdStatsJour() {
+// v7.5.23 : chiffres EXACTS via fetch direct Supabase (cache local pouvait fausser les totaux)
+async function renderCmdStatsJour() {
   var box = document.getElementById('cmd-stats-jour');
   if (!box) return;
-  if (!Array.isArray(commandes) || commandes.length === 0) { box.style.display = 'none'; return; }
   var now = new Date();
   var todayStr = now.toISOString().split('T')[0];
   // Debut de la semaine (lundi) au format YYYY-MM-DD
@@ -5072,34 +5072,15 @@ function renderCmdStatsJour() {
   var debutSemStr = debutSem.toISOString().split('T')[0];
   // Debut du mois
   var debutMoisStr = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+  // Demain (pour borne sup exclusive)
+  var demain = new Date(now); demain.setDate(now.getDate() + 1);
+  var demainStr = demain.toISOString().split('T')[0];
 
-  // Pour chaque cmd : determiner la vraie date d'entree (createdAt en priorite)
-  function getDateEntree(c) {
-    var src = c.createdAt || c.dateCmd || '';
-    return src.substring(0, 10);
-  }
-  var prisesJour    = commandes.filter(function(c){ return c && getDateEntree(c) === todayStr; });
-  var prisesSemaine = commandes.filter(function(c){
-    var d = getDateEntree(c);
-    return d && d >= debutSemStr && d <= todayStr;
-  });
-  var prisesMois    = commandes.filter(function(c){
-    var d = getDateEntree(c);
-    return d && d >= debutMoisStr && d <= todayStr;
-  });
-  // Si rien d'aujourd'hui ET rien de la semaine -> cacher (peu probable)
-  if (prisesJour.length === 0 && prisesSemaine.length === 0 && prisesMois.length === 0) {
-    box.style.display = 'none'; return;
-  }
-  var totalJour    = prisesJour.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
-  var totalSemaine = prisesSemaine.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
-  var totalMois    = prisesMois.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
+  // Render un état "loading" rapide pour eviter le blink
+  box.style.display = 'block';
 
-  var moisFr = ['Janv','Fev','Mars','Avr','Mai','Juin','Juil','Aout','Sept','Oct','Nov','Dec'];
-  var lblMois = moisFr[now.getMonth()];
-
-  function mini(ico, lbl, nb, total, bgClass, brdColor, textColor) {
-    return '<div style="background:' + bgClass + ';border:1px solid ' + brdColor + ';border-radius:8px;padding:7px 12px;display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:' + textColor + '">' +
+  function mini(ico, lbl, plage, nb, total, bgClass, brdColor, textColor) {
+    return '<div style="background:' + bgClass + ';border:1px solid ' + brdColor + ';border-radius:8px;padding:7px 12px;display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:' + textColor + '" title="' + plage + '">' +
       '<span>' + ico + ' ' + lbl + ' :</span>' +
       '<span><strong>' + nb + '</strong> cmd' + (nb>1?'s':'') + '</span>' +
       '<span style="opacity:.5">·</span>' +
@@ -5107,11 +5088,40 @@ function renderCmdStatsJour() {
     '</div>';
   }
 
-  box.style.display = 'block';
+  var moisFr = ['Janv','Fev','Mars','Avr','Mai','Juin','Juil','Aout','Sept','Oct','Nov','Dec'];
+  var lblMois = moisFr[now.getMonth()];
+
+  // Helper : fetch direct Supabase pour avoir le compte + somme exacts d'une periode
+  async function fetchPeriode(dateMin, dateMax) {
+    try {
+      var url = SUPABASE_URL + '/rest/v1/commandes?select=prix&created_at=gte.' + dateMin + '&created_at=lt.' + dateMax;
+      var r = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
+      if (!r.ok) return { nb: 0, total: 0 };
+      var data = await r.json();
+      if (!Array.isArray(data)) return { nb: 0, total: 0 };
+      var nb = data.length;
+      var total = data.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
+      return { nb: nb, total: total };
+    } catch(e) { return { nb: 0, total: 0 }; }
+  }
+
+  // Lancer les 3 requetes en parallele
+  var [j, s, m] = await Promise.all([
+    fetchPeriode(todayStr, demainStr),
+    fetchPeriode(debutSemStr, demainStr),
+    fetchPeriode(debutMoisStr, demainStr)
+  ]);
+
+  // Formats plage pour tooltip
+  function fmtJour(d){ return d.substring(8,10)+'/'+d.substring(5,7); }
+  var plageJour = "Cmds creees le " + fmtJour(todayStr);
+  var plageSem  = "Du lundi " + fmtJour(debutSemStr) + " au " + fmtJour(todayStr);
+  var plageMois = "Du 01/" + (now.getMonth()+1).toString().padStart(2,'0') + " au " + fmtJour(todayStr);
+
   box.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
-    mini('📊', "Aujourd'hui", prisesJour.length, totalJour, 'var(--bl)', 'var(--blue)', 'var(--bd)') +
-    mini('📅', 'Semaine', prisesSemaine.length, totalSemaine, 'var(--gl)', 'var(--green)', 'var(--gd)') +
-    mini('📆', lblMois, prisesMois.length, totalMois, 'var(--ol)', 'var(--orange)', 'var(--od)') +
+    mini('📊', "Aujourd'hui", plageJour, j.nb, j.total, 'var(--bl)', 'var(--blue)', 'var(--bd)') +
+    mini('📅', 'Semaine', plageSem, s.nb, s.total, 'var(--gl)', 'var(--green)', 'var(--gd)') +
+    mini('📆', lblMois, plageMois, m.nb, m.total, 'var(--ol)', 'var(--orange)', 'var(--od)') +
   '</div>';
 }
 
