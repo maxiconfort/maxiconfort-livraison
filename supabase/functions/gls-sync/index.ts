@@ -1,24 +1,27 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : gls-sync (v4 — 05/06/2026)
+// Edge Function : gls-sync (v6 — 05/06/2026)
 // ════════════════════════════════════════════════════════════════════
-// Endpoint enfin trouve via page 33 PDF doc GLS ShipIT-FARM :
-//   POST /backend/rs/tracking/parceldetails
-//   Body: { "TrackID": "...", "ShipmentReference": "" }
+// v4 : Bearer OAuth2 → 401 Authorization failed
+// v5 : 5 modes auth tentes sur sandbox test01 → tous 401
+// v6 : URL prod trouvee = shipit-wbm-fr01.gls-group.eu (test01 = sandbox FR)
 //
-// IMPORTANT (note doc) : tracking marche SEULEMENT pour les colis crees
-// via la webservice ShipIT. Si Borhen cree ses colis via un autre outil
-// (portail GLS classique), le tracking via cette API echouera.
+// On essaye plusieurs combinaisons d'auth pour identifier la bonne :
+//   1. Basic Auth : GLS_API_KEY:GLS_CLIENT_SECRET
+//   2. Basic Auth : GLS_CONTACT_ID:GLS_CLIENT_SECRET
+//   3. Bearer OAuth2 (fallback)
 //
 // Body optionnel :
-//   { dryRun: true }   → liste ce qui serait fait sans rien modifier
-//   { trackId: "XXX" } → teste sur un seul tracking ID
-//   { useProd: true }  → utilise l'URL prod (defaut = test sandbox)
+//   { dryRun: true }        → liste sans modifier
+//   { trackId: "XXX" }      → test sur 1 tracking ID
+//   { useProd: true }       → URL prod (defaut = sandbox test01)
+//   { authMode: "auto"|"basic_api"|"basic_contact"|"bearer" }
+//     defaut = "auto" (essaye les 3)
 //
 // Secrets requis :
-//   - GLS_API_KEY (Consumer Key OAuth2)
-//   - GLS_CLIENT_SECRET (Consumer Secret OAuth2)
-//   - GLS_APP_ID (App ID, info uniquement)
-//   - GLS_CONTACT_ID (Contact ID Olivier)
+//   - GLS_API_KEY
+//   - GLS_CLIENT_SECRET
+//   - GLS_APP_ID (info)
+//   - GLS_CONTACT_ID
 // ════════════════════════════════════════════════════════════════════
 
 // deno-lint-ignore-file no-explicit-any
@@ -32,9 +35,8 @@ const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 
 const GLS_OAUTH_URL = 'https://api.gls-group.net/oauth2/v2/token';
-// URLs Track & Trace (PDF page 33)
 const GLS_TEST_BASE = 'https://shipit-wbm-test01.gls-group.eu:443/backend/rs/tracking';
-const GLS_PROD_BASE = 'https://shipit-wbm.gls-group.eu/backend/rs/tracking'; // a confirmer
+const GLS_PROD_BASE = 'https://shipit-wbm-fr01.gls-group.eu/backend/rs/tracking';
 
 const sb = createClient(SB_URL, SB_SR_KEY, { auth: { autoRefreshToken: false, persistSession: false } });
 
@@ -56,34 +58,86 @@ async function getOAuth2Token(): Promise<string> {
   return cachedToken.token;
 }
 
-async function trackParcel(trackId: string, token: string, useProd: boolean): Promise<any> {
-  const baseUrl = useProd ? GLS_PROD_BASE : GLS_TEST_BASE;
-  const url = `${baseUrl}/parceldetails`;
-  const headers: Record<string, string> = {
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  };
-  if (GLS_CONTACT_ID) headers['Contact-Id'] = GLS_CONTACT_ID;
-  const body = JSON.stringify({ TrackID: trackId, ShipmentReference: '' });
+async function tryAuth(url: string, body: string, authHeader: string, label: string): Promise<any> {
   try {
+    const headers: Record<string, string> = {
+      'Authorization': authHeader,
+      'Content-Type': 'application/glsVersion1+json',
+      'Accept': 'application/glsVersion1+json, application/json',
+    };
+    if (GLS_CONTACT_ID) headers['Contact-Id'] = GLS_CONTACT_ID;
     const resp = await fetch(url, { method: 'POST', headers, body });
     const bodyText = await resp.text();
     if (resp.ok) {
       let data: any = null;
       try { data = JSON.parse(bodyText); } catch { data = { raw: bodyText.substring(0, 500) }; }
-      return { ok: true, url, status: resp.status, data };
+      return { ok: true, authMode: label, status: resp.status, data };
     }
-    return { ok: false, url, status: resp.status, body: bodyText.substring(0, 500) };
+    return { ok: false, authMode: label, status: resp.status, body: bodyText.substring(0, 300) };
   } catch (e: any) {
-    return { ok: false, url, error: e.message };
+    return { ok: false, authMode: label, error: e.message };
   }
+}
+
+async function trackParcel(trackId: string, useProd: boolean, authMode: string): Promise<any> {
+  const baseUrl = useProd ? GLS_PROD_BASE : GLS_TEST_BASE;
+  const url = `${baseUrl}/parceldetails`;
+  const body = JSON.stringify({ TrackID: trackId, ShipmentReference: '' });
+  const attempts: any[] = [];
+
+  // 1. Basic Auth : API_KEY:CLIENT_SECRET
+  if (authMode === 'auto' || authMode === 'basic_api') {
+    if (GLS_API_KEY && GLS_CLIENT_SECRET) {
+      const r = await tryAuth(url, body, `Basic ${btoa(`${GLS_API_KEY}:${GLS_CLIENT_SECRET}`)}`, 'basic_api');
+      attempts.push(r);
+      if (r.ok) return { ok: true, url, status: r.status, data: r.data, attempts, winning: 'basic_api' };
+    }
+  }
+
+  // 2. Basic Auth : CONTACT_ID:CLIENT_SECRET
+  if (authMode === 'auto' || authMode === 'basic_contact') {
+    if (GLS_CONTACT_ID && GLS_CLIENT_SECRET) {
+      const r = await tryAuth(url, body, `Basic ${btoa(`${GLS_CONTACT_ID}:${GLS_CLIENT_SECRET}`)}`, 'basic_contact');
+      attempts.push(r);
+      if (r.ok) return { ok: true, url, status: r.status, data: r.data, attempts, winning: 'basic_contact' };
+    }
+  }
+
+  // 3. Basic Auth : CONTACT_ID:API_KEY
+  if (authMode === 'auto' || authMode === 'basic_contact_apikey') {
+    if (GLS_CONTACT_ID && GLS_API_KEY) {
+      const r = await tryAuth(url, body, `Basic ${btoa(`${GLS_CONTACT_ID}:${GLS_API_KEY}`)}`, 'basic_contact_apikey');
+      attempts.push(r);
+      if (r.ok) return { ok: true, url, status: r.status, data: r.data, attempts, winning: 'basic_contact_apikey' };
+    }
+  }
+
+  // 4. Basic Auth : APP_ID:CLIENT_SECRET
+  if (authMode === 'auto' || authMode === 'basic_app') {
+    if (GLS_APP_ID && GLS_CLIENT_SECRET) {
+      const r = await tryAuth(url, body, `Basic ${btoa(`${GLS_APP_ID}:${GLS_CLIENT_SECRET}`)}`, 'basic_app');
+      attempts.push(r);
+      if (r.ok) return { ok: true, url, status: r.status, data: r.data, attempts, winning: 'basic_app' };
+    }
+  }
+
+  // 5. Bearer OAuth2 (fallback)
+  if (authMode === 'auto' || authMode === 'bearer') {
+    try {
+      const token = await getOAuth2Token();
+      const r = await tryAuth(url, body, `Bearer ${token}`, 'bearer');
+      attempts.push(r);
+      if (r.ok) return { ok: true, url, status: r.status, data: r.data, attempts, winning: 'bearer' };
+    } catch (e: any) {
+      attempts.push({ ok: false, authMode: 'bearer', error: 'OAuth2 fail: ' + e.message });
+    }
+  }
+
+  return { ok: false, url, attempts };
 }
 
 function isParcelDelivered(trackData: any): boolean {
   if (!trackData) return false;
-  // Selon la doc PDF, response a un node "History" avec events.
-  // Chaque event = { Date, LocationCode, Location, Country, ... } et probablement un Status/Description.
   const history = trackData.History || trackData.history || [];
   if (Array.isArray(history)) {
     for (const ev of history) {
@@ -97,7 +151,6 @@ function isParcelDelivered(trackData: any): boolean {
       if (desc.includes('delivered') || desc.includes('livré') || desc.includes('livre') || desc.includes('remise au destinataire')) return true;
     }
   }
-  // Fallback : top level status
   const topStatus = (trackData.Status || trackData.status || '').toString().toUpperCase();
   if (topStatus.includes('DELIVERED') || topStatus.includes('LIVRE')) return true;
   return false;
@@ -110,27 +163,19 @@ Deno.serve(async (req: Request) => {
   const dryRun: boolean = !!body.dryRun;
   const testTrackId: string | null = body.trackId || null;
   const useProd: boolean = !!body.useProd;
+  const authMode: string = body.authMode || 'auto';
   const summary = {
     started_at: new Date().toISOString(),
-    dryRun, useProd,
+    dryRun, useProd, authMode,
     cmds_a_checker: 0,
     cmds_livre: 0,
     cmds_erreur: 0,
     duration_ms: 0,
     details: [] as any[],
-    oauth: { ok: false, message: '' as string | null },
   };
 
-  let token = '';
-  try { token = await getOAuth2Token(); summary.oauth.ok = true; }
-  catch (e: any) {
-    summary.oauth.message = e.message;
-    summary.duration_ms = Date.now() - startTime;
-    return new Response(JSON.stringify({ ok: false, summary }), { status: 500, headers: { 'Content-Type': 'application/json' } });
-  }
-
   if (testTrackId) {
-    const result = await trackParcel(testTrackId, token, useProd);
+    const result = await trackParcel(testTrackId, useProd, authMode);
     summary.details.push({ trackId: testTrackId, ...result });
     if (result.ok) {
       const livre = isParcelDelivered(result.data);
@@ -148,9 +193,8 @@ Deno.serve(async (req: Request) => {
     .not('statut', 'in', '(livré,annulé)');
 
   if (errCmds) {
-    summary.oauth.message = 'Erreur SQL: ' + errCmds.message;
     summary.duration_ms = Date.now() - startTime;
-    return new Response(JSON.stringify({ ok: false, summary }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ ok: false, error: 'Erreur SQL: ' + errCmds.message, summary }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 
   const cmdsValid = (cmds || []).filter((c: any) => c.tracking_transporteur && c.tracking_transporteur.length >= 6);
@@ -158,10 +202,10 @@ Deno.serve(async (req: Request) => {
 
   for (const cmd of cmdsValid) {
     const tracking: string = cmd.tracking_transporteur;
-    const result = await trackParcel(tracking, token, useProd);
+    const result = await trackParcel(tracking, useProd, authMode);
     if (!result.ok) {
       summary.cmds_erreur++;
-      summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking, status: 'api_error', http: result.status, body: result.body, error: result.error });
+      summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking, status: 'api_error', attempts: result.attempts });
       continue;
     }
     const livre = isParcelDelivered(result.data);
