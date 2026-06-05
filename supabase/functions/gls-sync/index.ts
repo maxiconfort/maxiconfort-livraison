@@ -26,6 +26,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const GLS_API_KEY       = Deno.env.get('GLS_API_KEY') || '';
 const GLS_CLIENT_SECRET = Deno.env.get('GLS_CLIENT_SECRET') || '';
 const GLS_APP_ID        = Deno.env.get('GLS_APP_ID') || '';
+const GLS_CONTACT_ID    = Deno.env.get('GLS_CONTACT_ID') || '';
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 
@@ -78,26 +79,32 @@ async function getOAuth2Token(): Promise<string> {
 
 // Appel à l'API Track & Trace pour un tracking ID
 // L'URL exacte peut varier selon la doc — adapté si erreur 404.
+// v1.1 : ajoute ContactId dans header + query au cas où GLS l'exige.
 async function trackParcel(trackId: string, token: string): Promise<any> {
-  // Tentative 1 : endpoint standard Track and Trace
+  const ctParam = GLS_CONTACT_ID ? `?contactId=${encodeURIComponent(GLS_CONTACT_ID)}` : '';
   const candidates = [
-    `${GLS_API_BASE}/track-and-trace/v1/parcels/${encodeURIComponent(trackId)}`,
-    `${GLS_API_BASE}/tracking/v1/references/${encodeURIComponent(trackId)}`,
-    `${GLS_API_BASE}/shipit-farm/v1/parcels/${encodeURIComponent(trackId)}/tracking`,
+    `${GLS_API_BASE}/track-and-trace/v1/parcels/${encodeURIComponent(trackId)}${ctParam}`,
+    `${GLS_API_BASE}/tracking/v1/references/${encodeURIComponent(trackId)}${ctParam}`,
+    `${GLS_API_BASE}/shipit-farm/v1/parcels/${encodeURIComponent(trackId)}/tracking${ctParam}`,
   ];
+  const headers: Record<string, string> = {
+    'Authorization': `Bearer ${token}`,
+    'Accept': 'application/json',
+  };
+  if (GLS_CONTACT_ID) {
+    // GLS exige souvent le ContactId comme header custom
+    headers['X-Contact-ID']  = GLS_CONTACT_ID;
+    headers['ContactId']     = GLS_CONTACT_ID;
+    headers['Gls-Contact-Id'] = GLS_CONTACT_ID;
+  }
   let lastError: any = null;
   for (const url of candidates) {
     try {
-      const resp = await fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-        },
-      });
+      const resp = await fetch(url, { headers });
       if (resp.ok) {
         return { ok: true, url, data: await resp.json() };
       }
-      lastError = { status: resp.status, url, body: (await resp.text()).substring(0, 200) };
+      lastError = { status: resp.status, url, body: (await resp.text()).substring(0, 300) };
       // Si 401/403 inutile de continuer (problème d'auth)
       if (resp.status === 401 || resp.status === 403) break;
     } catch (e: any) {
