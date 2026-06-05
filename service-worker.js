@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.27 - Encarts Commandes : masque les € si role != admin
+// v7.5.28 - SMS depart groupe au 1er clic Waze (backup geofence)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-27';
+const CACHE_VERSION = 'maxiconfort-v7-5-28';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

@@ -7616,12 +7616,18 @@ function renderLivreur() {
     });
   });
   // Waze (v7.1 - hotfix tracking : maintenir Maxiconfort actif)
+  // v7.5.28 : 1er clic Waze du jour = backup SMS depart groupe (si geofence rate)
   document.querySelectorAll('.lv-waze-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {
       var adresse = encodeURIComponent(btn.dataset.adresse);
-      // NOUVEAU : declencher SMS "en route" vers ce client (uniquement transporteur RANOU)
       var _wcmdId = btn.dataset.cmdId || '';
-      if (_wcmdId) {
+      // v7.5.28 : 1er clic Waze du jour declenche SMS depart groupe (backup geofence)
+      var _sentGroupe = (typeof tryEnvoyerSmsDepartGroupeRanou === 'function')
+        ? tryEnvoyerSmsDepartGroupeRanou('waze-stop')
+        : false;
+      // Si pas le 1er clic du jour, envoyer SMS "en route" individuel a CE client
+      // (sinon il vient deja de recevoir le SMS depart, evite double SMS)
+      if (!_sentGroupe && _wcmdId) {
         var _wcmd = commandes.find(function(x){ return x.id === _wcmdId; });
         if (_wcmd && (_wcmd.transporteur || 'RANOU') === 'RANOU') {
           sendCmdSmsAsync(_wcmdId, 'route');
@@ -10711,6 +10717,7 @@ async function optimCharger() {
     var cmd = commandes.find(function(c){ return c.id === s.cmdId; });
     return {
       idx: i,
+      cmdId: s.cmdId,
       client: s.client,
       adresse: s.adresse || '',
       produit: s.produit,
@@ -12160,6 +12167,17 @@ function lancerWazeProchainStop() {
   if (!optimStops.length) { toast('Aucun arret a afficher', 'err'); return; }
   var prochain = optimStops.find(function(s){ return s.statut !== 'livre' && s.statut !== 'livré' && s.adresse; });
   if (!prochain) { toast('🎉 Tous les arrets sont livres !', 'ok'); return; }
+  // v7.5.28 : 1er clic Waze du jour = SMS depart groupe (backup geofence)
+  var _sentGroupe = (typeof tryEnvoyerSmsDepartGroupeRanou === 'function')
+    ? tryEnvoyerSmsDepartGroupeRanou('waze-prochain')
+    : false;
+  // Si pas le 1er clic du jour, SMS "en route" individuel pour CE client
+  if (!_sentGroupe && prochain.cmdId) {
+    var _wcmd = commandes.find(function(x){ return x.id === prochain.cmdId; });
+    if (_wcmd && (_wcmd.transporteur || 'RANOU') === 'RANOU') {
+      sendCmdSmsAsync(prochain.cmdId, 'route');
+    }
+  }
   var adresse = encodeURIComponent(prochain.adresse + ', France');
   window.open('https://waze.com/ul?q=' + adresse + '&navigate=yes', '_blank');
   toast('🚗 Waze ouvert : ' + prochain.client, 'ok');
@@ -12177,6 +12195,17 @@ function ouvrirWazeTournee() {
   if (!stopsRestants.length) { toast('🎉 Tous les arrets sont livres !', 'ok'); return; }
   // Ouvrir le 1er stop dans Waze
   var premier = stopsRestants[0];
+  // v7.5.28 : 1er clic Waze du jour = SMS depart groupe (backup geofence)
+  var _sentGroupe = (typeof tryEnvoyerSmsDepartGroupeRanou === 'function')
+    ? tryEnvoyerSmsDepartGroupeRanou('waze-tournee')
+    : false;
+  // Si pas le 1er clic du jour, SMS "en route" individuel pour CE client
+  if (!_sentGroupe && premier.cmdId) {
+    var _wcmd = commandes.find(function(x){ return x.id === premier.cmdId; });
+    if (_wcmd && (_wcmd.transporteur || 'RANOU') === 'RANOU') {
+      sendCmdSmsAsync(premier.cmdId, 'route');
+    }
+  }
   var adresseP = encodeURIComponent(premier.adresse + ', France');
   window.open('https://waze.com/ul?q=' + adresseP + '&navigate=yes', '_blank');
   // Copier la liste complete dans le presse-papier pour referencement
@@ -12290,6 +12319,17 @@ function optimAfficherCarte() {
 function lancerWazeStop(i) {
   var s = optimStops[i];
   if (!s || !s.adresse) return;
+  // v7.5.28 : 1er clic Waze du jour = SMS depart groupe (backup geofence)
+  var _sentGroupe = (typeof tryEnvoyerSmsDepartGroupeRanou === 'function')
+    ? tryEnvoyerSmsDepartGroupeRanou('waze-stop-i')
+    : false;
+  // Si pas le 1er clic du jour, SMS "en route" individuel pour CE client
+  if (!_sentGroupe && s.cmdId) {
+    var _wcmd = commandes.find(function(x){ return x.id === s.cmdId; });
+    if (_wcmd && (_wcmd.transporteur || 'RANOU') === 'RANOU') {
+      sendCmdSmsAsync(s.cmdId, 'route');
+    }
+  }
   window.open('https://waze.com/ul?q=' + encodeURIComponent(s.adresse + ', France') + '&navigate=yes', '_blank');
 }
 
@@ -13925,6 +13965,67 @@ function verifierProximiteClients(latLiv, lngLiv) {
   });
 }
 
+// ════════════════════════════════════════════════════════════
+// v7.5.28 : Helper unifie d'envoi SMS depart groupe
+// ────────────────────────────────────────────────────────────
+// Declenchable depuis : (1) geofence sortie depot OU (2) 1er clic
+// Waze de la journee. Garde localStorage flag par jour+livreur
+// pour eviter tout doublon, peu importe combien de fois appele.
+// Retourne true si on a envoye les SMS, false si deja fait/inapplicable.
+// ════════════════════════════════════════════════════════════
+function tryEnvoyerSmsDepartGroupeRanou(source) {
+  try {
+    var livreur = (typeof geofenceGetLivreurActuel === 'function' ? geofenceGetLivreurActuel() : null) || 'RANOU';
+    if (!livreur) return false;
+    var today = new Date().toISOString().split('T')[0];
+    var flagKey = 'lv_sms_depart_groupe_' + livreur + '_' + today;
+    if (localStorage.getItem(flagKey)) {
+      console.log('[SMS-DEPART] Deja envoye aujourdhui (' + livreur + ') via ' + (source||'auto') + ', skip');
+      return false;
+    }
+    var tourneeJour = (typeof tournees !== 'undefined' ? tournees : []).find(function(t){
+      return (t.livreur||'').toUpperCase() === livreur.toUpperCase() && t.date === today;
+    });
+    if (!tourneeJour || !Array.isArray(tourneeJour.stops)) {
+      console.warn('[SMS-DEPART] Pas de tournee du jour pour', livreur);
+      return false;
+    }
+    // Filtrer les stops eligibles : RANOU + tel valide + pas deja livre/annule
+    var stopsRanou = tourneeJour.stops.filter(function(s){
+      if (!s.cmdId) return false;
+      var cmd = (typeof commandes !== 'undefined' ? commandes : []).find(function(c){ return c.id === s.cmdId; });
+      if (!cmd) return false;
+      if ((cmd.transporteur || 'RANOU') !== 'RANOU') return false;
+      if (!cmd.tel || cmd.tel.length < 8) return false;
+      if (['livré','annulé','reporté'].indexOf(s.statut) !== -1) return false;
+      return true;
+    });
+    if (!stopsRanou.length) {
+      console.warn('[SMS-DEPART] Aucun stop RANOU eligible');
+      return false;
+    }
+    // Set flag AVANT envoi pour gerer double-clic / racing
+    localStorage.setItem(flagKey, new Date().toISOString());
+    var startMs = Date.now();
+    stopsRanou.forEach(function(s, idx){
+      // ETA approximative : 1er client = depart + 25 min, puis +18 min par stop
+      var etaMs = startMs + (25 + idx * 18) * 60 * 1000;
+      var heureArrivee = new Date(etaMs).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+      setTimeout(function(){
+        if (typeof sendCmdSmsAsync === 'function') sendCmdSmsAsync(s.cmdId, 'depart', { heureArrivee: heureArrivee });
+      }, idx * 200);
+    });
+    if (typeof toast === 'function') {
+      toast('📱 ' + stopsRanou.length + ' SMS depart envoyes aux clients ' + livreur + ' (source: ' + (source||'auto') + ')', 'ok');
+    }
+    console.log('[SMS-DEPART] ' + stopsRanou.length + ' SMS programmes via ' + (source||'auto'));
+    return true;
+  } catch(e) {
+    console.warn('[SMS-DEPART] Erreur:', e.message);
+    return false;
+  }
+}
+
 // ── Déclencher le départ : sortie de zone détectée ──
 function geofenceDeclencherDepart() {
   console.log('🚀 [GÉOFENCE] Sortie entrepôt détectée — démarrage GPS auto');
@@ -13942,42 +14043,8 @@ function geofenceDeclencherDepart() {
     gpsDemarrerReel();
   }
 
-  // v7.5.16 : Envoyer automatiquement les SMS "départ" à tous les clients RANOU
-  // v7.5.20 : avec heure d'arrivée estimée pour chaque client (ETA = depart + (index+1) * 18 min)
-  try {
-    var livreur = geofenceGetLivreurActuel();
-    if (livreur) {
-      var today = new Date().toISOString().split('T')[0];
-      var tourneeJour = (typeof tournees !== 'undefined' ? tournees : []).find(function(t){
-        return (t.livreur||'').toUpperCase() === livreur.toUpperCase() && t.date === today;
-      });
-      if (tourneeJour && Array.isArray(tourneeJour.stops)) {
-        // Filtrer les stops RANOU valides
-        var stopsRanou = tourneeJour.stops.filter(function(s){
-          if (!s.cmdId) return false;
-          var cmd = (typeof commandes !== 'undefined' ? commandes : []).find(function(c){ return c.id === s.cmdId; });
-          if (!cmd) return false;
-          if ((cmd.transporteur || 'RANOU') !== 'RANOU') return false;
-          if (!cmd.tel || cmd.tel.length < 8) return false;
-          return true;
-        });
-        var nbEnvoyes = 0;
-        var startMs = Date.now();
-        stopsRanou.forEach(function(s, idx){
-          // ETA approximative : 1er client = depart + 25 min, puis +18 min par stop
-          var etaMs = startMs + (25 + idx * 18) * 60 * 1000;
-          var heureArrivee = new Date(etaMs).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-          setTimeout(function(){
-            if (typeof sendCmdSmsAsync === 'function') sendCmdSmsAsync(s.cmdId, 'depart', { heureArrivee: heureArrivee });
-          }, nbEnvoyes * 200);
-          nbEnvoyes++;
-        });
-        if (nbEnvoyes > 0 && typeof toast === 'function') {
-          toast('📱 ' + nbEnvoyes + ' SMS de départ envoyés (avec ETA) aux clients ' + livreur, 'ok');
-        }
-      }
-    }
-  } catch(e) { console.warn('[GEOFENCE] Erreur envoi SMS depart:', e); }
+  // v7.5.28 : envoi SMS depart via helper unifie (garde localStorage anti-doublon)
+  tryEnvoyerSmsDepartGroupeRanou('geofence');
 
   // Log Supabase pour audit
   geofenceLogEvenement('sortie_entrepot');
