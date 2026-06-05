@@ -83,22 +83,24 @@ async function getOAuth2Token(): Promise<string> {
 async function trackParcel(trackId: string, token: string): Promise<any> {
   const t = encodeURIComponent(trackId);
   const ctParam = GLS_CONTACT_ID ? `?contactId=${encodeURIComponent(GLS_CONTACT_ID)}` : '';
-  // 14 candidats Track & Trace (sera coupe des qu'un repond OK ou 401/403)
+  // v2 : ajout domaine api.gls-france.com (indice : public utilise moncolis.gls-france.com)
   const candidates = [
+    // api.gls-france.com (variante FR)
+    `https://api.gls-france.com/track-and-trace/v1/parcels/${t}`,
+    `https://api.gls-france.com/shipit-farm/v1/parcels/${t}/tracking`,
+    `https://api.gls-france.com/tracking/v1/parcels/${t}`,
+    `https://api.gls-france.com/v1/parcels/${t}`,
+    `https://api.gls-france.com/parcels/${t}/track`,
+    // moncolis.gls-france.com (frontend public mais peut etre API derriere)
+    `https://moncolis.gls-france.com/api/parcels/${t}`,
+    `https://moncolis.gls-france.com/api/v1/track/${t}`,
+    // api.gls-group.net (selon doc PDF)
     `${GLS_API_BASE}/track-and-trace/v1/parcels/${t}`,
     `${GLS_API_BASE}/track-and-trace/v1/parcels/${t}${ctParam}`,
-    `${GLS_API_BASE}/track-and-trace/v1/parcels?trackingNumber=${t}`,
-    `${GLS_API_BASE}/track-and-trace/v1/references/${t}`,
-    `${GLS_API_BASE}/track-and-trace/v1/parcel/${t}/events`,
-    `${GLS_API_BASE}/shipit-farm/v1/parcels/${t}`,
     `${GLS_API_BASE}/shipit-farm/v1/parcels/${t}/tracking`,
-    `${GLS_API_BASE}/shipit-farm/v1/parcels/${t}/events`,
-    `${GLS_API_BASE}/shipit-farm/v1/tracking/${t}`,
-    `${GLS_API_BASE}/shipit-farm/v1/track-and-trace/${t}`,
+    `${GLS_API_BASE}/shipit-farm/v1/parcels/${t}`,
     `${GLS_API_BASE}/tracking/v1/parcels/${t}`,
-    `${GLS_API_BASE}/tracking/v1/track/${t}`,
     `${GLS_API_BASE}/v1/parcels/${t}/tracking`,
-    `${GLS_API_BASE}/v1/track/${t}`,
   ];
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${token}`,
