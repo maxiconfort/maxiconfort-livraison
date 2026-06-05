@@ -2284,6 +2284,16 @@ Maxiconfort — {TEL_CONTACT}</textarea>
         <div class="fg"><label>Email</label><input id="f-email" type="email" placeholder="client@email.com"></div>
         <div class="fg"><label>📅 Date prise de commande</label><input id="f-date-cmd" type="date"></div>
         <div class="fg"><label>🚚 Date livraison souhaitée *</label><input id="f-date" type="date"></div>
+        <!-- v7.5.26 : checkbox pour les saisies retroactives -->
+        <div class="fg full" style="background:#FFF7E6;border:1.5px solid #BA7517;border-radius:10px;padding:10px 14px">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;color:#7A4A00;font-weight:600">
+            <input type="checkbox" id="f-cmd-retro" style="width:18px;height:18px;accent-color:#BA7517;flex-shrink:0">
+            <span>📅 <strong>Commande rétroactive</strong> — la livraison est déjà passée (rattrapage compta)</span>
+          </label>
+          <div style="font-size:11px;color:#7A4A00;margin-top:6px;line-height:1.5;padding-left:28px">
+            Si coché, la commande n'apparaîtra <strong>pas en tête de liste</strong> (rangée à sa vraie date de livraison) et <strong>ne sera pas comptée</strong> dans les chiffres "Aujourd'hui/Semaine/Mois".
+          </div>
+        </div>
         <div class="fg full"><label>Adresse complète *</label><input id="f-adresse" placeholder="12 rue des Lilas, 94350 Villiers-sur-Marne"></div>
         <div class="fg"><label>Étage</label><input id="f-etage" placeholder="2e étage"></div>
         <div class="fg"><label>Ascenseur</label><select id="f-asc"><option>Non</option><option>Oui</option></select></div>
@@ -2725,6 +2735,9 @@ async function sbSaveCommande(cmd) {
       statut: cmd.statut||'en-attente',
       date_livraison: cmd.date||'',
       date_commande: (cmd.dateCmd && cmd.dateCmd.length === 10) ? cmd.dateCmd : null,
+      // v7.5.26 : si flag _retroactiveCreatedAt, on envoie un created_at custom (saisie retroactive)
+      // Sinon on omet le champ (Supabase met now() par defaut pour les inserts, conserve pour les updates depuis v7.4.5)
+      ...(cmd._retroactiveCreatedAt ? { created_at: cmd._retroactiveCreatedAt } : {}),
       instr: cmd.instr||'',
       origine: cmd.origine||'',
       ref_marketplace: cmd.refMarketplace||'',
@@ -6324,6 +6337,8 @@ function getLignesData() {
 
 function openNewCmd() {
   var _gm_cmd_title=document.getElementById('m-cmd-title'); if(_gm_cmd_title) _gm_cmd_title.textContent='Nouvelle commande';
+  // v7.5.26 : reset checkbox retroactive
+  var _retro = document.getElementById('f-cmd-retro'); if (_retro) _retro.checked = false;
 
   var _today_iso = new Date().toISOString().split('T')[0];
   document.getElementById('f-date').value = _today_iso;
@@ -6504,6 +6519,12 @@ function saveCmd() {
     origine:origine, refMarketplace:refMkt,
     transporteur:transporteur, trackingTransporteur:tracking,
   };
+  // v7.5.26 : si nouvelle cmd + checkbox retroactive cochee + date livraison saisie,
+  // forcer created_at = date_livraison pour que la cmd aille a sa vraie place dans la liste
+  var _retroEl = document.getElementById('f-cmd-retro');
+  if (!isEdit && _retroEl && _retroEl.checked && cmdData.date) {
+    cmdData._retroactiveCreatedAt = cmdData.date + 'T09:00:00+00:00';
+  }
   if (isEdit) {
     // Mise à jour commande existante
     const idx = commandes.findIndex(x => x.id === window._editingCmdId);

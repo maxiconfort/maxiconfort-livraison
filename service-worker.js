@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.25 - Encarts : exclure saisies rétroactives (Frudy, Cros…)
+// v7.5.26 - Checkbox "Cmd rétroactive" dans modale création
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-25';
+const CACHE_VERSION = 'maxiconfort-v7-5-26';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
