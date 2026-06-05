@@ -5092,13 +5092,19 @@ async function renderCmdStatsJour() {
   // Render un état "loading" rapide pour eviter le blink
   box.style.display = 'block';
 
+  // v7.5.27 : si pas admin (= collab/livreur), masquer les montants €
+  // pour challenger uniquement sur le nombre de cmds (sans exposer les chiffres financiers)
+  var showMontants = (typeof role === 'undefined' || role === 'admin');
   function mini(ico, lbl, plage, nb, total, bgClass, brdColor, textColor) {
-    return '<div style="background:' + bgClass + ';border:1px solid ' + brdColor + ';border-radius:8px;padding:7px 12px;display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:' + textColor + '" title="' + plage + '">' +
+    var html = '<div style="background:' + bgClass + ';border:1px solid ' + brdColor + ';border-radius:8px;padding:7px 12px;display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:' + textColor + '" title="' + plage + '">' +
       '<span>' + ico + ' ' + lbl + ' :</span>' +
-      '<span><strong>' + nb + '</strong> cmd' + (nb>1?'s':'') + '</span>' +
-      '<span style="opacity:.5">·</span>' +
-      '<span style="font-weight:900">' + total.toLocaleString('fr-FR') + ' €</span>' +
-    '</div>';
+      '<span><strong>' + nb + '</strong> cmd' + (nb>1?'s':'') + '</span>';
+    if (showMontants) {
+      html += '<span style="opacity:.5">·</span>' +
+              '<span style="font-weight:900">' + total.toLocaleString('fr-FR') + ' €</span>';
+    }
+    html += '</div>';
+    return html;
   }
 
   var moisFr = ['Janv','Fev','Mars','Avr','Mai','Juin','Juil','Aout','Sept','Oct','Nov','Dec'];
