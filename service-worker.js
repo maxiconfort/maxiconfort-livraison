@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.24 - Encarts cmds : date_commande + exclure annulés
+// v7.5.25 - Encarts : exclure saisies rétroactives (Frudy, Cros…)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-24';
+const CACHE_VERSION = 'maxiconfort-v7-5-25';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

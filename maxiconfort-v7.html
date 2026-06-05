@@ -5093,16 +5093,24 @@ async function renderCmdStatsJour() {
 
   // Helper : fetch direct Supabase pour avoir le compte + somme exacts d'une periode
   // v7.5.24 : utilise date_commande (vraie date prise commande, pas re-edite) et exclut les annulations
+  // v7.5.25 : exclut aussi les saisies retroactives (date_livraison < date_commande)
+  // pour ne compter QUE les vraies nouvelles cmds (pas les anciennes editees rétroactivement)
   async function fetchPeriode(dateMin, dateMax) {
     try {
-      // statut != annulé (encode 'é' = %C3%A9)
-      var url = SUPABASE_URL + '/rest/v1/commandes?select=prix&date_commande=gte.' + dateMin + '&date_commande=lt.' + dateMax + '&statut=not.eq.annul%C3%A9';
+      var url = SUPABASE_URL + '/rest/v1/commandes?select=prix,date_commande,date_livraison&date_commande=gte.' + dateMin + '&date_commande=lt.' + dateMax + '&statut=not.eq.annul%C3%A9';
       var r = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
       if (!r.ok) return { nb: 0, total: 0 };
       var data = await r.json();
       if (!Array.isArray(data)) return { nb: 0, total: 0 };
-      var nb = data.length;
-      var total = data.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
+      // Filtrer cote client : exclure cmds dont date_livraison < date_commande (= saisie retroactive)
+      var vraies = data.filter(function(c){
+        var dc = c.date_commande;
+        var dl = c.date_livraison;
+        if (!dl) return true; // pas de date livraison saisie -> nouvelle cmd OK
+        return dl >= dc;
+      });
+      var nb = vraies.length;
+      var total = vraies.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
       return { nb: nb, total: total };
     } catch(e) { return { nb: 0, total: 0 }; }
   }
