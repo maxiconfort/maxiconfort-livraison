@@ -5092,9 +5092,11 @@ async function renderCmdStatsJour() {
   var lblMois = moisFr[now.getMonth()];
 
   // Helper : fetch direct Supabase pour avoir le compte + somme exacts d'une periode
+  // v7.5.24 : utilise date_commande (vraie date prise commande, pas re-edite) et exclut les annulations
   async function fetchPeriode(dateMin, dateMax) {
     try {
-      var url = SUPABASE_URL + '/rest/v1/commandes?select=prix&created_at=gte.' + dateMin + '&created_at=lt.' + dateMax;
+      // statut != annulé (encode 'é' = %C3%A9)
+      var url = SUPABASE_URL + '/rest/v1/commandes?select=prix&date_commande=gte.' + dateMin + '&date_commande=lt.' + dateMax + '&statut=not.eq.annul%C3%A9';
       var r = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
       if (!r.ok) return { nb: 0, total: 0 };
       var data = await r.json();
