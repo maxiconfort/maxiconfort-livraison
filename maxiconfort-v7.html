@@ -6686,6 +6686,11 @@ function ouvrirCmd(id) {
         '</select>' +
       '</div>' +
       '<div id="pa-tracking-wrap" style="display:' + ((c.transporteur||'RANOU')==='GLS'?'block':'none') + '">' +
+        // v7.5.29 : Bouton "Créer étiquette GLS auto" (visible si pas encore de tracking)
+        (((c.trackingTransporteur||c.tracking_transporteur||'') === '') ?
+          '<button id="pa-create-label-btn" data-cmdid="'+c.id+'" class="btn" style="width:100%;padding:12px;background:linear-gradient(135deg,#FFB347,#FF8C42);color:#fff;font-weight:800;font-size:14px;border:none;margin-bottom:10px;box-shadow:0 2px 6px rgba(255,140,66,.3)">📦 Créer l\'étiquette GLS automatiquement</button>' +
+          '<div style="text-align:center;color:var(--t3);font-size:11px;margin-bottom:10px;font-weight:700">— OU SAISIE MANUELLE —</div>'
+          : '') +
         '<label style="font-size:11px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;display:block">📦 N° de suivi GLS</label>' +
         '<div style="display:flex;gap:8px">' +
           '<input id="pa-tracking" placeholder="ex: ABC123456789" value="' + ((c.trackingTransporteur||c.tracking_transporteur||'').replace(/"/g,'&quot;')) + '" style="flex:1;padding:9px 11px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font);font-weight:600">' +
@@ -6730,6 +6735,9 @@ function ouvrirCmd(id) {
   });
   var trackBtn = document.getElementById('pa-tracking-btn');
   if (trackBtn) trackBtn.addEventListener('click', function(){ panelEnregistrerTracking(trackBtn.dataset.cmdid); });
+  // v7.5.29 : Bouton "Créer étiquette GLS auto" via API ShipIT
+  var createBtn = document.getElementById('pa-create-label-btn');
+  if (createBtn) createBtn.addEventListener('click', function(){ panelCreerEtiquetteGLS(createBtn.dataset.cmdid); });
   var tBtn = document.getElementById('pa-tournee-btn');
   if (tBtn) tBtn.addEventListener('click', function(){ ajouterTournee(tBtn.dataset.cmdid); });
 
@@ -6820,6 +6828,79 @@ async function panelEnregistrerTracking(cmdId) {
     toast('❌ Erreur enregistrement : ' + e.message, 'err');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = labelOrig || '💾 + 📱 SMS'; }
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// v7.5.29 : Creer etiquette GLS automatique via API ShipIT
+// ────────────────────────────────────────────────────────────
+// Appelle l'Edge Function gls-create-shipment qui :
+//   1. Cree le shipment chez GLS (API ShipIT-FARM)
+//   2. Recupere le TrackID + PDF base64 de l'etiquette
+//   3. Met a jour commandes.tracking_transporteur en DB
+// Cote front :
+//   1. Affiche un toast de progression
+//   2. Ouvre le PDF dans un nouvel onglet (blob URL)
+//   3. Rafraichit la modale pour afficher le tracking
+// ════════════════════════════════════════════════════════════
+async function panelCreerEtiquetteGLS(cmdId) {
+  var c = commandes.find(function(x){ return x.id === cmdId; });
+  if (!c) { toast('Commande introuvable', 'err'); return; }
+  // Confirmation : creer un VRAI label chez GLS (peut etre facture)
+  if (!confirm('Créer une vraie étiquette GLS pour cette commande ?\n\nClient : ' + (c.client||'') + '\nAdresse : ' + (c.adresse||'') + '\n\n⚠️ Le label sera enregistré chez GLS et facturé lors de l\'expédition.')) return;
+  var btn = document.getElementById('pa-create-label-btn');
+  var labelOrig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Création en cours...'; btn.style.opacity = '0.7'; }
+  try {
+    var resp = await fetch(SUPABASE_URL + '/functions/v1/gls-create-shipment', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmdId: cmdId, withPdf: true })
+    });
+    var data = await resp.json();
+    if (!data.ok) {
+      console.warn('GLS create label error:', data);
+      var errMsg = (data.error || 'Erreur inconnue');
+      if (data.gls_response) errMsg += ' | GLS: ' + JSON.stringify(data.gls_response).substring(0, 200);
+      toast('❌ ' + errMsg, 'err');
+      return;
+    }
+    var trackId = data.trackId || '';
+    toast('✅ Étiquette créée : ' + trackId, 'ok');
+    // Update commande locale (l'Edge Function a deja update Supabase)
+    c.transporteur = 'GLS';
+    c.trackingTransporteur = trackId;
+    c.tracking_transporteur = trackId;
+    try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(_e) {}
+    // Ouvrir le PDF dans un nouvel onglet via blob URL
+    if (data.pdfBase64Full) {
+      try {
+        var byteCharacters = atob(data.pdfBase64Full);
+        var byteNumbers = new Array(byteCharacters.length);
+        for (var i = 0; i < byteCharacters.length; i++) byteNumbers[i] = byteCharacters.charCodeAt(i);
+        var byteArray = new Uint8Array(byteNumbers);
+        var blob = new Blob([byteArray], { type: 'application/pdf' });
+        var url = URL.createObjectURL(blob);
+        var w = window.open(url, '_blank');
+        if (!w) {
+          // Bloqueur popup → fallback : telecharger
+          var a = document.createElement('a');
+          a.href = url; a.download = 'GLS_' + trackId + '.pdf'; a.target = '_blank';
+          a.click();
+          toast('📥 Téléchargement étiquette (popup bloquée)', 'info');
+        }
+      } catch(e) {
+        console.warn('Erreur ouverture PDF:', e);
+        toast('⚠️ PDF reçu mais ouverture impossible', 'err');
+      }
+    }
+    renderCmds();
+    // Refresh modale pour afficher le tracking
+    setTimeout(function(){ ouvrirCmd(cmdId); }, 200);
+  } catch(e) {
+    toast('❌ Erreur réseau : ' + e.message, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = labelOrig || '📦 Créer l\'étiquette GLS automatiquement'; btn.style.opacity = '1'; }
   }
 }
 
