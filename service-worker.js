@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.31 - Fix encart Aujourd'hui (created_at) + form bug date_commande
+// v7.5.32 - Retour a date_commande pour encart (form bug deja fixe)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-31';
+const CACHE_VERSION = 'maxiconfort-v7-5-32';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
