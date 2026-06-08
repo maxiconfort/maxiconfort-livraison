@@ -28,6 +28,7 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { PDFDocument } from 'https://esm.sh/pdf-lib@1.17.1';
 
 const GLS_USER       = Deno.env.get('GLS_SHIPIT_USER') || '';
 const GLS_PASSWORD   = Deno.env.get('GLS_SHIPIT_PASSWORD') || '';
@@ -289,13 +290,42 @@ Deno.serve(async (req: Request) => {
   }));
   const trackId = allParcels[0]?.trackId || null;
   const parcelNumber = allParcels[0]?.parcelNumber || null;
-  // PrintData peut etre array {Data, LabelFormat} ou string base64 brut selon version GLS
+  // v5.3 : GLS retourne PrintData = array (1 entree par colis quand multi-colis).
+  // On extrait tous les PDF base64 et on les MERGE en 1 seul PDF multi-pages.
   let pdfBase64: string | null = null;
   const printData = created.PrintData;
+  const pdfsBase64: string[] = [];
   if (typeof printData === 'string') {
-    pdfBase64 = printData;
-  } else if (Array.isArray(printData) && printData.length > 0) {
-    pdfBase64 = printData[0]?.Data || null;
+    pdfsBase64.push(printData);
+  } else if (Array.isArray(printData)) {
+    for (const pd of printData) {
+      if (pd?.Data) pdfsBase64.push(pd.Data);
+    }
+  }
+  if (pdfsBase64.length === 1) {
+    pdfBase64 = pdfsBase64[0];
+  } else if (pdfsBase64.length > 1) {
+    // Merge des N PDFs en 1 multi-pages
+    try {
+      const merged = await PDFDocument.create();
+      for (const b64 of pdfsBase64) {
+        const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+        const pdf = await PDFDocument.load(bytes);
+        const pages = await merged.copyPages(pdf, pdf.getPageIndices());
+        pages.forEach((p: any) => merged.addPage(p));
+      }
+      const mergedBytes = await merged.save();
+      // bytes -> base64 (chunked pour eviter call-stack overflow sur gros PDFs)
+      let bin = '';
+      const chunk = 0x8000;
+      for (let i = 0; i < mergedBytes.length; i += chunk) {
+        bin += String.fromCharCode.apply(null, Array.from(mergedBytes.subarray(i, i + chunk)));
+      }
+      pdfBase64 = btoa(bin);
+    } catch (e: any) {
+      console.warn('PDF merge failed, fallback to first PDF:', e.message);
+      pdfBase64 = pdfsBase64[0];
+    }
   }
 
   // Update commande Supabase avec le TrackID (si pas testMode)
