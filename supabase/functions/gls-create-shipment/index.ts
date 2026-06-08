@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : gls-create-shipment (v1 — 05/06/2026)
+// Edge Function : gls-create-shipment (v5 — 08/06/2026)
 // ════════════════════════════════════════════════════════════════════
 // Cree une etiquette GLS via l'API ShipIT-FARM PROD France.
 //
@@ -11,8 +11,13 @@
 //   { dryRun: true }      → genere le payload sans appeler GLS
 //   { testMode: true }    → utilise donnees test fixees (validation label)
 //
+// v5 (08/06/2026) — MULTI-COLIS pour sommiers :
+//   Les sommiers se demontent en 2 demi-sommiers pour le transport routier.
+//   Detection auto sur cmd.produit -> genere plusieurs ShipmentUnit
+//   selon la table MULTICOLIS_RULES (sommier 140 = 2x7kg, 160 = 2x8kg, etc.)
+//
 // Retourne :
-//   { ok: true, trackId, parcelNumber, pdfBase64, ... }
+//   { ok: true, trackId, parcelNumber, parcels: [...], pdfBase64Full, ... }
 //
 // Secrets requis :
 //   - GLS_SHIPIT_USER      (login ShipIT, ex 25049710ST)
@@ -77,6 +82,32 @@ function normalizeTel(tel: string): string {
   return t;
 }
 
+// ── MULTI-COLIS : table des regles d'expedition par produit
+// Les sommiers > 120 se demontent en 2 demi-sommiers pour le transport GLS.
+// Format : { match: regex sur cmd.produit, nbColis, poidsParColis (kg) }
+// Premier match gagne. Order from biggest to smallest.
+const MULTICOLIS_RULES: { label: string; match: RegExp; nbColis: number; poidsParColis: number }[] = [
+  { label: 'Sommier 180x200 (2x 90x200)',  match: /sommier[\s\S]*?180\s*[xX×]\s*200/i, nbColis: 2, poidsParColis: 9 },
+  { label: 'Sommier 160x200 (2x 80x200)',  match: /sommier[\s\S]*?160\s*[xX×]\s*200/i, nbColis: 2, poidsParColis: 8 },
+  { label: 'Sommier 140x200 (2x 70x200)',  match: /sommier[\s\S]*?140\s*[xX×]\s*200/i, nbColis: 2, poidsParColis: 7 },
+  { label: 'Sommier 140x190 (2x 70x190)',  match: /sommier[\s\S]*?140\s*[xX×]\s*190/i, nbColis: 2, poidsParColis: 7 },
+  { label: 'Sommier 120x190 (1 colis)',    match: /sommier[\s\S]*?120\s*[xX×]\s*190/i, nbColis: 1, poidsParColis: 10 },
+  { label: 'Sommier 90x190 (1 colis)',     match: /sommier[\s\S]*?90\s*[xX×]\s*(190|200)/i, nbColis: 1, poidsParColis: 7 },
+  // Ensembles literie (matelas + sommier) : on garde 1 colis par defaut + sommier multi-colis si applique
+  // -> traite via une regle supplementaire si besoin
+];
+
+// Detecte la regle multi-colis applicable, ou retourne null
+function detectMultiColis(produit: string): { label: string; nbColis: number; poidsParColis: number } | null {
+  if (!produit) return null;
+  for (const rule of MULTICOLIS_RULES) {
+    if (rule.match.test(produit)) {
+      return { label: rule.label, nbColis: rule.nbColis, poidsParColis: rule.poidsParColis };
+    }
+  }
+  return null;
+}
+
 // ── Construit le payload Shipment GLS depuis une commande Supabase
 function buildShipmentPayload(cmd: any, testMode: boolean): any {
   const parsed = parseAdresseFR(cmd.adresse || '');
@@ -113,6 +144,28 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
       MobilePhoneNumber: '0033744289321',
     };
   }
+  // v5 : MULTI-COLIS — detecte si le produit (sommier) doit etre scinde en plusieurs colis
+  const mc = detectMultiColis(cmd.produit || '');
+  let shipmentUnits: any[];
+  if (mc && mc.nbColis > 1) {
+    shipmentUnits = [];
+    for (let i = 1; i <= mc.nbColis; i++) {
+      shipmentUnits.push({
+        ShipmentUnitReference: [reference + '-' + i],
+        Weight: mc.poidsParColis,
+        Note1: ((cmd.produit || '').substring(0, 48) + ' (' + i + '/' + mc.nbColis + ')').substring(0, 60),
+      });
+    }
+  } else {
+    // 1 colis par defaut (matelas, lit, ensemble, etc.)
+    const w = (mc && mc.nbColis === 1) ? mc.poidsParColis : weight;
+    shipmentUnits = [{
+      ShipmentUnitReference: [reference + '-1'],
+      Weight: w,
+      Note1: (cmd.produit || '').substring(0, 60),
+    }];
+  }
+
   const payload: any = {
     Shipment: {
       ShipmentReference: [reference],
@@ -120,14 +173,7 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
       Product: 'PARCEL',
       Consignee: consignee,
       Shipper: { ContactID: GLS_CONTACT_ID },
-      ShipmentUnit: [
-        {
-          // v2 : ShipmentUnitReference DOIT etre un array (GLS error v1)
-          ShipmentUnitReference: [reference + '-1'],
-          Weight: weight,
-          Note1: (cmd.produit || '').substring(0, 60),
-        },
-      ],
+      ShipmentUnit: shipmentUnits,
     },
     PrintingOptions: {
       ReturnLabels: {
@@ -202,16 +248,30 @@ Deno.serve(async (req: Request) => {
 
   // Extraction TrackID + PDF
   const created = result.data?.CreatedShipment || {};
-  const parcels = created.ParcelData || [];
-  const trackId = parcels[0]?.TrackID || null;
-  const parcelNumber = parcels[0]?.Barcodes?.Primary1D || null;
-  const pdfBase64 = created.PrintData || null;
+  const parcelData = created.ParcelData || [];
+  // v5 : retourne tous les colis (multi-colis sommiers)
+  const allParcels = parcelData.map((p: any) => ({
+    trackId: p?.TrackID || null,
+    parcelNumber: p?.Barcodes?.Primary1D || null,
+  }));
+  const trackId = allParcels[0]?.trackId || null;
+  const parcelNumber = allParcels[0]?.parcelNumber || null;
+  // PrintData peut etre array {Data, LabelFormat} ou string base64 brut selon version GLS
+  let pdfBase64: string | null = null;
+  const printData = created.PrintData;
+  if (typeof printData === 'string') {
+    pdfBase64 = printData;
+  } else if (Array.isArray(printData) && printData.length > 0) {
+    pdfBase64 = printData[0]?.Data || null;
+  }
 
   // Update commande Supabase avec le TrackID (si pas testMode)
+  // v5 : concatene tous les trackIDs separes par virgule si multi-colis
   if (cmdId && trackId && !testMode) {
     try {
+      const trackingValue = allParcels.map((p: any) => p.trackId).filter(Boolean).join(',');
       await sb.from('commandes').update({
-        tracking_transporteur: trackId,
+        tracking_transporteur: trackingValue,
         transporteur: 'GLS',
       }).eq('id', cmdId);
     } catch (e: any) {
@@ -219,12 +279,18 @@ Deno.serve(async (req: Request) => {
     }
   }
 
+  // v5 : multi-colis detection pour la reponse
+  const mcInfo = cmd.produit ? detectMultiColis(cmd.produit) : null;
+
   return new Response(JSON.stringify({
     ok: true,
-    trackId,
-    parcelNumber,
+    trackId,            // premier track (pour retrocompat)
+    parcelNumber,       // premier parcel number (pour retrocompat)
+    parcels: allParcels, // tous les colis
+    nbColis: allParcels.length,
+    multiColisRule: mcInfo ? mcInfo.label : null,
     pdfBase64: pdfBase64 ? pdfBase64.substring(0, 50) + '...(tronque, longueur=' + pdfBase64.length + ')' : null,
-    pdfBase64Full: pdfBase64, // Le PDF complet pour download/print cote client
+    pdfBase64Full: pdfBase64, // Le PDF complet pour download/print cote client (toutes etiquettes incluses)
     gls_response: created,
     duration_ms: Date.now() - startTime,
   }), { headers: { 'Content-Type': 'application/json' } });
