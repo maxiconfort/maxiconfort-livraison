@@ -1749,15 +1749,18 @@ Maxiconfort — {TEL_CONTACT}</textarea>
         <option value="RANOU">🟢 RANOU (interne)</option>
         <option value="GLS">🟠 GLS</option>
       </select>
-      <select id="suivi-statut" onchange="suiviAppliquerFiltres()" style="padding:9px 11px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
-        <option value="">📊 Tous statuts</option>
-        <option value="en-attente">⏳ En attente</option>
-        <option value="en-route">🚚 En route</option>
-        <option value="arrivé">📍 Arrivé</option>
-        <option value="livré">✅ Livré</option>
-        <option value="reporté">⏸ Reporté</option>
-        <option value="annulé">❌ Annulé</option>
-      </select>
+      <!-- v7.5.37 : Multi-select statuts via boutons pills -->
+      <div id="suivi-statut-wrap" style="display:flex;flex-direction:column;gap:4px">
+        <label style="font-size:10px;color:var(--t3);font-weight:700;text-transform:uppercase;letter-spacing:.4px">📊 Statuts (multi)</label>
+        <div id="suivi-statut-pills" style="display:flex;gap:5px;flex-wrap:wrap;padding:3px 0">
+          <button type="button" class="suivi-pill" data-statut="en-attente" onclick="suiviTogglePill(this)" style="padding:6px 10px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);border-radius:14px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .12s">⏳ En attente</button>
+          <button type="button" class="suivi-pill" data-statut="en-route" onclick="suiviTogglePill(this)" style="padding:6px 10px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);border-radius:14px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .12s">🚚 En route</button>
+          <button type="button" class="suivi-pill" data-statut="arrivé" onclick="suiviTogglePill(this)" style="padding:6px 10px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);border-radius:14px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .12s">📍 Arrivé</button>
+          <button type="button" class="suivi-pill" data-statut="livré" onclick="suiviTogglePill(this)" style="padding:6px 10px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);border-radius:14px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .12s">✅ Livré</button>
+          <button type="button" class="suivi-pill" data-statut="reporté" onclick="suiviTogglePill(this)" style="padding:6px 10px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);border-radius:14px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .12s">⏸ Reporté</button>
+          <button type="button" class="suivi-pill" data-statut="annulé" onclick="suiviTogglePill(this)" style="padding:6px 10px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);border-radius:14px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .12s">❌ Annulé</button>
+        </div>
+      </div>
       <div style="display:flex;flex-direction:column;gap:2px">
         <label style="font-size:10px;color:var(--t3);font-weight:700;text-transform:uppercase;letter-spacing:.4px">Date livraison du</label>
         <input type="date" id="suivi-date-debut" onchange="suiviAppliquerFiltres()" style="padding:8px 10px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
@@ -5498,7 +5501,13 @@ function suiviReset() {
     var el = document.getElementById(id); if (el) el.value='';
   });
   var tr = document.getElementById('suivi-transporteur'); if (tr) tr.value='';
-  var st = document.getElementById('suivi-statut');       if (st) st.value='';
+  // v7.5.37 : reset des pills statut (multi-select)
+  document.querySelectorAll('#suivi-statut-pills .suivi-pill').forEach(function(btn){
+    btn.dataset.actif = '0';
+    btn.style.background = 'var(--card)';
+    btn.style.color = 'var(--t2)';
+    btn.style.borderColor = 'var(--brd2)';
+  });
   suiviAppliquerFiltres();
 }
 
@@ -5512,11 +5521,33 @@ function suiviGetTransporteur(c) {
   return c.transporteur || 'RANOU';
 }
 
+// v7.5.37 : Toggle pill statut (multi-select)
+function suiviTogglePill(btn) {
+  if (!btn) return;
+  var actif = btn.dataset.actif === '1';
+  if (actif) {
+    btn.dataset.actif = '0';
+    btn.style.background = 'var(--card)';
+    btn.style.color = 'var(--t2)';
+    btn.style.borderColor = 'var(--brd2)';
+  } else {
+    btn.dataset.actif = '1';
+    btn.style.background = 'var(--blue)';
+    btn.style.color = '#fff';
+    btn.style.borderColor = 'var(--blue)';
+  }
+  if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres();
+}
+function suiviGetStatutsActifs() {
+  var pills = document.querySelectorAll('#suivi-statut-pills .suivi-pill[data-actif="1"]');
+  return Array.from(pills).map(function(b){ return b.dataset.statut; });
+}
+
 function suiviGetResultats() {
   if (!Array.isArray(commandes)) return [];
   var search = (document.getElementById('suivi-search')?.value || '').toLowerCase().trim();
   var transporteur = document.getElementById('suivi-transporteur')?.value || '';
-  var statut = document.getElementById('suivi-statut')?.value || '';
+  var statutsActifs = suiviGetStatutsActifs();
   var dateDeb = document.getElementById('suivi-date-debut')?.value || '';
   var dateFin = document.getElementById('suivi-date-fin')?.value || '';
   var preset = suiviPresetActif;
@@ -5534,8 +5565,8 @@ function suiviGetResultats() {
       var t = suiviGetTransporteur(c);
       if (t !== transporteur) return false;
     }
-    // statut
-    if (statut && c.statut !== statut) return false;
+    // v7.5.37 : statut multi-select (si aucun coché = tous affichés)
+    if (statutsActifs.length > 0 && statutsActifs.indexOf(c.statut) < 0) return false;
     // dates livraison (c.date)
     var dStr = c.date ? String(c.date).split('T')[0] : '';
     if (dateDeb && (!dStr || dStr < dateDeb)) return false;

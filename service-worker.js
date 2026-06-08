@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.36 - Fix responsive mobile modales (z-index + full-screen)
+// v7.5.37 - Multi-select statuts sur Suivi logistique (pills toggle)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-36';
+const CACHE_VERSION = 'maxiconfort-v7-5-37';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
