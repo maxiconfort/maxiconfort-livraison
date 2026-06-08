@@ -6871,7 +6871,7 @@ function saveCmd() {
     showSync('⏳ Sauvegarde commande...', 'pending');
     closeModal('m-cmd');
     sbSaveCommande(cmdData).then(function(){ showSync('✅ Commande sauvegardée', 'ok'); }).catch(function(){ showSync('⚠️ Erreur sync commande', 'err'); }); // Sync Supabase — AVANT renderDash
-    try { renderCmds(); renderDash(); populateCmdChecklist(); } catch(e) { console.warn('render err:', e.message); renderCmds(); populateCmdChecklist(); }
+    try { renderCmds(); renderDash(); populateCmdChecklist(); if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres(); } catch(e) { console.warn('render err:', e.message); renderCmds(); populateCmdChecklist(); }
     toast('Commande '+cmdData.id+' mise à jour ✓','ok');
   } else {
     // Nouvelle commande
@@ -6883,7 +6883,7 @@ function saveCmd() {
     showSync('⏳ Sauvegarde commande...', 'pending');
     closeModal('m-cmd');
     sbSaveCommande(cmdData).then(function(){ showSync('✅ Commande sauvegardée', 'ok'); }).catch(function(){ showSync('⚠️ Erreur sync commande', 'err'); }); // Sync Supabase — AVANT renderDash
-    try { renderCmds(); renderDash(); populateCmdChecklist(); } catch(e) { console.warn('render err:', e.message); renderCmds(); populateCmdChecklist(); }
+    try { renderCmds(); renderDash(); populateCmdChecklist(); if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres(); } catch(e) { console.warn('render err:', e.message); renderCmds(); populateCmdChecklist(); }
     toast('Commande '+cmdData.id+' créée — '+total.toLocaleString('fr-FR')+' € ✓','ok');
     if (!document.getElementById('f-livreur').value) {
       notifAjout('warn','commande','Commande sans livreur — '+nom,'Aucun livreur assigné pour cette commande.','Assigner livreur','commandes');
@@ -7104,6 +7104,8 @@ function chgStatut(id, st) {
     stkReCrediterStock(id);
   }
   renderCmds(); renderDash(); renderTournees(); renderLivreur();
+  // v7.5.39 : re-render Suivi logistique (sinon le statut reste l'ancien)
+  if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres();
   sbSaveCommande(c); // Sync Supabase
   closePanel(); ouvrirCmd(id);
   toast('Statut mis à jour : ' + st, 'ok');
@@ -7143,6 +7145,8 @@ async function panelEnregistrerTracking(cmdId) {
     await sbSaveCommande(c);
     try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(e) {}
     renderCmds();
+    // v7.5.39 : re-render Suivi logistique aussi
+    if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres();
     // Envoyer le SMS expedition seulement si : GLS + tracking saisi + (tracking change OU transporteur vient de passer en GLS)
     if (transp === 'GLS' && tracking && (trackChange || transpChange)) {
       if (typeof sendCmdSmsAsync === 'function') {

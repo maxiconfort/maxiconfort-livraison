@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.38 - Fix filtres Commandes preserves apres refresh auto
+// v7.5.39 - Fix re-render Suivi logistique apres chgStatut / save cmd
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-38';
+const CACHE_VERSION = 'maxiconfort-v7-5-39';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
