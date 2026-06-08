@@ -1,25 +1,22 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : gls-sync (v8 — 05/06/2026)
+// Edge Function : gls-sync (v10 — 08/06/2026)
 // ════════════════════════════════════════════════════════════════════
-// v6 : ShipIT-FARM URL prod fr01 trouvee, headers glsVersion1+json
-//      MAIS 401 sur tous modes (besoin credentials specifiques Olivier)
-// v7 : nettoyage
-// v8 : NOUVEAU endpoint public decouvert : rstt002 sur gls-group.com
-//      URL : GET /app/service/open/rest/GROUP/en/rstt002/{trackId}
-//      On test 5 modes auth en cascade :
-//        1. GET sans auth (au cas ou public)
-//        2. GET avec X-API-Key header
-//        3. GET avec apikey header
-//        4. GET avec Basic Auth API_KEY:CLIENT_SECRET
-//        5. GET avec Bearer OAuth2 token
+// v10 (08/06) : MULTI-TRACKINGS support pour les multi-colis.
+//   commandes.tracking_transporteur peut contenir N trackIDs separes par
+//   virgule (cas des sommiers/lits/ensembles depuis gls-create-shipment v5).
+//   On split, on track CHAQUE colis individuellement, on agrege le statut :
+//     - Tous livres + 0 erreur -> cmd statut = "livré"
+//     - Au moins 1 erreur API -> log partial_error, on reessaye au prochain run
+//     - Sinon -> still_in_transit (X/N livrés)
+//
+// v9 (05/06) : credentials Olivier prod ShipIT-FARM
+// v8 : endpoint public rstt002 + fallback ShipIT
 //
 // Body optionnel :
 //   { trackId: "XXX" }      → test sur 1 tracking
 //   { useRstt002: true }    → force test public rstt002
-//   { useShipIT: true }     → force test ShipIT-FARM (besoin creds Olivier)
+//   { useShipIT: true }     → force test ShipIT-FARM
 //   { dryRun: true }        → liste sans modifier
-//
-// Par defaut : essaye rstt002 en 1er, fallback ShipIT-FARM
 // ════════════════════════════════════════════════════════════════════
 
 // deno-lint-ignore-file no-explicit-any
@@ -263,30 +260,61 @@ Deno.serve(async (req: Request) => {
   summary.cmds_a_checker = cmdsValid.length;
 
   for (const cmd of cmdsValid) {
-    const tracking: string = cmd.tracking_transporteur;
-    const result = await trackParcel(tracking, { useRstt002, useShipIT, useProd });
-    if (!result.ok) {
+    const trackingFull: string = cmd.tracking_transporteur;
+    // v10 : SPLIT multi-trackings (1 cmd peut avoir N colis depuis create-shipment v5)
+    const trackIds = trackingFull.split(',').map((t: string) => t.trim()).filter((t: string) => t.length >= 6);
+    if (trackIds.length === 0) {
       summary.cmds_erreur++;
-      summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking, status: 'api_error', tried: result.tried });
+      summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, status: 'no_valid_trackid' });
       continue;
     }
-    const livre = isParcelDelivered(result.data);
-    if (livre) {
+
+    // Track CHAQUE colis individuellement
+    const parcelResults: any[] = [];
+    let nbErreurs = 0;
+    let nbLivre = 0;
+    for (const trackId of trackIds) {
+      const result = await trackParcel(trackId, { useRstt002, useShipIT, useProd });
+      if (!result.ok) {
+        nbErreurs++;
+        parcelResults.push({ trackId, status: 'api_error', tried: result.tried });
+        continue;
+      }
+      const livre = isParcelDelivered(result.data);
+      parcelResults.push({ trackId, livre, status: livre ? 'livre' : 'transit' });
+      if (livre) nbLivre++;
+    }
+
+    const nbColis = trackIds.length;
+    const tousLivre = (nbLivre === nbColis && nbErreurs === 0);
+
+    if (tousLivre) {
+      // Tous les colis livres -> cmd = livré
       if (dryRun) {
         summary.cmds_livre++;
-        summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking, status: 'would_update_livre' });
+        summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, nbColis, parcels: parcelResults, status: 'would_update_livre' });
       } else {
         const { error: errUpd } = await sb.from('commandes').update({ statut: 'livré' }).eq('id', cmd.id);
         if (errUpd) {
           summary.cmds_erreur++;
-          summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking, status: 'update_failed', error: errUpd.message });
+          summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, status: 'update_failed', error: errUpd.message });
         } else {
           summary.cmds_livre++;
-          summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking, status: 'updated_to_livre' });
+          summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, nbColis, parcels: parcelResults, status: 'updated_to_livre' });
         }
       }
+    } else if (nbErreurs === nbColis) {
+      // Tous les colis en erreur API -> erreur globale
+      summary.cmds_erreur++;
+      summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, nbColis, parcels: parcelResults, status: 'all_api_error' });
     } else {
-      summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking, status: 'still_in_transit' });
+      // En cours (au moins 1 colis pas encore livre ou 1 colis en erreur partielle)
+      summary.details.push({
+        cmdId: cmd.id, client: cmd.client, tracking: trackingFull, nbColis,
+        livreCount: nbLivre, errorCount: nbErreurs,
+        parcels: parcelResults,
+        status: `still_in_transit (${nbLivre}/${nbColis} livré${nbLivre > 1 ? 's' : ''}${nbErreurs > 0 ? ', ' + nbErreurs + ' err' : ''})`,
+      });
     }
   }
 
