@@ -83,26 +83,48 @@ function normalizeTel(tel: string): string {
 }
 
 // ── MULTI-COLIS : table des regles d'expedition par produit
-// Les sommiers > 120 se demontent en 2 demi-sommiers pour le transport GLS.
-// Format : { match: regex sur cmd.produit, nbColis, poidsParColis (kg) }
-// Premier match gagne. Order from biggest to smallest.
-const MULTICOLIS_RULES: { label: string; match: RegExp; nbColis: number; poidsParColis: number }[] = [
-  { label: 'Sommier 180x200 (2x 90x200)',  match: /sommier[\s\S]*?180\s*[xX×]\s*200/i, nbColis: 2, poidsParColis: 9 },
-  { label: 'Sommier 160x200 (2x 80x200)',  match: /sommier[\s\S]*?160\s*[xX×]\s*200/i, nbColis: 2, poidsParColis: 8 },
-  { label: 'Sommier 140x200 (2x 70x200)',  match: /sommier[\s\S]*?140\s*[xX×]\s*200/i, nbColis: 2, poidsParColis: 7 },
-  { label: 'Sommier 140x190 (2x 70x190)',  match: /sommier[\s\S]*?140\s*[xX×]\s*190/i, nbColis: 2, poidsParColis: 7 },
-  { label: 'Sommier 120x190 (1 colis)',    match: /sommier[\s\S]*?120\s*[xX×]\s*190/i, nbColis: 1, poidsParColis: 10 },
-  { label: 'Sommier 90x190 (1 colis)',     match: /sommier[\s\S]*?90\s*[xX×]\s*(190|200)/i, nbColis: 1, poidsParColis: 7 },
-  // Ensembles literie (matelas + sommier) : on garde 1 colis par defaut + sommier multi-colis si applique
-  // -> traite via une regle supplementaire si besoin
+// Format : { label, match: regex sur cmd.produit, colis: [poids_kg, poids_kg, ...] }
+// Premier match gagne. Ordre IMPORTANT (du plus specifique au plus generique).
+// v5.1 (08/06) : refactor en array de poids pour gerer les colis de poids differents
+// (ex : Lit Coffre = [tete 6kg, longueur 15kg, longueur 15kg])
+const MULTICOLIS_RULES: { label: string; match: RegExp; colis: number[] }[] = [
+  // ─── ENSEMBLES / PACKS LITERIE (matelas + sommier scinde) ───
+  // Ordre : avant matelas/sommier pour matcher en premier
+  { label: 'Ensemble/Pack 180x200 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?180\s*[xX×]\s*200/i, colis: [15, 9, 9] },
+  { label: 'Ensemble/Pack 160x200 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?160\s*[xX×]\s*200/i, colis: [15, 8, 8] },
+  { label: 'Ensemble/Pack 140x200 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?140\s*[xX×]\s*200/i, colis: [15, 7, 7] },
+  { label: 'Ensemble/Pack 140x190 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?140\s*[xX×]\s*190/i, colis: [15, 7, 7] },
+  { label: 'Ensemble/Pack 120x190 (mat. + sommier)',     match: /(ensemble|pack)[\s\S]*?120\s*[xX×]\s*190/i, colis: [15, 10] },
+  { label: 'Ensemble/Pack 90 (mat. + sommier)',          match: /(ensemble|pack)[\s\S]*?90\s*[xX×]\s*(190|200)/i, colis: [7, 7] },
+
+  // ─── LITS ───
+  // Lit Coffre : 3 colis (tete 6kg + 2 longueurs 15kg chacune)
+  { label: 'Lit Coffre (tete + 2 longueurs)', match: /lit\s*coffre/i, colis: [6, 15, 15] },
+  // Lit NICO : 2 colis (tete 6kg + 1 longueur 15kg)
+  { label: 'Lit NICO (tete + 1 longueur)',    match: /lit\s*nico/i, colis: [6, 15] },
+
+  // ─── SOMMIERS SEULS (sans matelas) ───
+  // Les sommiers > 120 se demontent en 2 demi-sommiers pour le transport GLS
+  { label: 'Sommier 180x200 (2x 90x200, 9kg)', match: /sommier[\s\S]*?180\s*[xX×]\s*200/i, colis: [9, 9] },
+  { label: 'Sommier 160x200 (2x 80x200, 8kg)', match: /sommier[\s\S]*?160\s*[xX×]\s*200/i, colis: [8, 8] },
+  { label: 'Sommier 140x200 (2x 70x200, 7kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*200/i, colis: [7, 7] },
+  { label: 'Sommier 140x190 (2x 70x190, 7kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*190/i, colis: [7, 7] },
+  { label: 'Sommier 120x190 (1 colis, 10kg)',  match: /sommier[\s\S]*?120\s*[xX×]\s*190/i, colis: [10] },
+  { label: 'Sommier 90 (1 colis, 7kg)',        match: /sommier[\s\S]*?90\s*[xX×]\s*(190|200)/i, colis: [7] },
+
+  // ─── MATELAS SEULS ───
+  // Matelas 90x190 / 90x200 = meme poids que sommier 90 (7kg)
+  { label: 'Matelas 90 (1 colis, 7kg)',        match: /matelas[\s\S]*?90\s*[xX×]\s*(190|200)/i, colis: [7] },
+  // Tous les autres matelas = 15kg defaut
+  { label: 'Matelas standard (1 colis, 15kg)', match: /matelas/i, colis: [15] },
 ];
 
 // Detecte la regle multi-colis applicable, ou retourne null
-function detectMultiColis(produit: string): { label: string; nbColis: number; poidsParColis: number } | null {
+function detectMultiColis(produit: string): { label: string; colis: number[] } | null {
   if (!produit) return null;
   for (const rule of MULTICOLIS_RULES) {
     if (rule.match.test(produit)) {
-      return { label: rule.label, nbColis: rule.nbColis, poidsParColis: rule.poidsParColis };
+      return { label: rule.label, colis: rule.colis };
     }
   }
   return null;
@@ -144,24 +166,21 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
       MobilePhoneNumber: '0033744289321',
     };
   }
-  // v5 : MULTI-COLIS — detecte si le produit (sommier) doit etre scinde en plusieurs colis
+  // v5.1 : MULTI-COLIS — detecte la regle de packaging selon le produit
+  // chaque colis peut avoir un poids different (ex Lit Coffre = 6+15+15)
   const mc = detectMultiColis(cmd.produit || '');
   let shipmentUnits: any[];
-  if (mc && mc.nbColis > 1) {
-    shipmentUnits = [];
-    for (let i = 1; i <= mc.nbColis; i++) {
-      shipmentUnits.push({
-        ShipmentUnitReference: [reference + '-' + i],
-        Weight: mc.poidsParColis,
-        Note1: ((cmd.produit || '').substring(0, 48) + ' (' + i + '/' + mc.nbColis + ')').substring(0, 60),
-      });
-    }
+  if (mc && mc.colis.length > 0) {
+    shipmentUnits = mc.colis.map((poids: number, idx: number) => ({
+      ShipmentUnitReference: [reference + '-' + (idx + 1)],
+      Weight: poids,
+      Note1: ((cmd.produit || '').substring(0, 44) + ' (' + (idx + 1) + '/' + mc.colis.length + ')').substring(0, 60),
+    }));
   } else {
-    // 1 colis par defaut (matelas, lit, ensemble, etc.)
-    const w = (mc && mc.nbColis === 1) ? mc.poidsParColis : weight;
+    // Fallback : 1 colis selon cmd.poids ou 25kg
     shipmentUnits = [{
       ShipmentUnitReference: [reference + '-1'],
-      Weight: w,
+      Weight: weight,
       Note1: (cmd.produit || '').substring(0, 60),
     }];
   }
