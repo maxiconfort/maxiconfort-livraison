@@ -91,7 +91,7 @@ function normalizeTel(tel: string): string {
 const MULTICOLIS_RULES: { label: string; match: RegExp; colis: number[] }[] = [
   // ─── ENSEMBLES / PACKS LITERIE (matelas + sommier scinde) ───
   // Ordre : avant matelas/sommier pour matcher en premier
-  { label: 'Ensemble/Pack 180x200 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?180\s*[xX×]\s*200/i, colis: [15, 9, 9] },
+  { label: 'Ensemble/Pack 180x200 (mat. + sommier 1 colis)', match: /(ensemble|pack)[\s\S]*?180\s*[xX×]\s*200/i, colis: [15, 15] },
   { label: 'Ensemble/Pack 160x200 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?160\s*[xX×]\s*200/i, colis: [15, 8, 8] },
   { label: 'Ensemble/Pack 140x200 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?140\s*[xX×]\s*200/i, colis: [15, 7, 7] },
   { label: 'Ensemble/Pack 140x190 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?140\s*[xX×]\s*190/i, colis: [15, 7, 7] },
@@ -106,7 +106,7 @@ const MULTICOLIS_RULES: { label: string; match: RegExp; colis: number[] }[] = [
 
   // ─── SOMMIERS SEULS (sans matelas) ───
   // Les sommiers > 120 se demontent en 2 demi-sommiers pour le transport GLS
-  { label: 'Sommier 180x200 (2x 90x200, 9kg)', match: /sommier[\s\S]*?180\s*[xX×]\s*200/i, colis: [9, 9] },
+  { label: 'Sommier 180x200 (1 colis, 15kg)', match: /sommier[\s\S]*?180\s*[xX×]\s*200/i, colis: [15] },
   { label: 'Sommier 160x200 (2x 80x200, 8kg)', match: /sommier[\s\S]*?160\s*[xX×]\s*200/i, colis: [8, 8] },
   { label: 'Sommier 140x200 (2x 70x200, 7kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*200/i, colis: [7, 7] },
   { label: 'Sommier 140x190 (2x 70x190, 7kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*190/i, colis: [7, 7] },
