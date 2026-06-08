@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.34 - Bouton "Reimprimer etiquette GLS" (PDF stocke en BD)
+// v7.5.35 - Auto-SMS expedition apres creation etiquette GLS
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-34';
+const CACHE_VERSION = 'maxiconfort-v7-5-35';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

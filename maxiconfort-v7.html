@@ -7148,6 +7148,11 @@ async function panelCreerEtiquetteGLS(cmdId) {
     c.trackingTransporteur = trackId;
     c.tracking_transporteur = trackId;
     try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(_e) {}
+    // v7.5.35 : envoyer SMS expedition au client (= meme comportement que saisie manuelle)
+    if (typeof sendCmdSmsAsync === 'function') {
+      sendCmdSmsAsync(cmdId, 'expedition');
+      toast('📱 SMS expédition envoyé à ' + (c.client || 'client'), 'ok');
+    }
     // Ouvrir le PDF dans un nouvel onglet via blob URL
     if (data.pdfBase64Full) {
       try {
