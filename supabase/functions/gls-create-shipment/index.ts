@@ -247,6 +247,36 @@ Deno.serve(async (req: Request) => {
   const dryRun: boolean = !!body.dryRun;
   const testMode: boolean = !!body.testMode;
   const cmdId: string | null = body.cmdId || null;
+  const action: string = body.action || 'create';
+
+  // v5.4 : action=getLabel — recupere le PDF stocke en BD (pour reimpression)
+  if (action === 'getLabel') {
+    if (!cmdId) {
+      return new Response(JSON.stringify({ ok: false, error: 'cmdId requis pour getLabel' }), { status: 400, headers: JSON_HEADERS });
+    }
+    try {
+      const { data, error } = await sb.from('commandes')
+        .select('id, tracking_transporteur, gls_pdf_base64, produit')
+        .eq('id', cmdId)
+        .single();
+      if (error || !data) {
+        return new Response(JSON.stringify({ ok: false, error: 'Commande introuvable' }), { status: 404, headers: JSON_HEADERS });
+      }
+      if (!data.gls_pdf_base64) {
+        return new Response(JSON.stringify({ ok: false, error: 'Aucune etiquette stockee pour cette commande. Cree-la d\'abord.' }), { status: 404, headers: JSON_HEADERS });
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        trackId: (data.tracking_transporteur || '').split(',')[0] || null,
+        tracking_transporteur: data.tracking_transporteur,
+        pdfBase64Full: data.gls_pdf_base64,
+        produit: data.produit,
+        cached: true,
+      }), { headers: JSON_HEADERS });
+    } catch (e: any) {
+      return new Response(JSON.stringify({ ok: false, error: e.message }), { status: 500, headers: JSON_HEADERS });
+    }
+  }
 
   if (!cmdId && !testMode) {
     return new Response(JSON.stringify({ ok: false, error: 'cmdId requis (ou testMode:true)' }), { status: 400, headers: JSON_HEADERS });
@@ -333,9 +363,11 @@ Deno.serve(async (req: Request) => {
   if (cmdId && trackId && !testMode) {
     try {
       const trackingValue = allParcels.map((p: any) => p.trackId).filter(Boolean).join(',');
+      // v5.4 : stocke aussi le PDF base64 (pour reimpression depuis l'app)
       await sb.from('commandes').update({
         tracking_transporteur: trackingValue,
         transporteur: 'GLS',
+        gls_pdf_base64: pdfBase64,
       }).eq('id', cmdId);
     } catch (e: any) {
       console.warn('Update commande failed:', e.message);

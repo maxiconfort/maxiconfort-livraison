@@ -6957,10 +6957,13 @@ function ouvrirCmd(id) {
       '</div>' +
       '<div id="pa-tracking-wrap" style="display:' + ((c.transporteur||'RANOU')==='GLS'?'block':'none') + '">' +
         // v7.5.29 : Bouton "Créer étiquette GLS auto" (visible si pas encore de tracking)
+        // v7.5.34 : Bouton "Réimprimer étiquette" (visible si tracking existe)
         (((c.trackingTransporteur||c.tracking_transporteur||'') === '') ?
           '<button id="pa-create-label-btn" data-cmdid="'+c.id+'" class="btn" style="width:100%;padding:12px;background:linear-gradient(135deg,#FFB347,#FF8C42);color:#fff;font-weight:800;font-size:14px;border:none;margin-bottom:10px;box-shadow:0 2px 6px rgba(255,140,66,.3)">📦 Créer l\'étiquette GLS automatiquement</button>' +
           '<div style="text-align:center;color:var(--t3);font-size:11px;margin-bottom:10px;font-weight:700">— OU SAISIE MANUELLE —</div>'
-          : '') +
+          :
+          '<button id="pa-reprint-label-btn" data-cmdid="'+c.id+'" class="btn" style="width:100%;padding:12px;background:linear-gradient(135deg,#4A90E2,#357ABD);color:#fff;font-weight:800;font-size:14px;border:none;margin-bottom:10px;box-shadow:0 2px 6px rgba(74,144,226,.3)">📄 Réimprimer l\'étiquette GLS</button>'
+          ) +
         '<label style="font-size:11px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;display:block">📦 N° de suivi GLS</label>' +
         '<div style="display:flex;gap:8px">' +
           '<input id="pa-tracking" placeholder="ex: ABC123456789" value="' + ((c.trackingTransporteur||c.tracking_transporteur||'').replace(/"/g,'&quot;')) + '" style="flex:1;padding:9px 11px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font);font-weight:600">' +
@@ -7008,6 +7011,9 @@ function ouvrirCmd(id) {
   // v7.5.29 : Bouton "Créer étiquette GLS auto" via API ShipIT
   var createBtn = document.getElementById('pa-create-label-btn');
   if (createBtn) createBtn.addEventListener('click', function(){ panelCreerEtiquetteGLS(createBtn.dataset.cmdid); });
+  // v7.5.34 : Bouton "Réimprimer étiquette" (PDF stocke en BD)
+  var reprintBtn = document.getElementById('pa-reprint-label-btn');
+  if (reprintBtn) reprintBtn.addEventListener('click', function(){ panelReimprimerEtiquetteGLS(reprintBtn.dataset.cmdid); });
   var tBtn = document.getElementById('pa-tournee-btn');
   if (tBtn) tBtn.addEventListener('click', function(){ ajouterTournee(tBtn.dataset.cmdid); });
 
@@ -7171,6 +7177,63 @@ async function panelCreerEtiquetteGLS(cmdId) {
     toast('❌ Erreur réseau : ' + e.message, 'err');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = labelOrig || '📦 Créer l\'étiquette GLS automatiquement'; btn.style.opacity = '1'; }
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// v7.5.34 : Reimprimer une etiquette GLS deja creee
+// ────────────────────────────────────────────────────────────
+// Appelle gls-create-shipment avec action='getLabel' pour recuperer
+// le PDF stocke dans la BD (commandes.gls_pdf_base64) et l'ouvrir
+// pour reimpression. Pas d'appel API GLS, donc pas facture.
+// ════════════════════════════════════════════════════════════
+async function panelReimprimerEtiquetteGLS(cmdId) {
+  var btn = document.getElementById('pa-reprint-label-btn');
+  var labelOrig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Récupération...'; btn.style.opacity = '0.7'; }
+  try {
+    var resp = await fetch(SUPABASE_URL + '/functions/v1/gls-create-shipment', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmdId: cmdId, action: 'getLabel' })
+    });
+    var data = await resp.json();
+    if (!data.ok) {
+      var msg = data.error || 'Erreur inconnue';
+      // Si pas de PDF stocke (cmd creee avant la maj), on propose de re-creer
+      if (msg.indexOf('Aucune etiquette stockee') >= 0) {
+        if (confirm('Cette étiquette a été créée avant la mise à jour, le PDF n\'a pas été sauvegardé.\n\nVeux-tu recréer une nouvelle étiquette ?\n\n⚠️ Ça va facturer une nouvelle étiquette chez GLS.')) {
+          return panelCreerEtiquetteGLS(cmdId);
+        }
+        return;
+      }
+      toast('❌ ' + msg, 'err');
+      return;
+    }
+    if (!data.pdfBase64Full) {
+      toast('❌ PDF vide', 'err');
+      return;
+    }
+    // Ouvrir le PDF
+    var byteCharacters = atob(data.pdfBase64Full);
+    var byteNumbers = new Array(byteCharacters.length);
+    for (var i = 0; i < byteCharacters.length; i++) byteNumbers[i] = byteCharacters.charCodeAt(i);
+    var byteArray = new Uint8Array(byteNumbers);
+    var blob = new Blob([byteArray], { type: 'application/pdf' });
+    var url = URL.createObjectURL(blob);
+    var w = window.open(url, '_blank');
+    if (!w) {
+      var a = document.createElement('a');
+      a.href = url; a.download = 'GLS_' + (data.trackId || cmdId) + '.pdf'; a.target = '_blank';
+      a.click();
+      toast('📥 Téléchargement étiquette (popup bloquée)', 'info');
+    } else {
+      toast('📄 Étiquette ' + (data.trackId || '') + ' rouverte', 'ok');
+    }
+  } catch(e) {
+    toast('❌ Erreur réseau : ' + e.message, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = labelOrig || '📄 Réimprimer l\'étiquette GLS'; btn.style.opacity = '1'; }
   }
 }
 

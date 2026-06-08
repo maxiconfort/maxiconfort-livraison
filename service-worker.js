@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.33 - Fix bug timezone encarts (UTC -> Local date format)
+// v7.5.34 - Bouton "Reimprimer etiquette GLS" (PDF stocke en BD)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-33';
+const CACHE_VERSION = 'maxiconfort-v7-5-34';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
