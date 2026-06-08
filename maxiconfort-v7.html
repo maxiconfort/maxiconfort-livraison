@@ -5104,17 +5104,26 @@ function pBdg(s){
 async function renderCmdStatsJour() {
   var box = document.getElementById('cmd-stats-jour');
   if (!box) return;
+  // v7.5.33 : fix bug timezone — toISOString() convertit en UTC, donc minuit local
+  // lundi GMT+2 devenait 22h UTC dimanche -> debutSemStr = dimanche au lieu de lundi
+  // Fix : formater YYYY-MM-DD basé sur la date LOCALE
+  function toLocalDateStr(d) {
+    var y = d.getFullYear();
+    var m = String(d.getMonth() + 1).padStart(2, '0');
+    var day = String(d.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + day;
+  }
   var now = new Date();
-  var todayStr = now.toISOString().split('T')[0];
+  var todayStr = toLocalDateStr(now);
   // Debut de la semaine (lundi) au format YYYY-MM-DD
   var dow = now.getDay() === 0 ? 6 : now.getDay() - 1;
   var debutSem = new Date(now); debutSem.setDate(now.getDate() - dow); debutSem.setHours(0,0,0,0);
-  var debutSemStr = debutSem.toISOString().split('T')[0];
+  var debutSemStr = toLocalDateStr(debutSem);
   // Debut du mois
-  var debutMoisStr = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+  var debutMoisStr = toLocalDateStr(new Date(now.getFullYear(), now.getMonth(), 1));
   // Demain (pour borne sup exclusive)
   var demain = new Date(now); demain.setDate(now.getDate() + 1);
-  var demainStr = demain.toISOString().split('T')[0];
+  var demainStr = toLocalDateStr(demain);
 
   // Render un état "loading" rapide pour eviter le blink
   box.style.display = 'block';
