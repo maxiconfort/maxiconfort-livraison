@@ -167,6 +167,21 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
       MobilePhoneNumber: '0033744289321',
     };
   }
+  // v5.5 : Note2 = tel client (pour qu'il apparaisse imprime sur l'etiquette)
+  // GLS imprime Note1 et Note2 dans la zone Contact du label PDF
+  // On formate le tel proprement (06 79 90 57 03 plutot que 0033...)
+  function formatTelDisplay(t: string): string {
+    if (!t) return '';
+    const clean = t.replace(/[^0-9]/g, '');
+    let local = clean;
+    if (clean.startsWith('0033')) local = '0' + clean.substring(4);
+    else if (clean.startsWith('33') && clean.length === 11) local = '0' + clean.substring(2);
+    // 0679905703 -> 06 79 90 57 03
+    return local.replace(/(\d{2})(?=\d)/g, '$1 ').trim();
+  }
+  const telDisplay = formatTelDisplay(cmd.tel || '');
+  const note2 = telDisplay ? ('Tel: ' + telDisplay).substring(0, 60) : '';
+
   // v5.1 : MULTI-COLIS — detecte la regle de packaging selon le produit
   // chaque colis peut avoir un poids different (ex Lit Coffre = 6+15+15)
   const mc = detectMultiColis(cmd.produit || '');
@@ -176,6 +191,7 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
       ShipmentUnitReference: [reference + '-' + (idx + 1)],
       Weight: poids,
       Note1: ((cmd.produit || '').substring(0, 44) + ' (' + (idx + 1) + '/' + mc.colis.length + ')').substring(0, 60),
+      Note2: note2,
     }));
   } else {
     // Fallback : 1 colis selon cmd.poids ou 25kg
@@ -183,6 +199,7 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
       ShipmentUnitReference: [reference + '-1'],
       Weight: weight,
       Note1: (cmd.produit || '').substring(0, 60),
+      Note2: note2,
     }];
   }
 
