@@ -5212,6 +5212,17 @@ async function renderCmdStatsJour() {
 
 function renderCmds(list) {
   renderCmdStatsJour();
+  // v7.5.38 : si la page Commandes est active ET qu'on est appele sans liste pre-filtree,
+  // redéléguer a cmdAppliquerFiltres() pour preserver TOUS les filtres (transporteur,
+  // origine, ville, produit, dates, preset). Sinon les filtres "lourds" sautent
+  // a chaque sync auto / save / realtime.
+  if (!list && typeof cmdAppliquerFiltres === 'function') {
+    var cmdActif = document.getElementById('cmd-filter-transporteur') || document.getElementById('cmd-filter-origine') || document.getElementById('cmd-filter-ville') || document.getElementById('cmd-filter-produit');
+    if (cmdActif) {
+      // si au moins un filtre lourd est dans le DOM, on passe par cmdAppliquerFiltres
+      return cmdAppliquerFiltres();
+    }
+  }
   // Toujours appliquer le filtre actif (barre recherche + statut)
   var allList = list || commandes;
   var searchVal = (document.getElementById('f-search') ? document.getElementById('f-search').value : '').toLowerCase().trim();
