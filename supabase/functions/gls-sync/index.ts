@@ -26,6 +26,10 @@ const GLS_API_KEY       = Deno.env.get('GLS_API_KEY') || '';
 const GLS_CLIENT_SECRET = Deno.env.get('GLS_CLIENT_SECRET') || '';
 const GLS_APP_ID        = Deno.env.get('GLS_APP_ID') || '';
 const GLS_CONTACT_ID    = Deno.env.get('GLS_CONTACT_ID') || '';
+// v11 : creds ShipIT-FARM Olivier (memes que gls-create-shipment)
+const GLS_SHIPIT_USER       = Deno.env.get('GLS_SHIPIT_USER') || '';
+const GLS_SHIPIT_PASSWORD   = Deno.env.get('GLS_SHIPIT_PASSWORD') || '';
+const GLS_SHIPIT_CONTACT_ID = Deno.env.get('GLS_SHIPIT_CONTACT_ID') || '';
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 
@@ -33,6 +37,8 @@ const GLS_OAUTH_URL  = 'https://api.gls-group.net/oauth2/v2/token';
 const GLS_TEST_BASE  = 'https://shipit-wbm-test01.gls-group.eu:443/backend/rs/tracking';
 const GLS_PROD_BASE  = 'https://shipit-wbm-fr01.gls-group.eu/backend/rs/tracking';
 const GLS_RSTT002    = 'https://gls-group.com/app/service/open/rest/GROUP/en/rstt002';
+// v11 : URL ShipIT-FARM (meme base que create-shipment qui marche)
+const GLS_SHIPIT_FARM_BASE = 'https://wbm-fr02.shipit.gls-group.com:443/backend/rs/tracking';
 
 const sb = createClient(SB_URL, SB_SR_KEY, { auth: { autoRefreshToken: false, persistSession: false } });
 
@@ -164,6 +170,41 @@ async function trackShipIT(trackId: string, useProd: boolean): Promise<any> {
   return { ok: false, url, attempts };
 }
 
+// v11 : ShipIT-FARM (memes creds que create-shipment qui marche)
+async function trackShipITFarm(trackId: string): Promise<any> {
+  if (!GLS_SHIPIT_USER || !GLS_SHIPIT_PASSWORD) {
+    return { ok: false, url: GLS_SHIPIT_FARM_BASE, attempts: [{ ok: false, error: 'GLS_SHIPIT_USER/PASSWORD manquant' }] };
+  }
+  const basic = btoa(`${GLS_SHIPIT_USER}:${GLS_SHIPIT_PASSWORD}`);
+  const attempts: any[] = [];
+  // Endpoint parceldetails : POST avec body
+  const url1 = `${GLS_SHIPIT_FARM_BASE}/parceldetails`;
+  const r1 = await tryAuthShipIT(url1, JSON.stringify({ TrackID: trackId, ShipmentReference: '' }), `Basic ${basic}`, 'shipit_farm_basic');
+  attempts.push(r1);
+  if (r1.ok) return { ok: true, url: url1, status: r1.status, data: r1.data, attempts, winning: 'shipit_farm_basic' };
+  // Endpoint parcels (alternative) : GET avec id en path
+  try {
+    const url2 = `${GLS_SHIPIT_FARM_BASE}/parcels/${trackId}`;
+    const headers: Record<string, string> = {
+      'Authorization': `Basic ${basic}`,
+      'Accept': 'application/glsVersion1+json, application/json',
+    };
+    if (GLS_SHIPIT_CONTACT_ID) headers['Contact-Id'] = GLS_SHIPIT_CONTACT_ID;
+    const resp = await fetch(url2, { method: 'GET', headers });
+    const bodyText = await resp.text();
+    if (resp.ok) {
+      let data: any = null;
+      try { data = JSON.parse(bodyText); } catch { data = { raw: bodyText.substring(0, 500) }; }
+      attempts.push({ ok: true, authMode: 'shipit_farm_get', status: resp.status, data });
+      return { ok: true, url: url2, status: resp.status, data, attempts, winning: 'shipit_farm_get' };
+    }
+    attempts.push({ ok: false, authMode: 'shipit_farm_get', status: resp.status, body: bodyText.substring(0, 300) });
+  } catch (e: any) {
+    attempts.push({ ok: false, authMode: 'shipit_farm_get', error: e.message });
+  }
+  return { ok: false, url: url1, attempts };
+}
+
 async function trackParcel(trackId: string, opts: { useRstt002?: boolean; useShipIT?: boolean; useProd?: boolean }): Promise<any> {
   const tried: any[] = [];
 
@@ -177,11 +218,17 @@ async function trackParcel(trackId: string, opts: { useRstt002?: boolean; useShi
     const r = await trackShipIT(trackId, !!opts.useProd);
     return { ...r, endpoint: 'shipit' };
   }
-  // Auto : essaye rstt002 d'abord (public), fallback ShipIT si echec
+  // v11 : Auto - essaye d'abord ShipIT-FARM (creds Olivier qui marchent pour create-shipment)
+  const r0 = await trackShipITFarm(trackId);
+  tried.push({ endpoint: 'shipit_farm', ...r0 });
+  if (r0.ok) return { ok: true, endpoint: 'shipit_farm', url: r0.url, data: r0.data, winning: r0.winning, tried };
+
+  // Fallback : rstt002 (public)
   const r1 = await tryRstt002(trackId);
   tried.push({ endpoint: 'rstt002', ...r1 });
   if (r1.ok) return { ok: true, endpoint: 'rstt002', url: r1.url, data: r1.data, winning: r1.winning, tried };
 
+  // Fallback : ShipIT classique
   const r2 = await trackShipIT(trackId, !!opts.useProd);
   tried.push({ endpoint: 'shipit', ...r2 });
   if (r2.ok) return { ok: true, endpoint: 'shipit', url: r2.url, data: r2.data, winning: r2.winning, tried };
