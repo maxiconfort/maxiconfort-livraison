@@ -271,12 +271,26 @@ textarea{resize:vertical;min-height:65px}
 .fa{display:flex;gap:10px;margin-top:14px;padding-top:14px;border-top:1px solid var(--brd)}
 
 /* modal */
-.mbd{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100;display:none;align-items:center;justify-content:center;padding:20px}
+.mbd{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9990;display:none;align-items:center;justify-content:center;padding:20px}
 .mbd.on{display:flex}
 .modal{background:var(--card);border-radius:18px;padding:22px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;box-shadow:var(--shm)}
-.mh{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+.mh{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;position:sticky;top:-22px;background:var(--card);margin:-22px -22px 18px -22px;padding:18px 22px;border-bottom:1px solid var(--brd);z-index:1}
 .mt{font-size:17px;font-weight:800}
-.mx{width:28px;height:28px;border-radius:50%;background:var(--bg);border:none;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;color:var(--t2)}
+.mx{width:32px;height:32px;border-radius:50%;background:var(--bg);border:none;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;color:var(--t2);flex-shrink:0}
+/* v7.5.36 : modale full-screen sur mobile + bouton actions en bas sticky */
+@media (max-width:600px) {
+  .mbd{padding:0;align-items:stretch}
+  .modal{max-width:100vw;max-height:100vh;height:100vh;border-radius:0;padding:16px;display:flex;flex-direction:column}
+  .modal > *:not(.mh):not(.fa){flex-shrink:0}
+  .mh{margin:-16px -16px 14px -16px;padding:14px 16px;top:-16px}
+  /* Footer actions sticky bottom + bouton full-width prioritaire */
+  .modal .fa{position:sticky;bottom:-16px;background:var(--card);margin:14px -16px -16px -16px;padding:14px 16px;border-top:1px solid var(--brd);border-bottom:0;flex-direction:row-reverse;z-index:2}
+  .modal .fa button{flex:1;font-size:14px;padding:13px 10px}
+  /* Grid 2 cols devient 1 col sur mobile */
+  .fg2{grid-template-columns:1fr !important}
+  /* Grid 3 cols Remise + Motif + Total devient 1 col */
+  .remise-grid{grid-template-columns:1fr !important}
+}
 
 /* side panel */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:49;display:none}
@@ -2404,7 +2418,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
       <div id="lignes-produits" style="display:flex;flex-direction:column;gap:7px"></div>
 
       <!-- Remise globale + total -->
-      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--brd);display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;align-items:end">
+      <div class="remise-grid" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--brd);display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;align-items:end">
         <div class="fg">
           <label>Remise globale sur commande</label>
           <div style="display:flex;gap:8px;align-items:center">

@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.35 - Auto-SMS expedition apres creation etiquette GLS
+// v7.5.36 - Fix responsive mobile modales (z-index + full-screen)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-35';
+const CACHE_VERSION = 'maxiconfort-v7-5-36';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
