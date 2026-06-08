@@ -225,7 +225,21 @@ async function createShipment(payload: any): Promise<any> {
   return { ok: resp.ok, status: resp.status, data };
 }
 
+// v5.2 : Headers CORS (sinon le navigateur bloque le preflight OPTIONS)
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'authorization, content-type, apikey, x-client-info',
+  'Access-Control-Max-Age': '86400',
+};
+const JSON_HEADERS = { 'Content-Type': 'application/json', ...CORS_HEADERS };
+
 Deno.serve(async (req: Request) => {
+  // v5.2 : CORS preflight
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+
   const startTime = Date.now();
   let body: any = {};
   if (req.method === 'POST') { try { body = await req.json(); } catch {} }
@@ -234,7 +248,7 @@ Deno.serve(async (req: Request) => {
   const cmdId: string | null = body.cmdId || null;
 
   if (!cmdId && !testMode) {
-    return new Response(JSON.stringify({ ok: false, error: 'cmdId requis (ou testMode:true)' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ ok: false, error: 'cmdId requis (ou testMode:true)' }), { status: 400, headers: JSON_HEADERS });
   }
 
   // Recup commande Supabase (sauf si testMode pur)
@@ -242,7 +256,7 @@ Deno.serve(async (req: Request) => {
   if (cmdId) {
     const { data, error } = await sb.from('commandes').select('*').eq('id', cmdId).single();
     if (error || !data) {
-      return new Response(JSON.stringify({ ok: false, error: 'Commande non trouvee: ' + (error?.message || cmdId) }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ ok: false, error: 'Commande non trouvee: ' + (error?.message || cmdId) }), { status: 404, headers: JSON_HEADERS });
     }
     cmd = data;
   }
@@ -250,7 +264,7 @@ Deno.serve(async (req: Request) => {
   const payload = buildShipmentPayload(cmd, testMode);
 
   if (dryRun) {
-    return new Response(JSON.stringify({ ok: true, dryRun: true, payload, duration_ms: Date.now() - startTime }), { headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ ok: true, dryRun: true, payload, duration_ms: Date.now() - startTime }), { headers: JSON_HEADERS });
   }
 
   const result = await createShipment(payload);
@@ -262,7 +276,7 @@ Deno.serve(async (req: Request) => {
       status: result.status,
       gls_response: result.data,
       payload_envoye: payload,
-    }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+    }), { status: 502, headers: JSON_HEADERS });
   }
 
   // Extraction TrackID + PDF
@@ -312,5 +326,5 @@ Deno.serve(async (req: Request) => {
     pdfBase64Full: pdfBase64, // Le PDF complet pour download/print cote client (toutes etiquettes incluses)
     gls_response: created,
     duration_ms: Date.now() - startTime,
-  }), { headers: { 'Content-Type': 'application/json' } });
+  }), { headers: JSON_HEADERS });
 });
