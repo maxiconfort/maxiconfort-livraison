@@ -5121,9 +5121,10 @@ function pBdg(s){
 async function renderCmdStatsJour() {
   var box = document.getElementById('cmd-stats-jour');
   if (!box) return;
-  // v7.5.33 : fix bug timezone — toISOString() convertit en UTC, donc minuit local
-  // lundi GMT+2 devenait 22h UTC dimanche -> debutSemStr = dimanche au lieu de lundi
-  // Fix : formater YYYY-MM-DD basé sur la date LOCALE
+  // v7.5.40 : REFONTE BULLETPROOF — 1 seule requete pour TOUT le mois,
+  // puis filtre cote client pour les 3 sous-periodes (jour/semaine/mois).
+  // Garantit la coherence : si Aujourd'hui inclut une cmd, Semaine et Mois
+  // l'incluront forcement aussi (pas de divergence entre 3 fetch séparés).
   function toLocalDateStr(d) {
     var y = d.getFullYear();
     var m = String(d.getMonth() + 1).padStart(2, '0');
@@ -5132,8 +5133,8 @@ async function renderCmdStatsJour() {
   }
   var now = new Date();
   var todayStr = toLocalDateStr(now);
-  // Debut de la semaine (lundi) au format YYYY-MM-DD
-  var dow = now.getDay() === 0 ? 6 : now.getDay() - 1;
+  // Debut de la semaine (lundi) au format YYYY-MM-DD — lundi=0, dimanche=6
+  var dow = (now.getDay() + 6) % 7;
   var debutSem = new Date(now); debutSem.setDate(now.getDate() - dow); debutSem.setHours(0,0,0,0);
   var debutSemStr = toLocalDateStr(debutSem);
   // Debut du mois
@@ -5163,39 +5164,57 @@ async function renderCmdStatsJour() {
   var moisFr = ['Janv','Fev','Mars','Avr','Mai','Juin','Juil','Aout','Sept','Oct','Nov','Dec'];
   var lblMois = moisFr[now.getMonth()];
 
-  // Helper : fetch direct Supabase pour avoir le compte + somme exacts d'une periode
-  // v7.5.24 : utilise date_commande (vraie date prise commande, pas re-edite) et exclut les annulations
-  // v7.5.25 : exclut aussi les saisies retroactives (date_livraison < date_commande)
-  // v7.5.31 (annule) : SWITCH vers created_at -> compte les saisies retroactives a tort
-  // v7.5.32 : RETOUR a date_commande comme avant. Le form bug etait la cause de corruption
-  //   mais il est fixe (fix #1 de v7.5.31). date_commande est desormais immuable a l'edition,
-  //   donc redevient source de verite fiable. + filtre rétroactif maintenu.
-  async function fetchPeriode(dateMin, dateMax) {
-    try {
-      var url = SUPABASE_URL + '/rest/v1/commandes?select=prix,date_commande,date_livraison&date_commande=gte.' + dateMin + '&date_commande=lt.' + dateMax + '&statut=not.eq.annul%C3%A9';
-      var r = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
-      if (!r.ok) return { nb: 0, total: 0 };
+  // v7.5.40 : UNE SEULE requete pour tout le mois (limit 1000 = large)
+  // + filtre cote client pour les 3 periodes (jour/semaine/mois).
+  // Garantit que les 3 chiffres soient parfaitement coherents.
+  // v7.5.24 : utilise date_commande (vraie date prise commande)
+  // v7.5.25 : exclut les saisies retroactives (date_livraison < date_commande)
+  // v7.5.32 : date_commande source de verite + filtre retroactif maintenu
+  var moisData = [];
+  try {
+    var url = SUPABASE_URL + '/rest/v1/commandes?select=id,prix,date_commande,date_livraison,statut&date_commande=gte.' + debutMoisStr + '&date_commande=lt.' + demainStr + '&statut=not.eq.annul%C3%A9&limit=1000';
+    var r = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
+    if (r.ok) {
       var data = await r.json();
-      if (!Array.isArray(data)) return { nb: 0, total: 0 };
-      // Filtrer cote client : exclure cmds dont date_livraison < date_commande (= saisie retroactive)
-      var vraies = data.filter(function(c){
-        var dc = c.date_commande;
-        var dl = c.date_livraison;
-        if (!dl) return true; // pas de date livraison saisie -> nouvelle cmd OK
-        return dl >= dc;
-      });
-      var nb = vraies.length;
-      var total = vraies.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
-      return { nb: nb, total: total };
-    } catch(e) { return { nb: 0, total: 0 }; }
+      if (Array.isArray(data)) moisData = data;
+    }
+  } catch(e) { console.warn('renderCmdStatsJour fetch err:', e.message); }
+
+  // Filtre rétroactif global
+  function isVraieCmd(c) {
+    if (!c.date_commande) return false;
+    if (!c.date_livraison) return true; // pas de date livraison -> nouvelle cmd OK
+    return c.date_livraison >= c.date_commande; // date_livraison >= date_commande (pas retroactive)
+  }
+  var vraies = moisData.filter(isVraieCmd);
+
+  function statsPeriode(dMin, dMax) {
+    var items = vraies.filter(function(c){
+      return c.date_commande >= dMin && c.date_commande < dMax;
+    });
+    var nb = items.length;
+    var total = items.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
+    return { nb: nb, total: total };
   }
 
-  // Lancer les 3 requetes en parallele
-  var [j, s, m] = await Promise.all([
-    fetchPeriode(todayStr, demainStr),
-    fetchPeriode(debutSemStr, demainStr),
-    fetchPeriode(debutMoisStr, demainStr)
-  ]);
+  var j = statsPeriode(todayStr, demainStr);
+  var s = statsPeriode(debutSemStr, demainStr);
+  var m = statsPeriode(debutMoisStr, demainStr);
+
+  // v7.5.40 : Logs console pour debug (visible via F12)
+  console.log('[StatsJour]', {
+    now: now.toString(),
+    todayStr: todayStr,
+    debutSemStr: debutSemStr,
+    debutMoisStr: debutMoisStr,
+    demainStr: demainStr,
+    moisDataTotal: moisData.length,
+    vraiesAprFiltre: vraies.length,
+    aujourdhui: j,
+    semaine: s,
+    mois: m,
+    excluesRetroactives: moisData.length - vraies.length
+  });
 
   // Formats plage pour tooltip
   function fmtJour(d){ return d.substring(8,10)+'/'+d.substring(5,7); }
