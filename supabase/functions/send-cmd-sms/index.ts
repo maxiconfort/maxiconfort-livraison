@@ -1,10 +1,11 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : send-cmd-sms (v2 — 04/06/2026)
+// Edge Function : send-cmd-sms (v3 — 10/06/2026)
 // ════════════════════════════════════════════════════════════════════
 // Envoie un SMS automatique au client pour une commande, selon le type :
+//   - "veille"     : SMS la veille — confirme livraison demain (NOUVEAU v3)
 //   - "depart"     : SMS départ tournée (RANOU) — accepte heureArrivee optionnelle
 //   - "route"      : SMS livreur en route vers ce client (RANOU)
-//   - "proche"     : SMS livreur à <1km (NOUVEAU v7.5.20)
+//   - "proche"     : SMS livreur à <1km
 //   - "expedition" : SMS expédition + n° tracking (GLS)
 //
 // Dedupe via commandes.sms_envoyes (ne renvoie pas 2 fois le même type).
@@ -36,6 +37,8 @@ const sb = createClient(SB_URL, SB_SR_KEY, {
 // Le sender "Maxiconfort" identifie l'expediteur, donc pas besoin de le
 // repeter dans le corps -> on gagne des caracteres.
 const TPL = {
+  veille: (p: any) =>
+    `Bonjour ${p.prenom}, votre livraison Maxiconfort est prevue demain ${p.dateFr} entre ${p.creneauDeb} et ${p.creneauFin}. Article : ${p.produit}. Le chauffeur vous contactera avant son arrivee.`,
   depart: (p: any) =>
     p.heureArrivee
       ? `Bonjour ${p.prenom}, livreur en route ! Arrivee prevue vers ${p.heureArrivee}. Suivi : ${p.lienSuivi}`
@@ -120,8 +123,8 @@ Deno.serve(async (req: Request) => {
     return new Response(JSON.stringify({ error: 'cmdId et type requis' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
-  if (!['depart', 'route', 'proche', 'expedition'].includes(type)) {
-    return new Response(JSON.stringify({ error: 'type doit être : depart, route, proche, expedition' }),
+  if (!['veille', 'depart', 'route', 'proche', 'expedition'].includes(type)) {
+    return new Response(JSON.stringify({ error: 'type doit être : veille, depart, route, proche, expedition' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
@@ -155,8 +158,15 @@ Deno.serve(async (req: Request) => {
     ? `${APP_BASE}/track.html?t=${cmd.tracking_token}`
     : APP_BASE;
   const tracking = cmd.tracking_transporteur || '';
+  // v3 : params veille (date livraison FR + creneau)
+  const dateLiv = cmd.date_livraison ? new Date(cmd.date_livraison + 'T12:00:00') : null;
+  const dateFr = dateLiv ? dateLiv.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) : '';
+  const produit = (cmd.produit || 'votre commande').substring(0, 60);
+  const creneauDeb = body.creneauDeb || '08:00';
+  const creneauFin = body.creneauFin || '17:00';
   const contenu = TPL[type as keyof typeof TPL]({
     prenom, lienSuivi, tracking, id: cmd.id, heureArrivee,
+    dateFr, produit, creneauDeb, creneauFin,
   });
 
   // Envoi Brevo

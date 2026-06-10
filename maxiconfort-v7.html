@@ -632,58 +632,171 @@ textarea{resize:vertical;min-height:65px}
   </div>
   </div>
 
-  <!-- ─── PAGE TOURNÉES ─── -->
+  <!-- ─── PAGE TOURNÉES v7.5.41 — Split 2 colonnes + smart actions ─── -->
   <div class="page" id="p-tournees">
-    <div class="g2" style="margin-bottom:16px">
-      <div class="card">
-        <div class="card-t">Créer une nouvelle tournée</div>
-        <div class="fg" style="margin-bottom:10px"><label>Date de la tournée</label><input type="date" id="t-date" onclick="try{this.showPicker&&this.showPicker()}catch(e){}" style="cursor:pointer"></div>
-        <div class="fg" style="margin-bottom:10px"><label>Livreur assigné</label>
-          <select id="t-livreur">
-            <option value="">— Choisir un livreur —</option>
+    <style>
+      /* ── Split layout 35/65 desktop, empile mobile ── */
+      .trn-split { display:grid; grid-template-columns:340px 1fr; gap:14px; align-items:start; }
+      @media (max-width:980px) {
+        .trn-split { grid-template-columns:1fr; }
+        .trn-mobile-tabs { display:flex !important; }
+      }
+      /* Tabs mobile pour basculer Liste / Création */
+      .trn-mobile-tabs { display:none; gap:6px; margin-bottom:12px; background:var(--card); border:1px solid var(--brd); border-radius:var(--r); padding:4px; }
+      .trn-mobile-tab { flex:1; padding:9px 0; text-align:center; font-size:13px; font-weight:700; color:var(--t2); border-radius:8px; cursor:pointer; transition:all .15s; }
+      .trn-mobile-tab.active { background:var(--bl); color:var(--bd); }
+      /* Colonne gauche : liste tournées compacte */
+      .trn-left-card { background:var(--card); border:1px solid var(--brd); border-radius:var(--rl2); padding:14px; position:sticky; top:14px; }
+      .trn-left-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; }
+      .trn-left-title { font-size:13px; font-weight:800; color:var(--t1); text-transform:uppercase; letter-spacing:.5px; }
+      .trn-count-pill { background:var(--bl); color:var(--bd); font-size:11px; font-weight:800; padding:3px 9px; border-radius:11px; }
+      .trn-mini-filters { display:flex; gap:6px; margin-bottom:10px; }
+      .trn-mini-filters input { flex:1; min-width:0; padding:7px 9px; border:1px solid var(--brd2); border-radius:8px; background:var(--bg); color:var(--text); font-size:12px; font-family:var(--font); }
+      .trn-list-scroll { max-height:calc(100vh - 220px); overflow-y:auto; padding-right:2px; margin:0 -2px; }
+      /* Cards tournée compactes 1 par ligne */
+      .trn-card { padding:10px 11px; border:1.5px solid var(--brd); border-radius:12px; margin-bottom:7px; cursor:pointer; background:var(--bg); transition:all .12s; }
+      .trn-card:hover { border-color:var(--blue); background:var(--bl); }
+      .trn-card.active { border-color:var(--blue); background:var(--bl); box-shadow:0 0 0 3px rgba(24,95,165,.15); }
+      .trn-card.done { opacity:.55; }
+      .trn-card-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; gap:6px; }
+      .trn-card-id { font-size:12px; font-weight:800; color:var(--t1); }
+      .trn-card-st { font-size:9px; font-weight:800; padding:2px 6px; border-radius:8px; text-transform:uppercase; letter-spacing:.4px; }
+      .trn-card-meta { font-size:11px; color:var(--t2); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+      .trn-card-prog { background:var(--bg2); height:4px; border-radius:2px; overflow:hidden; margin-top:5px; }
+      .trn-card-prog-fill { height:100%; background:linear-gradient(90deg,var(--blue),var(--green)); border-radius:2px; }
+      .trn-card-money { font-size:11px; color:var(--green); font-weight:800; }
+      /* Colonne droite : zone création/détail */
+      .trn-right { background:var(--card); border:1px solid var(--brd); border-radius:var(--rl2); overflow:hidden; }
+      .trn-right-head { padding:14px 16px; border-bottom:1px solid var(--brd); display:flex; justify-content:space-between; align-items:center; gap:10px; }
+      .trn-right-title { font-size:15px; font-weight:800; }
+      .trn-right-body { padding:14px 16px; }
+      .trn-row2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px; }
+      @media (max-width:480px) { .trn-row2 { grid-template-columns:1fr; } }
+      /* Smart actions chips */
+      .trn-smart-row { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; padding:10px 12px; background:var(--bg); border-radius:10px; align-items:center; }
+      .trn-smart-lbl { font-size:11px; font-weight:800; color:var(--t2); text-transform:uppercase; letter-spacing:.4px; margin-right:4px; }
+      .trn-chip { padding:6px 10px; border-radius:99px; background:var(--card); border:1.5px solid var(--brd2); color:var(--t1); font-size:12px; font-weight:700; cursor:pointer; transition:all .12s; font-family:var(--font); }
+      .trn-chip:hover { border-color:var(--blue); color:var(--bd); background:var(--bl); }
+      .trn-chip.danger:hover { border-color:var(--red); color:var(--rd); background:var(--rl); }
+      /* Liste cmds disponibles compactes */
+      .trn-cmd-list { border:1px solid var(--brd2); border-radius:10px; overflow:hidden; max-height:55vh; overflow-y:auto; }
+      .trn-cmd-group-head { background:var(--bg2); padding:6px 12px; font-size:11px; font-weight:800; color:var(--t2); text-transform:uppercase; letter-spacing:.4px; border-bottom:1px solid var(--brd); position:sticky; top:0; z-index:2; display:flex; justify-content:space-between; align-items:center; }
+      .trn-cmd-row { display:flex; align-items:center; gap:10px; padding:9px 12px; border-bottom:1px solid var(--brd); cursor:pointer; transition:background .1s; }
+      .trn-cmd-row:hover { background:var(--bl); }
+      .trn-cmd-row input[type=checkbox] { width:18px; height:18px; accent-color:var(--blue); flex-shrink:0; cursor:pointer; }
+      .trn-cmd-main { flex:1; min-width:0; }
+      .trn-cmd-l1 { font-size:13px; font-weight:700; color:var(--t1); display:flex; align-items:center; gap:6px; }
+      .trn-cmd-l2 { font-size:11px; color:var(--t2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
+      .trn-cmd-price { font-size:13px; font-weight:800; color:var(--green); flex-shrink:0; }
+      .trn-date-pill { font-size:10px; font-weight:800; padding:1px 6px; border-radius:8px; flex-shrink:0; }
+      .trn-date-soon { background:var(--gl); color:var(--gd); }
+      .trn-date-week { background:var(--bl); color:var(--bd); }
+      .trn-date-future { background:var(--ol); color:var(--od); }
+      .trn-date-late { background:var(--rl); color:var(--rd); }
+      /* Sticky footer compteur */
+      .trn-foot { position:sticky; bottom:0; background:var(--card); border-top:2px solid var(--brd); padding:12px 16px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+      .trn-foot-stat { font-size:13px; color:var(--t2); font-weight:600; }
+      .trn-foot-stat b { color:var(--t1); font-weight:800; }
+      .trn-foot-stat .sel { color:var(--blue); }
+      .trn-foot-stat .eur { color:var(--green); }
+      .trn-foot-btn { padding:11px 22px; font-size:14px; font-weight:800; background:var(--blue); color:#fff; border:none; border-radius:10px; cursor:pointer; font-family:var(--font); transition:all .15s; }
+      .trn-foot-btn:hover { background:var(--bd); transform:translateY(-1px); }
+      .trn-foot-btn:disabled { background:var(--gray); cursor:not-allowed; transform:none; }
+    </style>
 
-          </select>
+    <!-- Onglets mobile -->
+    <div class="trn-mobile-tabs">
+      <div class="trn-mobile-tab active" id="trn-mtab-list" onclick="trnMobileTab('list')">📋 Tournées</div>
+      <div class="trn-mobile-tab" id="trn-mtab-new" onclick="trnMobileTab('new')">➕ Nouvelle</div>
+    </div>
+
+    <div class="trn-split">
+      <!-- ═══════════════ COLONNE GAUCHE : LISTE TOURNÉES ═══════════════ -->
+      <div class="trn-left-card" id="trn-col-left">
+        <div class="trn-left-head">
+          <span class="trn-left-title">📋 Tournées</span>
+          <span class="trn-count-pill" id="trn-count-pill">0</span>
         </div>
-        <div class="fg" style="margin-bottom:10px">
-          <label>Sélectionner les commandes à inclure</label>
-          <div style="border:1px solid var(--brd2);border-radius:var(--r);overflow:hidden;max-height:450px;overflow-y:auto" id="cmd-checklist"></div>
+        <div class="trn-mini-filters">
+          <input type="date" id="tour-search-date" onchange="filtrerTournees()" title="Filtrer par date">
+          <input type="text" id="tour-search" placeholder="🔍 Livreur" oninput="filtrerTournees()" title="Filtrer par livreur">
+          <button onclick="resetFiltreTournees()" title="Reset" class="trn-chip danger" style="padding:7px 9px;font-size:12px">✕</button>
         </div>
-        <button class="btn btn-p btn-full" onclick="creerTournee()">🗺 Créer la tournée</button>
+        <div class="trn-list-scroll">
+          <div id="tournees-actives"><div style="text-align:center;padding:20px;color:var(--t3);font-size:13px">Aucune tournée créée</div></div>
+        </div>
       </div>
-      <div class="card">
-        <div class="card-t" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
-          <span>Tournées existantes</span>
-          <div style="display:flex;gap:6px;align-items:center">
-            <!-- v7.4.8 : vrai selecteur de date + champ livreur separes -->
-            <input type="date" id="tour-search-date" onchange="filtrerTournees()" title="Filtrer par date"
-              style="padding:6px 8px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--bg);color:var(--text);font-size:12px;font-family:var(--font);width:140px">
-            <input type="text" id="tour-search" placeholder="🔍 Livreur..." oninput="filtrerTournees()" title="Filtrer par texte (livreur, ID...)"
-              style="padding:6px 8px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--bg);color:var(--text);font-size:12px;font-family:var(--font);width:110px">
-            <button onclick="resetFiltreTournees()" title="Effacer les filtres" style="padding:6px 8px;border:1px solid var(--brd);border-radius:var(--r);background:var(--card);color:var(--t2);font-size:12px;cursor:pointer;font-family:var(--font)">🗑</button>
+
+      <!-- ═══════════════ COLONNE DROITE : CRÉATION / DÉTAIL ═══════════════ -->
+      <div class="trn-right" id="trn-col-right">
+        <!-- Mode CRÉATION (défaut) -->
+        <div id="trn-mode-create">
+          <div class="trn-right-head">
+            <div class="trn-right-title">➕ Nouvelle tournée</div>
+            <span style="font-size:11px;color:var(--t3)">Sélectionne les cmds et clique CRÉER</span>
+          </div>
+          <div class="trn-right-body">
+            <div class="trn-row2">
+              <div class="fg" style="margin:0"><label>📅 Date</label><input type="date" id="t-date" onclick="try{this.showPicker&&this.showPicker()}catch(e){}" style="cursor:pointer"></div>
+              <div class="fg" style="margin:0"><label>🚚 Livreur</label>
+                <select id="t-livreur">
+                  <option value="">— Choisir —</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Smart actions -->
+            <div class="trn-smart-row">
+              <span class="trn-smart-lbl">⚡ Vite :</span>
+              <button class="trn-chip" onclick="trnSmartSelect('demain')">+ Demain</button>
+              <button class="trn-chip" onclick="trnSmartSelect('aujourdhui')">+ Aujourd'hui</button>
+              <button class="trn-chip" onclick="trnSmartSelect('semaine')">+ Cette semaine</button>
+              <button class="trn-chip" onclick="trnSmartSelect('retards')">+ En retard</button>
+              <button class="trn-chip" onclick="trnSmartSelect('invert')">⇄ Inverser</button>
+              <button class="trn-chip danger" onclick="trnSmartSelect('reset')">✕ Reset</button>
+            </div>
+
+            <div class="trn-cmd-list" id="cmd-checklist"></div>
+          </div>
+
+          <!-- Sticky footer compteur -->
+          <div class="trn-foot">
+            <div class="trn-foot-stat">
+              <span class="sel"><b id="trn-foot-sel">0</b> sélectionnées</span>
+              &nbsp;·&nbsp;
+              <span>💰 <b class="eur" id="trn-foot-eur">0 €</b></span>
+              &nbsp;·&nbsp;
+              <span>⏱ <b id="trn-foot-time">~0h</b></span>
+            </div>
+            <button class="trn-foot-btn" id="trn-foot-btn" onclick="creerTournee()" disabled>🗺 Créer la tournée</button>
           </div>
         </div>
-        <div id="tournees-actives"><div style="text-align:center;padding:20px;color:var(--t3);font-size:13px">Aucune tournée créée</div></div>
-      </div>
-    </div>
-    <div id="tournee-detail" style="display:none">
-      <div class="sh">
-        <div style="display:flex;align-items:center;gap:10px">
-          <div class="st" id="td-title">Tournée</div>
-          <span class="bdg b-blue" id="td-badge">En cours</span>
-          <span id="td-optim-info" style="font-size:11px;color:var(--green);font-weight:700"></span>
+
+        <!-- Mode DÉTAIL TOURNÉE (visible quand on clique sur une tournée à gauche) -->
+        <div id="tournee-detail" style="display:none">
+          <div class="trn-right-head" style="flex-wrap:wrap;gap:10px">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <button class="trn-chip" onclick="trnFermerDetail()" title="Retour création" style="padding:5px 9px;font-size:11px">← Retour</button>
+              <div class="trn-right-title" id="td-title">Tournée</div>
+              <span class="bdg b-blue" id="td-badge">En cours</span>
+              <span id="td-optim-info" style="font-size:11px;color:var(--green);font-weight:700"></span>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn btn-sm" id="btn-td-optimiser" onclick="optimiserTourneeRapide(currentTourneeId)" style="background:#185FA5;color:#fff;font-weight:800">🚀 Optimiser</button>
+              <button class="btn btn-sm btn-p" onclick="ouvrirModifTournee(currentTourneeId)">✏️ Modifier</button>
+              <button class="btn btn-sm" onclick="supprimerTournee(currentTourneeId)" style="background:var(--rl);color:var(--rd);border:1.5px solid var(--red)">🗑</button>
+            </div>
+          </div>
+          <div class="trn-right-body">
+            <div class="g3" style="margin-bottom:14px">
+              <div style="background:var(--bg);border:1px solid var(--brd);border-radius:var(--r);padding:12px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--blue)" id="td-nb">0</div><div style="font-size:11px;color:var(--t3)">Arrêts</div></div>
+              <div style="background:var(--bg);border:1px solid var(--brd);border-radius:var(--r);padding:12px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--green)" id="td-livres">0</div><div style="font-size:11px;color:var(--t3)">Livrés</div></div>
+              <div style="background:var(--bg);border:1px solid var(--brd);border-radius:var(--r);padding:12px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--orange)" id="td-total">0 €</div><div style="font-size:11px;color:var(--t3)">À encaisser</div></div>
+            </div>
+            <div id="td-stops"></div>
+          </div>
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-sm" id="btn-td-optimiser" onclick="optimiserTourneeRapide(currentTourneeId)" style="background:#185FA5;color:#fff;font-weight:800">🚀 Optimiser la tournée</button>
-          <button class="btn btn-sm btn-p" onclick="ouvrirModifTournee(currentTourneeId)">✏️ Modifier</button>
-          <button class="btn btn-sm" onclick="supprimerTournee(currentTourneeId)" style="background:var(--rl);color:var(--rd);border:1.5px solid var(--red)">🗑 Supprimer</button>
-        </div>
       </div>
-      <div class="g3" style="margin-bottom:14px">
-        <div style="background:var(--card);border:1px solid var(--brd);border-radius:var(--r);padding:12px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--blue)" id="td-nb">0</div><div style="font-size:11px;color:var(--t3)">Arrêts</div></div>
-        <div style="background:var(--card);border:1px solid var(--brd);border-radius:var(--r);padding:12px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--green)" id="td-livres">0</div><div style="font-size:11px;color:var(--t3)">Livrés</div></div>
-        <div style="background:var(--card);border:1px solid var(--brd);border-radius:var(--r);padding:12px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--orange)" id="td-total">0 €</div><div style="font-size:11px;color:var(--t3)">À encaisser</div></div>
-      </div>
-      <div id="td-stops"></div>
     </div>
   </div>
 
@@ -7563,44 +7676,153 @@ function extraireCpVille(adresse){
 
 function populateCmdChecklist() {
   const el = document.getElementById('cmd-checklist');
-  if(!el) return;
-  const dispo = commandes.filter(c => c.statut !== 'livré' && c.statut !== 'annulé');
-  if(!dispo.length) {
-    el.innerHTML = '<div style="padding:12px;font-size:12px;color:var(--t3)">Aucune commande disponible</div>';
+  if (!el) return;
+  // v7.5.41 : filtre dispo = pas livré, pas annulé, pas déjà dans une tournée active
+  // + pas GLS (GLS = expédition directe, pas dans tournée RANOU)
+  var inTournees = new Set();
+  tournees.forEach(function(t){
+    if (t.statut !== 'terminée') {
+      (t.stops || []).forEach(function(s){ if (s.cmdId) inTournees.add(s.cmdId); });
+    }
+  });
+  const dispo = commandes.filter(function(c){
+    if (c.statut === 'livré' || c.statut === 'annulé') return false;
+    if ((c.transporteur || '').toUpperCase() === 'GLS') return false;
+    if (inTournees.has(c.id)) return false;
+    return true;
+  });
+
+  if (!dispo.length) {
+    el.innerHTML = '<div style="padding:24px 12px;font-size:13px;color:var(--t3);text-align:center"><div style="font-size:32px;margin-bottom:6px;opacity:.5">✓</div>Toutes les cmds sont dispatchées</div>';
+    trnUpdateFooter();
     return;
   }
 
-  // Regroupement par CP + ville
+  // v7.5.41 : pastille couleur selon date de livraison (J+0, J+1, semaine, retard, futur)
+  var todayStr = (function(){ var d = new Date(); var p = new Date(d.getTime() - d.getTimezoneOffset()*60000); return p.toISOString().split('T')[0]; })();
+  var demainStr = (function(){ var d = new Date(); d.setDate(d.getDate()+1); var p = new Date(d.getTime() - d.getTimezoneOffset()*60000); return p.toISOString().split('T')[0]; })();
+  var sem7Str   = (function(){ var d = new Date(); d.setDate(d.getDate()+7); var p = new Date(d.getTime() - d.getTimezoneOffset()*60000); return p.toISOString().split('T')[0]; })();
+
+  function datePill(dateStr) {
+    if (!dateStr) return '<span class="trn-date-pill trn-date-future">?</span>';
+    if (dateStr < todayStr) return '<span class="trn-date-pill trn-date-late">retard</span>';
+    if (dateStr === todayStr) return '<span class="trn-date-pill trn-date-soon">aujourd\'hui</span>';
+    if (dateStr === demainStr) return '<span class="trn-date-pill trn-date-soon">demain</span>';
+    if (dateStr <= sem7Str) return '<span class="trn-date-pill trn-date-week">cette sem.</span>';
+    return '<span class="trn-date-pill trn-date-future">futur</span>';
+  }
+
+  // Regroupement par CP + ville, tri secondaire par date croissante
   var groupes = {};
   dispo.forEach(function(c){
     var cv = extraireCpVille(c.adresse);
     var key = cv.cp + '|' + cv.ville;
-    if(!groupes[key]) groupes[key] = { cv: cv, cmds: [] };
+    if (!groupes[key]) groupes[key] = { cv: cv, cmds: [] };
     groupes[key].cmds.push(c);
   });
-  // Tri groupes par CP croissant
   var keysSorted = Object.keys(groupes).sort();
 
   el.innerHTML = keysSorted.map(function(key){
     var g = groupes[key];
     var cv = g.cv;
     var nb = g.cmds.length;
+    // Tri interne par date croissante
+    g.cmds.sort(function(a, b){ return (a.date || '').localeCompare(b.date || ''); });
     return ''+
-      '<div style="background:var(--bg2);padding:7px 12px;font-size:11px;font-weight:800;color:var(--t2);text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--brd);position:sticky;top:0;z-index:2">'+
-        '📍 ' + cv.cp + ' · ' + cv.ville + ' <span style="opacity:.6;font-weight:600">(' + nb + ')</span>' +
+      '<div class="trn-cmd-group-head">' +
+        '<span>📍 ' + cv.cp + ' · ' + cv.ville + '</span>' +
+        '<span style="display:flex;gap:6px;align-items:center">' +
+          '<span style="opacity:.6;font-weight:600">(' + nb + ')</span>' +
+          '<button class="trn-chip" style="padding:2px 7px;font-size:10px" onclick="event.stopPropagation();trnSmartSelect(\'cp:' + cv.cp + '\')">+ tout</button>' +
+        '</span>' +
       '</div>' +
       g.cmds.map(function(c){
-        return '<label style="display:flex;align-items:flex-start;gap:10px;padding:11px 12px;border-bottom:1px solid var(--brd);cursor:pointer;font-size:13px" onclick="event.stopPropagation()">'+
-          '<input type="checkbox" id="chk-'+c.id+'" value="'+c.id+'" style="width:20px;height:20px;accent-color:var(--blue);flex-shrink:0;margin-top:1px">'+
-          '<div style="flex:1;min-width:0">'+
-            '<div style="font-weight:700;font-size:13px;margin-bottom:2px">'+c.id+' · '+(c.client||'?')+'</div>'+
-            '<div style="font-size:11px;color:var(--t2);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(c.produit||'')+' · <b>'+(c.prix||0)+' €</b></div>'+
-            '<div style="font-size:11px;color:var(--t3)">🚚 souhaitée : '+fmtDate(c.date)+'</div>'+
-          '</div>'+
-          stBdg(c.statut)+
+        var prix = c.prix || 0;
+        return '<label class="trn-cmd-row" onclick="event.stopPropagation()">' +
+          '<input type="checkbox" id="chk-' + c.id + '" value="' + c.id + '" data-prix="' + prix + '" data-date="' + (c.date || '') + '" data-cp="' + (cv.cp || '') + '" onchange="trnUpdateFooter()">' +
+          '<div class="trn-cmd-main">' +
+            '<div class="trn-cmd-l1">' + c.id + ' · ' + (c.client || '?') + ' ' + datePill(c.date) + '</div>' +
+            '<div class="trn-cmd-l2">' + (c.produit || '') + (c.date ? ' · ' + fmtDate(c.date) : '') + '</div>' +
+          '</div>' +
+          '<span class="trn-cmd-price">' + prix + ' €</span>' +
         '</label>';
       }).join('');
   }).join('');
+
+  trnUpdateFooter();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// v7.5.41 : Smart Actions + Footer compteur — Page Tournées refactorée
+// ════════════════════════════════════════════════════════════════════
+
+function trnSmartSelect(action) {
+  var todayStr  = (function(){ var d = new Date(); var p = new Date(d.getTime() - d.getTimezoneOffset()*60000); return p.toISOString().split('T')[0]; })();
+  var demainStr = (function(){ var d = new Date(); d.setDate(d.getDate()+1); var p = new Date(d.getTime() - d.getTimezoneOffset()*60000); return p.toISOString().split('T')[0]; })();
+  var sem7Str   = (function(){ var d = new Date(); d.setDate(d.getDate()+7); var p = new Date(d.getTime() - d.getTimezoneOffset()*60000); return p.toISOString().split('T')[0]; })();
+
+  var allChks = Array.from(document.querySelectorAll('#cmd-checklist input[type="checkbox"]'));
+  var nb = 0;
+  allChks.forEach(function(cb){
+    var date = cb.dataset.date || '';
+    var cp = cb.dataset.cp || '';
+    var match = false;
+    if (action === 'reset') { cb.checked = false; return; }
+    if (action === 'invert') { cb.checked = !cb.checked; if (cb.checked) nb++; return; }
+    if (action === 'demain')      match = (date === demainStr);
+    else if (action === 'aujourdhui') match = (date === todayStr);
+    else if (action === 'semaine')    match = (date && date <= sem7Str && date >= todayStr);
+    else if (action === 'retards')    match = (date && date < todayStr);
+    else if (action.indexOf('cp:') === 0) match = (cp === action.substring(3));
+    if (match) { cb.checked = true; nb++; }
+  });
+  trnUpdateFooter();
+  var labels = { demain:'demain', aujourdhui:"aujourd'hui", semaine:'cette semaine', retards:'en retard', invert:'inversion', reset:'reset' };
+  var lbl = labels[action] || (action.indexOf('cp:') === 0 ? 'CP ' + action.substring(3) : action);
+  toast(action === 'reset' ? '🗑 Sélection vidée' : (action === 'invert' ? '⇄ Inversion appliquée' : '+ ' + nb + ' ajoutées (' + lbl + ')'), action === 'reset' ? 'info' : 'ok');
+}
+
+function trnUpdateFooter() {
+  var checks = Array.from(document.querySelectorAll('#cmd-checklist input[type="checkbox"]:checked'));
+  var nb = checks.length;
+  var total = 0;
+  checks.forEach(function(cb){ total += parseFloat(cb.dataset.prix || '0') || 0; });
+  // Estimation temps : ~25 min/arrêt + 15 min de marge (très approximatif)
+  var mins = nb * 25 + (nb > 0 ? 15 : 0);
+  var heures = Math.floor(mins / 60);
+  var restMin = mins % 60;
+  var tempsLabel = nb === 0 ? '~0h' : (heures > 0 ? heures + 'h' + (restMin > 0 ? restMin : '') : restMin + 'min');
+  var elSel  = document.getElementById('trn-foot-sel');  if (elSel) elSel.textContent = nb;
+  var elEur  = document.getElementById('trn-foot-eur');  if (elEur) elEur.textContent = Math.round(total) + ' €';
+  var elTime = document.getElementById('trn-foot-time'); if (elTime) elTime.textContent = tempsLabel;
+  var btn    = document.getElementById('trn-foot-btn');  if (btn) btn.disabled = (nb === 0);
+}
+
+function trnFermerDetail() {
+  var d = document.getElementById('tournee-detail');
+  var c = document.getElementById('trn-mode-create');
+  if (d) d.style.display = 'none';
+  if (c) c.style.display = 'block';
+  currentTourneeId = null;
+  renderTournees();
+}
+
+function trnMobileTab(which) {
+  var left = document.getElementById('trn-col-left');
+  var right = document.getElementById('trn-col-right');
+  var tList = document.getElementById('trn-mtab-list');
+  var tNew  = document.getElementById('trn-mtab-new');
+  if (which === 'list') {
+    if (left) left.style.display = '';
+    if (right) right.style.display = 'none';
+    if (tList) tList.classList.add('active');
+    if (tNew)  tNew.classList.remove('active');
+  } else {
+    if (left) left.style.display = 'none';
+    if (right) right.style.display = '';
+    if (tList) tList.classList.remove('active');
+    if (tNew)  tNew.classList.add('active');
+  }
 }
 
 function supprimerTournee(tid) {
@@ -7673,6 +7895,9 @@ function creerTournee() {
   document.getElementById('t-livreur').value='';
   document.getElementById('t-date').value='';
   document.querySelectorAll('#cmd-checklist input').forEach(cb=>cb.checked=false);
+  // v7.5.41 : reset footer compteur + re-populer la liste (cmds maintenant dans la tournée disparaissent)
+  if (typeof trnUpdateFooter === 'function') trnUpdateFooter();
+  populateCmdChecklist();
 
   renderTournees();
   renderCmds();
@@ -7689,24 +7914,61 @@ function creerTournee() {
 }
 
 function renderTournees() {
-  const el=document.getElementById('tournees-actives');
-  if(!tournees.length){
-    el.innerHTML='<div style="text-align:center;padding:20px;color:var(--t3);font-size:13px">Aucune tournée créée</div>';
-    document.getElementById('tournee-detail').style.display='none';
+  const el = document.getElementById('tournees-actives');
+  if (!el) return;
+  // v7.5.41 : compteur dans header pill
+  var countPill = document.getElementById('trn-count-pill');
+  if (countPill) countPill.textContent = tournees.length;
+
+  if (!tournees.length) {
+    el.innerHTML = '<div style="text-align:center;padding:30px 20px;color:var(--t3);font-size:13px"><div style="font-size:36px;margin-bottom:8px;opacity:.5">🗺</div>Aucune tournée créée<br><span style="font-size:11px;opacity:.7">Crée-en une à droite</span></div>';
+    var td = document.getElementById('tournee-detail'); if (td) td.style.display = 'none';
     return;
   }
-  el.innerHTML=tournees.map(t=>{
-    const done=t.stops.filter(s=>s.statut==='livré').length;
-    const stcls={préparée:'b-gray','en cours':'b-blue',terminée:'b-green'}[t.statut]||'b-gray';
-    const isTerminee = t.statut === 'terminée';
-    return `<div onclick="afficherTournee('${t.id}')" style="padding:11px 13px;border:1px solid var(--brd);border-radius:var(--r);margin-bottom:8px;cursor:pointer;background:var(--bg);transition:all .13s;opacity:${isTerminee?'0.65':'1'}" onmouseover="this.style.background='${isTerminee?'var(--bg)':'var(--bl)'}'" onmouseout="this.style.background='var(--bg)'">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-        <div style="font-size:13px;font-weight:700">${t.id} · ${t.livreur}</div>
-        <span class="bdg ${stcls}">${t.statut}</span>
-      </div>
-      <div style="font-size:12px;color:var(--t2)">${fmtDate(t.date)} · ${t.stops.length} arrêts · ${done} livrés</div>
-      <div style="font-size:12px;color:var(--green);font-weight:600;margin-top:3px">${t.stops.reduce((s,x)=>s+x.prix,0)} € à encaisser</div>
-    </div>`;
+
+  // v7.5.41 : application des filtres (date / livreur) du panneau gauche
+  var fDate = (document.getElementById('tour-search-date')||{}).value || '';
+  var fLiv  = ((document.getElementById('tour-search')||{}).value || '').toLowerCase().trim();
+  var liste = tournees.filter(function(t){
+    if (fDate && t.date !== fDate) return false;
+    if (fLiv && !(t.livreur||'').toLowerCase().includes(fLiv) && !(t.id||'').toLowerCase().includes(fLiv)) return false;
+    return true;
+  });
+  // Tri : à venir d'abord, puis en cours, puis terminées
+  liste.sort(function(a, b){
+    var rank = { 'préparée':0, 'en cours':1, 'terminée':2 };
+    var ra = rank[a.statut] != null ? rank[a.statut] : 0;
+    var rb = rank[b.statut] != null ? rank[b.statut] : 0;
+    if (ra !== rb) return ra - rb;
+    return (b.date||'').localeCompare(a.date||'');
+  });
+
+  if (!liste.length) {
+    el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--t3);font-size:12px">Aucun résultat<br><span style="font-size:11px;opacity:.7">Ajuste tes filtres</span></div>';
+    return;
+  }
+
+  el.innerHTML = liste.map(function(t){
+    var done = t.stops.filter(function(s){ return s.statut === 'livré'; }).length;
+    var total = t.stops.length;
+    var pct = total ? Math.round(done / total * 100) : 0;
+    var montantRest = t.stops.filter(function(s){ return !['livré','annulé'].includes(s.statut); }).reduce(function(s, x){ return s + (x.prix || 0); }, 0);
+    var stcls = { 'préparée': 'b-gray', 'en cours': 'b-blue', 'terminée': 'b-green' }[t.statut] || 'b-gray';
+    var isTerm = t.statut === 'terminée';
+    var isActive = t.id === currentTourneeId;
+    var classes = 'trn-card' + (isTerm ? ' done' : '') + (isActive ? ' active' : '');
+    return '<div class="' + classes + '" onclick="afficherTournee(\'' + t.id + '\')">' +
+      '<div class="trn-card-head">' +
+        '<span class="trn-card-id">' + t.id + ' · ' + (t.livreur || '?') + '</span>' +
+        '<span class="bdg ' + stcls + '" style="font-size:9px;padding:2px 6px">' + t.statut + '</span>' +
+      '</div>' +
+      '<div class="trn-card-meta">' +
+        '<span>📅 ' + fmtDate(t.date) + '</span>' +
+        '<span>📦 ' + done + '/' + total + '</span>' +
+        '<span class="trn-card-money">💰 ' + montantRest + ' €</span>' +
+      '</div>' +
+      '<div class="trn-card-prog"><div class="trn-card-prog-fill" style="width:' + pct + '%"></div></div>' +
+    '</div>';
   }).join('');
 }
 
@@ -15784,6 +16046,13 @@ function afficherTournee(id) {
   if (!t) return;
   const det = document.getElementById('tournee-detail');
   det.style.display = 'block';
+  // v7.5.41 : masquer le mode création quand on regarde une tournée
+  var modeCreate = document.getElementById('trn-mode-create');
+  if (modeCreate) modeCreate.style.display = 'none';
+  // Re-render gauche pour highlighter la tournée active
+  if (typeof renderTournees === 'function') renderTournees();
+  // Mobile : basculer sur l'onglet "détail"
+  if (window.innerWidth <= 980 && typeof trnMobileTab === 'function') trnMobileTab('new');
   var _gtd_title=document.getElementById('td-title'); if(_gtd_title) _gtd_title.textContent=t.id + ' · ' + t.livreur;
 
   // v7.3.1 : afficher le flag d'optimisation s'il existe (localStorage)

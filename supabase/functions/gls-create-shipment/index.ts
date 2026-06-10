@@ -1,5 +1,15 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : gls-create-shipment (v5 — 08/06/2026)
+// Edge Function : gls-create-shipment (v5.8 — 10/06/2026)
+// ════════════════════════════════════════════════════════════════════
+// v5.8 : auto-SMS expedition cote SERVER (plus de dependance front cache)
+// v5.7 : sommier/ensemble 120x190 = 2 demi-sommiers 5kg
+// v5.6 : correction regles 180x200
+// v5.5 : tel client sur etiquette (Note2)
+// v5.4 : stockage PDF + action getLabel
+// v5.3 : merge PDFs multi-colis
+// v5.2 : fix CORS preflight
+// v5.1 : multi-colis matelas/lits/ensembles
+// v5   : multi-colis sommiers
 // ════════════════════════════════════════════════════════════════════
 // Cree une etiquette GLS via l'API ShipIT-FARM PROD France.
 //
@@ -377,6 +387,7 @@ Deno.serve(async (req: Request) => {
 
   // Update commande Supabase avec le TrackID (si pas testMode)
   // v5 : concatene tous les trackIDs separes par virgule si multi-colis
+  let smsSent: any = null;
   if (cmdId && trackId && !testMode) {
     try {
       const trackingValue = allParcels.map((p: any) => p.trackId).filter(Boolean).join(',');
@@ -386,6 +397,24 @@ Deno.serve(async (req: Request) => {
         transporteur: 'GLS',
         gls_pdf_base64: pdfBase64,
       }).eq('id', cmdId);
+
+      // v5.8 : envoi SMS expedition cote server (independant du cache navigateur)
+      // Plus robuste que l'appel front, qui dependait que le HTML ait bien v7.5.35.
+      try {
+        const smsResp = await fetch(`${SB_URL}/functions/v1/send-cmd-sms`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${SB_SR_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ cmdId, type: 'expedition' }),
+        });
+        const smsData = await smsResp.json().catch(() => ({}));
+        smsSent = smsData;
+      } catch (e: any) {
+        console.warn('Auto-SMS expedition failed:', e.message);
+        smsSent = { error: e.message };
+      }
     } catch (e: any) {
       console.warn('Update commande failed:', e.message);
     }
@@ -404,6 +433,7 @@ Deno.serve(async (req: Request) => {
     pdfBase64: pdfBase64 ? pdfBase64.substring(0, 50) + '...(tronque, longueur=' + pdfBase64.length + ')' : null,
     pdfBase64Full: pdfBase64, // Le PDF complet pour download/print cote client (toutes etiquettes incluses)
     gls_response: created,
+    smsSent,                  // v5.8 : retour de l'envoi auto SMS expedition
     duration_ms: Date.now() - startTime,
   }), { headers: JSON_HEADERS });
 });
