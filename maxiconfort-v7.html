@@ -788,11 +788,13 @@ textarea{resize:vertical;min-height:65px}
             </div>
           </div>
           <div class="trn-right-body">
-            <div class="g3" style="margin-bottom:14px">
+            <!-- v7.5.42 : retire le bloc 'A encaisser' (gain confidentialite) -->
+            <div class="g2" style="margin-bottom:14px">
               <div style="background:var(--bg);border:1px solid var(--brd);border-radius:var(--r);padding:12px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--blue)" id="td-nb">0</div><div style="font-size:11px;color:var(--t3)">Arrêts</div></div>
               <div style="background:var(--bg);border:1px solid var(--brd);border-radius:var(--r);padding:12px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--green)" id="td-livres">0</div><div style="font-size:11px;color:var(--t3)">Livrés</div></div>
-              <div style="background:var(--bg);border:1px solid var(--brd);border-radius:var(--r);padding:12px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--orange)" id="td-total">0 €</div><div style="font-size:11px;color:var(--t3)">À encaisser</div></div>
             </div>
+            <!-- placeholder pour td-total (reste dans le DOM, masque, evite null sur le code legacy) -->
+            <span id="td-total" style="display:none">0 €</span>
             <div id="td-stops"></div>
           </div>
         </div>
@@ -840,7 +842,7 @@ textarea{resize:vertical;min-height:65px}
       .lv-header { border-radius:var(--rl2);padding:18px 20px;margin-bottom:14px;color:#fff;position:relative;overflow:hidden; }
       .lv-header::before { content:'';position:absolute;top:-30px;right:-20px;width:120px;height:120px;border-radius:50%;background:rgba(255,255,255,.08); }
       .lv-header::after  { content:'';position:absolute;bottom:-40px;right:30px;width:80px;height:80px;border-radius:50%;background:rgba(255,255,255,.06); }
-      .lv-stat-grid { display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px; }
+      .lv-stat-grid { display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:14px; } /* v7.5.42 : 2 cols (retire A encaisser) */
       .lv-stat { background:rgba(255,255,255,.18);border-radius:10px;padding:10px 8px;text-align:center;backdrop-filter:blur(4px); }
       .lv-stat-val { font-size:22px;font-weight:900;line-height:1; }
       .lv-stat-lbl { font-size:10px;opacity:.85;margin-top:3px;letter-spacing:.3px;text-transform:uppercase; }
@@ -942,6 +944,7 @@ textarea{resize:vertical;min-height:65px}
       <div style="position:relative;z-index:1">
         <div style="font-size:11px;opacity:.8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px" id="lv-bar-label">Tournée</div>
         <div style="font-size:20px;font-weight:900" id="lv-bar-restants">—</div>
+        <!-- v7.5.42 : retire 'A encaisser' (confidentialite) - garde Livres + Restants -->
         <div class="lv-stat-grid">
           <div class="lv-stat">
             <div class="lv-stat-val" id="lv-stat-livres">—</div>
@@ -951,11 +954,9 @@ textarea{resize:vertical;min-height:65px}
             <div class="lv-stat-val" id="lv-stat-restants">—</div>
             <div class="lv-stat-lbl">Restants</div>
           </div>
-          <div class="lv-stat">
-            <div class="lv-stat-val" id="lv-bar-montant">—</div>
-            <div class="lv-stat-lbl">À encaisser</div>
-          </div>
         </div>
+        <!-- placeholder pour lv-bar-montant (reste dans le DOM, masque, evite null sur le code legacy) -->
+        <span id="lv-bar-montant" style="display:none">—</span>
       </div>
     </div>
 
