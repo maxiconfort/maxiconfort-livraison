@@ -95,7 +95,7 @@ const MULTICOLIS_RULES: { label: string; match: RegExp; colis: number[] }[] = [
   { label: 'Ensemble/Pack 160x200 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?160\s*[xX×]\s*200/i, colis: [15, 8, 8] },
   { label: 'Ensemble/Pack 140x200 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?140\s*[xX×]\s*200/i, colis: [15, 7, 7] },
   { label: 'Ensemble/Pack 140x190 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?140\s*[xX×]\s*190/i, colis: [15, 7, 7] },
-  { label: 'Ensemble/Pack 120x190 (mat. + sommier)',     match: /(ensemble|pack)[\s\S]*?120\s*[xX×]\s*190/i, colis: [15, 10] },
+  { label: 'Ensemble/Pack 120x190 (mat. + 2 demi-som.)',  match: /(ensemble|pack)[\s\S]*?120\s*[xX×]\s*190/i, colis: [15, 5, 5] },
   { label: 'Ensemble/Pack 90 (mat. + sommier)',          match: /(ensemble|pack)[\s\S]*?90\s*[xX×]\s*(190|200)/i, colis: [7, 7] },
 
   // ─── LITS ───
@@ -110,7 +110,7 @@ const MULTICOLIS_RULES: { label: string; match: RegExp; colis: number[] }[] = [
   { label: 'Sommier 160x200 (2x 80x200, 8kg)', match: /sommier[\s\S]*?160\s*[xX×]\s*200/i, colis: [8, 8] },
   { label: 'Sommier 140x200 (2x 70x200, 7kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*200/i, colis: [7, 7] },
   { label: 'Sommier 140x190 (2x 70x190, 7kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*190/i, colis: [7, 7] },
-  { label: 'Sommier 120x190 (1 colis, 10kg)',  match: /sommier[\s\S]*?120\s*[xX×]\s*190/i, colis: [10] },
+  { label: 'Sommier 120x190 (2x 60x190, 5kg)',  match: /sommier[\s\S]*?120\s*[xX×]\s*190/i, colis: [5, 5] },
   { label: 'Sommier 90 (1 colis, 7kg)',        match: /sommier[\s\S]*?90\s*[xX×]\s*(190|200)/i, colis: [7] },
 
   // ─── MATELAS SEULS ───
