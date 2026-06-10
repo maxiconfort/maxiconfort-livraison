@@ -7953,7 +7953,16 @@ function renderTournees() {
     var done = t.stops.filter(function(s){ return s.statut === 'livré'; }).length;
     var total = t.stops.length;
     var pct = total ? Math.round(done / total * 100) : 0;
-    var montantRest = t.stops.filter(function(s){ return !['livré','annulé'].includes(s.statut); }).reduce(function(s, x){ return s + (x.prix || 0); }, 0);
+    // v7.5.43 : afficher l'ENCAISSE (livrees + payees) au lieu du restant
+    var encaisse = t.stops.filter(function(s){
+      return s.statut === 'livré' && (s.stpaie === 'Payé' || s.stpaie === 'Partiel');
+    }).reduce(function(sum, s){
+      // Mixte : sommer especes + CB de la stop
+      if (s.paie === 'Mixte') {
+        return sum + (parseFloat(s.paie_especes) || 0) + (parseFloat(s.paie_cb) || 0);
+      }
+      return sum + (parseFloat(s.prix) || 0);
+    }, 0);
     var stcls = { 'préparée': 'b-gray', 'en cours': 'b-blue', 'terminée': 'b-green' }[t.statut] || 'b-gray';
     var isTerm = t.statut === 'terminée';
     var isActive = t.id === currentTourneeId;
@@ -7966,7 +7975,7 @@ function renderTournees() {
       '<div class="trn-card-meta">' +
         '<span>📅 ' + fmtDate(t.date) + '</span>' +
         '<span>📦 ' + done + '/' + total + '</span>' +
-        '<span class="trn-card-money">💰 ' + montantRest + ' €</span>' +
+        '<span class="trn-card-money">✓ ' + Math.round(encaisse) + ' € encaissés</span>' +
       '</div>' +
       '<div class="trn-card-prog"><div class="trn-card-prog-fill" style="width:' + pct + '%"></div></div>' +
     '</div>';

@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.42 - retire bloc 'À encaisser' page Tournées + vue Livreur (confidentialité)
+// v7.5.43 - cards Tournees gauche : affiche ENCAISSE (pas restant)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-42';
+const CACHE_VERSION = 'maxiconfort-v7-5-43';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
