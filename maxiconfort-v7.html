@@ -1842,6 +1842,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button onclick="suiviReset()" style="padding:9px 14px;border-radius:10px;border:1px solid var(--brd);background:var(--card);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">🗑 Effacer filtres</button>
+        <button onclick="genererRapportGLS()" style="padding:9px 14px;border-radius:10px;border:none;background:linear-gradient(135deg,#FFB347,#FF8C42);color:#fff;font-size:13px;font-weight:800;cursor:pointer;font-family:var(--font);box-shadow:0 2px 6px rgba(255,140,66,.3)">🖨️ Rapport GLS du jour</button>
         <button class="btn btn-p" onclick="suiviExporterExcel()">📥 Exporter Excel</button>
       </div>
     </div>
@@ -3477,7 +3478,7 @@ async function sbLoadAll() {
           paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
           montantEnc:parseFloat(r.montant_enc)||0,
           livreur:r.livreur||'', statut:r.statut||'en-attente',
-          date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'',
+          date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'',
           origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
         };
       });
@@ -3593,7 +3594,7 @@ async function sbChargerPlusCommandes() {
           paie:r2.paie||'Espèces', stpaie:r2.stpaie||'Non payé',
           montantEnc:parseFloat(r2.montant_enc)||0,
           livreur:r2.livreur||'', statut:r2.statut||'en-attente',
-          date:r2.date_livraison||'', dateCmd:r2.date_commande||'', createdAt:r2.created_at||'', instr:r2.instr||'', tracking_token:r2.tracking_token||'', transporteur:r2.transporteur||'RANOU', trackingTransporteur:r2.tracking_transporteur||'',
+          date:r2.date_livraison||'', dateCmd:r2.date_commande||'', createdAt:r2.created_at||'', instr:r2.instr||'', tracking_token:r2.tracking_token||'', transporteur:r2.transporteur||'RANOU', trackingTransporteur:r2.tracking_transporteur||'', glsDateEtiquette:r2.gls_date_etiquette||'',
           origine:r2.origine||'', refMarketplace:r2.ref_marketplace||'',
           modePaie:r2.mode_paie||'Espèces',
         };
@@ -3652,7 +3653,7 @@ function startPolling() {
               paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
               montantEnc:parseFloat(r.montant_enc)||0,
               livreur:r.livreur||'', statut:r.statut||'en-attente',
-              date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'',
+              date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'',
               origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
               modePaie:r.mode_paie||'Espèces',
             };
@@ -3757,7 +3758,7 @@ function sbStartRealtime() {
         remiseGlobaleVal:r.remise_globale_val, remiseGlobaleType:r.remise_globale_type,
         remiseMotif:r.remise_motif, paie:r.paie, stpaie:r.stpaie,
         montantEnc:r.montant_enc, livreur:r.livreur, statut:r.statut,
-        date:r.date_livraison, dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'',
+        date:r.date_livraison, dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'',
         refMarketplace:r.ref_marketplace,
       };
       if (idx > -1) commandes[idx] = mapped;
@@ -14300,6 +14301,71 @@ function genererBonLivraison(cmdId, tourneeId) {
     win.focus();
     win.print();
   };
+}
+
+// v7.5.45 : Rapport journalier GLS — liste imprimable des etiquettes creees un jour donne.
+// A donner au chauffeur GLS lors du ramassage, ou a garder comme preuve d'expedition.
+// Source : champ gls_date_etiquette (rempli par gls-create-shipment v5.9 a chaque creation).
+function genererRapportGLS() {
+  var today = new Date().toLocaleDateString('fr-CA'); // YYYY-MM-DD heure locale
+  var dateStr = prompt('Date du rapport GLS (format AAAA-MM-JJ) :', today);
+  if (!dateStr) return;
+  dateStr = dateStr.trim();
+
+  var rows = commandes.filter(function(c){ return (c.glsDateEtiquette||'') === dateStr; });
+  if (!rows.length) {
+    toast('Aucune étiquette GLS créée le ' + dateStr + ' (les étiquettes d\'avant le 11/06/2026 n\'ont pas de date enregistrée)', 'info');
+    return;
+  }
+
+  var dateFr = new Date(dateStr + 'T12:00:00').toLocaleDateString('fr-FR', {weekday:'long', day:'2-digit', month:'long', year:'numeric'});
+  var totalColis = 0;
+  var lignes = rows.map(function(c, i){
+    var tracks = (c.trackingTransporteur || c.tracking_transporteur || '').split(',').map(function(t){ return t.trim(); }).filter(Boolean);
+    totalColis += tracks.length || 1;
+    return '<tr>' +
+      '<td>' + (i+1) + '</td>' +
+      '<td><strong>' + (c.id||'') + '</strong></td>' +
+      '<td>' + (c.client||'') + '</td>' +
+      '<td>' + (c.adresse||'') + '</td>' +
+      '<td>' + (c.produit||'') + '</td>' +
+      '<td style="text-align:center">' + (tracks.length||1) + '</td>' +
+      '<td style="font-family:monospace;font-size:11px">' + (tracks.join('<br>')||'—') + '</td>' +
+    '</tr>';
+  }).join('');
+
+  var html = '<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Rapport GLS ' + dateStr + '</title>' +
+    '<style>body{font-family:Arial,sans-serif;margin:30px;color:#1a1a18;font-size:13px}' +
+    '.logo{font-size:24px;font-weight:900;color:#185FA5}.logo span{color:#BA7517}' +
+    'h1{font-size:18px;margin:6px 0 2px}' +
+    '.sub{color:#666;font-size:12px;margin-bottom:18px}' +
+    'table{width:100%;border-collapse:collapse;margin:14px 0}' +
+    'th{background:#185FA5;color:#fff;padding:7px 8px;text-align:left;font-size:11px;text-transform:uppercase}' +
+    'td{padding:7px 8px;border-bottom:1px solid #ddd;vertical-align:top}' +
+    '.tot{font-size:14px;font-weight:800;margin:14px 0}' +
+    '.sig{display:flex;gap:40px;margin-top:40px}' +
+    '.sig div{flex:1;border-top:1px solid #999;padding-top:6px;font-size:12px;color:#555}' +
+    '.footer{margin-top:30px;font-size:10px;color:#999;text-align:center}' +
+    '@media print{body{margin:10mm}}' +
+    '</style></head><body>' +
+    '<div class="logo">Maxi<span>confort</span></div>' +
+    '<h1>Rapport d\'expédition GLS</h1>' +
+    '<div class="sub">Étiquettes créées le ' + dateFr + ' — Expéditeur : Maxiconfort, Noisy-le-Grand</div>' +
+    '<table><thead><tr><th>#</th><th>Cmd</th><th>Client</th><th>Adresse</th><th>Produit</th><th>Colis</th><th>N° de suivi</th></tr></thead>' +
+    '<tbody>' + lignes + '</tbody></table>' +
+    '<div class="tot">Total : ' + rows.length + ' commande(s) — ' + totalColis + ' colis</div>' +
+    '<div class="sig">' +
+      '<div>Signature chauffeur GLS (nb de colis remis : ______ )</div>' +
+      '<div>Signature expéditeur</div>' +
+    '</div>' +
+    '<div class="footer">Maxiconfort — Rapport généré automatiquement le ' + new Date().toLocaleString('fr-FR') + '</div>' +
+    '</body></html>';
+
+  var win = window.open('', '_blank', 'width=900,height=1000');
+  if (!win) { toast('Popup bloquée — autorise les popups pour imprimer', 'err'); return; }
+  win.document.write(html);
+  win.document.close();
+  win.onload = function() { win.focus(); win.print(); };
 }
 
 function genererRecuPaiement(cmdId) {

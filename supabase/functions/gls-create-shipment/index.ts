@@ -1,6 +1,7 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : gls-create-shipment (v5.8 — 10/06/2026)
+// Edge Function : gls-create-shipment (v5.9 — 11/06/2026)
 // ════════════════════════════════════════════════════════════════════
+// v5.9 : stocke gls_date_etiquette (date creation label) pour le rapport journalier
 // v5.8 : auto-SMS expedition cote SERVER (plus de dependance front cache)
 // v5.7 : sommier/ensemble 120x190 = 2 demi-sommiers 5kg
 // v5.6 : correction regles 180x200
@@ -396,6 +397,8 @@ Deno.serve(async (req: Request) => {
         tracking_transporteur: trackingValue,
         transporteur: 'GLS',
         gls_pdf_base64: pdfBase64,
+        // v5.9 : date de creation de l'etiquette (heure Paris) pour le rapport journalier
+        gls_date_etiquette: new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' }),
       }).eq('id', cmdId);
 
       // v5.8 : envoi SMS expedition cote server (independant du cache navigateur)
