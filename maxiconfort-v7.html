@@ -2527,8 +2527,12 @@ Maxiconfort — {TEL_CONTACT}</textarea>
       </div>
     </div>
 
+    <!-- v7.5.47 : note affichee a la place du bloc produits quand on edite un SAV -->
+    <div id="bloc-sav-note" style="display:none;background:var(--bg);border-radius:var(--r);padding:14px;margin-bottom:14px;font-size:13px;color:var(--t3)">
+      🔧 <b>Commande SAV</b> — les produits et montants sont gérés automatiquement à la création du SAV et ne sont pas modifiables ici. Tu peux modifier le reste (adresse, date, livreur, instructions...).
+    </div>
     <!-- Produits -->
-    <div style="background:var(--bg);border-radius:var(--r);padding:14px;margin-bottom:14px">
+    <div id="bloc-produits" style="background:var(--bg);border-radius:var(--r);padding:14px;margin-bottom:14px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <div style="font-size:11px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.5px">📦 Produits commandés</div>
         <button class="btn btn-sm btn-p" onclick="ajouterLigne()">+ Ajouter un produit</button>
@@ -6831,6 +6835,9 @@ function openNewCmd() {
 
   document.getElementById('f-remise-display').style.display='none';
   window._editingCmdId = null;
+  // v7.5.47 : reafficher le bloc produits (peut etre masque par une edition SAV precedente)
+  var _bpN = document.getElementById('bloc-produits'); if (_bpN) _bpN.style.display = '';
+  var _bsN = document.getElementById('bloc-sav-note'); if (_bsN) _bsN.style.display = 'none';
   ajouterLigne();
   openModal('m-cmd');
 }
@@ -6855,6 +6862,12 @@ function ouvrirEditionCommande(id) {
 
   // Pré-remplir le formulaire avec les données existantes
   var _gm_cmd_title=document.getElementById('m-cmd-title'); if(_gm_cmd_title) _gm_cmd_title.textContent='Modifier commande ' + c.id;
+
+  // v7.5.47 : commande SAV -> masquer le bloc produits/remise (produits et montants
+  // geres par la fiche SAV ; les recalculer ici ecraserait prix et montant rembourse)
+  var _isSavEdit = ((c.origine || '').indexOf('SAV') === 0) || (String(c.id).indexOf('#SAV') === 0);
+  var _bpE = document.getElementById('bloc-produits'); if (_bpE) _bpE.style.display = _isSavEdit ? 'none' : '';
+  var _bsE = document.getElementById('bloc-sav-note'); if (_bsE) _bsE.style.display = _isSavEdit ? 'block' : 'none';
 
   document.getElementById('f-nom').value     = c.client || '';
   document.getElementById('f-tel').value     = c.tel    || '';
@@ -6956,14 +6969,17 @@ function saveCmd() {
   const adr = document.getElementById('f-adresse').value.trim();
   if (!nom||!tel||!adr) { toast('Nom, téléphone et adresse obligatoires','err'); return; }
   const isEdit = !!window._editingCmdId;
+  // v7.5.47 : edition d'un SAV -> pas de validation produit, montants preserves plus bas
+  const existingCmd = isEdit ? commandes.find(x => x.id === window._editingCmdId) : null;
+  const isSavCmd = !!(existingCmd && (((existingCmd.origine || '').indexOf('SAV') === 0) || (String(existingCmd.id).indexOf('#SAV') === 0)));
   const lignes = getLignesData();
-  if (!lignes.length) { toast('Ajoutez au moins un produit','err'); return; }
+  if (!lignes.length && !isSavCmd) { toast('Ajoutez au moins un produit','err'); return; }
   const soustotal = lignes.reduce((s,l)=>s+l.sousTotal,0);
   const remGV = parseFloat(document.getElementById('f-remise-val').value)||0;
   const remGT = document.getElementById('f-remise-type').value;
   const remGM = remGT==='pct' ? soustotal*remGV/100 : Math.min(remGV,soustotal);
   const total = Math.max(0, soustotal - remGM);
-  const prodLabel = lignes[0].produit + (lignes.length>1 ? ' (+'+( lignes.length-1)+' autre'+(lignes.length>2?'s':'')+')'  : '');
+  const prodLabel = lignes.length ? (lignes[0].produit + (lignes.length>1 ? ' (+'+( lignes.length-1)+' autre'+(lignes.length>2?'s':'')+')'  : '')) : (existingCmd ? existingCmd.produit : '');
   var origine = document.getElementById('f-origine')?.value || '';
   var refMkt = document.getElementById('f-ref-mkt')?.value || '';
   var transporteur = (document.getElementById('f-transporteur')||{}).value || 'RANOU';
@@ -7000,6 +7016,25 @@ function saveCmd() {
     cmdData._retroactiveCreatedAt = cmdData.date + 'T09:00:00+00:00';
   }
   if (isEdit) {
+    // v7.5.47 : toute edition conserve le montant deja encaisse (sinon l'UPSERT
+    // l'ecrase a 0 en base — ex. remboursement SAV ou encaissement livreur perdus)
+    if (existingCmd) cmdData.montantEnc = existingCmd.montantEnc || 0;
+    // v7.5.47 : edition d'un SAV -> produits et montants de la fiche SAV intouchables
+    // (le formulaire n'affiche pas le bloc produits, le recalcul donnerait 0 €)
+    if (isSavCmd) {
+      cmdData.produit = existingCmd.produit;
+      cmdData.lignes = existingCmd.lignes || [];
+      cmdData.qte = existingCmd.qte || 1;
+      cmdData.prix = existingCmd.prix || 0;
+      cmdData.prixBrut = existingCmd.prixBrut || 0;
+      cmdData.remiseGlobale = existingCmd.remiseGlobale || 0;
+      cmdData.remiseGlobaleVal = existingCmd.remiseGlobaleVal || 0;
+      cmdData.remiseGlobaleType = existingCmd.remiseGlobaleType || 'pct';
+      cmdData.remiseMotif = existingCmd.remiseMotif || '';
+      // Le select Origine n'a pas d'option "SAV - ..." -> il rendrait '' et le
+      // marqueur SAV serait perdu (le SAV reapparaitrait dans les stats de CA)
+      cmdData.origine = existingCmd.origine || '';
+    }
     // Mise à jour commande existante
     const idx = commandes.findIndex(x => x.id === window._editingCmdId);
     if (idx > -1) {
