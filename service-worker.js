@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.45 - Rapport journalier GLS imprimable (bouton page Suivi logistique)
+// v7.5.46 - Perf : chargement commandes sans gls_pdf_base64 (PDF récupérés à la demande)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-45';
+const CACHE_VERSION = 'maxiconfort-v7-5-46';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
