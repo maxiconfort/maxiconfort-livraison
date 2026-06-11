@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.49 - Alerte colis GLS bloqué : SMS auto (gls-sync v12) + bannière panneau + 🚨 suivi
+// v7.5.50 - Optim tournée fiable : géocodage avec replis CP + badge adresse imprécise + ETA OSRM
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-49';
+const CACHE_VERSION = 'maxiconfort-v7-5-50';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

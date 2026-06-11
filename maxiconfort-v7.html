@@ -11442,20 +11442,34 @@ async function geocoderAdresse(adresse) {
   if (!adresse) return COORDS_VILLES['default'];
   var key = String(adresse).trim().toLowerCase();
   if (geocodeCache[key]) return geocodeCache[key];
-  try {
-    var query = encodeURIComponent(adresse + ', France');
-    var resp = await fetch('https://nominatim.openstreetmap.org/search?format=json&q=' + query + '&limit=1&countrycodes=fr', {
-      headers: { 'Accept-Language': 'fr' }
-    });
-    var data = await resp.json();
-    if (data && data.length > 0) {
-      var coords = {lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon)};
-      geocodeCache[key] = coords;
-      geocodeCacheSauver();
-      return coords;
+  async function nominatim(q) {
+    try {
+      var resp = await fetch('https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(q) + '&limit=1&countrycodes=fr', {
+        headers: { 'Accept-Language': 'fr' }
+      });
+      var data = await resp.json();
+      if (data && data.length > 0) return {lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon)};
+    } catch(e) { console.warn('Geocode erreur:', e.message); }
+    return null;
+  }
+  // 1) Adresse complete
+  var coords = await nominatim(adresse + ', France');
+  // 2) Repli : code postal seul — centre de la commune, insensible aux fautes
+  //    de frappe dans la rue ou la ville (ex: "cheuvreuse" -> CP 78460 = Chevreuse)
+  if (!coords) {
+    var cp = String(adresse).match(/\b\d{5}\b/);
+    if (cp) {
+      coords = await nominatim(cp[0] + ', France');
+      if (coords) coords.approx = true;
     }
-  } catch(e) { console.warn('Geocode erreur:', e.message); }
-  return getCoordsFromAdresse(adresse);
+  }
+  if (coords) {
+    geocodeCache[key] = coords;
+    geocodeCacheSauver();
+    return coords;
+  }
+  var estim = Object.assign({approx: true}, getCoordsFromAdresse(adresse));
+  return estim;
 }
 
 // ════════════════════════════════════════════════════════════
@@ -11472,7 +11486,12 @@ async function optimMatriceOSRM(points) {
   var coords = points.map(function(p){ return p.lng+','+p.lat; }).join(';');
   var url = 'https://router.project-osrm.org/table/v1/driving/' + coords + '?annotations=duration,distance';
   try {
-    var resp = await fetch(url);
+    // Timeout 20s : sans ca, si le serveur OSRM public ne repond pas,
+    // l'optimisation reste bloquee indefiniment (pas de fallback)
+    var ctrl = new AbortController();
+    var tmo = setTimeout(function(){ ctrl.abort(); }, 20000);
+    var resp = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(tmo);
     if (!resp.ok) throw new Error('OSRM HTTP ' + resp.status);
     var data = await resp.json();
     if (data.code !== 'Ok') throw new Error('OSRM ' + data.code);
@@ -11582,17 +11601,20 @@ async function optimCharger() {
   document.getElementById('btn-optim-lancer').style.display = '';
   document.getElementById('btn-optim-alertes').style.display = '';
 
-  // Geocoder TOUTES les adresses en parallele AVANT le calcul (vs apres en background avant)
+  // Geocoder TOUTES les adresses AVANT le calcul — en SEQUENTIEL :
+  // Nominatim limite a 1 requete/seconde, en parallele des requetes echouaient
+  // en silence et les stops atterrissaient sur des coordonnees par defaut (Paris)
   toast('🌍 Géocodage des adresses en cours...', 'info');
-  optimSetStatus('🌍 Géocodage des '+optimStops.length+' adresses...');
-  var geoPromises = optimStops.map(function(s, i) {
-    if (!s.adresse) return Promise.resolve();
-    return geocoderAdresse(s.adresse).then(function(c) {
-      optimStops[i].lat = c.lat;
-      optimStops[i].lng = c.lng;
-    });
-  });
-  await Promise.all(geoPromises);
+  for (var gi = 0; gi < optimStops.length; gi++) {
+    if (!optimStops[gi].adresse) continue;
+    optimSetStatus('🌍 Géocodage adresse ' + (gi+1) + '/' + optimStops.length + '...');
+    var dejaEnCache = !!geocodeCache[String(optimStops[gi].adresse).trim().toLowerCase()];
+    var c = await geocoderAdresse(optimStops[gi].adresse);
+    optimStops[gi].lat = c.lat;
+    optimStops[gi].lng = c.lng;
+    optimStops[gi].geocodeApprox = !!c.approx;
+    if (!dejaEnCache) await new Promise(function(r){ setTimeout(r, 1050); });
+  }
   optimSetStatus('');
   await optimCalculer();
 }
@@ -11627,6 +11649,9 @@ async function optimCalculer() {
     }
   } catch(e) {}
   var tous = [OPTIM_DEPOT].concat(optimStops);
+  // Memoriser l'index de chaque stop dans la matrice (le depot occupe l'index 0),
+  // pour que optimCalculerETAs retrouve les durees OSRM apres reordonnancement
+  optimStops.forEach(function(s, i) { s._mIdx = i + 1; });
   if (coordsDomicileOpt) {
     tous.push({ lat: coordsDomicileOpt.lat, lng: coordsDomicileOpt.lng });
     endpointIdx = tous.length - 1;
@@ -11767,8 +11792,19 @@ function optimCalculerETAs() {
   const dureeStop = parseInt(document.getElementById('optim-duree')?.value) || 15;
   let [h, m] = startH.split(':').map(Number);
   let currentMin = h * 60 + m;
-  // Trajet depuis entrepôt vers premier stop (estimé 20 min)
-  currentMin += optimStops.length > 0 ? getTrajetMin(48.829, 2.541, optimStops[0].lat, optimStops[0].lng) : 20;
+  // Durees OSRM si la matrice est disponible (sinon estimation vol d'oiseau)
+  const M = optimDerniereMatrice;
+  function dureeOSRM(iTous, jTous) {
+    if (M && M.durations && iTous != null && jTous != null && M.durations[iTous] && M.durations[iTous][jTous] != null) {
+      return Math.max(1, Math.round(M.durations[iTous][jTous]));
+    }
+    return null;
+  }
+  // Trajet depuis entrepôt (index 0 de la matrice) vers premier stop
+  if (optimStops.length > 0) {
+    var d0 = dureeOSRM(0, optimStops[0]._mIdx);
+    currentMin += d0 != null ? d0 : getTrajetMin(OPTIM_DEPOT.lat, OPTIM_DEPOT.lng, optimStops[0].lat, optimStops[0].lng);
+  } else { currentMin += 20; }
 
   optimStops.forEach((s, i) => {
     // Si impératif et créneau défini, respecter le créneau
@@ -11784,7 +11820,8 @@ function optimCalculerETAs() {
     // Trajet vers le suivant
     if (i < optimStops.length - 1) {
       const next = optimStops[i + 1];
-      const trajet = getTrajetMin(s.lat, s.lng, next.lat, next.lng);
+      var dOSRM = dureeOSRM(s._mIdx, next._mIdx);
+      const trajet = dOSRM != null ? dOSRM : getTrajetMin(s.lat, s.lng, next.lat, next.lng);
       s.trajetVersSuivant = trajet;
       currentMin += trajet;
     }
@@ -11872,6 +11909,7 @@ function optimRendrePage() {
           '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">'+
             '<div style="font-size:15px;font-weight:800">'+s.client+'</div>'+
             (isImp?'<span class="bdg b-red" style="font-size:10px">⚠️ Impératif '+(s.creneauDebut?s.creneauDebut:'')+(s.creneauFin?'-'+s.creneauFin:'')+'</span>':'<span class="bdg b-blue" style="font-size:10px">Flexible</span>')+
+            (s.geocodeApprox?'<span class="bdg b-orange" style="font-size:10px" title="Adresse introuvable sur la carte — position estimée au centre de la commune. Vérifiez l\'orthographe de l\'adresse.">📍 Adresse imprécise</span>':'')+
             (isDone?'<span class="bdg b-green" style="font-size:10px">✅ Livré</span>':'')+
           '</div>'+
           '<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--t2);margin-bottom:8px">'+
