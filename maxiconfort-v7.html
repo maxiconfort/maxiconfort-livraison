@@ -2906,6 +2906,12 @@ async function sbSaveCommande(cmd) {
       ref_marketplace: cmd.refMarketplace||'',
       transporteur: cmd.transporteur || 'RANOU',
       tracking_transporteur: cmd.trackingTransporteur || null,
+      // v7.5.48 : suivi litige GLS
+      litige_type: cmd.litigeType || null,
+      litige_num_reclamation: cmd.litigeNumReclamation || null,
+      litige_date_ouverture: cmd.litigeDateOuverture || null,
+      litige_statut: cmd.litigeStatut || null,
+      litige_description: cmd.litigeDescription || null,
       updated_at: new Date().toISOString()
       // v7.4.5 : created_at retire du payload - sinon UPSERT le remettait
       // a maintenant a chaque modif, faisant remonter la commande en tete
@@ -3423,7 +3429,7 @@ function calculerProgressionChargement(t) {
 
 // Colonnes chargées pour les commandes — EXCLUT gls_pdf_base64 (PDF étiquette 50-400 Ko/cmd,
 // stocké par gls-create-shipment, récupéré uniquement à la demande via l'action getLabel)
-var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,origine,ref_marketplace,mode_paie';
+var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie';
 
 async function sbLoadAll() {
   // Afficher cache immédiatement (UX rapide) pendant chargement Supabase
@@ -3488,6 +3494,7 @@ async function sbLoadAll() {
           montantEnc:parseFloat(r.montant_enc)||0,
           livreur:r.livreur||'', statut:r.statut||'en-attente',
           date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'',
+          litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
           origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
         };
       });
@@ -3604,6 +3611,7 @@ async function sbChargerPlusCommandes() {
           montantEnc:parseFloat(r2.montant_enc)||0,
           livreur:r2.livreur||'', statut:r2.statut||'en-attente',
           date:r2.date_livraison||'', dateCmd:r2.date_commande||'', createdAt:r2.created_at||'', instr:r2.instr||'', tracking_token:r2.tracking_token||'', transporteur:r2.transporteur||'RANOU', trackingTransporteur:r2.tracking_transporteur||'', glsDateEtiquette:r2.gls_date_etiquette||'',
+          litigeType:r2.litige_type||'', litigeNumReclamation:r2.litige_num_reclamation||'', litigeDateOuverture:r2.litige_date_ouverture||'', litigeStatut:r2.litige_statut||'', litigeDescription:r2.litige_description||'',
           origine:r2.origine||'', refMarketplace:r2.ref_marketplace||'',
           modePaie:r2.mode_paie||'Espèces',
         };
@@ -3663,6 +3671,7 @@ function startPolling() {
               montantEnc:parseFloat(r.montant_enc)||0,
               livreur:r.livreur||'', statut:r.statut||'en-attente',
               date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'',
+              litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
               origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
               modePaie:r.mode_paie||'Espèces',
             };
@@ -3768,6 +3777,7 @@ function sbStartRealtime() {
         remiseMotif:r.remise_motif, paie:r.paie, stpaie:r.stpaie,
         montantEnc:r.montant_enc, livreur:r.livreur, statut:r.statut,
         date:r.date_livraison, dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'',
+        litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
         refMarketplace:r.ref_marketplace,
       };
       if (idx > -1) commandes[idx] = mapped;
@@ -7195,7 +7205,9 @@ function ouvrirCmd(id) {
           '<button id="pa-create-label-btn" data-cmdid="'+c.id+'" class="btn" style="width:100%;padding:12px;background:linear-gradient(135deg,#FFB347,#FF8C42);color:#fff;font-weight:800;font-size:14px;border:none;margin-bottom:10px;box-shadow:0 2px 6px rgba(255,140,66,.3)">📦 Créer l\'étiquette GLS automatiquement</button>' +
           '<div style="text-align:center;color:var(--t3);font-size:11px;margin-bottom:10px;font-weight:700">— OU SAISIE MANUELLE —</div>'
           :
-          '<button id="pa-reprint-label-btn" data-cmdid="'+c.id+'" class="btn" style="width:100%;padding:12px;background:linear-gradient(135deg,#4A90E2,#357ABD);color:#fff;font-weight:800;font-size:14px;border:none;margin-bottom:10px;box-shadow:0 2px 6px rgba(74,144,226,.3)">📄 Réimprimer l\'étiquette GLS</button>'
+          '<button id="pa-reprint-label-btn" data-cmdid="'+c.id+'" class="btn" style="width:100%;padding:12px;background:linear-gradient(135deg,#4A90E2,#357ABD);color:#fff;font-weight:800;font-size:14px;border:none;margin-bottom:10px;box-shadow:0 2px 6px rgba(74,144,226,.3)">📄 Réimprimer l\'étiquette GLS</button>' +
+          // v7.5.48 : Bouton litige GLS (dossier d'indemnisation)
+          '<button id="pa-litige-btn" data-cmdid="'+c.id+'" class="btn" style="width:100%;padding:10px;background:' + (c.litigeStatut ? '#FED7D7' : 'var(--card)') + ';color:#9B2C2C;font-weight:800;font-size:13px;border:1.5px solid #E53E3E;margin-bottom:10px">' + (c.litigeStatut ? '⚠️ Litige en cours — ouvrir le dossier' : '⚠️ Déclarer un litige GLS') + '</button>'
           ) +
         '<label style="font-size:11px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;display:block">📦 N° de suivi GLS</label>' +
         '<div style="display:flex;gap:8px">' +
@@ -7247,6 +7259,9 @@ function ouvrirCmd(id) {
   // v7.5.34 : Bouton "Réimprimer étiquette" (PDF stocke en BD)
   var reprintBtn = document.getElementById('pa-reprint-label-btn');
   if (reprintBtn) reprintBtn.addEventListener('click', function(){ panelReimprimerEtiquetteGLS(reprintBtn.dataset.cmdid); });
+  // v7.5.48 : Bouton litige GLS
+  var litigeBtn = document.getElementById('pa-litige-btn');
+  if (litigeBtn) litigeBtn.addEventListener('click', function(){ litigeOuvrir(litigeBtn.dataset.cmdid); });
   var tBtn = document.getElementById('pa-tournee-btn');
   if (tBtn) tBtn.addEventListener('click', function(){ ajouterTournee(tBtn.dataset.cmdid); });
 
@@ -14341,6 +14356,246 @@ function genererBonLivraison(cmdId, tourneeId) {
     win.focus();
     win.print();
   };
+}
+
+// ════════════════════════════════════════════════════════════════════
+// v7.5.48 : LITIGE GLS — dossier d'indemnisation en 1 clic
+// ════════════════════════════════════════════════════════════════════
+// Process GLS (fiche experte 32 + mode operatoire WebLitige) :
+//  1. Ouvrir une reclamation aupres du Service Client GLS → n° a 13 chiffres
+//  2. Deposer le dossier sur WebLitige (YourGLS) sous 40 JOURS OUVRES :
+//     facture de vente + si avarie : lettre de reserves du client (72h
+//     apres reception, 7 jours international) + photos colis/marchandise
+//  Indemnisation : 23 EUR/kg, max 690 EUR, valeur facture -30% de marge.
+// Le compte GLS est au nom de BMS (SAS, RCS Paris 993 863 687).
+
+var LITIGE_BMS = {
+  nom: 'BMS',
+  adresse: '60 rue François 1er, 75008 Paris',
+  forme: 'SAS au capital de 1,00 €',
+  rcs: 'RCS Paris 993 863 687',
+  tva: 'FR29993863687', // calcule depuis le SIREN (cle 29) — verifier sur un document officiel
+};
+var LITIGE_TYPES = { 'perte': '📭 Perte (colis non retracé)', 'avarie': '💥 Avarie (colis endommagé)', 'retour': '↩️ Retour endommagé' };
+var LITIGE_STATUTS = { 'a_declarer': '📝 À déclarer', 'reclamation_ouverte': '📞 Réclamation ouverte', 'dossier_envoye': '📤 Dossier envoyé sur WebLitige', 'indemnise': '✅ Indemnisé', 'refuse': '❌ Refusé' };
+
+function litigeEsc(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+
+// Ajoute n jours ouvres (lun-ven) a une date YYYY-MM-DD
+function litigeAddJoursOuvres(dateStr, n) {
+  var d = new Date(dateStr + 'T12:00:00');
+  var add = 0;
+  while (add < n) {
+    d.setDate(d.getDate() + 1);
+    if (d.getDay() !== 0 && d.getDay() !== 6) add++;
+  }
+  return d;
+}
+
+function litigeFermer(){ var m = document.getElementById('litige-modal'); if (m) m.remove(); }
+
+function litigeOuvrir(cmdId) {
+  var c = commandes.find(function(x){ return x.id === cmdId; });
+  if (!c) { toast('Commande introuvable', 'err'); return; }
+  litigeFermer();
+  var tracks = (c.trackingTransporteur || c.tracking_transporteur || '').split(',').map(function(t){ return t.trim(); }).filter(Boolean);
+
+  var delaiHtml = '';
+  if (c.litigeDateOuverture) {
+    var lim = litigeAddJoursOuvres(c.litigeDateOuverture, 40);
+    delaiHtml = '<div style="background:#FFF5F5;border:1px solid #E53E3E;border-radius:8px;padding:10px;margin:12px 0 0;font-size:13px;color:#9B2C2C;font-weight:700">⏰ Date limite de dépôt du dossier complet : ' + lim.toLocaleDateString('fr-FR', {weekday:'long', day:'2-digit', month:'long', year:'numeric'}) + ' (40 jours ouvrés après ouverture)</div>';
+  }
+
+  var selStyle = 'width:100%;padding:9px 11px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)';
+  var lblStyle = 'font-size:11px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.4px;margin:10px 0 4px;display:block';
+  var typeOpts = Object.keys(LITIGE_TYPES).map(function(k){ return '<option value="'+k+'"'+((c.litigeType||'')===k?' selected':'')+'>'+LITIGE_TYPES[k]+'</option>'; }).join('');
+  var statutOpts = Object.keys(LITIGE_STATUTS).map(function(k){ return '<option value="'+k+'"'+((c.litigeStatut||'a_declarer')===k?' selected':'')+'>'+LITIGE_STATUTS[k]+'</option>'; }).join('');
+  var btnDoc = 'padding:10px 12px;border-radius:8px;border:1px solid var(--brd2);background:var(--card);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);flex:1;min-width:150px';
+
+  var wrap = document.createElement('div');
+  wrap.id = 'litige-modal';
+  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:14px';
+  wrap.innerHTML =
+    '<div style="background:var(--card);border-radius:var(--rl2);padding:22px;max-width:560px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.25)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
+        '<div style="font-size:18px;font-weight:900;color:var(--text)">⚠️ Litige GLS — ' + litigeEsc(c.id) + '</div>' +
+        '<button id="lit-close-x" style="background:none;border:none;font-size:24px;color:var(--t3);cursor:pointer;line-height:1">&times;</button>' +
+      '</div>' +
+      '<div style="background:var(--bg);border-radius:8px;padding:10px;font-size:13px;color:var(--t2);line-height:1.6">' +
+        '<strong>' + litigeEsc(c.client) + '</strong> — ' + litigeEsc(c.produit) + '<br>' +
+        '📦 ' + (tracks.length || 1) + ' colis : <span style="font-family:monospace">' + litigeEsc(tracks.join(', ') || '—') + '</span>' +
+        (c.glsDateEtiquette ? '<br>🏷️ Étiquette créée le ' + new Date(c.glsDateEtiquette+'T12:00:00').toLocaleDateString('fr-FR') : '') +
+      '</div>' +
+      '<label style="' + lblStyle + '">Type de litige</label>' +
+      '<select id="lit-type" style="' + selStyle + '">' + typeOpts + '</select>' +
+      '<label style="' + lblStyle + '">N° de réclamation GLS (13 chiffres, donné par le Service Client)</label>' +
+      '<input id="lit-num" value="' + litigeEsc(c.litigeNumReclamation) + '" placeholder="ex : 1234567890123" style="' + selStyle + ';font-family:monospace">' +
+      '<label style="' + lblStyle + '">Date d\'ouverture de la réclamation</label>' +
+      '<input type="date" id="lit-date" value="' + litigeEsc(c.litigeDateOuverture) + '" style="' + selStyle + '">' +
+      '<label style="' + lblStyle + '">Statut du dossier</label>' +
+      '<select id="lit-statut" style="' + selStyle + '">' + statutOpts + '</select>' +
+      '<label style="' + lblStyle + '">Description du problème (dégâts constatés, contenu du colis...)</label>' +
+      '<textarea id="lit-desc" rows="3" style="' + selStyle + ';resize:vertical">' + litigeEsc(c.litigeDescription) + '</textarea>' +
+      delaiHtml +
+      '<div style="background:#FFFBEB;border:1px solid #F6AD55;border-radius:8px;padding:10px;margin:12px 0;font-size:12px;color:#7A4A00;line-height:1.7">' +
+        '<strong>📋 Checklist du dossier WebLitige :</strong><br>' +
+        '1. Email/appel Service Client GLS → obtenir le n° à 13 chiffres<br>' +
+        '2. Facture de vente (bouton ci-dessous)<br>' +
+        '3. Si avarie : lettre de réserves signée par le client <strong>sous 72h</strong> + photos colis + marchandise<br>' +
+        '4. Déposer le tout sur <a href="https://yourgls.gls-group.eu" target="_blank" style="color:#185FA5;font-weight:700">YourGLS</a> → menu Litige → « Valider et envoyer »<br>' +
+        '💶 Indemnisation : 23 €/kg, plafond 690 €, sur la base facture −30 %' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">' +
+        '<button id="lit-email" style="' + btnDoc + '">📧 Email d\'ouverture</button>' +
+        '<button id="lit-lettre" style="' + btnDoc + '">🖨️ Lettre de réserves</button>' +
+        '<button id="lit-facture" style="' + btnDoc + '">🖨️ Facture de vente</button>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px">' +
+        '<button id="lit-save" class="btn btn-p" style="flex:1;padding:12px;font-weight:800">💾 Enregistrer le dossier</button>' +
+        '<button id="lit-close" class="btn" style="padding:12px">Fermer</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(wrap);
+
+  document.getElementById('lit-close-x').addEventListener('click', litigeFermer);
+  document.getElementById('lit-close').addEventListener('click', litigeFermer);
+  document.getElementById('lit-save').addEventListener('click', function(){ litigeSauver(cmdId); });
+  document.getElementById('lit-email').addEventListener('click', function(){ litigeEmailOuverture(cmdId); });
+  document.getElementById('lit-lettre').addEventListener('click', function(){ litigeLettreReserves(cmdId); });
+  document.getElementById('lit-facture').addEventListener('click', function(){ litigeFactureVente(cmdId); });
+  wrap.addEventListener('click', function(e){ if (e.target === wrap) litigeFermer(); });
+}
+
+// Lit les champs du modal dans la commande (sans sauvegarder)
+function litigeLireChamps(c) {
+  var g = function(id){ var el = document.getElementById(id); return el ? el.value.trim() : ''; };
+  if (document.getElementById('lit-type')) {
+    c.litigeType = g('lit-type');
+    c.litigeNumReclamation = g('lit-num');
+    c.litigeDateOuverture = g('lit-date');
+    c.litigeStatut = g('lit-statut');
+    c.litigeDescription = g('lit-desc');
+    // Si n° de reclamation saisi sans date d'ouverture → aujourd'hui par defaut
+    if (c.litigeNumReclamation && !c.litigeDateOuverture) {
+      c.litigeDateOuverture = new Date().toLocaleDateString('fr-CA');
+      var dEl = document.getElementById('lit-date'); if (dEl) dEl.value = c.litigeDateOuverture;
+    }
+    if (c.litigeNumReclamation && c.litigeStatut === 'a_declarer') c.litigeStatut = 'reclamation_ouverte';
+  }
+}
+
+function litigeSauver(cmdId) {
+  var c = commandes.find(function(x){ return x.id === cmdId; });
+  if (!c) return;
+  litigeLireChamps(c);
+  sbSaveCommande(c);
+  toast('💾 Dossier litige enregistré', 'ok');
+  litigeFermer();
+  closePanel(); ouvrirCmd(cmdId);
+}
+
+// 1) Email pret a envoyer au Service Client GLS pour ouvrir la reclamation
+function litigeEmailOuverture(cmdId) {
+  var c = commandes.find(function(x){ return x.id === cmdId; });
+  if (!c) return;
+  litigeLireChamps(c);
+  var tracks = (c.trackingTransporteur || '').split(',').map(function(t){ return t.trim(); }).filter(Boolean);
+  var typeLbl = c.litigeType === 'perte' ? 'colis non livré / non retracé (sans signature du destinataire)' : c.litigeType === 'retour' ? 'colis retourné endommagé' : 'colis endommagé (avarie)';
+  var sujet = 'Demande d\'ouverture de réclamation — colis ' + tracks.join(', ') + ' — compte BMS';
+  var corps = 'Bonjour,\n\n' +
+    'Nous souhaitons ouvrir une réclamation concernant l\'expédition suivante :\n\n' +
+    '- Expéditeur : BMS (' + LITIGE_BMS.adresse + ')\n' +
+    '- N° de colis : ' + (tracks.join(', ') || 'à compléter') + '\n' +
+    (c.glsDateEtiquette ? '- Date d\'expédition : ' + new Date(c.glsDateEtiquette+'T12:00:00').toLocaleDateString('fr-FR') + '\n' : '') +
+    '- Destinataire : ' + (c.client||'') + ', ' + (c.adresse||'') + '\n' +
+    '- Marchandise : ' + (c.produit||'') + '\n' +
+    '- Nature du problème : ' + typeLbl + '\n' +
+    (c.litigeDescription ? '- Description : ' + c.litigeDescription + '\n' : '') +
+    '\nMerci de bien vouloir ouvrir une enquête et nous communiquer le numéro de réclamation à 13 chiffres afin de déposer notre dossier sur WebLitige.\n\n' +
+    'Cordialement,\nBorhen Marouf — BMS';
+  var full = 'À : litiges@gls-france.com\nObjet : ' + sujet + '\n\n' + corps;
+  var fin = function(){
+    toast('📧 Email copié ! Colle-le dans ta messagerie (Ctrl+V)', 'ok');
+    window.open('mailto:litiges@gls-france.com?subject=' + encodeURIComponent(sujet) + '&body=' + encodeURIComponent(corps), '_self');
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(full).then(fin, fin); else fin();
+}
+
+// 2) Lettre de reserves pre-remplie — a faire signer par le CLIENT sous 72h (avarie)
+function litigeLettreReserves(cmdId) {
+  var c = commandes.find(function(x){ return x.id === cmdId; });
+  if (!c) return;
+  litigeLireChamps(c);
+  var tracks = (c.trackingTransporteur || '').split(',').map(function(t){ return t.trim(); }).filter(Boolean);
+  var html = '<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Lettre de réserves ' + litigeEsc(c.id) + '</title>' +
+    '<style>body{font-family:Arial,sans-serif;margin:50px;color:#1a1a18;font-size:14px;line-height:1.8}' +
+    'h1{font-size:18px;text-align:center;margin:30px 0;text-decoration:underline}' +
+    '.dest{text-align:right;margin-bottom:30px}.sig{margin-top:50px}' +
+    '.note{margin-top:60px;font-size:11px;color:#888;border-top:1px solid #ddd;padding-top:10px}' +
+    '@media print{.note{display:none}}</style></head><body>' +
+    '<div class="dest">À l\'attention de GLS France<br>Service Litiges</div>' +
+    '<h1>Lettre de réserves — marchandise endommagée</h1>' +
+    '<p>Je soussigné(e) <strong>' + litigeEsc(c.client) + '</strong>, demeurant ' + litigeEsc(c.adresse) + ',</p>' +
+    '<p>déclare avoir réceptionné le ______ /______ /__________ le(s) colis suivant(s), expédié(s) par la société BMS :</p>' +
+    '<p style="font-family:monospace;font-weight:bold">' + (tracks.length ? tracks.join('<br>') : '________________________') + '</p>' +
+    '<p>contenant : <strong>' + litigeEsc(c.produit) + '</strong></p>' +
+    '<p>Lors de la réception, j\'ai constaté les dommages suivants :</p>' +
+    '<p style="min-height:80px;border-bottom:1px solid #999">' + litigeEsc(c.litigeDescription||'') + '</p>' +
+    '<p>J\'émets en conséquence les réserves les plus expresses concernant l\'état de la marchandise livrée et me réserve tous droits à ce titre.</p>' +
+    '<div class="sig">Fait à ____________________ , le ______ /______ /__________<br><br><br>Signature du destinataire :</div>' +
+    '<div class="note">⚠️ Rappel (ne s\'imprime pas) : cette lettre doit être établie par le client dans les 72 heures suivant la réception du colis (7 jours pour l\'international), puis jointe au dossier WebLitige avec des photos du colis et de la marchandise.</div>' +
+    '</body></html>';
+  var win = window.open('', '_blank', 'width=800,height=1000');
+  if (!win) { toast('Popup bloquée — autorise les popups', 'err'); return; }
+  win.document.write(html); win.document.close();
+  win.onload = function(){ win.focus(); win.print(); };
+}
+
+// 3) Facture de vente BMS (TVA 20%) — piece obligatoire du dossier WebLitige
+function litigeFactureVente(cmdId) {
+  var c = commandes.find(function(x){ return x.id === cmdId; });
+  if (!c) return;
+  var ttc = parseFloat(c.prix) || 0;
+  var ht = ttc / 1.2;
+  var tva = ttc - ht;
+  var fmt = function(n){ return n.toLocaleString('fr-FR', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' €'; };
+  var dateFact = (c.dateCmd && c.dateCmd.length === 10) ? c.dateCmd : new Date().toLocaleDateString('fr-CA');
+  var dateFr = new Date(dateFact + 'T12:00:00').toLocaleDateString('fr-FR', {day:'2-digit', month:'long', year:'numeric'});
+  var numFact = 'F' + dateFact.substring(0,4) + '-' + (c.id||'').replace('#','');
+  var html = '<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Facture ' + numFact + '</title>' +
+    '<style>body{font-family:Arial,sans-serif;margin:40px;color:#1a1a18;font-size:13px}' +
+    '.head{display:flex;justify-content:space-between;margin-bottom:40px}' +
+    '.bms{font-size:22px;font-weight:900;color:#185FA5}' +
+    '.blk{line-height:1.7}.client{margin-left:auto;text-align:right}' +
+    'h1{font-size:20px;margin:20px 0 4px}' +
+    'table{width:100%;border-collapse:collapse;margin:24px 0}' +
+    'th{background:#185FA5;color:#fff;padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase}' +
+    'td{padding:10px;border-bottom:1px solid #ddd}' +
+    '.tot td{border:none;padding:5px 10px;text-align:right}' +
+    '.tot .label{color:#666}.tot .ttc{font-size:16px;font-weight:900;color:#185FA5}' +
+    '.acquit{display:inline-block;margin-top:12px;padding:6px 14px;border:2px solid #276749;color:#276749;font-weight:900;border-radius:6px;transform:rotate(-3deg)}' +
+    '.footer{margin-top:60px;font-size:10px;color:#888;text-align:center;border-top:1px solid #ddd;padding-top:10px}' +
+    '</style></head><body>' +
+    '<div class="head">' +
+      '<div class="blk"><div class="bms">' + LITIGE_BMS.nom + '</div>' + LITIGE_BMS.adresse.replace(', ', '<br>') + '<br>' + LITIGE_BMS.rcs + '<br>TVA : ' + LITIGE_BMS.tva + '</div>' +
+      '<div class="blk client"><strong>Facturé à :</strong><br>' + litigeEsc(c.client) + '<br>' + litigeEsc(c.adresse) + '</div>' +
+    '</div>' +
+    '<h1>Facture n° ' + numFact + '</h1>' +
+    '<div style="color:#666">Date : ' + dateFr + ' — Référence commande : ' + litigeEsc(c.id) + '</div>' +
+    '<table><thead><tr><th>Désignation</th><th style="width:60px;text-align:center">Qté</th><th style="width:110px;text-align:right">Total HT</th><th style="width:110px;text-align:right">Total TTC</th></tr></thead>' +
+    '<tbody><tr><td>' + litigeEsc(c.produit) + '</td><td style="text-align:center">' + (c.qte||1) + '</td><td style="text-align:right">' + fmt(ht) + '</td><td style="text-align:right">' + fmt(ttc) + '</td></tr></tbody></table>' +
+    '<table class="tot" style="width:300px;margin-left:auto"><tbody>' +
+      '<tr><td class="label">Total HT</td><td>' + fmt(ht) + '</td></tr>' +
+      '<tr><td class="label">TVA 20 %</td><td>' + fmt(tva) + '</td></tr>' +
+      '<tr><td class="label">Total TTC</td><td class="ttc">' + fmt(ttc) + '</td></tr>' +
+    '</tbody></table>' +
+    (c.stpaie === 'Payé' ? '<div style="text-align:right"><span class="acquit">FACTURE ACQUITTÉE</span></div>' : '') +
+    '<div class="footer">' + LITIGE_BMS.nom + ' — ' + LITIGE_BMS.forme + ' — ' + LITIGE_BMS.rcs + ' — TVA intracommunautaire : ' + LITIGE_BMS.tva + '<br>Siège social : ' + LITIGE_BMS.adresse + '</div>' +
+    '</body></html>';
+  var win = window.open('', '_blank', 'width=800,height=1000');
+  if (!win) { toast('Popup bloquée — autorise les popups', 'err'); return; }
+  win.document.write(html); win.document.close();
+  win.onload = function(){ win.focus(); win.print(); };
 }
 
 // v7.5.45 : Rapport journalier GLS — liste imprimable des etiquettes creees un jour donne.
