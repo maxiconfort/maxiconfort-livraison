@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.48 - Litige GLS : dossier d'indemnisation en 1 clic (email + lettre de réserves + facture BMS)
+// v7.5.49 - Alerte colis GLS bloqué : SMS auto (gls-sync v12) + bannière panneau + 🚨 suivi
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-48';
+const CACHE_VERSION = 'maxiconfort-v7-5-49';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

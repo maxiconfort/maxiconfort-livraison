@@ -1,6 +1,15 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : gls-sync (v10 — 08/06/2026)
+// Edge Function : gls-sync (v12 — 11/06/2026)
 // ════════════════════════════════════════════════════════════════════
+// v12 (11/06) : DETECTION COLIS BLOQUES + alerte SMS Borhen.
+//   Pour chaque colis non livre, on extrait la date du dernier evenement
+//   de tracking (UnitDetail.History[].Date). Si AUCUN scan depuis
+//   STUCK_DAYS jours (defaut 4) sur au moins un colis non livre :
+//     - commandes.gls_bloque = true + gls_dernier_scan = date dernier scan
+//     - SMS d'alerte a Borhen (1 seule fois : dedupe via l'ancien gls_bloque)
+//   Le flag retombe a false des que le colis bouge ou est livre.
+//   Body optionnel : { stuckDays: 6 } pour changer le seuil.
+//
 // v10 (08/06) : MULTI-TRACKINGS support pour les multi-colis.
 //   commandes.tracking_transporteur peut contenir N trackIDs separes par
 //   virgule (cas des sommiers/lits/ensembles depuis gls-create-shipment v5).
@@ -32,6 +41,10 @@ const GLS_SHIPIT_PASSWORD   = Deno.env.get('GLS_SHIPIT_PASSWORD') || '';
 const GLS_SHIPIT_CONTACT_ID = Deno.env.get('GLS_SHIPIT_CONTACT_ID') || '';
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+// v12 : alerte colis bloque
+const BREVO_KEY = Deno.env.get('BREVO_API_KEY') || '';
+const ALERT_SMS_TO = '+33744289321'; // Borhen
+const STUCK_DAYS_DEFAULT = 4;
 
 const GLS_OAUTH_URL  = 'https://api.gls-group.net/oauth2/v2/token';
 const GLS_TEST_BASE  = 'https://shipit-wbm-test01.gls-group.eu:443/backend/rs/tracking';
@@ -263,6 +276,38 @@ function isParcelDelivered(trackData: any): boolean {
   return false;
 }
 
+// v12 : date (ms epoch) du dernier evenement de tracking d'un colis, ou null.
+// Format reel ShipIT-FARM : data.UnitDetail.History[] avec Date ISO "2026-06-10T15:33:54+02:00"
+function getLastEventMs(trackData: any): number | null {
+  const history = trackData?.UnitDetail?.History || trackData?.History || trackData?.history || [];
+  if (!Array.isArray(history)) return null;
+  let max: number | null = null;
+  for (const ev of history) {
+    const raw = ev?.Date || ev?.date || ev?.Timestamp || ev?.DateTime || null;
+    if (!raw) continue;
+    const ms = Date.parse(String(raw));
+    if (!isNaN(ms) && (max === null || ms > max)) max = ms;
+  }
+  return max;
+}
+
+// v12 : SMS d'alerte a Borhen via Brevo (meme API que send-cmd-sms)
+async function envoyerAlerteSMS(contenu: string): Promise<boolean> {
+  if (!BREVO_KEY) { console.warn('BREVO_API_KEY manquant — alerte non envoyee'); return false; }
+  try {
+    const resp = await fetch('https://api.brevo.com/v3/transactionalSMS/sms', {
+      method: 'POST',
+      headers: { 'api-key': BREVO_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ sender: 'Maxiconfort', recipient: ALERT_SMS_TO, content: contenu, type: 'transactional' }),
+    });
+    if (!resp.ok) { console.warn('Brevo HTTP', resp.status, await resp.text()); return false; }
+    return true;
+  } catch (e: any) {
+    console.warn('Brevo exception:', e.message);
+    return false;
+  }
+}
+
 Deno.serve(async (req: Request) => {
   const startTime = Date.now();
   let body: any = {};
@@ -272,10 +317,12 @@ Deno.serve(async (req: Request) => {
   const useProd: boolean = !!body.useProd;
   const useRstt002: boolean = !!body.useRstt002;
   const useShipIT: boolean = !!body.useShipIT;
+  // v12 : seuil de detection colis bloque (jours sans scan)
+  const stuckDays: number = (typeof body.stuckDays === 'number' && body.stuckDays > 0) ? body.stuckDays : STUCK_DAYS_DEFAULT;
   const summary = {
     started_at: new Date().toISOString(),
-    dryRun, useProd, useRstt002, useShipIT,
-    cmds_a_checker: 0, cmds_livre: 0, cmds_erreur: 0,
+    dryRun, useProd, useRstt002, useShipIT, stuckDays,
+    cmds_a_checker: 0, cmds_livre: 0, cmds_erreur: 0, cmds_bloquees: 0, alertes_sms: 0,
     duration_ms: 0,
     details: [] as any[],
   };
@@ -293,7 +340,7 @@ Deno.serve(async (req: Request) => {
 
   const { data: cmds, error: errCmds } = await sb
     .from('commandes')
-    .select('id, client, tracking_transporteur, statut')
+    .select('id, client, tracking_transporteur, statut, gls_bloque')
     .eq('transporteur', 'GLS')
     .not('tracking_transporteur', 'is', null)
     .not('statut', 'in', '(livré,annulé)');
@@ -320,6 +367,10 @@ Deno.serve(async (req: Request) => {
     const parcelResults: any[] = [];
     let nbErreurs = 0;
     let nbLivre = 0;
+    // v12 : dernier scan des colis NON livres (pour la detection bloque)
+    let dernierScanNonLivre: number | null = null;
+    let auMoinsUnNonLivreSansScanRecent = false;
+    const seuilMs = stuckDays * 24 * 3600 * 1000;
     for (const trackId of trackIds) {
       const result = await trackParcel(trackId, { useRstt002, useShipIT, useProd });
       if (!result.ok) {
@@ -328,8 +379,13 @@ Deno.serve(async (req: Request) => {
         continue;
       }
       const livre = isParcelDelivered(result.data);
-      parcelResults.push({ trackId, livre, status: livre ? 'livre' : 'transit' });
+      const lastMs = getLastEventMs(result.data);
+      parcelResults.push({ trackId, livre, status: livre ? 'livre' : 'transit', dernier_scan: lastMs ? new Date(lastMs).toISOString() : null });
       if (livre) nbLivre++;
+      else if (lastMs !== null) {
+        if (dernierScanNonLivre === null || lastMs > dernierScanNonLivre) dernierScanNonLivre = lastMs;
+        if (Date.now() - lastMs > seuilMs) auMoinsUnNonLivreSansScanRecent = true;
+      }
     }
 
     const nbColis = trackIds.length;
@@ -341,7 +397,8 @@ Deno.serve(async (req: Request) => {
         summary.cmds_livre++;
         summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, nbColis, parcels: parcelResults, status: 'would_update_livre' });
       } else {
-        const { error: errUpd } = await sb.from('commandes').update({ statut: 'livré' }).eq('id', cmd.id);
+        // v12 : livre -> on efface aussi le flag bloque
+        const { error: errUpd } = await sb.from('commandes').update({ statut: 'livré', gls_bloque: false }).eq('id', cmd.id);
         if (errUpd) {
           summary.cmds_erreur++;
           summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, status: 'update_failed', error: errUpd.message });
@@ -356,10 +413,36 @@ Deno.serve(async (req: Request) => {
       summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, nbColis, parcels: parcelResults, status: 'all_api_error' });
     } else {
       // En cours (au moins 1 colis pas encore livre ou 1 colis en erreur partielle)
+      // v12 : detection colis bloque (aucun scan depuis stuckDays jours sur un colis non livre)
+      const bloque = auMoinsUnNonLivreSansScanRecent;
+      const etaitBloque = !!cmd.gls_bloque;
+      let alerteSms = false;
+      if (!dryRun) {
+        try {
+          await sb.from('commandes').update({
+            gls_bloque: bloque,
+            gls_dernier_scan: dernierScanNonLivre ? new Date(dernierScanNonLivre).toISOString() : null,
+          }).eq('id', cmd.id);
+        } catch (_e) { /* non bloquant */ }
+        // Alerte SMS uniquement au PASSAGE a bloque (pas de re-alerte toutes les 2h)
+        if (bloque && !etaitBloque) {
+          const dernierFr = dernierScanNonLivre ? new Date(dernierScanNonLivre).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' }) : '?';
+          alerteSms = await envoyerAlerteSMS(
+            '🚨 GLS : colis bloqué !\nCmd ' + cmd.id + ' — ' + (cmd.client || '') +
+            '\nAucun scan depuis le ' + dernierFr + ' (' + stuckDays + 'j+)' +
+            '\nColis : ' + trackingFull +
+            '\nSi ça persiste : déclare un litige dans l\'app (bouton ⚠️ sur la commande).'
+          );
+          if (alerteSms) summary.alertes_sms++;
+        }
+      }
+      if (bloque) summary.cmds_bloquees++;
       summary.details.push({
         cmdId: cmd.id, client: cmd.client, tracking: trackingFull, nbColis,
         livreCount: nbLivre, errorCount: nbErreurs,
         parcels: parcelResults,
+        bloque, etaitBloque, alerteSms,
+        dernier_scan: dernierScanNonLivre ? new Date(dernierScanNonLivre).toISOString() : null,
         status: `still_in_transit (${nbLivre}/${nbColis} livré${nbLivre > 1 ? 's' : ''}${nbErreurs > 0 ? ', ' + nbErreurs + ' err' : ''})`,
       });
     }
