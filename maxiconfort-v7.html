@@ -5286,7 +5286,7 @@ async function renderCmdStatsJour() {
   // v7.5.32 : date_commande source de verite + filtre retroactif maintenu
   var moisData = [];
   try {
-    var url = SUPABASE_URL + '/rest/v1/commandes?select=id,prix,date_commande,date_livraison,statut&date_commande=gte.' + debutMoisStr + '&date_commande=lt.' + demainStr + '&statut=not.eq.annul%C3%A9&limit=1000';
+    var url = SUPABASE_URL + '/rest/v1/commandes?select=id,prix,date_commande,date_livraison,statut,origine&date_commande=gte.' + debutMoisStr + '&date_commande=lt.' + demainStr + '&statut=not.eq.annul%C3%A9&limit=1000';
     var r = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
     if (r.ok) {
       var data = await r.json();
@@ -5300,7 +5300,10 @@ async function renderCmdStatsJour() {
     if (!c.date_livraison) return true; // pas de date livraison -> nouvelle cmd OK
     return c.date_livraison >= c.date_commande; // date_livraison >= date_commande (pas retroactive)
   }
-  var vraies = moisData.filter(isVraieCmd);
+  // v7.5.44 : exclut les SAV (origine 'SAV - ...') — pas des ventes, rien a encaisser
+  var vraies = moisData.filter(isVraieCmd).filter(function(c){
+    return (c.origine || '').toUpperCase().indexOf('SAV') !== 0;
+  });
 
   function statsPeriode(dMin, dMax) {
     var items = vraies.filter(function(c){

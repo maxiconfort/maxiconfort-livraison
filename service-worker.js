@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.43 - cards Tournees gauche : affiche ENCAISSE (pas restant)
+// v7.5.44 - stats Cmds : SAV exclus des compteurs jour/semaine/mois
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-43';
+const CACHE_VERSION = 'maxiconfort-v7-5-44';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
