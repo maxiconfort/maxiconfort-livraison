@@ -1,6 +1,19 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : gls-create-shipment (v5.9 — 11/06/2026)
+// Edge Function : gls-create-shipment (v5.10 — 12/06/2026)
 // ════════════════════════════════════════════════════════════════════
+// v5.10 (12/06/2026) — GROSSE CORRECTION FIABILITE :
+//   1. try/catch GLOBAL : avant, toute exception non attrapee produisait un
+//      500 brut SANS headers CORS -> le navigateur affichait "CORS blocked"
+//      au lieu du vrai message d'erreur.
+//   2. Appel GLS en HTTP/1.0 BRUT (Deno.connectTls) : le serveur GLS renvoie
+//      ses erreurs de validation dans des EN-TETES HTTP malformes que le
+//      parseur strict de Deno rejette (h2 : "unspecific protocol error",
+//      h1 : "invalid HTTP header parsed") -> fetch inutilisable.
+//   3. Note1 max 50 caracteres (et non 60) + glsSafe() : translitteration
+//      ASCII de tous les champs texte (accents, ×, em-dash) — cause reelle
+//      du blocage de #1227 ("Value is too long. Maximum is 50").
+//   4. Message d'erreur GLS extrait des en-tetes -> visible dans l'app.
+//   ⚠️ AUCUN retry apres envoi (risque de doublon d'expedition facturable).
 // v5.9 : stocke gls_date_etiquette (date creation label) pour le rapport journalier
 // v5.8 : auto-SMS expedition cote SERVER (plus de dependance front cache)
 // v5.7 : sommier/ensemble 120x190 = 2 demi-sommiers 5kg
@@ -84,6 +97,17 @@ function parseAdresseFR(adresse: string): { streetNumber: string; street: string
   return { streetNumber: '', street: beforeZip, zipCode, city };
 }
 
+// ── v5.10 : champ texte sur pour GLS — translittere en ASCII pur
+// (le backend GLS est en Latin-1 : l'UTF-8 donne des � sur l'etiquette et
+// fausse le comptage de longueur ; em-dash etc. cassent leurs en-tetes d'erreur)
+function glsSafe(s: string, max: number): string {
+  if (!s) return '';
+  let t = String(s).normalize("NFD").replace(/[̀-ͯ]/g, ''); // accents -> lettre nue
+  t = t.replace(/×/g, 'x').replace(/[—–]/g, '-').replace(/’/g, "'").replace(/[«»“”]/g, '"');
+  t = t.replace(/[^\x20-\x7E]/g, ' ').replace(/\s+/g, ' ').trim();
+  return t.substring(0, max);
+}
+
 // ── Normalise un telephone francais en format E.164 type 0033...
 function normalizeTel(tel: string): string {
   if (!tel) return '';
@@ -154,14 +178,15 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
   const weight = parseFloat(cmd.poids || '') || 25.0;
   // Nom client : split en Name1 (nom) + Name2 (prenom/complement)
   const clientName = (cmd.client || 'Client').trim();
+  // v5.10 : glsSafe partout (translitteration ASCII + longueurs sures)
   const consignee: any = {
     Address: {
-      Name1: clientName.substring(0, 40),
+      Name1: glsSafe(clientName, 40) || 'Client',
       CountryCode: 'FR',
       ZIPCode: parsed.zipCode || '75001',
-      City: (parsed.city || 'Paris').substring(0, 40),
-      Street: (parsed.street || 'Rue').substring(0, 40),
-      StreetNumber: parsed.streetNumber.substring(0, 10),
+      City: glsSafe(parsed.city || 'Paris', 40) || 'Paris',
+      Street: glsSafe(parsed.street || 'Rue', 40) || 'Rue',
+      StreetNumber: glsSafe(parsed.streetNumber, 10),
     },
   };
   if (tel) consignee.Address.MobilePhoneNumber = tel;
@@ -191,7 +216,8 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
     return local.replace(/(\d{2})(?=\d)/g, '$1 ').trim();
   }
   const telDisplay = formatTelDisplay(cmd.tel || '');
-  const note2 = telDisplay ? ('Tel: ' + telDisplay).substring(0, 60) : '';
+  // v5.10 : limite GLS = 50 caracteres par Note (constate le 12/06 : 60 -> erreur INVALID_FIELD_VALUE)
+  const note2 = telDisplay ? glsSafe('Tel: ' + telDisplay, 50) : '';
 
   // v5.1 : MULTI-COLIS — detecte la regle de packaging selon le produit
   // chaque colis peut avoir un poids different (ex Lit Coffre = 6+15+15)
@@ -201,7 +227,8 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
     shipmentUnits = mc.colis.map((poids: number, idx: number) => ({
       ShipmentUnitReference: [reference + '-' + (idx + 1)],
       Weight: poids,
-      Note1: ((cmd.produit || '').substring(0, 44) + ' (' + (idx + 1) + '/' + mc.colis.length + ')').substring(0, 60),
+      // v5.10 : max GLS = 50 (43 + ' (x/y)' = 49 max)
+      Note1: glsSafe(cmd.produit || '', 43) + ' (' + (idx + 1) + '/' + mc.colis.length + ')',
       Note2: note2,
     }));
   } else {
@@ -209,7 +236,7 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
     shipmentUnits = [{
       ShipmentUnitReference: [reference + '-1'],
       Weight: weight,
-      Note1: (cmd.produit || '').substring(0, 60),
+      Note1: glsSafe(cmd.produit || '', 50),
       Note2: note2,
     }];
   }
@@ -234,24 +261,104 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
 }
 
 // ── Appel API GLS Create Shipment
+// v5.10 (12/06/2026) : requete HTTP/1.0 BRUTE via Deno.connectTls.
+// Pourquoi : le serveur GLS (AWS, wbm-fr02) s'est mis a (1) couper les
+// connexions HTTP/2 ("http2 error: unspecific protocol error") et (2) renvoyer
+// des en-tetes HTTP malformes que le parseur strict de Deno rejette
+// ("invalid HTTP header parsed") — fetch est donc inutilisable. curl tolere.
+// On ecrit la requete a la main et on parse la reponse de maniere TOLERANTE
+// (on ne lit que la ligne de statut + le body, les en-tetes pourris sont ignores).
+// ⚠️ AUCUN retry apres envoi de la requete : si GLS a deja cree l'expedition,
+// un retry creerait un DOUBLON (etiquette fantome facturable).
+const GLS_HOST = 'wbm-fr02.shipit.gls-group.com';
+const GLS_PATH = '/backend/rs/shipments';
+
+function dechunkBody(body: string): string {
+  // Decode un body en Transfer-Encoding: chunked (taille hex CRLF data CRLF ...)
+  let out = '';
+  let rest = body;
+  while (rest.length > 0) {
+    const nl = rest.indexOf('\r\n');
+    if (nl < 0) break;
+    const size = parseInt(rest.substring(0, nl).trim(), 16);
+    if (!size || isNaN(size)) break;
+    out += rest.substr(nl + 2, size);
+    rest = rest.substring(nl + 2 + size + 2);
+  }
+  return out || body;
+}
+
+async function glsRawRequest(bodyStr: string, basic: string, timeoutMs = 60000): Promise<{ status: number; text: string; errHeader?: string | null }> {
+  const conn = await Deno.connectTls({ hostname: GLS_HOST, port: 443 });
+  const enc = new TextEncoder();
+  const bodyBytes = enc.encode(bodyStr);
+  const timeout = setTimeout(() => { try { conn.close(); } catch (_e) {} }, timeoutMs);
+  try {
+    const head =
+      'POST ' + GLS_PATH + ' HTTP/1.0\r\n' +
+      'Host: ' + GLS_HOST + '\r\n' +
+      'Authorization: Basic ' + basic + '\r\n' +
+      'Content-Type: application/glsVersion1+json\r\n' +
+      'Accept: application/glsVersion1+json, application/json\r\n' +
+      'Content-Length: ' + bodyBytes.length + '\r\n' +
+      'Connection: close\r\n\r\n';
+    await conn.write(enc.encode(head));
+    await conn.write(bodyBytes);
+    // Lire TOUTE la reponse jusqu'a fermeture de la connexion
+    const chunks: Uint8Array[] = [];
+    const buf = new Uint8Array(65536);
+    while (true) {
+      let n: number | null = null;
+      try { n = await conn.read(buf); } catch (_e) { break; }
+      if (n === null) break;
+      chunks.push(buf.slice(0, n));
+    }
+    let total = 0;
+    for (const c of chunks) total += c.length;
+    const all = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { all.set(c, off); off += c.length; }
+    const raw = new TextDecoder().decode(all);
+    // debug v5.10 : trace de la reponse brute (statut + en-tetes) dans les logs
+    console.warn('GLS raw response (' + total + ' octets):', raw.substring(0, 600).replace(/\r\n/g, ' | '));
+    const sep = raw.indexOf('\r\n\r\n');
+    const headers = sep >= 0 ? raw.substring(0, sep) : raw;
+    let body = sep >= 0 ? raw.substring(sep + 4) : '';
+    const statusMatch = headers.match(/^HTTP\/[\d.]+\s+(\d{3})/);
+    const status = statusMatch ? parseInt(statusMatch[1]) : 0;
+    if (/transfer-encoding:\s*chunked/i.test(headers)) body = dechunkBody(body);
+    // GLS met ses messages d'erreur de validation dans des EN-TETES (message:/error:/args:)
+    const msgMatch = headers.match(/\r\nmessage:\s*([^\r\n]+)/i);
+    const errMatch = headers.match(/\r\nerror:\s*([^\r\n]+)/i);
+    const errHeader = [errMatch?.[1], msgMatch?.[1]].filter(Boolean).join(' — ') || null;
+    return { status, text: body, errHeader };
+  } finally {
+    clearTimeout(timeout);
+    try { conn.close(); } catch (_e) { /* deja fermee */ }
+  }
+}
+
 async function createShipment(payload: any): Promise<any> {
   if (!GLS_USER || !GLS_PASSWORD) {
     throw new Error('GLS_SHIPIT_USER ou GLS_SHIPIT_PASSWORD manquant dans les secrets Supabase');
   }
   const basic = btoa(`${GLS_USER}:${GLS_PASSWORD}`);
-  const resp = await fetch(GLS_API_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Basic ${basic}`,
-      'Content-Type': 'application/glsVersion1+json',
-      'Accept': 'application/glsVersion1+json, application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-  const text = await resp.text();
+  let resp: { status: number; text: string };
+  try {
+    resp = await glsRawRequest(JSON.stringify(payload), basic);
+  } catch (e: any) {
+    throw new Error('Appel API GLS impossible (' + (e?.message || e) + ')');
+  }
+  if (!resp.status) {
+    throw new Error('Reponse GLS illisible ou vide (connexion interrompue) — verifier dans YourGLS si l\'expedition a quand meme ete creee avant de re-essayer');
+  }
   let data: any = null;
-  try { data = JSON.parse(text); } catch { data = { raw: text.substring(0, 1000) }; }
-  return { ok: resp.ok, status: resp.status, data };
+  try { data = JSON.parse(resp.text); } catch { data = { raw: resp.text.substring(0, 1000) }; }
+  // Si GLS a repondu une erreur via ses en-tetes, la rendre visible dans la reponse
+  if ((resp as any).errHeader && data && typeof data === 'object' && !data.message) {
+    data.message = (resp as any).errHeader;
+  }
+  return { ok: resp.status >= 200 && resp.status < 300, status: resp.status, data };
 }
 
 // v5.2 : Headers CORS (sinon le navigateur bloque le preflight OPTIONS)
@@ -268,7 +375,20 @@ Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
+  // v5.10 : try/catch GLOBAL — toute exception renvoie un JSON + CORS
+  // (sinon le runtime repond 500 sans CORS et le front ne voit qu'une erreur CORS)
+  try {
+    return await handleRequest(req);
+  } catch (e: any) {
+    console.error('gls-create-shipment exception non attrapee:', e?.message || e, e?.stack || '');
+    return new Response(JSON.stringify({
+      ok: false,
+      error: 'Erreur interne: ' + (e?.message || String(e)),
+    }), { status: 500, headers: JSON_HEADERS });
+  }
+});
 
+async function handleRequest(req: Request): Promise<Response> {
   const startTime = Date.now();
   let body: any = {};
   if (req.method === 'POST') { try { body = await req.json(); } catch {} }
@@ -439,4 +559,4 @@ Deno.serve(async (req: Request) => {
     smsSent,                  // v5.8 : retour de l'envoi auto SMS expedition
     duration_ms: Date.now() - startTime,
   }), { headers: JSON_HEADERS });
-});
+}
