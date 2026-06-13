@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.55 - Facture : badge ACQUITTÉE/À RÉGLER sans le mode de règlement interne (souvent faux/inutile au client)
+// v7.5.56 - Signature : commandes marketplace = "déjà payé via la plateforme" par défaut (plus d'Espèces par erreur)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-55';
+const CACHE_VERSION = 'maxiconfort-v7-5-56';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

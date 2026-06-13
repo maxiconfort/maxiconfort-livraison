@@ -2686,10 +2686,14 @@ Maxiconfort — {TEL_CONTACT}</textarea>
 
     <!-- SECTION PAIEMENT -->
     <div style="background:var(--bg);border-radius:12px;padding:14px;margin-bottom:12px;border:1.5px solid var(--brd)">
-      <div style="font-size:13px;font-weight:800;margin-bottom:10px;color:var(--text)">💰 Paiement reçu ?</div>
-      <div style="display:flex;gap:8px;margin-bottom:10px">
-        <button id="sig-paie-oui" onclick="sigTogglePaie(true)" style="flex:1;padding:10px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">✅ Oui, encaissé</button>
-        <button id="sig-paie-non" onclick="sigTogglePaie(false)" style="flex:1;padding:10px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">❌ Non payé</button>
+      <!-- v7.5.56 : bandeau commande marketplace deja payee en ligne -->
+      <div id="sig-prepaye-banner" style="display:none;background:var(--gl);color:var(--gd);border:1.5px solid var(--green);border-radius:10px;padding:12px;font-size:13px;font-weight:700;line-height:1.5"></div>
+      <div id="sig-paie-question">
+        <div style="font-size:13px;font-weight:800;margin-bottom:10px;color:var(--text)">💰 Paiement reçu ?</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <button id="sig-paie-oui" onclick="sigTogglePaie(true)" style="flex:1;padding:10px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">✅ Oui, encaissé</button>
+          <button id="sig-paie-non" onclick="sigTogglePaie(false)" style="flex:1;padding:10px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">❌ Non payé</button>
+        </div>
       </div>
       <div id="sig-paie-mode-wrap" style="display:none">
         <div style="font-size:12px;color:var(--t2);margin-bottom:6px">Mode de règlement :</div>
@@ -9211,10 +9215,27 @@ function setLvSt(tid, idx, st) {
 
     document.getElementById('sig-nom').value=s.client;
     document.getElementById('m-sig').classList.add('on');
-    // Pré-sélectionner "Oui encaissé + Espèces" par défaut
+    // v7.5.56 : si commande marketplace (deja payee en ligne via la plateforme),
+    // pre-selectionner "deja paye via X" au lieu de "Especes encaissé" (evite
+    // d'enregistrer Especes par defaut sur une commande prepayee).
     setTimeout(function(){
-      sigTogglePaie(true);
-      sigSelectMode('Espèces');
+      var cmdSig = s.cmdId ? commandes.find(function(c){ return c.id === s.cmdId; }) : null;
+      var mkt = cmdSig ? cmdOrigineMarketplace(cmdSig) : null;
+      if (mkt) {
+        sigPrepaidMode = mkt;
+        sigPaieEncaisse = true;
+        sigPaieMode = mkt;
+        var banner = document.getElementById('sig-prepaye-banner');
+        if (banner) { banner.style.display = 'block'; banner.innerHTML = '✅ <strong>Déjà payé en ligne</strong> via ' + mkt + ' — rien à encaisser sur place.'; }
+        var q = document.getElementById('sig-paie-question'); if (q) q.style.display = 'none';
+        var mw = document.getElementById('sig-paie-mode-wrap'); if (mw) mw.style.display = 'none';
+      } else {
+        sigPrepaidMode = null;
+        var banner2 = document.getElementById('sig-prepaye-banner'); if (banner2) banner2.style.display = 'none';
+        var q2 = document.getElementById('sig-paie-question'); if (q2) q2.style.display = '';
+        sigTogglePaie(true);
+        sigSelectMode('Espèces');
+      }
     }, 100);
     setTimeout(initSig,80);
     return;
@@ -9273,6 +9294,21 @@ var scv = null; // déclaré globalement pour clearSig()
 var noteStopId = null; // {tid, idx} pour la note en cours
 var sigPaieEncaisse = false; // paiement encaissé à la signature
 var sigPaieMode = 'Espèces'; // mode de paiement sélectionné
+// v7.5.56 : si défini (nom de la plateforme), la commande est déjà payée en ligne
+// (marketplace) → validerSig enregistre ce mode au lieu d'« Espèces ».
+var sigPrepaidMode = null;
+// Origines marketplace = commandes TOUJOURS payées en ligne avant le départ du dépôt
+// (confirmé par Borhen). Le livreur n'encaisse rien ; le mode de règlement = la plateforme.
+var MARKETPLACES_ORIGINES = ['LeBonCoin','Amazon','Cdiscount','Fnac Darty','Rakuten','Rue du Commerce','Ubaldi','ManoMano','Conforama','But','La Redoute','Maison du Monde','Boulanger','Leroy Merlin','eBay','Wish','AliExpress','Vinted','Facebook Marketplace','TikTok Shop','Instagram Shop'];
+function cmdOrigineMarketplace(cmd) {
+  if (!cmd) return null;
+  var o = (cmd.origine || '').trim();
+  if (o && MARKETPLACES_ORIGINES.indexOf(o) !== -1) return o;
+  // repli : si le mode de paiement est déjà une plateforme marketplace connue
+  var p = (cmd.paie || '').trim();
+  if (p && MARKETPLACES_ORIGINES.indexOf(p) !== -1) return p;
+  return null;
+}
 document.addEventListener('DOMContentLoaded', function() {
   scv = document.getElementById('sig-cv');
   if (!scv) return;
@@ -9309,8 +9345,14 @@ function validerSig(){
     var diffStop = (sigPaieEsp + sigPaieCb) - prixStop;
     sigStatut = (Math.abs(diffStop) < 0.01) ? 'Payé' : 'Partiel';
   }
-  // Enregistrer paiement si encaissé
-  if (sigPaieEncaisse) {
+  // Enregistrer paiement
+  if (sigPrepaidMode) {
+    // v7.5.56 : commande marketplace déjà payée en ligne — mode = la plateforme, rien encaissé
+    s.paie = sigPrepaidMode;
+    s.stpaie = 'Payé';
+    delete s.paie_especes;
+    delete s.paie_cb;
+  } else if (sigPaieEncaisse) {
     s.paie = sigPaieMode;
     s.stpaie = sigStatut;
     if (sigPaieMode === 'Mixte') {
@@ -9325,7 +9367,14 @@ function validerSig(){
   const cmd=commandes.find(c=>c.id===s.cmdId);
   if(cmd){
     cmd.statut='livré';
-    if (sigPaieEncaisse) {
+    if (sigPrepaidMode) {
+      // v7.5.56 : marketplace déjà payée — préserver le mode plateforme, payé, rien encaissé sur place
+      cmd.paie = sigPrepaidMode;
+      cmd.stpaie = 'Payé';
+      cmd.montantEnc = cmd.prix;
+      delete cmd.paie_especes;
+      delete cmd.paie_cb;
+    } else if (sigPaieEncaisse) {
       cmd.paie = sigPaieMode;
       cmd.stpaie = sigStatut;
       if (sigPaieMode === 'Mixte') {
@@ -9370,6 +9419,10 @@ function validerSig(){
   // Reset paiement
   sigPaieEncaisse = false;
   sigPaieMode = 'Espèces';
+  sigPrepaidMode = null;
+  // v7.5.56 : restaurer l'UI normale (cacher le bandeau marketplace, ré-afficher la question)
+  var pb=document.getElementById('sig-prepaye-banner'); if(pb) pb.style.display='none';
+  var pq=document.getElementById('sig-paie-question'); if(pq) pq.style.display='';
   var oui=document.getElementById('sig-paie-oui'); if(oui){oui.style.background='';oui.style.borderColor='';oui.style.color='';}
   var non=document.getElementById('sig-paie-non'); if(non){non.style.background='';non.style.borderColor='';non.style.color='';}
   var wrap=document.getElementById('sig-paie-mode-wrap'); if(wrap) wrap.style.display='none';
