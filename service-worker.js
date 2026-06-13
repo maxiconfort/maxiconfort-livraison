@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.54 - Facture client : bouton 📄 par commande (BMS TVA 20%), envoi SMS/WhatsApp + lien public facture.html + téléchargement
+// v7.5.55 - Facture : badge ACQUITTÉE/À RÉGLER sans le mode de règlement interne (souvent faux/inutile au client)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-54';
+const CACHE_VERSION = 'maxiconfort-v7-5-55';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

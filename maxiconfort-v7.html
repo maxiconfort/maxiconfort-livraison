@@ -14867,7 +14867,7 @@ function buildFactureHTML(cmd) {
       '<tr><td class="label">TVA 20 %</td><td>'+fmt(tva)+'</td></tr>'+
       '<tr><td class="label ttc">Total TTC</td><td class="ttc">'+fmt(ttc)+'</td></tr>'+
     '</tbody></table>'+
-    '<div style="text-align:right">'+(acquit?'<span class="acquit">FACTURE ACQUITTÉE'+(cmd.paie?' — '+esc(cmd.paie):'')+'</span>':'<span class="apayer">À RÉGLER</span>')+'</div>'+
+    '<div style="text-align:right">'+(acquit?'<span class="acquit">FACTURE ACQUITTÉE</span>':'<span class="apayer">À RÉGLER</span>')+'</div>'+
     '<div class="footer">'+LITIGE_BMS.nom+' — '+LITIGE_BMS.forme+' — '+LITIGE_BMS.rcs+' — TVA intracommunautaire : '+LITIGE_BMS.tva+'<br>Siège social : '+LITIGE_BMS.adresse+'<br>Merci de votre confiance — Maxiconfort</div>'+
     '</body></html>';
 }
