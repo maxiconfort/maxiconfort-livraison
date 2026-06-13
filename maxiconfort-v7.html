@@ -2060,6 +2060,33 @@ Maxiconfort — {TEL_CONTACT}</textarea>
     </div>
   </div>
 
+  <!-- MODAL FACTURE CLIENT (v7.5.54) -->
+  <div class="mbd" id="m-facture">
+    <div class="modal" style="max-width:480px">
+      <div class="mh">
+        <div class="mt">📄 Facture client</div>
+        <button class="mx" onclick="closeModal('m-facture')">✕</button>
+      </div>
+      <div id="fac-info" style="background:var(--bg2);border-radius:var(--r);padding:12px 14px;margin-bottom:14px;font-size:13px;line-height:1.6"></div>
+      <div class="fg" style="margin-bottom:14px">
+        <label>Lien de la facture en ligne (le client la consulte et la télécharge)</label>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="fac-lien" readonly style="flex:1;font-size:12px" onclick="this.select()">
+          <button class="btn" onclick="factureCopierLien()" title="Copier le lien">📋</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <button class="btn" style="background:#25D366;color:#fff;justify-content:center;font-weight:700" onclick="factureWhatsApp()">💬 WhatsApp</button>
+        <button class="btn" style="background:var(--blue);color:#fff;justify-content:center;font-weight:700" onclick="factureSMS()">📱 SMS</button>
+        <button class="btn btn-p" style="justify-content:center" onclick="factureImprimer()">🖨️ Imprimer / PDF</button>
+        <button class="btn" style="justify-content:center" onclick="factureTelecharger()">📥 Télécharger</button>
+      </div>
+      <div style="font-size:11px;color:var(--t3);margin-top:12px;line-height:1.5">
+        💡 « Imprimer / PDF » ouvre la facture : choisissez <strong>Enregistrer en PDF</strong> comme imprimante pour obtenir un vrai PDF. WhatsApp et SMS envoient le <strong>lien</strong> au client (il télécharge sa facture lui-même).
+      </div>
+    </div>
+  </div>
+
   <!-- ─── PAGE PARAMÈTRES ─── -->
   <div class="page" id="p-pins">
 
@@ -7247,6 +7274,7 @@ function ouvrirCmd(id) {
     '<div style="display:flex;gap:6px;flex-wrap:wrap;width:100%">' +
       '<button onclick="genererBonLivraison(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+';background:var(--blue);color:#fff">🖨️ Bon</button>' +
       '<button onclick="genererRecuPaiement(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+'">🧾 Reçu</button>' +
+      '<button onclick="ouvrirFacture(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+';background:#185FA5;color:#fff;font-weight:800" title="Générer la facture (BMS, TVA 20%) — envoi SMS/WhatsApp + téléchargement">📄 Facture</button>' +
       (role === 'admin' ? '<button onclick="supprimerCommande(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+';background:var(--red);color:#fff" title="Supprimer la commande">🗑️ Supprimer</button>' : '') +
       '<button onclick="closePanel()" class="btn" style="'+btnStyleSm+';margin-left:auto">Fermer</button>' +
     '</div>';
@@ -14759,6 +14787,155 @@ function genererRecuPaiement(cmdId) {
   win.document.write(html);
   win.document.close();
   win.onload = function() { win.focus(); win.print(); };
+}
+
+// ════════════════════════════════════════
+// FACTURE CLIENT (BMS, TVA 20%) — v7.5.54
+// Facture de vente a la demande : imprimable/PDF, telechargeable (.html),
+// et envoyable par SMS/WhatsApp via un lien vers la page publique
+// facture.html (lecture par tracking_token, comme track.html — pas de secret).
+// Memes mentions legales que la facture litige (LITIGE_BMS).
+// ════════════════════════════════════════
+var _factureCmdId = null;
+
+function factureNum(cmd) {
+  var d = (cmd.dateCmd && cmd.dateCmd.length === 10) ? cmd.dateCmd : new Date().toLocaleDateString('fr-CA');
+  return 'F' + d.substring(0,4) + '-' + (cmd.id||'').replace('#','');
+}
+function factureLien(cmd) {
+  return 'https://livraison.maxiconfort.fr/facture.html?t=' + encodeURIComponent(cmd.tracking_token || '');
+}
+function factureMessage(cmd) {
+  var prenom = (cmd.client||'').replace(/^(M\.|Mme|Mr\.?)\s*/i,'').split(' ')[0];
+  return 'Bonjour ' + prenom + ', voici votre facture Maxiconfort pour la commande ' + cmd.id + ' : ' + factureLien(cmd);
+}
+function factureTelIntl(tel) {
+  var t = (tel||'').replace(/[^0-9+]/g,'');
+  if (t.indexOf('+33') === 0) return '33' + t.slice(3);
+  if (t.indexOf('0033') === 0) return '33' + t.slice(4);
+  if (t.indexOf('33') === 0 && t.length === 11) return t;
+  if (t.indexOf('0') === 0 && t.length === 10) return '33' + t.slice(1);
+  return t.replace(/^\+/,'');
+}
+
+// Construit le document HTML complet de la facture (BMS, TVA 20%)
+function buildFactureHTML(cmd) {
+  var esc = litigeEsc;
+  var ttc = parseFloat(cmd.prix) || 0;
+  var ht = ttc / 1.2;
+  var tva = ttc - ht;
+  var fmt = function(n){ return (Number(n)||0).toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2}) + ' €'; };
+  var dateFact = (cmd.dateCmd && cmd.dateCmd.length === 10) ? cmd.dateCmd : new Date().toLocaleDateString('fr-CA');
+  var dateFr = new Date(dateFact + 'T12:00:00').toLocaleDateString('fr-FR',{day:'2-digit',month:'long',year:'numeric'});
+  var numFact = factureNum(cmd);
+  var lignes = (cmd.lignes && cmd.lignes.length) ? cmd.lignes : [{nom:cmd.produit, qte:cmd.qte||1, sousTotal:ttc}];
+  var lignesHtml = lignes.map(function(l){
+    var st = parseFloat(l.sousTotal!=null ? l.sousTotal : (parseFloat(l.prixUnit||0)*(l.qte||1))) || 0;
+    return '<tr><td>'+esc(l.nom||l.produit||'—')+'</td><td style="text-align:center">'+(l.qte||1)+'</td><td style="text-align:right">'+fmt(st)+'</td></tr>';
+  }).join('');
+  var acquit = cmd.stpaie === 'Payé';
+  return '<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Facture '+numFact+'</title>'+
+    '<style>body{font-family:Arial,sans-serif;margin:0;padding:40px;color:#1a1a18;font-size:13px}'+
+    '.logo{font-size:24px;font-weight:900;color:#185FA5}.logo span{color:#BA7517}'+
+    '.head{display:flex;justify-content:space-between;margin-bottom:34px}'+
+    '.bms{font-size:12px;color:#444;line-height:1.6;margin-top:6px}'+
+    '.client{text-align:right;line-height:1.6}'+
+    'h1{font-size:20px;margin:18px 0 2px;color:#185FA5}.meta{color:#666;margin-bottom:18px}'+
+    'table{width:100%;border-collapse:collapse;margin:18px 0}'+
+    'th{background:#185FA5;color:#fff;padding:9px 10px;text-align:left;font-size:11px;text-transform:uppercase}'+
+    'td{padding:10px;border-bottom:1px solid #e3e3e0}'+
+    '.tot{width:280px;margin-left:auto}.tot td{border:none;padding:5px 10px;text-align:right}'+
+    '.tot .label{color:#666}.tot .ttc{font-size:17px;font-weight:900;color:#185FA5;border-top:2px solid #185FA5}'+
+    '.acquit{display:inline-block;margin-top:14px;padding:6px 16px;border:2px solid #276749;color:#276749;font-weight:900;border-radius:6px;transform:rotate(-3deg)}'+
+    '.apayer{display:inline-block;margin-top:14px;padding:6px 16px;border:2px solid #A32D2D;color:#A32D2D;font-weight:900;border-radius:6px}'+
+    '.footer{margin-top:50px;font-size:10px;color:#888;text-align:center;border-top:1px solid #ddd;padding-top:12px;line-height:1.6}'+
+    '.toolbar{display:flex;gap:8px;margin-bottom:24px}'+
+    '.toolbar button{padding:9px 16px;border:none;border-radius:8px;background:#185FA5;color:#fff;font-size:13px;font-weight:700;cursor:pointer}'+
+    '@media print{.toolbar{display:none}body{padding:14mm}}'+
+    '</style></head><body>'+
+    '<div class="toolbar"><button onclick="window.print()">🖨️ Imprimer / Enregistrer en PDF</button></div>'+
+    '<div class="head">'+
+      '<div><div class="logo">Maxi<span>confort</span></div>'+
+        '<div class="bms"><strong>'+LITIGE_BMS.nom+'</strong> — '+LITIGE_BMS.forme+'<br>'+LITIGE_BMS.adresse+'<br>'+LITIGE_BMS.rcs+'<br>TVA : '+LITIGE_BMS.tva+'</div></div>'+
+      '<div class="client"><strong>Facturé à</strong><br>'+esc(cmd.client)+'<br>'+esc(cmd.adresse||'')+(cmd.tel?'<br>'+esc(cmd.tel):'')+'</div>'+
+    '</div>'+
+    '<h1>Facture n° '+numFact+'</h1>'+
+    '<div class="meta">Date : '+dateFr+' — Référence commande : '+esc(cmd.id)+'</div>'+
+    '<table><thead><tr><th>Désignation</th><th style="width:60px;text-align:center">Qté</th><th style="width:130px;text-align:right">Montant TTC</th></tr></thead><tbody>'+lignesHtml+'</tbody></table>'+
+    '<table class="tot"><tbody>'+
+      '<tr><td class="label">Total HT</td><td>'+fmt(ht)+'</td></tr>'+
+      '<tr><td class="label">TVA 20 %</td><td>'+fmt(tva)+'</td></tr>'+
+      '<tr><td class="label ttc">Total TTC</td><td class="ttc">'+fmt(ttc)+'</td></tr>'+
+    '</tbody></table>'+
+    '<div style="text-align:right">'+(acquit?'<span class="acquit">FACTURE ACQUITTÉE'+(cmd.paie?' — '+esc(cmd.paie):'')+'</span>':'<span class="apayer">À RÉGLER</span>')+'</div>'+
+    '<div class="footer">'+LITIGE_BMS.nom+' — '+LITIGE_BMS.forme+' — '+LITIGE_BMS.rcs+' — TVA intracommunautaire : '+LITIGE_BMS.tva+'<br>Siège social : '+LITIGE_BMS.adresse+'<br>Merci de votre confiance — Maxiconfort</div>'+
+    '</body></html>';
+}
+
+function ouvrirFacture(cmdId) {
+  var c = commandes.find(function(x){ return x.id === cmdId; });
+  if (!c) { toast('Commande introuvable','err'); return; }
+  _factureCmdId = cmdId;
+  var ttc = parseFloat(c.prix)||0;
+  document.getElementById('fac-info').innerHTML =
+    '<strong>'+litigeEsc(c.client)+'</strong> — '+litigeEsc(c.id)+'<br>'+
+    '<span style="color:var(--t2)">'+litigeEsc(c.produit||'')+'</span><br>'+
+    'Total TTC : <strong>'+ttc.toLocaleString('fr-FR')+' €</strong> · '+
+    (c.stpaie==='Payé'?'<span style="color:var(--green);font-weight:700">✅ Acquittée</span>':'<span style="color:var(--red);font-weight:700">À régler</span>');
+  var lienEl = document.getElementById('fac-lien');
+  lienEl.value = c.tracking_token ? factureLien(c) : '(lien indisponible — commande sans token de suivi)';
+  openModal('m-facture');
+}
+
+function factureImprimer() {
+  var c = commandes.find(function(x){ return x.id === _factureCmdId; });
+  if (!c) return;
+  var win = window.open('', '_blank', 'width=820,height=1000');
+  if (!win) { toast('Popup bloquée — autorise les popups','err'); return; }
+  win.document.write(buildFactureHTML(c)); win.document.close();
+  win.onload = function(){ win.focus(); };
+}
+
+function factureTelecharger() {
+  var c = commandes.find(function(x){ return x.id === _factureCmdId; });
+  if (!c) return;
+  var blob = new Blob([buildFactureHTML(c)], {type:'text/html;charset=utf-8'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = 'Facture_'+factureNum(c)+'.html';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+  toast('📥 Facture téléchargée (ouvrez-la puis « Enregistrer en PDF »)','ok');
+}
+
+function factureWhatsApp() {
+  var c = commandes.find(function(x){ return x.id === _factureCmdId; });
+  if (!c) return;
+  if (!c.tracking_token) { toast('Lien indisponible pour cette commande','err'); return; }
+  var tel = factureTelIntl(c.tel);
+  var msg = encodeURIComponent(factureMessage(c));
+  window.open(tel ? ('https://wa.me/'+tel+'?text='+msg) : ('https://wa.me/?text='+msg), '_blank');
+}
+
+function factureSMS() {
+  var c = commandes.find(function(x){ return x.id === _factureCmdId; });
+  if (!c) return;
+  if (!c.tracking_token) { toast('Lien indisponible pour cette commande','err'); return; }
+  var txt = factureMessage(c);
+  try { navigator.clipboard.writeText(txt); } catch(e){}
+  var tel = (c.tel||'').replace(/[^0-9+]/g,'');
+  var a = document.createElement('a');
+  a.href = 'sms:'+tel+'?body='+encodeURIComponent(txt);
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  toast('📱 Message copié — il s\'ouvre dans l\'appli SMS sur mobile','info');
+}
+
+function factureCopierLien() {
+  var el = document.getElementById('fac-lien');
+  el.select();
+  var val = el.value;
+  if (navigator.clipboard) { navigator.clipboard.writeText(val).then(function(){ toast('📋 Lien copié','ok'); }, function(){ try{document.execCommand('copy');toast('📋 Lien copié','ok');}catch(e){} }); }
+  else { try{document.execCommand('copy');toast('📋 Lien copié','ok');}catch(e){} }
 }
 
 // ════════════════════════════════════════

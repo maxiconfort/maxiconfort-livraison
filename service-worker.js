@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.53 - Page Commandes : champ de recherche client agrandi (le select statut ne l'écrase plus)
+// v7.5.54 - Facture client : bouton 📄 par commande (BMS TVA 20%), envoi SMS/WhatsApp + lien public facture.html + téléchargement
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-53';
+const CACHE_VERSION = 'maxiconfort-v7-5-54';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
