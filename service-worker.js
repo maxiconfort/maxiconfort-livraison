@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.50 - Optim tournée fiable : géocodage avec replis CP + badge adresse imprécise + ETA OSRM
+// v7.5.51 - Polling encaissement fiable : tri updated_at (le règlement livreur remonte enfin en live)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-50';
+const CACHE_VERSION = 'maxiconfort-v7-5-51';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

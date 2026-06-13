@@ -3651,7 +3651,13 @@ function startPolling() {
   _pollingInterval = setInterval(async function() {
     try {
       // Recharger commandes
-      var rC = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=created_at.desc&limit=50', {
+      // v7.5.51 : tri par updated_at (date de MODIFICATION) et non created_at.
+      // Avant : le polling ne voyait que les 50 commandes les plus RECEMMENT
+      // CREEES -> une commande ancienne livree aujourd'hui (reglement valide par
+      // le livreur) restait HORS fenetre -> l'encaissement ne remontait jamais
+      // en direct cote admin (sauf rechargement complet). Desormais toute commande
+      // que le livreur vient de modifier remonte en tete et est rafraichie en 30s.
+      var rC = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=updated_at.desc.nullslast&limit=80', {
         headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
       });
       if (rC.ok) {
