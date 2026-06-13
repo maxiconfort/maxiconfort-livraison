@@ -572,8 +572,8 @@ textarea{resize:vertical;min-height:65px}
     <!-- v7.4.3 : Barre de filtres enrichie -->
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
       <div style="display:flex;gap:8px;align-items:center;flex:1;min-width:280px">
-        <div class="srch" style="flex:1;max-width:320px"><span style="color:var(--t3)">🔍</span><input type="text" placeholder="Rechercher client, ID, ville, tel..." oninput="cmdAppliquerFiltres()" id="cmd-search"></div>
-        <select id="cmd-filter-statut" style="padding:7px 10px;border:1px solid var(--brd);border-radius:var(--r);background:var(--bg);font-size:13px;font-family:var(--font);color:var(--t2)" onchange="cmdAppliquerFiltres()">
+        <div class="srch" style="flex:1;min-width:340px"><span style="color:var(--t3)">🔍</span><input type="text" placeholder="Rechercher client, ID, ville, tel..." oninput="cmdAppliquerFiltres()" id="cmd-search"></div>
+        <select id="cmd-filter-statut" style="width:auto;flex:0 0 auto;padding:7px 10px;border:1px solid var(--brd);border-radius:var(--r);background:var(--bg);font-size:13px;font-family:var(--font);color:var(--t2)" onchange="cmdAppliquerFiltres()">
           <option value="">📊 Tous statuts</option>
           <option value="en-attente">⏳ En attente</option>
           <option value="en-route">🚚 En route</option>

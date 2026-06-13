@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.52 - PIN admin : la base devient source de vérité (login lit le PIN dès le démarrage)
+// v7.5.53 - Page Commandes : champ de recherche client agrandi (le select statut ne l'écrase plus)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-52';
+const CACHE_VERSION = 'maxiconfort-v7-5-53';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
