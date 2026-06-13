@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.51 - Polling encaissement fiable : tri updated_at (le règlement livreur remonte enfin en live)
+// v7.5.52 - PIN admin : la base devient source de vérité (login lit le PIN dès le démarrage)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-51';
+const CACHE_VERSION = 'maxiconfort-v7-5-52';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

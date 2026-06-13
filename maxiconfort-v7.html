@@ -8718,7 +8718,8 @@ function sasValiderEtDemarrer(tid) {
 function sasDeblocageAdmin() {
   var pin = prompt('🔓 DÉBLOCAGE ADMIN\n\nCette action permettra au livreur de partir SANS avoir tout coché.\nL\'action sera tracée.\n\nSaisir le PIN admin :');
   if (!pin) return;
-  if (pin !== '1234') {
+  // v7.5.52 : utiliser le vrai PIN admin (PINS.admin) et non '1234' en dur
+  if (pin !== PINS.admin) {
     alert('❌ PIN incorrect');
     return;
   }
@@ -14196,6 +14197,15 @@ async function sbLoadParametres() {
       }
     });
     try { localStorage.setItem('mx_livreurs_domiciles', JSON.stringify(livreursDomiciles)); } catch(e) {}
+    // v7.5.52 : ecrire les PIN dans le localStorage INDIVIDUEL (pin_admin/collab/livreur).
+    // L'ecran de login lit ces cles AU DEMARRAGE (ligne ~4245), AVANT que
+    // sbLoadParametres ne s'execute. Sans ca, le login retombait sur le defaut
+    // '1234' et ignorait la valeur de la base -> PIN admin change en base sans effet.
+    try {
+      localStorage.setItem('pin_admin',   PINS.admin);
+      localStorage.setItem('pin_collab',  PINS.collab);
+      localStorage.setItem('pin_livreur', PINS.livreur);
+    } catch(e) {}
     // Sauvegarder en cache
     localStorage.setItem('mx_params_cache', JSON.stringify({pins:PINS, societe:societe, legalText:legalText}));
   } catch(e) { console.warn('sbLoadParametres:', e.message); }
@@ -16409,6 +16419,9 @@ function savePin(r){
   if(!/^\d{4}$/.test(v)){toast('Le PIN doit contenir exactement 4 chiffres','err');return;}
   PINS[r]=v;
   localStorage.setItem('pin_'+r,v);
+  // v7.5.52 : enregistrer AUSSI en base (source de verite) pour propager le
+  // changement a tous les appareils. Avant, le PIN ne vivait qu'en local.
+  if (typeof sbSaveParametre === 'function') sbSaveParametre('pin_'+r, v);
   toast('PIN '+r+' mis à jour ✓','ok');
 }
 
@@ -16432,6 +16445,11 @@ function tick(){document.getElementById('clk').textContent=new Date().toLocaleTi
 document.addEventListener('DOMContentLoaded', function(){
   setInterval(tick,1000); tick();
   initDarkMode(); // Initialiser le mode sombre
+  // v7.5.52 : charger les PIN/parametres depuis la base AVANT le login.
+  // Avant, sbLoadParametres ne tournait que dans buildUI (APRES login) -> l'ecran
+  // de connexion validait le PIN admin contre le defaut '1234'. Desormais la base
+  // (source de verite) est lue des le demarrage : le PIN change en base prend effet.
+  if (typeof sbLoadParametres === 'function') sbLoadParametres();
 });
 
 // Date par défaut tournée
