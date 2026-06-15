@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.56 - Signature : commandes marketplace = "déjà payé via la plateforme" par défaut (plus d'Espèces par erreur)
+// v7.5.57 - SMS approche 30 min : géocodage auto des stops (le SMS proche ne partait jamais, coords manquantes)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-56';
+const CACHE_VERSION = 'maxiconfort-v7-5-57';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

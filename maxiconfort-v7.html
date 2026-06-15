@@ -15367,6 +15367,7 @@ function verifierProximiteClients(latLiv, lngLiv) {
   });
   if (!tourneeJour || !Array.isArray(tourneeJour.stops)) return;
   var nowMs = Date.now();
+  var _gfGeocodeLanceCeTour = false; // v7.5.57 : 1 seul géocodage par passage (limite Nominatim)
   tourneeJour.stops.forEach(function(s){
     if (!s.cmdId) return;
     // Skip livrés/annulés/reportés
@@ -15378,10 +15379,25 @@ function verifierProximiteClients(latLiv, lngLiv) {
     // Anti-spam local : pas 2x dans la même heure
     var lastNotif = _gfProximityCache[s.cmdId] || 0;
     if (nowMs - lastNotif < 3600 * 1000) return;
-    // Coords du client : prendre la position si déjà géocodée, sinon skip
+    // Coords du client : prendre la position si déjà géocodée, sinon géocoder l'adresse
     var latC = s._lat || s.lat;
     var lngC = s._lng || s.lng;
-    if (!latC || !lngC) return;
+    if (!latC || !lngC) {
+      // v7.5.57 : les stops de tournée n'ont pas de coords -> le SMS "proche" ne
+      // partait JAMAIS. On géocode l'adresse en arrière-plan (1 stop par passage GPS
+      // pour respecter la limite Nominatim), résultat caché dans s._lat/s._lng pour
+      // les passages suivants. geocoderAdresse a un repli code postal si l'adresse
+      // exacte échoue, donc s._lat finit toujours par être renseigné.
+      if (s.adresse && !s._geocodeEnCours && !_gfGeocodeLanceCeTour) {
+        _gfGeocodeLanceCeTour = true;
+        s._geocodeEnCours = true;
+        geocoderAdresse(s.adresse).then(function(c){
+          s._geocodeEnCours = false;
+          if (c && c.lat && c.lng) { s._lat = c.lat; s._lng = c.lng; }
+        }).catch(function(){ s._geocodeEnCours = false; });
+      }
+      return;
+    }
     var dist = geofenceDistance(latLiv, lngLiv, latC, lngC);
     if (dist > 1000) return;
     // < 1 km : trigger SMS proche
