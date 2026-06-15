@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.58 - SMS approche : déclenché à ~30 min de route réelle (OSRM + estim. vitesse) au lieu de 1 km
+// v7.5.59 - Suivi logistique : tél client cliquable (appel) + tracking GLS cliquable (suivi colis)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-58';
+const CACHE_VERSION = 'maxiconfort-v7-5-59';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

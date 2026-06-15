@@ -5846,7 +5846,11 @@ function suiviAppliquerFiltres() {
       ? '<span style="display:inline-block;padding:3px 9px;border-radius:999px;background:#FFE7C2;color:#7A4A00;font-size:11px;font-weight:800">🟠 GLS</span>'
       : '<span style="display:inline-block;padding:3px 9px;border-radius:999px;background:#D6F0E0;color:#1F5A36;font-size:11px;font-weight:800">🟢 RANOU</span>';
     var trackVal = c.trackingTransporteur || c.tracking_transporteur || '';
-    var tracking = trackVal ? '<code style="font-size:11px;background:var(--bg2);padding:2px 6px;border-radius:4px">'+trackVal+'</code>' : '<span style="color:var(--t3)">—</span>';
+    // v7.5.59 : tracking GLS cliquable -> ouvre la page de suivi GLS (1er colis)
+    var trackFirst = trackVal ? String(trackVal).split(',')[0].trim() : '';
+    var tracking = trackVal
+      ? '<a href="https://gls-group.eu/FR/fr/suivi-colis.html?match='+encodeURIComponent(trackFirst)+'" target="_blank" onclick="event.stopPropagation()" title="Ouvrir le suivi GLS" style="text-decoration:none"><code style="font-size:11px;background:var(--bg2);padding:2px 6px;border-radius:4px;color:var(--blue);cursor:pointer">'+trackVal+'</code></a>'
+      : '<span style="color:var(--t3)">—</span>';
     // v7.5.49 : colis bloque detecte par gls-sync (aucun scan 4j+)
     if (c.glsBloque && c.statut !== 'livré' && c.statut !== 'annulé') tracking = '<span title="Colis bloqué — aucun scan GLS depuis le ' + (c.glsDernierScan ? new Date(c.glsDernierScan).toLocaleDateString('fr-FR') : '?') + '" style="font-weight:900;color:var(--rd)">🚨</span> ' + tracking;
     var dStr = c.date ? String(c.date).split('T')[0] : '';
@@ -5867,7 +5871,9 @@ function suiviAppliquerFiltres() {
     return '<tr onclick="ouvrirCmd(\''+c.id+'\')" style="cursor:pointer" data-cmdid="'+c.id+'">'+
       '<td style="text-align:center;padding:4px 8px" onclick="event.stopPropagation()">'+chkHtml+'</td>'+
       '<td style="color:var(--t3);font-size:12px">'+c.id+'</td>'+
-      '<td><div class="td-m">'+(c.client||'')+'</div><div class="td-s">'+(c.tel||'')+'</div></td>'+
+      '<td><div class="td-m">'+(c.client||'')+'</div>'+
+        ((c.tel||'') ? '<a href="tel:'+String(c.tel).replace(/[^0-9+]/g,'')+'" onclick="event.stopPropagation()" title="Appeler le client" class="td-s" style="color:var(--blue);text-decoration:none">📞 '+c.tel+'</a>' : '<div class="td-s">—</div>')+
+      '</td>'+
       '<td style="font-size:12px">'+(c.adresse||'')+'</td>'+
       '<td style="font-size:12px;white-space:nowrap">'+dateAffich+'</td>'+
       '<td>'+transpoBdg+'</td>'+
