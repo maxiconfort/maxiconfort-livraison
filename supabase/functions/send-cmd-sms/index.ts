@@ -38,7 +38,7 @@ const sb = createClient(SB_URL, SB_SR_KEY, {
 // repeter dans le corps -> on gagne des caracteres.
 const TPL = {
   veille: (p: any) =>
-    `Bonjour ${p.prenom}, votre livraison Maxiconfort est prevue demain ${p.dateFr} entre ${p.creneauDeb} et ${p.creneauFin}. Article : ${p.produit}. Le chauffeur vous contactera avant son arrivee.`,
+    `Bonjour ${p.prenom}, votre livraison Maxiconfort est prevue demain ${p.dateFr} entre ${p.creneauDeb} et ${p.creneauFin} (${p.produit}). Serez-vous present ? Merci de confirmer ici : ${p.lienConfirm}`,
   depart: (p: any) =>
     p.heureArrivee
       ? `Bonjour ${p.prenom}, livreur en route ! Arrivee prevue vers ${p.heureArrivee}. Suivi : ${p.lienSuivi}`
@@ -157,6 +157,10 @@ Deno.serve(async (req: Request) => {
   const lienSuivi = cmd.tracking_token
     ? `${APP_BASE}/track.html?t=${cmd.tracking_token}`
     : APP_BASE;
+  // v3.1 : lien de confirmation de presence (SMS veille) -> confirmer.html
+  const lienConfirm = cmd.tracking_token
+    ? `${APP_BASE}/confirmer.html?t=${cmd.tracking_token}`
+    : APP_BASE;
   const tracking = cmd.tracking_transporteur || '';
   // v3 : params veille (date livraison FR + creneau)
   const dateLiv = cmd.date_livraison ? new Date(cmd.date_livraison + 'T12:00:00') : null;
@@ -165,7 +169,7 @@ Deno.serve(async (req: Request) => {
   const creneauDeb = body.creneauDeb || '08:00';
   const creneauFin = body.creneauFin || '17:00';
   const contenu = TPL[type as keyof typeof TPL]({
-    prenom, lienSuivi, tracking, id: cmd.id, heureArrivee,
+    prenom, lienSuivi, lienConfirm, tracking, id: cmd.id, heureArrivee,
     dateFr, produit, creneauDeb, creneauFin,
   });
 

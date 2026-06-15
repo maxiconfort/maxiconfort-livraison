@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.59 - Suivi logistique : tél client cliquable (appel) + tracking GLS cliquable (suivi colis)
+// v7.5.60 - Confirmation présence : SMS veille avec lien -> client confirme -> badge 🟢/🔴 côté admin
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-59';
+const CACHE_VERSION = 'maxiconfort-v7-5-60';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

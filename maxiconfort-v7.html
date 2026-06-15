@@ -3460,7 +3460,7 @@ function calculerProgressionChargement(t) {
 
 // Colonnes chargées pour les commandes — EXCLUT gls_pdf_base64 (PDF étiquette 50-400 Ko/cmd,
 // stocké par gls-create-shipment, récupéré uniquement à la demande via l'action getLabel)
-var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie';
+var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at';
 
 async function sbLoadAll() {
   // Afficher cache immédiatement (UX rapide) pendant chargement Supabase
@@ -3528,6 +3528,7 @@ async function sbLoadAll() {
           litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
           glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
           origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
+          confirmationPresence:r.confirmation_presence||'', confirmationAt:r.confirmation_at||'',
         };
       });
     }
@@ -3647,6 +3648,7 @@ async function sbChargerPlusCommandes() {
           glsBloque:!!r2.gls_bloque, glsDernierScan:r2.gls_dernier_scan||'',
           origine:r2.origine||'', refMarketplace:r2.ref_marketplace||'',
           modePaie:r2.mode_paie||'Espèces',
+          confirmationPresence:r2.confirmation_presence||'', confirmationAt:r2.confirmation_at||'',
         };
       });
       commandes = commandes.concat(nouvelles);
@@ -3714,6 +3716,7 @@ function startPolling() {
               glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
               origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
               modePaie:r.mode_paie||'Espèces',
+              confirmationPresence:r.confirmation_presence||'', confirmationAt:r.confirmation_at||'',
             };
             if (idx > -1) {
               // Commande existante — mettre à jour si changement
@@ -3819,6 +3822,7 @@ function sbStartRealtime() {
         date:r.date_livraison, dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'',
         litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
         glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
+        confirmationPresence:r.confirmation_presence||'', confirmationAt:r.confirmation_at||'',
         refMarketplace:r.ref_marketplace,
       };
       if (idx > -1) commandes[idx] = mapped;
@@ -5284,6 +5288,13 @@ function stBdg(s){
   };
   return m[s]||`<span class="bdg b-gray">${s||'—'}</span>`;
 }
+// v7.5.60 : badge de confirmation de présence (client a répondu au SMS veille)
+function confirmBadge(c){
+  var v = (c && c.confirmationPresence) || '';
+  if (v === 'confirme') return '<span title="Le client a confirmé sa présence" style="display:inline-block;padding:2px 7px;border-radius:999px;background:#D6F0E0;color:#1F5A36;font-size:10px;font-weight:800;white-space:nowrap">🟢 Présence OK</span>';
+  if (v === 'reporter') return '<span title="Le client a indiqué ne pas être là — à reprogrammer" style="display:inline-block;padding:2px 7px;border-radius:999px;background:#FCEBEB;color:#791F1F;font-size:10px;font-weight:800;white-space:nowrap">🔴 Absent — reporter</span>';
+  return '';
+}
 function pBdg(s){
   if(s==='Payé') return '<span class="bdg b-green">Payé</span>';
   if(s==='Partiel') return '<span class="bdg b-orange">Partiel</span>';
@@ -5878,7 +5889,7 @@ function suiviAppliquerFiltres() {
       '<td style="font-size:12px;white-space:nowrap">'+dateAffich+'</td>'+
       '<td>'+transpoBdg+'</td>'+
       '<td>'+tracking+'</td>'+
-      '<td>'+stBdg(c.statut)+'</td>'+
+      '<td>'+stBdg(c.statut)+(confirmBadge(c)?'<div style="margin-top:4px">'+confirmBadge(c)+'</div>':'')+'</td>'+
       '<td><strong>'+(c.prix||0)+' €</strong></td>'+
       '<td style="color:var(--t3);font-size:16px">›</td>'+
     '</tr>';
@@ -7173,7 +7184,7 @@ function ouvrirCmd(id) {
   if (!c) return;
   var _gpanel_title=document.getElementById('panel-title'); if(_gpanel_title) _gpanel_title.textContent=c.client;
 
-  document.getElementById('panel-sub').innerHTML = c.id+' &nbsp;&middot;&nbsp; '+stBdg(c.statut);
+  document.getElementById('panel-sub').innerHTML = c.id+' &nbsp;&middot;&nbsp; '+stBdg(c.statut)+(confirmBadge(c)?' &nbsp; '+confirmBadge(c):'');
   const tel = c.tel||'';
   const waNum = tel.startsWith('0') ? '33'+tel.slice(1) : tel;
 
