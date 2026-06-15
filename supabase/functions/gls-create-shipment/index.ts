@@ -1,6 +1,9 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : gls-create-shipment (v5.11 — 15/06/2026)
+// Edge Function : gls-create-shipment (v5.12 — 15/06/2026)
 // ════════════════════════════════════════════════════════════════════
+// v5.12 : regles colis sommier (Borhen) — BOIS A LATTES = 1 colis (a plat),
+//         TAPISSIER = 2 demi-colis (120/190, 140/190, 140/200, 160/200, 180/200).
+//         Matcher "lattes" et non "bois" (les tapissiers ont "Pieds Bois").
 // v5.11 : colis calcules sur TOUTES les lignes (cmd.lignes) et non le seul
 //         resume cmd.produit. Un "matelas + sommier" (2 lignes) etait compte
 //         comme "matelas" seul (1 colis) -> sommier absent de l'etiquette GLS.
@@ -143,14 +146,18 @@ const MULTICOLIS_RULES: { label: string; match: RegExp; colis: number[] }[] = [
   // Lit NICO : 2 colis (tete 6kg + 1 longueur 15kg)
   { label: 'Lit NICO (tete + 1 longueur)',    match: /lit\s*nico/i, colis: [6, 15] },
 
-  // ─── SOMMIERS SEULS (sans matelas) ───
-  // Les sommiers > 120 se demontent en 2 demi-sommiers pour le transport GLS
-  { label: 'Sommier 180x200 (1 colis, 15kg)', match: /sommier[\s\S]*?180\s*[xX×]\s*200/i, colis: [15] },
-  { label: 'Sommier 160x200 (2x 80x200, 8kg)', match: /sommier[\s\S]*?160\s*[xX×]\s*200/i, colis: [8, 8] },
-  { label: 'Sommier 140x200 (2x 70x200, 7kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*200/i, colis: [7, 7] },
-  { label: 'Sommier 140x190 (2x 70x190, 7kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*190/i, colis: [7, 7] },
-  { label: 'Sommier 120x190 (2x 60x190, 5kg)',  match: /sommier[\s\S]*?120\s*[xX×]\s*190/i, colis: [5, 5] },
-  { label: 'Sommier 90 (1 colis, 7kg)',        match: /sommier[\s\S]*?90\s*[xX×]\s*(190|200)/i, colis: [7] },
+  // ─── SOMMIERS SEULS (sans matelas) — regle Borhen 15/06/2026 (v5.12) ───
+  // Sommier BOIS A LATTES = 1 colis (se transporte a plat, quelle que soit la taille).
+  // Sommier TAPISSIER (capitonne) = 2 demi-colis pour 120/190, 140/190, 140/200, 160/200, 180/200.
+  // ⚠️ matcher "lattes" et NON "bois" : les sommiers tapissier ont "Pieds Bois" dans le nom.
+  { label: 'Sommier bois a lattes (1 colis, 15kg)', match: /sommier[\s\S]*?lattes?/i, colis: [15] },
+  { label: 'Sommier tapissier 180x200 (2 colis, 9kg)', match: /sommier[\s\S]*?180\s*[xX×]\s*200/i, colis: [9, 9] },
+  { label: 'Sommier tapissier 160x200 (2 colis, 8kg)', match: /sommier[\s\S]*?160\s*[xX×]\s*200/i, colis: [8, 8] },
+  { label: 'Sommier tapissier 140x200 (2 colis, 7kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*200/i, colis: [7, 7] },
+  { label: 'Sommier tapissier 140x190 (2 colis, 7kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*190/i, colis: [7, 7] },
+  { label: 'Sommier tapissier 120x190 (2 colis, 5kg)', match: /sommier[\s\S]*?120\s*[xX×]\s*190/i, colis: [5, 5] },
+  // Sommier d'une autre taille (ex 90) ou type non precise = 1 colis
+  { label: 'Sommier (autre, 1 colis, 12kg)',   match: /sommier/i, colis: [12] },
 
   // ─── MATELAS SEULS ───
   // Matelas 90x190 / 90x200 = meme poids que sommier 90 (7kg)
