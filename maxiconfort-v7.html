@@ -15398,12 +15398,49 @@ function verifierProximiteClients(latLiv, lngLiv) {
       }
       return;
     }
-    var dist = geofenceDistance(latLiv, lngLiv, latC, lngC);
-    if (dist > 1000) return;
-    // < 1 km : trigger SMS proche
-    _gfProximityCache[s.cmdId] = nowMs;
-    console.log('[PROXIMITE] ' + s.client + ' a ' + Math.round(dist) + 'm -> SMS proche');
+    // v7.5.58 : déclenchement basé sur le TEMPS DE ROUTE RÉEL (OSRM), pas la distance.
+    // 1 km à vol d'oiseau ≈ 5 min : trop tard pour un SMS "arrive dans 30 min".
+    // On vise SMS_PROCHE_ETA_MIN minutes de trajet réel. Repli distance si OSRM KO.
+    var distBrut = geofenceDistance(latLiv, lngLiv, latC, lngC);
+    if (distBrut > 30000) return; // > 30 km : pas proche, inutile d'appeler OSRM
+    // Throttle OSRM : 1 vérif / 90 s par client (l'ETA évolue lentement)
+    if (s._etaCheckMs && (nowMs - s._etaCheckMs) < 90000) return;
+    s._etaCheckMs = nowMs;
+    smsProcheVerifierEta(s, latLiv, lngLiv, latC, lngC, distBrut);
+  });
+}
+
+// v7.5.58 : seuil de déclenchement du SMS "approche" = minutes de trajet restantes.
+// 30 = le client reçoit le SMS quand le livreur est à ~30 min de route (et non 1 km).
+// Modifiable ici (ex : 20 pour déclencher plus tard/plus près, 40 pour plus tôt/plus loin).
+var SMS_PROCHE_ETA_MIN = 30;
+// Vitesse effective moyenne porte-à-porte en IDF (km/h), pour l'estimation locale du
+// temps de trajet quand OSRM ne répond pas. Plus c'est bas, plus le SMS part tôt (loin).
+var SMS_PROCHE_VITESSE_KMH = 35;
+
+// Déclenche le SMS "proche" quand le livreur est à ~SMS_PROCHE_ETA_MIN minutes de route.
+// Estimation INSTANTANÉE par vitesse moyenne (fiable, sans réseau) ; OSRM affine si dispo.
+function smsProcheVerifierEta(s, latLiv, lngLiv, latC, lngC, distBrut) {
+  var declencher = function(raison){
+    _gfProximityCache[s.cmdId] = Date.now();
+    console.log('[PROXIMITE] ' + s.client + ' -> SMS proche (' + raison + ')');
     if (typeof sendCmdSmsAsync === 'function') sendCmdSmsAsync(s.cmdId, 'proche');
+  };
+  // Estimation locale : distance route ≈ vol d'oiseau / 0.75, puis / vitesse moyenne.
+  var etaEstimee = (distBrut / 1000) / 0.75 / SMS_PROCHE_VITESSE_KMH * 60; // minutes
+  // OSRM pour affiner (timeout court 5 s) ; sinon on garde l'estimation locale.
+  var url = 'https://router.project-osrm.org/route/v1/driving/' +
+            lngLiv + ',' + latLiv + ';' + lngC + ',' + latC + '?overview=false&alternatives=false';
+  var ctrl = new AbortController();
+  var tmo = setTimeout(function(){ try { ctrl.abort(); } catch(e){} }, 5000);
+  fetch(url, { signal: ctrl.signal }).then(function(r){ return r.ok ? r.json() : null; }).then(function(d){
+    clearTimeout(tmo);
+    var osrmOk = d && d.routes && d.routes[0] && d.routes[0].duration != null;
+    var eta = osrmOk ? (d.routes[0].duration / 60) : etaEstimee;
+    if (eta <= SMS_PROCHE_ETA_MIN) declencher('ETA ' + Math.round(eta) + ' min' + (osrmOk ? ' (OSRM)' : ' (estim)'));
+  }).catch(function(){
+    clearTimeout(tmo);
+    if (etaEstimee <= SMS_PROCHE_ETA_MIN) declencher('ETA estim ' + Math.round(etaEstimee) + ' min');
   });
 }
 
