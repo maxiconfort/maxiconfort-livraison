@@ -1474,8 +1474,14 @@ textarea{resize:vertical;min-height:65px}
 
     <!-- ── ONGLET SMS VEILLE ── -->
     <div id="notif-tab-sms-veille" style="display:none">
+      <!-- v7.5.61 : envoi manuel des SMS de confirmation (serveur, lien + anti-doublon) -->
+      <div style="background:linear-gradient(135deg,#EAF3DE,#D6F0E0);border:1.5px solid var(--green);border-radius:var(--rl2);padding:18px;margin-bottom:18px">
+        <div style="font-size:15px;font-weight:800;color:var(--gd);margin-bottom:6px">🟢 Sécuriser la tournée de demain</div>
+        <div style="font-size:13px;color:var(--gd);line-height:1.55;margin-bottom:14px">Envoie à chaque client <strong>RANOU de demain</strong> un SMS avec le <strong>lien de confirmation de présence</strong> (le client clique « présent / pas là », tu vois les pastilles 🟢/🔴). Les clients déjà notifiés ne reçoivent pas de doublon. 👉 À utiliser le soir, une fois ta tournée organisée.</div>
+        <button id="btn-veille-confirm" class="btn btn-full" style="background:var(--green);color:#fff;font-weight:800;justify-content:center;font-size:15px;padding:14px" onclick="envoyerVeilleConfirmation()">📲 Envoyer les SMS de confirmation (demain)</button>
+      </div>
       <div class="alert a-info" style="margin-bottom:16px">
-        📅 SMS envoyés <strong>la veille</strong> pour confirmer le créneau de livraison du lendemain.
+        📅 Réglage du message ci-dessous (avancé). Le bouton vert ci-dessus est le moyen recommandé au quotidien.
       </div>
 
       <!-- Template SMS veille -->
@@ -4210,6 +4216,32 @@ async function brevoEnvoiGroupeTournee(tid, type) {
 }
 
 // Envoi SMS veille automatique
+// v7.5.61 : déclenche côté SERVEUR l'envoi des SMS veille de confirmation de présence
+// (message à jour + lien confirmer.html + dedupe). Même action que le cron 19h.
+// À utiliser le soir quand la tournée est organisée après 19h.
+async function envoyerVeilleConfirmation() {
+  if (!confirm('Envoyer le SMS de confirmation de présence à tous les clients RANOU de DEMAIN ?\n\nLes clients déjà notifiés ne recevront pas de second SMS.')) return;
+  var btn = document.getElementById('btn-veille-confirm');
+  var orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Envoi en cours...'; btn.style.opacity = '0.7'; }
+  try {
+    var r = await fetch(SUPABASE_URL + '/functions/v1/sms-auto', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phase: 'veille' })
+    });
+    var d = await r.json().catch(function(){ return {}; });
+    if (d && d.ok) {
+      toast('✅ ' + (d.sent||0) + ' SMS envoyé(s) · ' + (d.skipped||0) + ' ignoré(s) · ' + (d.failed||0) + ' échec(s)', (d.failed>0)?'err':'ok');
+    } else {
+      toast('❌ Erreur : ' + ((d && d.error) || 'réponse inattendue'), 'err');
+    }
+  } catch(e) {
+    toast('❌ Erreur réseau : ' + e.message, 'err');
+  }
+  if (btn) { btn.disabled = false; btn.textContent = orig || '📲 Envoyer les SMS de confirmation (demain)'; btn.style.opacity = '1'; }
+}
+
 async function brevoEnvoiVeille() {
   var demain = new Date(); demain.setDate(demain.getDate()+1);
   var demainStr = demain.toISOString().split('T')[0];

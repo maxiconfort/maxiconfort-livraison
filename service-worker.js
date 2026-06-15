@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.60 - Confirmation présence : SMS veille avec lien -> client confirme -> badge 🟢/🔴 côté admin
+// v7.5.61 - Bouton "Envoyer SMS de confirmation (demain)" dans Notifications (déclenche le serveur, anti-doublon)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-60';
+const CACHE_VERSION = 'maxiconfort-v7-5-61';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
