@@ -38,7 +38,7 @@ const sb = createClient(SB_URL, SB_SR_KEY, {
 // repeter dans le corps -> on gagne des caracteres.
 const TPL = {
   veille: (p: any) =>
-    `Bonjour ${p.prenom}, votre livraison Maxiconfort est prevue demain ${p.dateFr} entre ${p.creneauDeb} et ${p.creneauFin} (${p.produit}). Serez-vous present ? Merci de confirmer ici : ${p.lienConfirm}`,
+    `Bonjour ${p.prenom}, votre livraison Maxiconfort (${p.produit}) est prevue demain ${p.dateFr}. Le livreur vous appellera environ 1h avant son passage. Serez-vous present ? Merci de confirmer ici : ${p.lienConfirm}`,
   depart: (p: any) =>
     p.heureArrivee
       ? `Bonjour ${p.prenom}, livreur en route ! Arrivee prevue vers ${p.heureArrivee}. Suivi : ${p.lienSuivi}`
