@@ -1,6 +1,10 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : gls-create-shipment (v5.10 — 12/06/2026)
+// Edge Function : gls-create-shipment (v5.11 — 15/06/2026)
 // ════════════════════════════════════════════════════════════════════
+// v5.11 : colis calcules sur TOUTES les lignes (cmd.lignes) et non le seul
+//         resume cmd.produit. Un "matelas + sommier" (2 lignes) etait compte
+//         comme "matelas" seul (1 colis) -> sommier absent de l'etiquette GLS.
+//         buildColis() parcourt chaque ligne x quantite. Note1 = produit du colis.
 // v5.10 (12/06/2026) — GROSSE CORRECTION FIABILITE :
 //   1. try/catch GLOBAL : avant, toute exception non attrapee produisait un
 //      500 brut SANS headers CORS -> le navigateur affichait "CORS blocked"
@@ -166,6 +170,34 @@ function detectMultiColis(produit: string): { label: string; colis: number[] } |
   return null;
 }
 
+// v5.11 : calcule TOUS les colis a partir des LIGNES de la commande (cmd.lignes),
+// chaque ligne x sa quantite. Avant, on ne lisait que le resume cmd.produit qui
+// n'affiche que le 1er article (ex "Matelas ... (+1 autre)") -> le sommier (ligne 2)
+// etait IGNORE et l'etiquette GLS sous-comptait les colis. Repli sur cmd.produit
+// si la commande n'a pas de lignes exploitables (anciennes commandes / saisie manuelle).
+function buildColis(cmd: any): { poids: number; nom: string }[] {
+  const out: { poids: number; nom: string }[] = [];
+  const lignes = Array.isArray(cmd.lignes) ? cmd.lignes : [];
+  for (const l of lignes) {
+    const nom = (l?.produit || l?.nom || '').toString().trim();
+    if (!nom) continue;
+    const qte = Math.max(1, Math.round(Number(l?.qte) || 1));
+    const mc = detectMultiColis(nom);
+    const colisUnit = (mc && mc.colis.length > 0) ? mc.colis : [15]; // defaut 15kg/article
+    for (let q = 0; q < qte; q++) {
+      for (const poids of colisUnit) out.push({ poids, nom });
+    }
+  }
+  // Repli : aucune ligne exploitable -> ancien comportement base sur cmd.produit
+  if (out.length === 0) {
+    const mc = detectMultiColis(cmd.produit || '');
+    const weight = parseFloat(cmd.poids || '') || 25.0;
+    const colis = (mc && mc.colis.length > 0) ? mc.colis : [weight];
+    for (const poids of colis) out.push({ poids, nom: (cmd.produit || '').toString() });
+  }
+  return out;
+}
+
 // ── Construit le payload Shipment GLS depuis une commande Supabase
 function buildShipmentPayload(cmd: any, testMode: boolean): any {
   const parsed = parseAdresseFR(cmd.adresse || '');
@@ -174,8 +206,6 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
   // v2 : Reference avec fallback testMode pour eviter strings vides
   const cmdRef = (cmd.id || '').replace(/^#/, 'CMD-');
   const reference = cmdRef || (testMode ? 'TEST-' + Date.now().toString().slice(-8) : 'CMD-AUTO');
-  // Poids defaut 25kg (meubles)
-  const weight = parseFloat(cmd.poids || '') || 25.0;
   // Nom client : split en Name1 (nom) + Name2 (prenom/complement)
   const clientName = (cmd.client || 'Client').trim();
   // v5.10 : glsSafe partout (translitteration ASCII + longueurs sures)
@@ -219,27 +249,17 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
   // v5.10 : limite GLS = 50 caracteres par Note (constate le 12/06 : 60 -> erreur INVALID_FIELD_VALUE)
   const note2 = telDisplay ? glsSafe('Tel: ' + telDisplay, 50) : '';
 
-  // v5.1 : MULTI-COLIS — detecte la regle de packaging selon le produit
-  // chaque colis peut avoir un poids different (ex Lit Coffre = 6+15+15)
-  const mc = detectMultiColis(cmd.produit || '');
-  let shipmentUnits: any[];
-  if (mc && mc.colis.length > 0) {
-    shipmentUnits = mc.colis.map((poids: number, idx: number) => ({
-      ShipmentUnitReference: [reference + '-' + (idx + 1)],
-      Weight: poids,
-      // v5.10 : max GLS = 50 (43 + ' (x/y)' = 49 max)
-      Note1: glsSafe(cmd.produit || '', 43) + ' (' + (idx + 1) + '/' + mc.colis.length + ')',
-      Note2: note2,
-    }));
-  } else {
-    // Fallback : 1 colis selon cmd.poids ou 25kg
-    shipmentUnits = [{
-      ShipmentUnitReference: [reference + '-1'],
-      Weight: weight,
-      Note1: glsSafe(cmd.produit || '', 50),
-      Note2: note2,
-    }];
-  }
+  // v5.11 : MULTI-COLIS calcule sur TOUTES les lignes (matelas + sommier + ...),
+  // chaque ligne x quantite. Note1 = nom reel du produit de CE colis.
+  const colisAll = buildColis(cmd);
+  const nbColisTotal = colisAll.length;
+  const shipmentUnits: any[] = colisAll.map((c, idx) => ({
+    ShipmentUnitReference: [reference + '-' + (idx + 1)],
+    Weight: c.poids,
+    // max GLS = 50 (nom 40 + ' (xx/yy)' <= 50)
+    Note1: glsSafe(c.nom, 40) + ' (' + (idx + 1) + '/' + nbColisTotal + ')',
+    Note2: note2,
+  }));
 
   const payload: any = {
     Shipment: {
