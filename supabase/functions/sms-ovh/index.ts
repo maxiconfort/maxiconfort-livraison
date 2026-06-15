@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-ovh (v1.1 — 12/06/2026)
+// Edge Function : sms-ovh (v1.2 — 12/06/2026)
 // ════════════════════════════════════════════════════════════════════
 // Envoi de SMS via l'API OVH (https://eu.api.ovh.com/1.0).
 // Creee pour : campagnes marketing base clients + future migration des
@@ -131,7 +131,7 @@ function sansAccents(s: string): string {
 }
 
 // ── Envoi d'un lot via POST /sms/{service}/jobs ──────────────────────
-async function envoyerLot(service: string, receivers: string[], message: string, tag: string, noStop = false) {
+async function envoyerLot(service: string, receivers: string[], message: string, tag: string, noStop = false, forceNumeroCourt = false) {
   const payload: any = {
     message,
     receivers,
@@ -142,7 +142,9 @@ async function envoyerLot(service: string, receivers: string[], message: string,
     tag: tag.substring(0, 20),
     validityPeriod: 2880,
   };
-  if (OVH_SENDER) payload.sender = OVH_SENDER;
+  // forceNumeroCourt : SMS internes a Borhen (alerte/recap) — partent
+  // toujours par numero court, meme si l'expediteur alpha est bloque.
+  if (OVH_SENDER && !forceNumeroCourt) payload.sender = OVH_SENDER;
   else payload.senderForResponse = true;
   const r = await ovh('POST', `/sms/${service}/jobs`, payload);
   return r;
@@ -332,7 +334,7 @@ async function handleRequest(req: Request): Promise<Response> {
       const st = s.data?.status || 'inconnu';
       if (st === 'refused' || st === 'disable') {
         await sb.from('campagnes_sms').update({ statut: 'erreur', resultat: { raison: 'expediteur ' + st } }).eq('id', camp.id);
-        await envoyerLot(service, [TEL_BORHEN], `MAXICONFORT app : expediteur ${OVH_SENDER} ${st} par OVH — campagne "${camp.nom}" annulee. Voir manager OVH.`, 'alerte', true).catch(() => {});
+        await envoyerLot(service, [TEL_BORHEN], `MAXICONFORT app : expediteur ${OVH_SENDER} ${st} par OVH — campagne "${camp.nom}" annulee. Voir manager OVH.`, 'alerte', true, true).catch(() => {});
         return new Response(JSON.stringify({ ok: false, error: 'expediteur ' + st }), { headers: JSON_HEADERS });
       }
       if (st !== 'enable') {
@@ -354,7 +356,7 @@ async function handleRequest(req: Request): Promise<Response> {
     }).eq('id', camp.id);
     await envoyerLot(service, [TEL_BORHEN],
       `MAXICONFORT app : campagne "${camp.nom}" envoyee a ${res.envoyes} clients (${res.credits} credits, ${res.invalides.length} blacklist/invalides).`,
-      'recap', true).catch(() => {});
+      'recap', true, true).catch(() => {});
     return new Response(JSON.stringify({ ok: true, campagne: camp.id, ...res }), { headers: JSON_HEADERS });
   }
 
