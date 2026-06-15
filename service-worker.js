@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.61 - Bouton "Envoyer SMS de confirmation (demain)" dans Notifications (déclenche le serveur, anti-doublon)
+// v7.5.62 - Reports : commandes non livrées (tournée du jour) re-cochables dans le Suivi + déplacement propre
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-61';
+const CACHE_VERSION = 'maxiconfort-v7-5-62';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

@@ -5874,9 +5874,14 @@ function suiviAppliquerFiltres() {
 
   var todayStr = new Date().toISOString().split('T')[0];
   // v7.5.30 : detection commandes deja dans une tournee pour disable la checkbox
+  // v7.5.62 : on ne bloque QUE les tournées FUTURES (date > aujourd'hui). Une
+  // commande non livrée restée dans la tournée du jour ou passée = un REPORT :
+  // elle doit pouvoir être re-cochée pour la planifier dans une nouvelle tournée.
   var cmdsDansTournee = new Set();
   if (typeof tournees !== 'undefined' && Array.isArray(tournees)) {
     tournees.forEach(function(t){
+      var td = (t.date || '').split('T')[0];
+      if (!td || td <= todayStr) return; // passée/du jour -> ne bloque pas
       if (Array.isArray(t.stops)) t.stops.forEach(function(s){
         if (s.cmdId) cmdsDansTournee.add(s.cmdId);
       });
@@ -6136,8 +6141,24 @@ async function suiviValiderAjoutTournee() {
     }
     // Assigner livreur = RANOU sur les commandes
     cmds.forEach(function(c){ c.livreur = 'RANOU'; });
+    // v7.5.62 : aligner la date de livraison sur la tournée cible + retirer ces
+    // commandes des AUTRES tournées (report : elles trainaient non livrées dans
+    // la tournée du jour/passée). On préserve les stops déjà livrés (historique).
+    var tourneesAMaj = [];
+    cmds.forEach(function(c){
+      c.date = date;
+      tournees.forEach(function(autre){
+        if (autre.id === t.id || !Array.isArray(autre.stops)) return;
+        var avant = autre.stops.length;
+        autre.stops = autre.stops.filter(function(s){ return !(s.cmdId === c.id && s.statut !== 'livré'); });
+        if (autre.stops.length !== avant && tourneesAMaj.indexOf(autre) === -1) tourneesAMaj.push(autre);
+      });
+    });
     // Sauvegarde
     await sbSaveTournee(t);
+    for (var mj = 0; mj < tourneesAMaj.length; mj++) {
+      try { await sbSaveTournee(tourneesAMaj[mj]); } catch(_e) {}
+    }
     for (var k = 0; k < cmds.length; k++) {
       try { await sbSaveCommande(cmds[k]); } catch (_e) {}
     }
