@@ -7138,6 +7138,14 @@ function saveCmd() {
   if (!isEdit && _retroEl && _retroEl.checked && cmdData.date) {
     cmdData._retroactiveCreatedAt = cmdData.date + 'T09:00:00+00:00';
   }
+  // v7.5.64 : garde-fou anti faute de frappe sur la date. Si la date de LIVRAISON
+  // est avant la date de COMMANDE (souvent une mauvaise annee, ex 2024 au lieu de
+  // 2026) et que ce n'est PAS une saisie retroactive volontaire, on alerte : sinon
+  // la commande est exclue du chiffre d'affaires sans rien dire.
+  if (cmdData.date && cmdData.dateCmd && cmdData.date < cmdData.dateCmd && !(_retroEl && _retroEl.checked)) {
+    var _okDate = confirm('⚠️ La date de LIVRAISON (' + cmdData.date + ') est AVANT la date de COMMANDE (' + cmdData.dateCmd + ').\n\nC\'est souvent une faute de frappe sur l\'annee. Dans ce cas, la commande N\'EST PAS comptee dans le chiffre d\'affaires.\n\n• Annuler = revenir corriger la date\n• OK = enregistrer quand meme (saisie retroactive volontaire)');
+    if (!_okDate) return;
+  }
   if (isEdit) {
     // v7.5.47 : toute edition conserve le montant deja encaisse (sinon l'UPSERT
     // l'ecrase a 0 en base — ex. remboursement SAV ou encaissement livreur perdus)

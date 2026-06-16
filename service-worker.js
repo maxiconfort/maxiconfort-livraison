@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.63 - GLS multi-colis : garde TOUS les n° de suivi (fix troncature) + affichage "X colis" dans le panneau
+// v7.5.64 - Garde-fou date : alerte si livraison avant commande (faute d'année) qui excluait la cmd du CA
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-63';
+const CACHE_VERSION = 'maxiconfort-v7-5-64';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
