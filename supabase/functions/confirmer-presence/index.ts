@@ -10,16 +10,16 @@
 // NOK  : { ok: false, reason }
 //
 // Effet : commandes.confirmation_presence = choix, confirmation_at = now.
-//   + si choix=reporter -> SMS d'alerte à Borhen (best-effort, Brevo).
-// Secrets : SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (auto), BREVO_API_KEY.
+//   + si choix=reporter -> SMS d'alerte à Borhen (best-effort, OVH).
+// Secrets : SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (auto), secrets OVH.
 // ════════════════════════════════════════════════════════════════════
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { envoyerSMSOVH } from '../_shared/ovh-sms.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
-const BREVO_KEY = Deno.env.get('BREVO_API_KEY') || '';
 const BORHEN_TEL = '+33744289321'; // SMS alertes internes
 
 const sb = createClient(SB_URL, SB_SR_KEY, {
@@ -37,16 +37,9 @@ function json(body: any, status = 200) {
   });
 }
 
-// SMS alerte à Borhen (best-effort, n'échoue jamais le flux)
+// SMS alerte à Borhen (best-effort, n'échoue jamais le flux) — via OVH
 async function alerteBorhen(contenu: string): Promise<void> {
-  if (!BREVO_KEY) return;
-  try {
-    await fetch('https://api.brevo.com/v3/transactionalSMS/sms', {
-      method: 'POST',
-      headers: { 'api-key': BREVO_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ sender: 'Maxiconfort', recipient: BORHEN_TEL, content: contenu, type: 'transactional' }),
-    });
-  } catch (_e) { /* silencieux */ }
+  try { await envoyerSMSOVH(BORHEN_TEL, contenu); } catch (_e) { /* silencieux */ }
 }
 
 Deno.serve(async (req: Request) => {

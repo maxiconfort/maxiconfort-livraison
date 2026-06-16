@@ -30,6 +30,7 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { envoyerSMSOVH } from '../_shared/ovh-sms.ts';
 
 const GLS_API_KEY       = Deno.env.get('GLS_API_KEY') || '';
 const GLS_CLIENT_SECRET = Deno.env.get('GLS_CLIENT_SECRET') || '';
@@ -41,8 +42,7 @@ const GLS_SHIPIT_PASSWORD   = Deno.env.get('GLS_SHIPIT_PASSWORD') || '';
 const GLS_SHIPIT_CONTACT_ID = Deno.env.get('GLS_SHIPIT_CONTACT_ID') || '';
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
-// v12 : alerte colis bloque
-const BREVO_KEY = Deno.env.get('BREVO_API_KEY') || '';
+// v12 : alerte colis bloque (v13 : via OVH)
 const ALERT_SMS_TO = '+33744289321'; // Borhen
 const STUCK_DAYS_DEFAULT = 4;
 
@@ -291,21 +291,9 @@ function getLastEventMs(trackData: any): number | null {
   return max;
 }
 
-// v12 : SMS d'alerte a Borhen via Brevo (meme API que send-cmd-sms)
+// v13 : SMS d'alerte a Borhen via OVH (migre depuis Brevo)
 async function envoyerAlerteSMS(contenu: string): Promise<boolean> {
-  if (!BREVO_KEY) { console.warn('BREVO_API_KEY manquant — alerte non envoyee'); return false; }
-  try {
-    const resp = await fetch('https://api.brevo.com/v3/transactionalSMS/sms', {
-      method: 'POST',
-      headers: { 'api-key': BREVO_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ sender: 'Maxiconfort', recipient: ALERT_SMS_TO, content: contenu, type: 'transactional' }),
-    });
-    if (!resp.ok) { console.warn('Brevo HTTP', resp.status, await resp.text()); return false; }
-    return true;
-  } catch (e: any) {
-    console.warn('Brevo exception:', e.message);
-    return false;
-  }
+  return await envoyerSMSOVH(ALERT_SMS_TO, contenu);
 }
 
 Deno.serve(async (req: Request) => {

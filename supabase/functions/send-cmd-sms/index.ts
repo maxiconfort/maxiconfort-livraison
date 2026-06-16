@@ -16,15 +16,16 @@
 //     heureArrivee?: string (HH:MM, optionnel pour depart) }
 //
 // Secrets requis :
-//   - BREVO_API_KEY (déjà configuré pour send-sms / sms-veille)
+//   - Secrets OVH (OVH_APP_KEY/SECRET, OVH_CONSUMER_KEY, OVH_SMS_SERVICE,
+//     OVH_SMS_SENDER) — voir _shared/ovh-sms.ts
 //   - SUPABASE_SERVICE_ROLE_KEY (auto)
 //   - SUPABASE_URL (auto)
 // ════════════════════════════════════════════════════════════════════
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { envoyerSMSOVH } from '../_shared/ovh-sms.ts';
 
-const BREVO_KEY = Deno.env.get('BREVO_API_KEY') || '';
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 const APP_BASE  = 'https://livraison.maxiconfort.fr';
@@ -53,46 +54,6 @@ const TPL = {
 
 function prenomDe(client: string): string {
   return (client || '').replace(/^(M\.|Mme|Mr\.?)\s*/i, '').split(' ')[0] || 'Bonjour';
-}
-
-function nettoyerTel(tel: string): string {
-  if (!tel) return '';
-  let t = tel.replace(/[\s.()\-]/g, '');
-  if (t.startsWith('0033')) t = '+33' + t.slice(4);
-  else if (t.startsWith('33') && t.length === 11) t = '+' + t;
-  else if (t.startsWith('0') && t.length === 10) t = '+33' + t.slice(1);
-  if (!t.startsWith('+')) return '';
-  return t;
-}
-
-async function envoyerSMSBrevo(tel: string, contenu: string): Promise<boolean> {
-  if (!BREVO_KEY) { console.warn('BREVO_API_KEY manquant'); return false; }
-  const num = nettoyerTel(tel);
-  if (!num) { console.warn('Téléphone invalide:', tel); return false; }
-  try {
-    const resp = await fetch('https://api.brevo.com/v3/transactionalSMS/sms', {
-      method: 'POST',
-      headers: {
-        'api-key': BREVO_KEY,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: JSON.stringify({
-        sender: 'Maxiconfort',
-        recipient: num,
-        content: contenu,
-        type: 'transactional',
-      }),
-    });
-    if (!resp.ok) {
-      console.warn('Brevo HTTP', resp.status, await resp.text());
-      return false;
-    }
-    return true;
-  } catch (e: any) {
-    console.warn('Brevo exception:', e.message);
-    return false;
-  }
 }
 
 async function logHistorique(c: any, type: string, contenu: string, statut: string) {
@@ -173,12 +134,12 @@ Deno.serve(async (req: Request) => {
     dateFr, produit, creneauDeb, creneauFin,
   });
 
-  // Envoi Brevo
-  const ok = await envoyerSMSBrevo(cmd.tel, contenu);
+  // Envoi OVH (transactionnel — pas de clause STOP)
+  const ok = await envoyerSMSOVH(cmd.tel, contenu);
   await logHistorique(cmd, type, contenu, ok ? 'envoyé' : 'échec');
 
   if (!ok) {
-    return new Response(JSON.stringify({ error: 'envoi Brevo échoué', contenu }),
+    return new Response(JSON.stringify({ error: 'envoi OVH échoué', contenu }),
       { status: 502, headers: { 'Content-Type': 'application/json' } });
   }
 
