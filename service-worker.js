@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.64 - Garde-fou date : alerte si livraison avant commande (faute d'année) qui excluait la cmd du CA
+// v7.5.65 - SMS approche réparé : geofenceGetLivreurActuel lit livNom (source GPS) -> le SMS proche part enfin
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-64';
+const CACHE_VERSION = 'maxiconfort-v7-5-65';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

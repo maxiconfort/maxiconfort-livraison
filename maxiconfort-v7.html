@@ -15378,6 +15378,10 @@ function geofenceDistance(lat1, lng1, lat2, lng2) {
 
 // ── Récupérer le nom du livreur actuel ──
 function geofenceGetLivreurActuel() {
+  // v7.5.65 : livNom est la source FIABLE du nom livreur (celle qu'utilise le GPS
+  // pour envoyer les positions). On la lit EN PREMIER — sinon la vérif de proximité
+  // (SMS approche) ne trouvait jamais la tournée et le SMS ne partait jamais.
+  if (typeof livNom !== 'undefined' && livNom) return livNom.trim().toUpperCase();
   // Cherche dans plusieurs sources possibles
   if (typeof livreurActuel !== 'undefined' && livreurActuel) return livreurActuel.toUpperCase();
   const sel = document.getElementById('lv-selector') || document.getElementById('livreur-actuel');
