@@ -7271,6 +7271,9 @@ function ouvrirCmd(id) {
     return '<option '+(c.livreur===l?'selected':'')+'>'+l+'</option>';
   }).join('');
 
+  // v7.5.63 : liste des n° de suivi GLS (multi-colis) pour un affichage clair du nombre de colis
+  var glsTracks = (c.trackingTransporteur||c.tracking_transporteur||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
+
   document.getElementById('panel-body').innerHTML =
     '<div style="display:flex;gap:7px;margin-bottom:16px">'+
       '<a href="tel:'+tel+'" style="flex:1;padding:10px;background:var(--bl);color:var(--bd);border-radius:var(--r);text-align:center;font-size:13px;font-weight:700;text-decoration:none">📞 '+tel+'</a>'+
@@ -7319,6 +7322,8 @@ function ouvrirCmd(id) {
           '<div style="text-align:center;color:var(--t3);font-size:11px;margin-bottom:10px;font-weight:700">— OU SAISIE MANUELLE —</div>'
           :
           '<button id="pa-reprint-label-btn" data-cmdid="'+c.id+'" class="btn" style="width:100%;padding:12px;background:linear-gradient(135deg,#4A90E2,#357ABD);color:#fff;font-weight:800;font-size:14px;border:none;margin-bottom:10px;box-shadow:0 2px 6px rgba(74,144,226,.3)">📄 Réimprimer l\'étiquette GLS</button>' +
+          // v7.5.63 : nombre de colis enregistrés chez GLS + tous les n° de suivi (multi-colis)
+          (glsTracks.length ? '<div style="background:#E6F1FB;border:1px solid rgba(24,95,165,.25);border-radius:8px;padding:9px 11px;margin-bottom:10px;font-size:12.5px;color:#0C447C">📦 <strong>'+glsTracks.length+' colis</strong> enregistré'+(glsTracks.length>1?'s':'')+' chez GLS'+(glsTracks.length>1?' :<br><span style="font-family:monospace;font-size:11px;font-weight:600;line-height:1.6">'+glsTracks.join('&nbsp;&middot;&nbsp;')+'</span>':'')+'</div>' : '') +
           // v7.5.49 : Banniere colis bloque (detecte par gls-sync v12, aucun scan depuis 4j+)
           (c.glsBloque ? '<div style="background:#FED7D7;border:1.5px solid #E53E3E;border-radius:8px;padding:10px;margin-bottom:10px;font-size:12.5px;color:#9B2C2C;font-weight:800">🚨 Colis bloqué chez GLS — aucun scan depuis le ' + (c.glsDernierScan ? new Date(c.glsDernierScan).toLocaleDateString('fr-FR') : '?') + '. Si ça persiste, déclare un litige ci-dessous.</div>' : '') +
           // v7.5.48 : Bouton litige GLS (dossier d'indemnisation)
@@ -7510,11 +7515,16 @@ async function panelCreerEtiquetteGLS(cmdId) {
       return;
     }
     var trackId = data.trackId || '';
-    toast('✅ Étiquette créée : ' + trackId, 'ok');
-    // Update commande locale (l'Edge Function a deja update Supabase)
+    // v7.5.63 : garder TOUS les n° de suivi (multi-colis), pas seulement le 1er.
+    // Sinon une re-sauvegarde de la commande écrasait les 2 colis par 1 seul en base.
+    var trackingComplet = (Array.isArray(data.parcels) && data.parcels.length)
+      ? data.parcels.map(function(p){ return p.trackId; }).filter(Boolean).join(',')
+      : trackId;
+    toast('✅ Étiquette créée : ' + (data.nbColis||1) + ' colis (' + trackId + ')', 'ok');
+    // Update commande locale (l'Edge Function a deja update Supabase avec la liste complete)
     c.transporteur = 'GLS';
-    c.trackingTransporteur = trackId;
-    c.tracking_transporteur = trackId;
+    c.trackingTransporteur = trackingComplet;
+    c.tracking_transporteur = trackingComplet;
     try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(_e) {}
     // v7.5.35 : envoyer SMS expedition au client (= meme comportement que saisie manuelle)
     if (typeof sendCmdSmsAsync === 'function') {

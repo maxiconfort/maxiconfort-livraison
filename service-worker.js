@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.62 - Reports : commandes non livrées (tournée du jour) re-cochables dans le Suivi + déplacement propre
+// v7.5.63 - GLS multi-colis : garde TOUS les n° de suivi (fix troncature) + affichage "X colis" dans le panneau
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-62';
+const CACHE_VERSION = 'maxiconfort-v7-5-63';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
