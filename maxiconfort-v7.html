@@ -6108,7 +6108,7 @@ async function suiviValiderAjoutTournee() {
     if (target === 'nouvelle') {
       // Nouvelle tournée RANOU
       t = {
-        id: 'T-' + (tournees.length + 1),
+        id: nextTourneeId(),
         date: date,
         livreur: 'RANOU',
         stops: cmds.map(function(c, i){
@@ -8070,7 +8070,7 @@ function creerTournee() {
   const cmdsSelect=checked.map(id=>commandes.find(c=>c.id===id)).filter(Boolean);
 
   const t={
-    id:'T-'+(tournees.length+1),
+    id:nextTourneeId(),
     date,livreur,
     stops:cmdsSelect.map((c,i)=>({
       num:i+1,cmdId:c.id,client:c.client,tel:c.tel,
@@ -8107,6 +8107,19 @@ function creerTournee() {
   toast('Tournée ' + t.id + ' créée — ' + t.stops.length + ' arrêts ✓', 'ok');
 }
 
+// v7.5.66 : ID de tournée robuste = max(numéros existants) + 1. AVANT : 'T-'+(tournees.length+1)
+// produisait des COLLISIONS dès qu'il y avait un trou dans la numérotation (ex 21 tournées
+// mais max = T-22) -> la "nouvelle" tournée prenait l'id d'une existante et l'ÉCRASAIT en base
+// (UPSERT merge-duplicates). C'est ce qui faisait "disparaître" les tournées.
+function nextTourneeId() {
+  var maxN = 0;
+  (typeof tournees !== 'undefined' ? tournees : []).forEach(function(t){
+    var n = parseInt(String(t && t.id || '').replace(/[^0-9]/g, '')) || 0;
+    if (n > maxN) maxN = n;
+  });
+  return 'T-' + (maxN + 1);
+}
+
 function renderTournees() {
   const el = document.getElementById('tournees-actives');
   if (!el) return;
@@ -8128,14 +8141,10 @@ function renderTournees() {
     if (fLiv && !(t.livreur||'').toLowerCase().includes(fLiv) && !(t.id||'').toLowerCase().includes(fLiv)) return false;
     return true;
   });
-  // Tri : à venir d'abord, puis en cours, puis terminées
-  liste.sort(function(a, b){
-    var rank = { 'préparée':0, 'en cours':1, 'terminée':2 };
-    var ra = rank[a.statut] != null ? rank[a.statut] : 0;
-    var rb = rank[b.statut] != null ? rank[b.statut] : 0;
-    if (ra !== rb) return ra - rb;
-    return (b.date||'').localeCompare(a.date||'');
-  });
+  // v7.5.66 : tri par DATE décroissante (plus récente en haut), quel que soit le statut.
+  // Avant : tri par statut (préparée/en cours/terminée) -> les tournées terminées
+  // récentes étaient reléguées tout en bas et semblaient "disparues".
+  liste.sort(function(a, b){ return (b.date||'').localeCompare(a.date||''); });
 
   if (!liste.length) {
     el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--t3);font-size:12px">Aucun résultat<br><span style="font-size:11px;opacity:.7">Ajuste tes filtres</span></div>';

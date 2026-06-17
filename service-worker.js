@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.65 - SMS approche réparé : geofenceGetLivreurActuel lit livNom (source GPS) -> le SMS proche part enfin
+// v7.5.66 - FIX CRITIQUE : ID tournée = max+1 (avant length+1 -> collision -> nouvelle tournée écrasait l'ancienne)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-65';
+const CACHE_VERSION = 'maxiconfort-v7-5-66';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
