@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.66 - FIX CRITIQUE : ID tournée = max+1 (avant length+1 -> collision -> nouvelle tournée écrasait l'ancienne)
+// v7.5.67 - Signature : 3 choix paiement (Encaissé / Déjà payé / Non payé) - ne plus présumer "marketplace = prépayé"
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-66';
+const CACHE_VERSION = 'maxiconfort-v7-5-67';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

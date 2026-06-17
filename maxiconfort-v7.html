@@ -2695,10 +2695,11 @@ Maxiconfort — {TEL_CONTACT}</textarea>
       <!-- v7.5.56 : bandeau commande marketplace deja payee en ligne -->
       <div id="sig-prepaye-banner" style="display:none;background:var(--gl);color:var(--gd);border:1.5px solid var(--green);border-radius:10px;padding:12px;font-size:13px;font-weight:700;line-height:1.5"></div>
       <div id="sig-paie-question">
-        <div style="font-size:13px;font-weight:800;margin-bottom:10px;color:var(--text)">💰 Paiement reçu ?</div>
-        <div style="display:flex;gap:8px;margin-bottom:10px">
-          <button id="sig-paie-oui" onclick="sigTogglePaie(true)" style="flex:1;padding:10px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">✅ Oui, encaissé</button>
-          <button id="sig-paie-non" onclick="sigTogglePaie(false)" style="flex:1;padding:10px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">❌ Non payé</button>
+        <div style="font-size:13px;font-weight:800;margin-bottom:10px;color:var(--text)">💰 Paiement ?</div>
+        <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+          <button id="sig-paie-oui" onclick="sigTogglePaie(true)" style="flex:1;min-width:86px;padding:10px 6px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">✅ Encaissé</button>
+          <button id="sig-paie-deja" onclick="sigDejaPaye()" style="flex:1;min-width:86px;padding:10px 6px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">📦 Déjà payé</button>
+          <button id="sig-paie-non" onclick="sigTogglePaie(false)" style="flex:1;min-width:86px;padding:10px 6px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">❌ Non payé</button>
         </div>
       </div>
       <div id="sig-paie-mode-wrap" style="display:none">
@@ -9172,20 +9173,40 @@ async function lvPaieValider() {
   toast(msg, 'ok');
 }
 
+// v7.5.67 : 3 états de paiement à la signature — Encaissé / Déjà payé / Non payé.
+// Helper visuel pour (dé)surligner les 3 boutons.
+function _sigPaieBtns(actif) {
+  var ids = { oui:'sig-paie-oui', deja:'sig-paie-deja', non:'sig-paie-non' };
+  var styles = {
+    oui:{bg:'var(--gl)',bd:'var(--green)',fg:'var(--gd)'},
+    deja:{bg:'var(--bl)',bd:'var(--blue)',fg:'var(--bd)'},
+    non:{bg:'var(--rl)',bd:'var(--red)',fg:'var(--rd)'}
+  };
+  Object.keys(ids).forEach(function(k){
+    var el = document.getElementById(ids[k]); if(!el) return;
+    if (k === actif) { el.style.background=styles[k].bg; el.style.borderColor=styles[k].bd; el.style.color=styles[k].fg; }
+    else { el.style.background='var(--bg)'; el.style.borderColor='var(--brd)'; el.style.color='var(--text)'; }
+  });
+}
 function sigTogglePaie(encaisse) {
-  sigPaieEncaisse = encaisse;
-  var oui = document.getElementById('sig-paie-oui');
-  var non = document.getElementById('sig-paie-non');
   var wrap = document.getElementById('sig-paie-mode-wrap');
   if (encaisse) {
-    if(oui) { oui.style.background='var(--gl)'; oui.style.borderColor='var(--green)'; oui.style.color='var(--gd)'; }
-    if(non) { non.style.background='var(--bg)'; non.style.borderColor='var(--brd)'; non.style.color='var(--text)'; }
+    sigPaieEncaisse = true; sigPrepaidMode = null;   // encaissé : le livreur saisit le mode
+    _sigPaieBtns('oui');
     if(wrap) wrap.style.display='block';
   } else {
-    if(non) { non.style.background='var(--rl)'; non.style.borderColor='var(--red)'; non.style.color='var(--rd)'; }
-    if(oui) { oui.style.background='var(--bg)'; oui.style.borderColor='var(--brd)'; oui.style.color='var(--text)'; }
+    sigPaieEncaisse = false; sigPrepaidMode = null;   // non payé : rien encaissé, pas prépayé
+    _sigPaieBtns('non');
     if(wrap) wrap.style.display='none';
   }
+}
+// Déjà payé (prépayé en ligne / marketplace) : le livreur n'encaisse rien.
+function sigDejaPaye() {
+  sigPaieEncaisse = false;
+  sigPrepaidMode = sigCmdMarketplace || 'Déjà payé'; // mode = plateforme si marketplace, sinon "Déjà payé"
+  _sigPaieBtns('deja');
+  var wrap = document.getElementById('sig-paie-mode-wrap'); if(wrap) wrap.style.display='none';
+  var mx = document.getElementById('sig-mixte-wrap'); if(mx) mx.style.display='none';
 }
 
 function sigSelectMode(mode) {
@@ -9312,27 +9333,26 @@ function setLvSt(tid, idx, st) {
 
     document.getElementById('sig-nom').value=s.client;
     document.getElementById('m-sig').classList.add('on');
-    // v7.5.56 : si commande marketplace (deja payee en ligne via la plateforme),
-    // pre-selectionner "deja paye via X" au lieu de "Especes encaissé" (evite
-    // d'enregistrer Especes par defaut sur une commande prepayee).
+    // v7.5.67 : on ne PRÉSUME RIEN. Le livreur choisit (Encaissé Espèces/CB/Mixte,
+    // Déjà payé, ou Non payé). Pour une commande marketplace, simple RAPPEL (pas de
+    // pré-sélection) : LeBonCoin IDF n'est PAS toujours prépayé (confirmé Borhen).
     setTimeout(function(){
       var cmdSig = s.cmdId ? commandes.find(function(c){ return c.id === s.cmdId; }) : null;
-      var mkt = cmdSig ? cmdOrigineMarketplace(cmdSig) : null;
-      if (mkt) {
-        sigPrepaidMode = mkt;
-        sigPaieEncaisse = true;
-        sigPaieMode = mkt;
-        var banner = document.getElementById('sig-prepaye-banner');
-        if (banner) { banner.style.display = 'block'; banner.innerHTML = '✅ <strong>Déjà payé en ligne</strong> via ' + mkt + ' — rien à encaisser sur place.'; }
-        var q = document.getElementById('sig-paie-question'); if (q) q.style.display = 'none';
-        var mw = document.getElementById('sig-paie-mode-wrap'); if (mw) mw.style.display = 'none';
-      } else {
-        sigPrepaidMode = null;
-        var banner2 = document.getElementById('sig-prepaye-banner'); if (banner2) banner2.style.display = 'none';
-        var q2 = document.getElementById('sig-paie-question'); if (q2) q2.style.display = '';
-        sigTogglePaie(true);
-        sigSelectMode('Espèces');
+      sigCmdMarketplace = cmdSig ? cmdOrigineMarketplace(cmdSig) : null;
+      sigPrepaidMode = null;
+      var banner = document.getElementById('sig-prepaye-banner');
+      if (banner) {
+        if (sigCmdMarketplace) {
+          banner.style.display = 'block';
+          banner.style.background = '#FFF7E6'; banner.style.color = '#7A4A00'; banner.style.borderColor = '#BA7517';
+          banner.innerHTML = '💡 Commande <strong>' + sigCmdMarketplace + '</strong> — si elle a déjà été payée en ligne, choisissez « Déjà payé ».';
+        } else {
+          banner.style.display = 'none';
+        }
       }
+      var q = document.getElementById('sig-paie-question'); if (q) q.style.display = '';
+      sigTogglePaie(true);       // défaut : Encaissé
+      sigSelectMode('Espèces');  // + Espèces (le livreur change si CB / Mixte / Déjà payé / Non payé)
     }, 100);
     setTimeout(initSig,80);
     return;
@@ -9391,12 +9411,16 @@ var scv = null; // déclaré globalement pour clearSig()
 var noteStopId = null; // {tid, idx} pour la note en cours
 var sigPaieEncaisse = false; // paiement encaissé à la signature
 var sigPaieMode = 'Espèces'; // mode de paiement sélectionné
-// v7.5.56 : si défini (nom de la plateforme), la commande est déjà payée en ligne
-// (marketplace) → validerSig enregistre ce mode au lieu d'« Espèces ».
+// v7.5.56/67 : si défini (nom de la plateforme ou "Déjà payé"), la commande est
+// payée d'avance → validerSig l'enregistre comme prépayée. Mis SEULEMENT quand le
+// livreur clique « Déjà payé » (plus d'auto-détection par origine, cf v7.5.67).
 var sigPrepaidMode = null;
-// Origines marketplace = commandes TOUJOURS payées en ligne avant le départ du dépôt
-// (confirmé par Borhen). Le livreur n'encaisse rien ; le mode de règlement = la plateforme.
-var MARKETPLACES_ORIGINES = ['LeBonCoin','Amazon','Cdiscount','Fnac Darty','Rakuten','Rue du Commerce','Ubaldi','ManoMano','Conforama','But','La Redoute','Maison du Monde','Boulanger','Leroy Merlin','eBay','Wish','AliExpress','Vinted','Facebook Marketplace','TikTok Shop','Instagram Shop'];
+// v7.5.67 : origine marketplace de la commande en cours de signature (pour le bouton "Déjà payé").
+var sigCmdMarketplace = null;
+// Origines marketplace. ⚠️ v7.5.67 : ces commandes ne sont PAS toujours prépayées
+// (LeBonCoin IDF peut être payé à la livraison — confirmé Borhen). Sert UNIQUEMENT à
+// afficher un rappel à la signature ; le livreur décide (Encaissé / Déjà payé / Non payé).
+var MARKETPLACES_ORIGINES =['LeBonCoin','Amazon','Cdiscount','Fnac Darty','Rakuten','Rue du Commerce','Ubaldi','ManoMano','Conforama','But','La Redoute','Maison du Monde','Boulanger','Leroy Merlin','eBay','Wish','AliExpress','Vinted','Facebook Marketplace','TikTok Shop','Instagram Shop'];
 function cmdOrigineMarketplace(cmd) {
   if (!cmd) return null;
   var o = (cmd.origine || '').trim();
@@ -9444,7 +9468,7 @@ function validerSig(){
   }
   // Enregistrer paiement
   if (sigPrepaidMode) {
-    // v7.5.56 : commande marketplace déjà payée en ligne — mode = la plateforme, rien encaissé
+    // v7.5.67 : "Déjà payé" choisi par le livreur — déjà réglé en ligne, rien encaissé sur place
     s.paie = sigPrepaidMode;
     s.stpaie = 'Payé';
     delete s.paie_especes;
@@ -9459,13 +9483,18 @@ function validerSig(){
       delete s.paie_especes;
       delete s.paie_cb;
     }
+  } else {
+    // v7.5.67 : "Non payé" explicite — le client n'a pas réglé (créance à suivre)
+    s.stpaie = 'Non payé';
+    delete s.paie_especes;
+    delete s.paie_cb;
   }
   if(t.stops.every(x=>['livré','annulé'].includes(x.statut))) t.statut='terminée';
   const cmd=commandes.find(c=>c.id===s.cmdId);
   if(cmd){
     cmd.statut='livré';
     if (sigPrepaidMode) {
-      // v7.5.56 : marketplace déjà payée — préserver le mode plateforme, payé, rien encaissé sur place
+      // v7.5.67 : "Déjà payé" — préserver le mode (plateforme ou "Déjà payé"), payé, rien encaissé sur place
       cmd.paie = sigPrepaidMode;
       cmd.stpaie = 'Payé';
       cmd.montantEnc = cmd.prix;
@@ -9483,6 +9512,12 @@ function validerSig(){
         delete cmd.paie_especes;
         delete cmd.paie_cb;
       }
+    } else {
+      // v7.5.67 : "Non payé" explicite — livré mais non réglé (créance)
+      cmd.stpaie = 'Non payé';
+      cmd.montantEnc = 0;
+      delete cmd.paie_especes;
+      delete cmd.paie_cb;
     }
     stkDeduireStock(cmd.id);
     sbSaveCommande(cmd); // ✅ Sync commande Supabase → Realtime admin
@@ -9517,10 +9552,12 @@ function validerSig(){
   sigPaieEncaisse = false;
   sigPaieMode = 'Espèces';
   sigPrepaidMode = null;
-  // v7.5.56 : restaurer l'UI normale (cacher le bandeau marketplace, ré-afficher la question)
+  sigCmdMarketplace = null;
+  // restaurer l'UI normale (cacher le rappel, ré-afficher la question, dé-surligner les boutons)
   var pb=document.getElementById('sig-prepaye-banner'); if(pb) pb.style.display='none';
   var pq=document.getElementById('sig-paie-question'); if(pq) pq.style.display='';
   var oui=document.getElementById('sig-paie-oui'); if(oui){oui.style.background='';oui.style.borderColor='';oui.style.color='';}
+  var deja=document.getElementById('sig-paie-deja'); if(deja){deja.style.background='';deja.style.borderColor='';deja.style.color='';}
   var non=document.getElementById('sig-paie-non'); if(non){non.style.background='';non.style.borderColor='';non.style.color='';}
   var wrap=document.getElementById('sig-paie-mode-wrap'); if(wrap) wrap.style.display='none';
   // v7.3.4 : reset Mixte
