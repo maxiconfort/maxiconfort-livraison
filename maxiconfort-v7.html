@@ -11473,9 +11473,15 @@ function stkRender() {
 
   // KPIs
   const total    = produits.length;
-  const dispo    = produits.filter(p => p.stock > p.seuil).length;
-  const alertes  = produits.filter(p => p.stock > 0 && p.stock <= p.seuil).length;
-  const ruptures = produits.filter(p => p.stock === 0).length;
+  // v7.5.80 : les ALERTES/KPI ne portent que sur les produits PHYSIQUES (matelas, sommiers,
+  // lits, articles seuls). Un ENSEMBLE est virtuel (= ses composants) -> l'alerter EN PLUS
+  // ferait double emploi avec ses composants et noierait la liste ("alertes partout"). La
+  // vraie dispo de chaque ensemble reste affichée dans le tableau (getStockDispo).
+  const estVirtuel = p => p.composants && Array.isArray(p.composants) && p.composants.length > 0;
+  const physiques  = produits.filter(p => !estVirtuel(p));
+  const dispo    = physiques.filter(p => p.stock > p.seuil).length;
+  const alertes  = physiques.filter(p => p.stock > 0 && p.stock <= p.seuil).length;
+  const ruptures = physiques.filter(p => p.stock === 0).length;
   var _gstk_kpi_total=document.getElementById('stk-kpi-total'); if(_gstk_kpi_total) _gstk_kpi_total.textContent=total;
 
   var _gstk_kpi_dispo=document.getElementById('stk-kpi-dispo'); if(_gstk_kpi_dispo) _gstk_kpi_dispo.textContent=dispo;
@@ -11485,15 +11491,16 @@ function stkRender() {
   var _gstk_kpi_rupture=document.getElementById('stk-kpi-rupture'); if(_gstk_kpi_rupture) _gstk_kpi_rupture.textContent=ruptures;
 
   // Alertes visuelles
-  const alertList = produits.filter(p => p.stock <= p.seuil);
+  const alertList = produits.filter(p => !estVirtuel(p) && p.stock <= p.seuil);
   document.getElementById('stk-alertes-wrap').innerHTML = alertList.length
     ? alertList.map(p => {
-        const isRup = p.stock === 0;
+        const effA = p.stock;
+        const isRup = effA === 0;
         return `<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:${isRup?'var(--rl)':'var(--ol)'};border:1px solid ${isRup?'var(--red)':'var(--orange)'};border-radius:var(--r);margin-bottom:7px">
           <span style="font-size:18px">${isRup?'❌':'⚠️'}</span>
           <div style="flex:1">
             <div style="font-size:13px;font-weight:700;color:${isRup?'var(--rd)':'var(--od)'}">${isRup?'RUPTURE DE STOCK':'Stock bas'} — ${p.nom}</div>
-            <div style="font-size:12px;color:${isRup?'var(--rd)':'var(--od)'}">Stock actuel : <strong>${p.stock}</strong> unité${p.stock>1?'s':''} · Seuil alerte : ${p.seuil}</div>
+            <div style="font-size:12px;color:${isRup?'var(--rd)':'var(--od)'}">Stock actuel : <strong>${effA}</strong> unité${effA>1?'s':''} · Seuil alerte : ${p.seuil}</div>
           </div>
           <button onclick="ouvrirAjustement('${p.id}')" style="padding:7px 12px;border-radius:var(--r);border:none;background:${isRup?'var(--red)':'var(--orange)'};color:#fff;font-size:12px;font-weight:700;font-family:var(--font);cursor:pointer">Réapprovisionner</button>
         </div>`;
@@ -11512,11 +11519,13 @@ function stkRender() {
       new Date(c.date).getFullYear() === anneeActuelle
     ).length;
     const valeur = p.stock * p.prix;
+    // v7.5.80 : stock effectif = dispo composants pour un ensemble, stock normal sinon
+    const eff = getStockDispo(p);
     let statutHtml, statutClass;
-    if (p.stock === 0) {
+    if (eff === 0) {
       statutHtml = '<span class="bdg b-red">❌ Rupture</span>';
       statutClass = 'var(--rl)';
-    } else if (p.stock <= p.seuil) {
+    } else if (eff <= p.seuil) {
       statutHtml = '<span class="bdg b-orange">⚠️ Stock bas</span>';
       statutClass = 'var(--ol)';
     } else {
@@ -11524,8 +11533,8 @@ function stkRender() {
       statutClass = '';
     }
     // Barre visuelle stock
-    const pct = Math.min(100, Math.round(p.stock / Math.max(p.seuil * 4, 10) * 100));
-    const barColor = p.stock === 0 ? 'var(--red)' : p.stock <= p.seuil ? 'var(--orange)' : 'var(--green)';
+    const pct = Math.min(100, Math.round(eff / Math.max(p.seuil * 4, 10) * 100));
+    const barColor = eff === 0 ? 'var(--red)' : eff <= p.seuil ? 'var(--orange)' : 'var(--green)';
     // Detection ensemble + calcul dispo composants
     var estEnsemble = p.composants && Array.isArray(p.composants) && p.composants.length > 0;
     var dispoCompo = estEnsemble ? getStockDispo(p) : null;
@@ -11549,7 +11558,7 @@ function stkRender() {
       <td>
         <div style="display:flex;align-items:center;gap:8px">
           <div style="flex:1;max-width:60px">
-            <div style="font-size:16px;font-weight:800;color:${barColor}">${p.stock}</div>
+            <div style="font-size:16px;font-weight:800;color:${barColor}">${eff}</div>
             <div style="height:4px;background:var(--bg2);border-radius:2px;margin-top:3px;overflow:hidden">
               <div style="width:${pct}%;height:100%;background:${barColor};border-radius:2px;transition:width .5s"></div>
             </div>

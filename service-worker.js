@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.79 - Stock fiable : deduction par ID produit + flag "stock_deduit" persistant (anti double-deduction/recredit cassé) + Actualiser recharge la base
+// v7.5.80 - Inventaire : ensemble = virtuel (dispo = composants). Alertes/KPI sur le PHYSIQUE seulement + voyant ensemble cohérent
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-79';
+const CACHE_VERSION = 'maxiconfort-v7-5-80';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
