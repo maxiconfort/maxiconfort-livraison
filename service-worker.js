@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.69 - Encaissé (choix B : total réglé, prépayé inclus) : part espèces des Mixte cohérente entre "collectées" et "remises"
+// v7.5.70 - Anti-homonyme : findCmdForStop() ne rattache un stop par NOM que si le nom est unique (sinon mauvais prix/paie propagé)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-69';
+const CACHE_VERSION = 'maxiconfort-v7-5-70';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

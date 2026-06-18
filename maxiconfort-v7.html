@@ -2899,6 +2899,26 @@ function findStopForCmd(cmdId) {
   return null;
 }
 
+// v7.5.70 : retrouve la commande liée à un stop SANS confondre deux clients homonymes.
+// Priorité au cmdId (identifiant unique). Repli par NOM uniquement si le stop n'a pas
+// de cmdId (stops legacy) ET si le nom est UNIQUE en base. Si plusieurs clients portent
+// le même nom -> renvoie null (on ne devine pas) plutôt qu'un mauvais match — avant, le
+// polling propageait le prix/paie/stpaie du 1er homonyme sur le stop -> caisse faussée.
+// `filtre` (optionnel) restreint le repli par nom (ex : statut livré) pour rester
+// équivalent au code d'origine.
+function findCmdForStop(s, filtre) {
+  if (!s || typeof commandes === 'undefined') return null;
+  if (s.cmdId) {
+    var byId = commandes.find(function(c){ return c.id === s.cmdId; });
+    if (byId) return byId;
+  }
+  if (!s.client) return null;
+  var homonymes = commandes.filter(function(c){
+    return c.client === s.client && (!filtre || filtre(c));
+  });
+  return homonymes.length === 1 ? homonymes[0] : null;
+}
+
 function getMontantEspecesCmd(c) {
   if (!c) return 0;
   if (c.stpaie !== 'Payé' && c.stpaie !== 'Partiel') return 0;
@@ -3455,8 +3475,7 @@ function calculerProgressionChargement(t) {
   if (!t || !t.stops) return {total: 0, charges: 0, pct: 0, manquants: []};
   var total = 0, charges = 0, manquants = [];
   (t.stops||[]).forEach(function(s) {
-    var cmd = s.cmdId ? commandes.find(function(c){ return c.id === s.cmdId; }) : null;
-    if (!cmd && s.client) cmd = commandes.find(function(c){ return c.client === s.client; });
+    var cmd = findCmdForStop(s); // v7.5.70 : repli homonyme sûr
     if (!cmd) return;
     var lignes = cmd.lignes || [{produit: cmd.produit, qte: cmd.qte || 1}];
     lignes.forEach(function(ligne, idx) {
@@ -3801,8 +3820,7 @@ function startPolling() {
     tournees.forEach(function(t) {
       if (!t.stops) return;
       t.stops.forEach(function(s) {
-        var cmd = s.cmdId ? commandes.find(function(c){ return c.id === s.cmdId; }) : null;
-        if (!cmd && s.client) cmd = commandes.find(function(c){ return c.client === s.client; });
+        var cmd = findCmdForStop(s); // v7.5.70 : repli homonyme sûr (nom unique seulement)
         if (cmd && (s.prix !== cmd.prix || s.paie !== cmd.paie || s.stpaie !== cmd.stpaie)) {
           s.prix   = cmd.prix;
           s.paie   = cmd.paie;
@@ -8456,8 +8474,7 @@ function renderLivreur() {
         '<div class="lv-info-row"><span class="lv-info-icon">📦</span><span><strong>'+s.produit+'</strong></span></div>'+
         // ── v7.1 : CHECKLIST CHARGEMENT ──
         (function(){
-          var linkedCmd = s.cmdId ? commandes.find(function(c){ return c.id === s.cmdId; }) : null;
-          if (!linkedCmd && s.client) linkedCmd = commandes.find(function(c){ return c.client === s.client; });
+          var linkedCmd = findCmdForStop(s); // v7.5.70 : repli homonyme sûr
           if (!linkedCmd) return '';
           var lignes = linkedCmd.lignes && linkedCmd.lignes.length ? linkedCmd.lignes : [{produit: linkedCmd.produit, qte: linkedCmd.qte || 1}];
           var chCmd = chargements[linkedCmd.id] || {};
@@ -8491,8 +8508,7 @@ function renderLivreur() {
         '<div class="lv-amount-band">'+
           '<div class="lv-amount-val">'+(function(){
             // Prendre le prix depuis la commande liée si disponible (mise à jour admin)
-            var linkedCmd = s.cmdId ? commandes.find(function(c){ return c.id === s.cmdId; }) : null;
-            if (!linkedCmd && s.client) linkedCmd = commandes.find(function(c){ return c.client === s.client; });
+            var linkedCmd = findCmdForStop(s); // v7.5.70 : repli homonyme sûr
             return (linkedCmd ? linkedCmd.prix : s.prix) || s.prix;
           })()+' €</div>'+
           (done
@@ -8800,8 +8816,7 @@ function sasGenererListe(t) {
   if (!listeEl) return;
   var html = '';
   (t.stops||[]).forEach(function(s, sIdx) {
-    var cmd = s.cmdId ? commandes.find(function(c){ return c.id === s.cmdId; }) : null;
-    if (!cmd && s.client) cmd = commandes.find(function(c){ return c.client === s.client; });
+    var cmd = findCmdForStop(s); // v7.5.70 : repli homonyme sûr
     if (!cmd) return;
     var lignes = cmd.lignes && cmd.lignes.length ? cmd.lignes : [{produit: cmd.produit, qte: cmd.qte || 1}];
     var chCmd = chargements[cmd.id] || {};
@@ -8981,10 +8996,8 @@ function lvModifierPaie(tid, idx) {
   var s = t.stops[idx];
   if (!s) { toast('Stop non trouvé', 'err'); return; }
 
-  // Chercher la commande liée
-  var cmd = null;
-  if (s.cmdId) cmd = commandes.find(function(c){ return c.id === s.cmdId; });
-  if (!cmd && s.client) cmd = commandes.find(function(c){ return c.client === s.client && c.statut === 'livré'; });
+  // Chercher la commande liée — v7.5.70 : repli homonyme sûr (nom unique + statut livré)
+  var cmd = findCmdForStop(s, function(c){ return c.statut === 'livré'; });
 
   // Créer ou afficher le bottom sheet
   var bsId = 'lv-paie-sheet';
@@ -9176,9 +9189,7 @@ async function lvPaieValider() {
   }
 
   // Mettre à jour la commande liée
-  var cmd = null;
-  if (s.cmdId) cmd = commandes.find(function(c){ return c.id === s.cmdId; });
-  if (!cmd && s.client) cmd = commandes.find(function(c){ return c.client === s.client; });
+  var cmd = findCmdForStop(s); // v7.5.70 : repli homonyme sûr
 
   if (cmd) {
     cmd.paie   = newMode;
@@ -9882,11 +9893,12 @@ function finRender() {
         // Identifier la commande liée
         var cmdId = s.cmdId;
         if (!cmdId && s.client) {
-          // Fallback : chercher par client + livreur + statut livré
-          var cmd = commandes.find(function(c){
+          // v7.5.70 : repli par client+livreur+livré UNIQUEMENT si non ambigu (1 seul
+          // match) -> évite d'attribuer le mauvais homonyme (fausserait la caisse tournée).
+          var matches = commandes.filter(function(c){
             return c.client === s.client && c.livreur === t.livreur && c.statut === 'livré';
           });
-          if (cmd) cmdId = cmd.id;
+          if (matches.length === 1) cmdId = matches[0].id;
         }
         if (cmdId) {
           // Si une commande apparaît dans plusieurs tournées (cas reporté), garder la plus récente
