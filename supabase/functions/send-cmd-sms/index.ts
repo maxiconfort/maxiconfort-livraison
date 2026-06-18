@@ -60,8 +60,8 @@ const TPL = {
   // livraison ; sans date -> message generique. <=160 car = 1 credit OVH.
   confirmation: (p: any) =>
     p.dateFr
-      ? `Bonjour ${p.prenom}, Maxiconfort confirme votre commande. Elle est en cours d'acheminement et sera livree le ${p.dateFr}. Merci de votre confiance !`
-      : `Bonjour ${p.prenom}, Maxiconfort confirme votre commande. Elle est en cours de traitement, nous vous communiquerons la date de livraison. Merci !`,
+      ? `Bonjour ${p.prenom}, votre commande a bien ete expediee. Elle est en cours d'acheminement et sera livree le ${p.dateFr}. Merci de votre confiance. Maxiconfort.`
+      : `Bonjour ${p.prenom}, votre commande a bien ete expediee et est en cours d'acheminement. Nous vous communiquerons la date de livraison. Merci. Maxiconfort.`,
 };
 
 function prenomDe(client: string): string {
