@@ -12605,13 +12605,41 @@ async function optimiserTourneeRapide(tid) {
       matriceDuree = tous.map(function(a){ return tous.map(function(b){ return getTrajetMin(a.lat, a.lng, b.lat, b.lng); }); });
     }
 
-    // 4) NNH + 2-opt sur tous les stops (en excluant le depot et le domicile s'il existe)
+    // 4) Ordonnancement avec FENÊTRES HORAIRES (v7.5.76) — respecte les créneaux écrits
+    //    dans les notes (« avant 9h30 », « entre 14h-16h »…) tout en minimisant le temps.
+    //    AVANT : NN + 2-opt sur les durées seules -> ignorait totalement les impératifs.
     var depotIdx = 0;
     var indices = [];
     var maxIdx = endpointIdx != null ? endpointIdx : tous.length;
     for (var i = 1; i < maxIdx; i++) indices.push(i);
-    var ordreIdx = optimNearestNeighbor(indices, depotIdx, matriceDuree);
-    if (ordreIdx.length >= 4) ordreIdx = optim2opt(ordreIdx, matriceDuree, depotIdx, endpointIdx);
+    // Détecter les créneaux dans les notes -> fenêtres horaires {ready, due} (minutes)
+    var startMinR = 8 * 60;   // départ 08:00 par défaut (pas de champ heure sur ce bouton)
+    var dureeStopR = 15;      // ~15 min par arrêt
+    var infosR = {};
+    var nbCrenR = 0;
+    stopsAOptimiser.forEach(function(s, k){
+      var cmdR = commandes.find(function(c){ return c.id === s.cmdId; });
+      var cren = optimDetecterCreneau(s.instr || (cmdR && cmdR.instr) || '');
+      var ready = null, due = null;
+      if (cren) {
+        nbCrenR++;
+        if (cren.creneauDebut) { var p = cren.creneauDebut.split(':'); ready = (+p[0]) * 60 + (+p[1] || 0); }
+        if (cren.creneauFin)   { var q = cren.creneauFin.split(':');   due   = (+q[0]) * 60 + (+q[1] || 0); }
+        s.imperatif = true; s.creneauDebut = cren.creneauDebut; s.creneauFin = cren.creneauFin; // persisté pour affichage
+      }
+      infosR[k + 1] = { ready: ready, due: due };
+    });
+    if (nbCrenR > 0) toast('🕐 ' + nbCrenR + ' créneau(x) horaire(s) détecté(s) dans les notes', 'info');
+    var coutR = function(o){ return optimCoutCreneaux(o, matriceDuree, matriceDuree, depotIdx, endpointIdx, infosR, startMinR, dureeStopR); };
+    var startNNr  = optimNearestNeighbor(indices, depotIdx, matriceDuree);
+    var startECHr = indices.slice().sort(function(a, b){
+      var da = (infosR[a] && infosR[a].due != null) ? infosR[a].due : 99999;
+      var db = (infosR[b] && infosR[b].due != null) ? infosR[b].due : 99999;
+      return da - db;
+    });
+    var oA = optimAmeliorerCreneaux(startNNr,  matriceDuree, matriceDuree, depotIdx, endpointIdx, infosR, startMinR, dureeStopR);
+    var oB = optimAmeliorerCreneaux(startECHr, matriceDuree, matriceDuree, depotIdx, endpointIdx, infosR, startMinR, dureeStopR);
+    var ordreIdx = (coutR(oA) <= coutR(oB)) ? oA : oB;
 
     // 5) Construire le nouvel ordre de stops (livres devant + optimises ensuite)
     var nouvelOrdre = stopsLivres.slice();
