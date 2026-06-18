@@ -11997,6 +11997,45 @@ function optimAmeliorerCreneaux(ordre, ms, md, depotIdx, endpointIdx, infos, sta
   return ordre;
 }
 
+// v7.5.77 : ordonnancement avec créneaux + RÈGLE « l'impératif le plus serré d'abord ».
+// Règle Borhen : l'impératif dont la FIN de créneau est la plus tôt (le plus urgent) est
+// TOUJOURS placé en 1er (sécurité), puis on optimise le reste autour (en respectant leurs
+// propres créneaux). S'il n'y a aucun impératif à échéance, optimisation normale (2 départs
+// -> meilleur). allIdx = indices matrice des stops (1..N). depotIdx=départ, endpointIdx=arrivée.
+function optimOrdonnerCreneaux(allIdx, depotIdx, endpointIdx, ms, md, infos, startMin, dureeStop) {
+  function cout(o, dep, st){ return optimCoutCreneaux(o, ms, md, dep, endpointIdx, infos, st, dureeStop); }
+  function meilleur(cand, dep, st){
+    if (!cand.length) return [];
+    var nn  = optimNearestNeighbor(cand, dep, ms);
+    var ech = cand.slice().sort(function(a, b){
+      var da = (infos[a] && infos[a].due != null) ? infos[a].due : 99999;
+      var db = (infos[b] && infos[b].due != null) ? infos[b].due : 99999;
+      return da - db;
+    });
+    var o1 = optimAmeliorerCreneaux(nn,  ms, md, dep, endpointIdx, infos, st, dureeStop);
+    var o2 = optimAmeliorerCreneaux(ech, ms, md, dep, endpointIdx, infos, st, dureeStop);
+    return cout(o1, dep, st) <= cout(o2, dep, st) ? o1 : o2;
+  }
+  // Impératif le plus serré = plus petite FIN de créneau (tie-break : début le plus tôt)
+  var forced = null, bestDue = Infinity, bestReady = Infinity;
+  allIdx.forEach(function(mi){
+    var inf = infos[mi];
+    if (inf && inf.due != null) {
+      var rd = inf.ready != null ? inf.ready : 0;
+      if (inf.due < bestDue || (inf.due === bestDue && rd < bestReady)) { bestDue = inf.due; bestReady = rd; forced = mi; }
+    }
+  });
+  if (forced == null) return meilleur(allIdx, depotIdx, startMin); // aucun impératif -> normal
+  // Servir le plus urgent en 1er : heure de départ APRÈS l'avoir livré
+  var rest = allIdx.filter(function(x){ return x !== forced; });
+  var startApres = startMin + (md[depotIdx][forced] || 0);
+  if (infos[forced] && infos[forced].ready != null && startApres < infos[forced].ready) startApres = infos[forced].ready;
+  startApres += dureeStop;
+  // Optimiser le reste avec « départ » = le stop forcé
+  var restOpt = meilleur(rest, forced, startApres);
+  return [forced].concat(restOpt);
+}
+
 // ── INIT PAGE ──
 function optimInit() {
   // Peupler le sélecteur de tournées
@@ -12213,16 +12252,8 @@ async function optimCalculer() {
   //    on garde le meilleur. Remplace l'ancien "flexibles puis injection" (ne controlait
   //    pas la FIN du creneau et pouvait livrer trop tard).
   var allIdx = optimStops.map(function(s){ return s._mIdx; });
-  var coutF = function(o){ return optimCoutCreneaux(o, matriceScore, matriceDuree, depotIdx, endpointIdx, infos, startMin, dureeStop); };
-  var startNN  = optimNearestNeighbor(allIdx, depotIdx, matriceScore);
-  var startECH = allIdx.slice().sort(function(a, b){
-    var da = (infos[a] && infos[a].due != null) ? infos[a].due : 99999;
-    var db = (infos[b] && infos[b].due != null) ? infos[b].due : 99999;
-    return da - db;
-  });
-  var o1 = optimAmeliorerCreneaux(startNN,  matriceScore, matriceDuree, depotIdx, endpointIdx, infos, startMin, dureeStop);
-  var o2 = optimAmeliorerCreneaux(startECH, matriceScore, matriceDuree, depotIdx, endpointIdx, infos, startMin, dureeStop);
-  var ordreIdx = (coutF(o1) <= coutF(o2)) ? o1 : o2;
+  // v7.5.77 : impératif le plus serré toujours en 1er, puis reste optimisé (créneaux respectés)
+  var ordreIdx = optimOrdonnerCreneaux(allIdx, depotIdx, endpointIdx, matriceScore, matriceDuree, infos, startMin, dureeStop);
 
   // 6) Construire l'ordre final (index matrice 1..N -> stop dans optimStops)
   var ordreFinal = ordreIdx.map(function(mi){ return optimStops[mi - 1]; });
@@ -12630,16 +12661,8 @@ async function optimiserTourneeRapide(tid) {
       infosR[k + 1] = { ready: ready, due: due };
     });
     if (nbCrenR > 0) toast('🕐 ' + nbCrenR + ' créneau(x) horaire(s) détecté(s) dans les notes', 'info');
-    var coutR = function(o){ return optimCoutCreneaux(o, matriceDuree, matriceDuree, depotIdx, endpointIdx, infosR, startMinR, dureeStopR); };
-    var startNNr  = optimNearestNeighbor(indices, depotIdx, matriceDuree);
-    var startECHr = indices.slice().sort(function(a, b){
-      var da = (infosR[a] && infosR[a].due != null) ? infosR[a].due : 99999;
-      var db = (infosR[b] && infosR[b].due != null) ? infosR[b].due : 99999;
-      return da - db;
-    });
-    var oA = optimAmeliorerCreneaux(startNNr,  matriceDuree, matriceDuree, depotIdx, endpointIdx, infosR, startMinR, dureeStopR);
-    var oB = optimAmeliorerCreneaux(startECHr, matriceDuree, matriceDuree, depotIdx, endpointIdx, infosR, startMinR, dureeStopR);
-    var ordreIdx = (coutR(oA) <= coutR(oB)) ? oA : oB;
+    // v7.5.77 : impératif le plus serré toujours en 1er, puis reste optimisé (créneaux respectés)
+    var ordreIdx = optimOrdonnerCreneaux(indices, depotIdx, endpointIdx, matriceDuree, matriceDuree, infosR, startMinR, dureeStopR);
 
     // 5) Construire le nouvel ordre de stops (livres devant + optimises ensuite)
     var nouvelOrdre = stopsLivres.slice();
