@@ -105,12 +105,20 @@ function mapLignes(items: any[]): any[] {
   }));
 }
 
-function mapShopifyToCmd(o: any) {
+function mapShopifyToCmd(o: any, appId: string) {
   const lignes = mapLignes(o.line_items || []);
   const produitConcat = lignes.map(l => l.qte + '× ' + l.produit).join(' | ');
-  const totalPrix = Number(o.current_total_price || o.total_price || 0);
+  // v6 (18/06/2026) : MONTANT = produits seuls (subtotal_price, APRES remise, HORS frais
+  // de port et HORS TVA séparée). AVANT : current_total_price incluait les frais de
+  // livraison -> montant gonflé (ex #1030 : 168,90 € total au lieu de 139 € de produits ;
+  // #1029 : 541 € port inclus au lieu de 511,10 €). La remise éventuelle est modélisée
+  // dans le système de remise globale de l'app (type 'eur') pour rester cohérent si la
+  // commande est rouverte/éditée : prix = prix_brut - remise.
+  const sousTotal = Number(o.subtotal_price ?? o.current_subtotal_price ?? 0); // produits après remise
+  const remiseVal = Number(o.total_discounts ?? 0);                            // remise niveau commande
+  const brut = +(sousTotal + remiseVal).toFixed(2);                            // produits avant remise (edit-safe)
   return {
-    id: o.name || ('#' + o.order_number),    // ex: "#1018"
+    id: appId,                               // v6 : numéro APP (max+1), plus le numéro Shopify
     client: fmtClient(o),
     tel: fmtTel(o),
     email: o.email || o.contact_email || '',
@@ -121,20 +129,22 @@ function mapShopifyToCmd(o: any) {
     produit: produitConcat,
     lignes: lignes,
     qte: lignes.reduce((s, l) => s + (l.qte || 1), 0) || 1,
-    prix: totalPrix,
-    prix_brut: totalPrix,
-    remise_globale: 0,
-    remise_globale_val: 0,
-    remise_globale_type: 'pct',
-    remise_motif: '',
+    prix: sousTotal,
+    prix_brut: brut,
+    remise_globale: remiseVal,
+    remise_globale_val: remiseVal,
+    remise_globale_type: 'eur',
+    remise_motif: remiseVal > 0 ? 'Remise site' : '',
     paie: 'Site Maxiconfort',
     stpaie: mapStatutPaie(o.financial_status),
-    montant_enc: o.financial_status === 'paid' ? totalPrix : 0,
+    montant_enc: o.financial_status === 'paid' ? sousTotal : 0,
     livreur: '',
     statut: 'en-attente',
     date_livraison: '',  // a planifier par Borhen ensuite
     date_commande: (o.created_at || '').substring(0, 10), // YYYY-MM-DD
-    instr: (o.note || '').toString(),
+    // v6 : on garde le n° Shopify (o.name, ex "#1030") dans l'instruction pour pouvoir
+    // recroiser avec l'admin Shopify, puisque l'id app est désormais différent.
+    instr: (o.name ? 'Commande site ' + o.name + '. ' : '') + (o.note || '').toString(),
     origine: 'Site Maxiconfort',
     ref_marketplace: String(o.id), // ID Shopify pour deduper
     updated_at: new Date().toISOString(),
@@ -149,6 +159,26 @@ async function commandeDejaImportee(shopifyId: string): Promise<boolean> {
     .eq('ref_marketplace', shopifyId)
     .limit(1);
   return !!(data && data.length);
+}
+
+// v6 (18/06/2026) : prochain numéro de commande APP = max(numéros existants) + 1.
+// AVANT : la commande importée reprenait le numéro Shopify (o.name, ex "#1030") comme id
+// -> ce numéro tombe dans la plage des commandes de l'app (saisies LeBonCoin) et
+// l'upsert onConflict:'id' ÉCRASAIT la commande existante portant ce numéro (collision
+// imminente : Shopify ~#1030 approchait des saisies manuelles qui démarrent à #1047).
+// Désormais l'import prend le prochain numéro libre de l'app (comme une saisie manuelle).
+// Les #SAV... (parseInt -> NaN) sont ignorés. ref_marketplace=ID Shopify reste la clé de
+// déduplication (donc pas de ré-import en double malgré le changement d'id).
+async function maxNumeroCommande(): Promise<number> {
+  const { data } = await sb.from('commandes').select('id');
+  let maxN = 0;
+  for (const r of (data || [])) {
+    const idStr = String((r as any)?.id || '');
+    if (/SAV/i.test(idStr)) continue;
+    const n = parseInt(idStr.replace(/[^0-9]/g, '')) || 0;
+    if (n > maxN) maxN = n;
+  }
+  return maxN;
 }
 
 // ── Handler ────────────────────────────────────────────────────────
@@ -190,6 +220,10 @@ Deno.serve(async (req: Request) => {
     const json = await resp.json();
     const orders: any[] = json.orders || [];
 
+    // v6 : numérotation APP (max+1) pour les imports -> plus de collision/écrasement.
+    // On lit le max UNE fois, puis on incrémente localement pour chaque NOUVELLE commande.
+    let prochainNum = (await maxNumeroCommande()) + 1;
+
     // 3. Pour chaque commande, mapper + upsert si pas deja en BD
     for (const o of orders) {
       try {
@@ -198,7 +232,7 @@ Deno.serve(async (req: Request) => {
           result.skipped++;
           continue;
         }
-        const cmd = mapShopifyToCmd(o);
+        const cmd = mapShopifyToCmd(o, '#' + (prochainNum++));
         const { error } = await sb.from('commandes').upsert(cmd, { onConflict: 'id' });
         if (error) {
           result.errors++;
