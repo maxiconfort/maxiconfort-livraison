@@ -1692,7 +1692,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
         </select>
       </div>
       <div style="display:flex;gap:8px">
-        <button class="btn" onclick="stkRender()">🔄 Actualiser</button>
+        <button class="btn" onclick="stkActualiser()">🔄 Actualiser</button>
         <button class="btn btn-p" onclick="ouvrirAjoutProduit()">+ Ajouter produit</button>
       </div>
     </div>
@@ -2962,6 +2962,7 @@ async function sbSaveCommande(cmd) {
       prix: cmd.prix||0,
       prix_brut: cmd.prixBrut||0,
       frais_port: cmd.fraisPort||0,
+      stock_deduit: !!cmd.stockDeduit,
       remise_globale: cmd.remiseGlobale||0,
       remise_globale_val: cmd.remiseGlobaleVal||0,
       remise_globale_type: cmd.remiseGlobaleType||'pct',
@@ -3503,7 +3504,7 @@ function calculerProgressionChargement(t) {
 
 // Colonnes chargées pour les commandes — EXCLUT gls_pdf_base64 (PDF étiquette 50-400 Ko/cmd,
 // stocké par gls-create-shipment, récupéré uniquement à la demande via l'action getLabel)
-var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at,frais_port';
+var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at,frais_port,stock_deduit';
 
 async function sbLoadAll() {
   // Afficher cache immédiatement (UX rapide) pendant chargement Supabase
@@ -3561,6 +3562,7 @@ async function sbLoadAll() {
           produit:r.produit||'', lignes:r.lignes||null, qte:r.qte||1,
           prix:parseFloat(r.prix)||0, prixBrut:parseFloat(r.prix_brut)||0,
           fraisPort:parseFloat(r.frais_port)||0,
+          stockDeduit: !!r.stock_deduit,
           remiseGlobale:parseFloat(r.remise_globale)||0,
           remiseGlobaleVal:parseFloat(r.remise_globale_val)||0,
           remiseGlobaleType:r.remise_globale_type||'pct',
@@ -3749,6 +3751,7 @@ function startPolling() {
               produit:r.produit||'', lignes:r.lignes||null, qte:r.qte||1,
               prix:parseFloat(r.prix)||0, prixBrut:parseFloat(r.prix_brut)||0,
               fraisPort:parseFloat(r.frais_port)||0,
+              stockDeduit: !!r.stock_deduit,
               remiseGlobale:parseFloat(r.remise_globale)||0,
               remiseGlobaleVal:parseFloat(r.remise_globale_val)||0,
               remiseGlobaleType:r.remise_globale_type||'pct',
@@ -3859,7 +3862,7 @@ function sbStartRealtime() {
         id:r.id, client:r.client, tel:r.tel, email:r.email,
         adresse:r.adresse, etage:r.etage, asc:r.ascenseur, code:r.code,
         produit:r.produit, lignes:r.lignes, qte:r.qte, prix:r.prix,
-        prixBrut:r.prix_brut, fraisPort:parseFloat(r.frais_port)||0, remiseGlobale:r.remise_globale,
+        prixBrut:r.prix_brut, fraisPort:parseFloat(r.frais_port)||0, stockDeduit:!!r.stock_deduit, remiseGlobale:r.remise_globale,
         remiseGlobaleVal:r.remise_globale_val, remiseGlobaleType:r.remise_globale_type,
         remiseMotif:r.remise_motif, paie:r.paie, stpaie:r.stpaie,
         montantEnc:r.montant_enc, livreur:r.livreur, statut:r.statut,
@@ -11143,6 +11146,24 @@ let stkMouvements = [
 let editProduitId = null;
 let ajustProduitId = null;
 
+// v7.5.79 : retrouve un produit du catalogue d'abord par son ID (fiable, présent dans
+// cmd.lignes[].produitId), puis en repli par nom (commandes legacy / sans id). AVANT :
+// la déduction/recrédit cherchaient UNIQUEMENT par nom approximatif -> les commandes
+// dont le libellé diffère du catalogue (ex site Shopify) ou un produit renommé ->
+// produit non trouvé -> stock jamais décrémenté, en silence.
+function stkTrouverProduit(produitId, nomProduit) {
+  if (produitId) {
+    var byId = produits.find(function(p){ return p.id === produitId; });
+    if (byId) return byId;
+  }
+  if (!nomProduit) return null;
+  return produits.find(function(p) {
+    return p.nom === nomProduit ||
+           nomProduit.includes(p.nom) ||
+           p.nom.includes(nomProduit.split(' ').slice(0,2).join(' '));
+  }) || null;
+}
+
 // ── Déduire automatiquement du stock quand une livraison est validée ──
 
 // ── Recréditer le stock si commande annulée/reportée après livraison ──
@@ -11151,44 +11172,47 @@ function stkReCrediterStock(cmdId) {
   var cmd = commandes.find(function(c){ return c.id === cmdId; });
   if (!cmd) return;
 
-  function recredit(nomProduit, qte) {
-    if (!nomProduit) return;
-    var prod = produits.find(function(p) {
-      return p.nom === nomProduit ||
-             nomProduit.includes(p.nom) ||
-             p.nom.includes(nomProduit.split(' ').slice(0,2).join(' '));
-    });
+  // v7.5.79 : on ne recrédite QUE si le stock avait bien été déduit (flag durable, persisté
+  // en base). AVANT : le test reposait sur stkMouvements (volatil) -> après un rechargement,
+  // l'annulation ne recréditait jamais le stock.
+  if (!cmd.stockDeduit) return;
+
+  function recreditUn(prod, qte) {
     if (!prod) return;
-
-    var qteARecréditer = Math.max(1, parseInt(qte) || 1);
-    prod.stock += qteARecréditer;
-
+    prod.stock += qte;
     stkMouvements.unshift({
       date: new Date().toISOString().split('T')[0],
-      produit: prod.nom,
-      type: 'retour-annulation',
-      qte: qteARecréditer,
-      stockApres: prod.stock,
-      motif: 'Annulation livraison ' + cmdId + ' → ' + (cmd.client||'') + ' (Admin)',
-      auto: true,
+      produit: prod.nom, type: 'retour-annulation', qte: qte, stockApres: prod.stock,
+      motif: 'Annulation livraison ' + cmdId + ' → ' + (cmd.client||'') + ' (Admin)', auto: true,
     });
-
     sbSaveProduit(prod);
-    toast('↩️ Stock recrédité : ' + prod.nom + ' (+' + qteARecréditer + ')', 'ok');
+    toast('↩️ Stock recrédité : ' + prod.nom + ' (+' + qte + ')', 'ok');
   }
 
-  // Vérifier si le stock avait été déduit pour cette commande
-  var dejaFait = stkMouvements.some(function(m) {
-    return m.motif && m.motif.includes(cmdId) && m.type === 'sortie-livraison';
-  });
-  if (!dejaFait) return; // Stock jamais déduit — rien à faire
+  // Recrédit par ID d'abord ; un ENSEMBLE recrédite ses composants (miroir de la déduction)
+  function recredit(produitId, nomProduit, qte) {
+    var prod = stkTrouverProduit(produitId, nomProduit);
+    if (!prod) return;
+    var q = Math.max(1, parseInt(qte) || 1);
+    if (prod.composants && Array.isArray(prod.composants) && prod.composants.length > 0) {
+      prod.composants.forEach(function(c) {
+        var comp = produits.find(function(x){ return x.id === c.id; });
+        if (comp) recreditUn(comp, (c.qte || 1) * q);
+      });
+    } else {
+      recreditUn(prod, q);
+    }
+  }
 
-  // Recréditer
   if (cmd.lignes && cmd.lignes.length > 0) {
-    cmd.lignes.forEach(function(l) { recredit(l.nom || l.produit, l.qte || 1); });
+    cmd.lignes.forEach(function(l) { recredit(l.produitId, l.nom || l.produit, l.qte || 1); });
   } else {
-    recredit(cmd.produit, cmd.qte || 1);
+    recredit(null, cmd.produit, cmd.qte || 1);
   }
+
+  // v7.5.79 : stock remis -> marquer non déduit + persister (évite un double recrédit)
+  cmd.stockDeduit = false;
+  sbSaveCommande(cmd);
 
   var pStock = document.getElementById('p-stock');
   if (pStock && pStock.classList.contains('on')) stkRender();
@@ -11308,23 +11332,15 @@ function stkDeduireStock(cmdId) {
   var cmd = commandes.find(function(c){ return c.id === cmdId; });
   if (!cmd) return;
 
-  // Éviter la double déduction — vérifier les mouvements existants
-  var dejaFait = stkMouvements.some(function(m) {
-    return m.motif && m.motif.includes(cmdId) && m.type === 'sortie-livraison';
-  });
-  if (dejaFait) {
- return; }
+  // v7.5.79 : garde anti double-déduction sur un FLAG DURABLE (cmd.stockDeduit, persisté
+  // en base) au lieu de stkMouvements (volatil, réinitialisé à chaque rechargement) ->
+  // avant, une commande livrée puis rouverte après un rechargement était déduite 2 fois.
+  if (cmd.stockDeduit) return;
 
-  // Fonction interne de déduction pour un produit
-  function deduire(nomProduit, qte) {
-    if (!nomProduit) return;
-    // Match flexible — cherche le produit par correspondance partielle
-    var prod = produits.find(function(p) {
-      return p.nom === nomProduit ||
-             nomProduit.includes(p.nom) ||
-             p.nom.includes(nomProduit.split(' ').slice(0,2).join(' '));
-    });
-    if (!prod) { console.warn('Stock: produit non trouvé:', nomProduit); return; }
+  // Fonction interne de déduction pour un produit (par ID d'abord, repli nom)
+  function deduire(produitId, nomProduit, qte) {
+    var prod = stkTrouverProduit(produitId, nomProduit);
+    if (!prod) { console.warn('Stock: produit non trouvé:', nomProduit, produitId); return; }
 
     var qteADeduire = Math.max(1, parseInt(qte) || 1);
 
@@ -11420,17 +11436,30 @@ function stkDeduireStock(cmdId) {
   // Gérer les lignes multiples si elles existent
   if (cmd.lignes && cmd.lignes.length > 0) {
     cmd.lignes.forEach(function(l) {
-      deduire(l.nom || l.produit, l.qte || 1);
+      deduire(l.produitId, l.nom || l.produit, l.qte || 1);
     });
   } else {
     // Produit unique
-    deduire(cmd.produit, cmd.qte || 1);
+    deduire(null, cmd.produit, cmd.qte || 1);
   }
+
+  // v7.5.79 : marquer la commande "stock déduit" + persister en base (anti double-déduction
+  // durable, et permet à l'annulation de savoir qu'il faut recréditer).
+  cmd.stockDeduit = true;
+  sbSaveCommande(cmd);
 
   // Rafraîchir stock si page ouverte
   var pStock = document.getElementById('p-stock');
   if (pStock && pStock.classList.contains('on')) stkRender();
   if (role !== 'collab') finRender();
+}
+
+// v7.5.79 : "Actualiser" recharge le VRAI stock depuis Supabase (avant : simple re-render
+// mémoire -> ne montrait pas les changements faits ailleurs).
+async function stkActualiser() {
+  toast('🔄 Actualisation du stock...', 'info');
+  try { if (typeof sbLoadProduits === 'function') await sbLoadProduits(); } catch(e) { console.warn('stkActualiser:', e.message); }
+  stkRender();
 }
 
 // ── Render principal ──

@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.78 - Vue livreur : bandeau ROUGE bien visible de l'impératif horaire sur chaque arrêt concerné
+// v7.5.79 - Stock fiable : deduction par ID produit + flag "stock_deduit" persistant (anti double-deduction/recredit cassé) + Actualiser recharge la base
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-78';
+const CACHE_VERSION = 'maxiconfort-v7-5-79';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
