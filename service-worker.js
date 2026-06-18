@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.70 - Anti-homonyme : findCmdForStop() ne rattache un stop par NOM que si le nom est unique (sinon mauvais prix/paie propagé)
+// v7.5.71 - Commandes site Shopify : frais de port comptés dans le CA via champ frais_port dédié (edit-safe)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-70';
+const CACHE_VERSION = 'maxiconfort-v7-5-71';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

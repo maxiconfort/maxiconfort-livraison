@@ -2961,6 +2961,7 @@ async function sbSaveCommande(cmd) {
       qte: cmd.qte||1,
       prix: cmd.prix||0,
       prix_brut: cmd.prixBrut||0,
+      frais_port: cmd.fraisPort||0,
       remise_globale: cmd.remiseGlobale||0,
       remise_globale_val: cmd.remiseGlobaleVal||0,
       remise_globale_type: cmd.remiseGlobaleType||'pct',
@@ -3502,7 +3503,7 @@ function calculerProgressionChargement(t) {
 
 // Colonnes chargées pour les commandes — EXCLUT gls_pdf_base64 (PDF étiquette 50-400 Ko/cmd,
 // stocké par gls-create-shipment, récupéré uniquement à la demande via l'action getLabel)
-var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at';
+var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at,frais_port';
 
 async function sbLoadAll() {
   // Afficher cache immédiatement (UX rapide) pendant chargement Supabase
@@ -3559,6 +3560,7 @@ async function sbLoadAll() {
           adresse:r.adresse||'', etage:r.etage||'', asc:r.ascenseur||'Non', code:r.code||'',
           produit:r.produit||'', lignes:r.lignes||null, qte:r.qte||1,
           prix:parseFloat(r.prix)||0, prixBrut:parseFloat(r.prix_brut)||0,
+          fraisPort:parseFloat(r.frais_port)||0,
           remiseGlobale:parseFloat(r.remise_globale)||0,
           remiseGlobaleVal:parseFloat(r.remise_globale_val)||0,
           remiseGlobaleType:r.remise_globale_type||'pct',
@@ -3746,6 +3748,7 @@ function startPolling() {
               adresse:r.adresse||'', etage:r.etage||'', asc:r.ascenseur||'Non', code:r.code||'',
               produit:r.produit||'', lignes:r.lignes||null, qte:r.qte||1,
               prix:parseFloat(r.prix)||0, prixBrut:parseFloat(r.prix_brut)||0,
+              fraisPort:parseFloat(r.frais_port)||0,
               remiseGlobale:parseFloat(r.remise_globale)||0,
               remiseGlobaleVal:parseFloat(r.remise_globale_val)||0,
               remiseGlobaleType:r.remise_globale_type||'pct',
@@ -3856,7 +3859,7 @@ function sbStartRealtime() {
         id:r.id, client:r.client, tel:r.tel, email:r.email,
         adresse:r.adresse, etage:r.etage, asc:r.ascenseur, code:r.code,
         produit:r.produit, lignes:r.lignes, qte:r.qte, prix:r.prix,
-        prixBrut:r.prix_brut, remiseGlobale:r.remise_globale,
+        prixBrut:r.prix_brut, fraisPort:parseFloat(r.frais_port)||0, remiseGlobale:r.remise_globale,
         remiseGlobaleVal:r.remise_globale_val, remiseGlobaleType:r.remise_globale_type,
         remiseMotif:r.remise_motif, paie:r.paie, stpaie:r.stpaie,
         montantEnc:r.montant_enc, livreur:r.livreur, statut:r.statut,
@@ -6928,12 +6931,18 @@ function recalcTotal() {
   const remGV = parseFloat(document.getElementById('f-remise-val')?.value)||0;
   const remGT = document.getElementById('f-remise-type')?.value||'pct';
   const remGM = remGT==='pct' ? brut*remGV/100 : Math.min(remGV, brut);
-  const total = Math.max(0, brut - remGM);
+  // v7.5.71 : inclure les frais de port de la commande en cours d'édition (commande site)
+  var _ecPort = window._editingCmdId ? commandes.find(function(c){ return c.id===window._editingCmdId; }) : null;
+  var _port = _ecPort ? (parseFloat(_ecPort.fraisPort)||0) : 0;
+  const total = Math.max(0, brut - remGM) + _port;
   const totEl = document.getElementById('f-total-display');
   const remEl = document.getElementById('f-remise-display');
   if (totEl) totEl.textContent = total.toLocaleString('fr-FR')+' €';
   if (remEl) {
-    if (remGM > 0) { remEl.textContent = 'Remise '+(remGT==='pct'?remGV+'%':remGV+' €')+' → −'+remGM.toFixed(0)+' €'; remEl.style.display=''; }
+    var _msg = '';
+    if (remGM > 0) _msg = 'Remise '+(remGT==='pct'?remGV+'%':remGV+' €')+' → −'+remGM.toFixed(0)+' €';
+    if (_port > 0) _msg = (_msg ? _msg+' · ' : '') + 'Frais de port +'+_port.toFixed(0)+' €';
+    if (_msg) { remEl.textContent = _msg; remEl.style.display=''; }
     else remEl.style.display='none';
   }
 }
@@ -7136,7 +7145,13 @@ function saveCmd() {
   const remGV = parseFloat(document.getElementById('f-remise-val').value)||0;
   const remGT = document.getElementById('f-remise-type').value;
   const remGM = remGT==='pct' ? soustotal*remGV/100 : Math.min(remGV,soustotal);
-  const total = Math.max(0, soustotal - remGM);
+  const totalProduits = Math.max(0, soustotal - remGM);
+  // v7.5.71 : frais de port (commandes site Shopify) préservés à l'édition. Le formulaire
+  // n'a pas de champ port -> on reprend celui de la commande existante (0 pour une saisie
+  // manuelle) et on l'ajoute au prix. Sans ça, rouvrir une commande site faisait perdre
+  // le port (ex #1030 retombé à 139 au lieu de 168,90). prix = produits(net) + port.
+  const fraisPort = existingCmd ? (parseFloat(existingCmd.fraisPort)||0) : 0;
+  const total = totalProduits + fraisPort;
   const prodLabel = lignes.length ? (lignes[0].produit + (lignes.length>1 ? ' (+'+( lignes.length-1)+' autre'+(lignes.length>2?'s':'')+')'  : '')) : (existingCmd ? existingCmd.produit : '');
   var origine = document.getElementById('f-origine')?.value || '';
   var refMkt = document.getElementById('f-ref-mkt')?.value || '';
@@ -7157,7 +7172,7 @@ function saveCmd() {
     adresse:adr, etage:document.getElementById('f-etage').value,
     asc:document.getElementById('f-asc').value, code:document.getElementById('f-code').value,
     produit:prodLabel, lignes, qte:lignes.reduce((s,l)=>s+l.qte,0),
-    prix:total, prixBrut:soustotal, remiseGlobale:remGM,
+    prix:total, prixBrut:soustotal, fraisPort:fraisPort, remiseGlobale:remGM,
     remiseGlobaleVal:remGV, remiseGlobaleType:remGT,
     remiseMotif:document.getElementById('f-remise-motif').value,
     paie:document.getElementById('f-paie').value, stpaie:document.getElementById('f-stpaie').value,
@@ -7303,6 +7318,13 @@ function ouvrirCmd(id) {
       '<span style="color:var(--orange);font-weight:700">-'+c.remiseGlobale.toFixed(0)+' €</span>'+
     '</div>' : '';
 
+  // v7.5.71 : ligne frais de port (commandes site) — le Total TTC les inclut déjà
+  let portHtml = (parseFloat(c.fraisPort)||0) > 0 ?
+    '<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--brd);font-size:12px">'+
+      '<span style="color:var(--t2)">🚚 Frais de livraison</span>'+
+      '<span style="font-weight:700;color:var(--t2)">+'+(parseFloat(c.fraisPort)||0).toFixed(0)+' €</span>'+
+    '</div>' : '';
+
   const statuts = ['en-attente','en-route','arrivé','livré','reporté','annulé'];
   const slbls = {'en-attente':'En attente','en-route':'En route','arrivé':'Arrivé','livré':'Livré ✓','reporté':'Reporté','annulé':'Annulé'};
   let statutBtns = statuts.map(function(s){
@@ -7332,7 +7354,7 @@ function ouvrirCmd(id) {
     '</div>'+
     '<div class="psec">Commande ('+((c.lignes&&c.lignes.length)||1)+' produit'+((c.lignes&&c.lignes.length>1)?'s':'')+')</div>'+
     '<div style="background:var(--bg);border-radius:var(--r);padding:12px;margin-bottom:14px">'+
-      produitsHtml+remiseHtml+
+      produitsHtml+remiseHtml+portHtml+
       '<div class="prow" style="margin-top:4px"><span class="pk" style="font-weight:700">Total TTC</span><span class="pv" style="font-size:18px;color:var(--green);font-weight:800">'+((c.prix||0)).toLocaleString('fr-FR')+' €</span></div>'+
       '<div class="prow"><span class="pk">Paiement</span><span class="pv">'+c.paie+'</span></div>'+
       '<div class="prow"><span class="pk">Statut paie</span><span class="pv">'+pBdg(c.stpaie)+'</span></div>'+

@@ -117,6 +117,11 @@ function mapShopifyToCmd(o: any, appId: string) {
   const sousTotal = Number(o.subtotal_price ?? o.current_subtotal_price ?? 0); // produits après remise
   const remiseVal = Number(o.total_discounts ?? 0);                            // remise niveau commande
   const brut = +(sousTotal + remiseVal).toFixed(2);                            // produits avant remise (edit-safe)
+  // v6.1 (18/06) : Borhen veut le port COMPTÉ dans le CA. On le stocke dans frais_port
+  // (champ dédié, edit-safe côté app) et prix = produits(net) + port. Le port n'est PAS
+  // mis dans les lignes produit (sinon il polluerait chargement/stock/facture).
+  const port = +Number(o.total_shipping_price_set?.shop_money?.amount ?? o.shipping_lines?.reduce((s: number, l: any) => s + Number(l.price || 0), 0) ?? 0).toFixed(2);
+  const prixTotal = +(sousTotal + port).toFixed(2);                            // produits net + frais de port
   return {
     id: appId,                               // v6 : numéro APP (max+1), plus le numéro Shopify
     client: fmtClient(o),
@@ -129,15 +134,16 @@ function mapShopifyToCmd(o: any, appId: string) {
     produit: produitConcat,
     lignes: lignes,
     qte: lignes.reduce((s, l) => s + (l.qte || 1), 0) || 1,
-    prix: sousTotal,
+    prix: prixTotal,
     prix_brut: brut,
+    frais_port: port,
     remise_globale: remiseVal,
     remise_globale_val: remiseVal,
     remise_globale_type: 'eur',
     remise_motif: remiseVal > 0 ? 'Remise site' : '',
     paie: 'Site Maxiconfort',
     stpaie: mapStatutPaie(o.financial_status),
-    montant_enc: o.financial_status === 'paid' ? sousTotal : 0,
+    montant_enc: o.financial_status === 'paid' ? prixTotal : 0,
     livreur: '',
     statut: 'en-attente',
     date_livraison: '',  // a planifier par Borhen ensuite
