@@ -8437,6 +8437,22 @@ function renderLivreurCaisse(t) {
   '</div>';
 }
 
+// v7.5.78 : libellé du créneau horaire d'un stop pour la VUE LIVREUR. Source = champs
+// structurés (s.imperatif/creneauDebut/creneauFin, posés par l'optimisation) OU, à défaut,
+// détection dans la note (s.instr) via optimDetecterCreneau -> l'impératif est visible même
+// SANS avoir lancé l'optimisation. Renvoie '' si aucun créneau.
+function lvCreneauLabel(s) {
+  if (!s) return '';
+  var cren = (s.imperatif && (s.creneauDebut || s.creneauFin))
+    ? { creneauDebut: s.creneauDebut, creneauFin: s.creneauFin }
+    : (typeof optimDetecterCreneau === 'function' ? optimDetecterCreneau(s.instr || '') : null);
+  if (!cren) return '';
+  if (cren.creneauDebut && cren.creneauFin) return 'CRÉNEAU ' + cren.creneauDebut + ' – ' + cren.creneauFin;
+  if (cren.creneauFin) return 'AVANT ' + cren.creneauFin;
+  if (cren.creneauDebut) return 'À PARTIR DE ' + cren.creneauDebut;
+  return '';
+}
+
 function renderLivreur() {
   var sel = document.getElementById('lv-tournee-select');
   var selectorWrap = document.getElementById('lv-selector-wrap');
@@ -8558,6 +8574,12 @@ function renderLivreur() {
     var waNum = tel.startsWith('0') ? '33'+tel.slice(1) : tel;
     var adresseNav = encodeURIComponent(s.adresse || '');
 
+    // v7.5.78 : bandeau ROUGE bien visible si le client a un impératif horaire (créneau)
+    var crenLbl = (!done) ? lvCreneauLabel(s) : '';
+    var crenBanner = crenLbl
+      ? '<div style="background:#E53E3E;color:#fff;font-weight:900;font-size:15px;line-height:1.25;padding:10px 12px;border-radius:10px;margin-bottom:10px;display:flex;align-items:center;gap:8px;box-shadow:0 2px 6px rgba(229,62,62,.35)"><span style="font-size:18px">⏰</span><span>IMPÉRATIF HORAIRE : '+crenLbl+'</span></div>'
+      : '';
+
     // Statut badge label
     var stLbl = {'en-attente':'En attente','en-route':'🚚 En route','arrivé':'📍 Arrivé','livré':'✅ Livré','reporté':'📅 Reporté','absent':'🔔 Absent','problème':'⚠️ Problème'}[st] || st;
 
@@ -8572,6 +8594,7 @@ function renderLivreur() {
 
       // ── Top card ──
       '<div class="lv-card-top">'+
+        crenBanner +
         '<div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:12px">'+
           '<div class="lv-card-num" style="background:'+cfg.bg+'">'+( done?'✓':i+1)+'</div>'+
           '<div style="flex:1">'+

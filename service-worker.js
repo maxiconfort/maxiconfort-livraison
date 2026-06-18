@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.77 - L'impératif horaire le plus serré (échéance la plus tôt) est TOUJOURS placé en 1er
+// v7.5.78 - Vue livreur : bandeau ROUGE bien visible de l'impératif horaire sur chaque arrêt concerné
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-77';
+const CACHE_VERSION = 'maxiconfort-v7-5-78';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
