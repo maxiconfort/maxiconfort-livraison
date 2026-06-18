@@ -38,8 +38,13 @@ const sb = createClient(SB_URL, SB_SR_KEY, {
 // Le sender "Maxiconfort" identifie l'expediteur, donc pas besoin de le
 // repeter dans le corps -> on gagne des caracteres.
 const TPL = {
+  // v7.5.68 : raccourci sous 160 caracteres = 1 seul SMS = 1 credit OVH (avant : ~2
+  // segments = 2 credits par SMS veille). Le lien confirmer.html?t=<uuid> fait deja
+  // ~86 car -> le corps doit rester court. Le sender "MAXICONFORT" identifie deja
+  // l'expediteur ; le nom du produit et la phrase "appel 1h avant" sont retires
+  // (l'info "1h avant" est rappelee par le SMS depart du jour J). dateFr = JJ/MM.
   veille: (p: any) =>
-    `Bonjour ${p.prenom}, votre livraison Maxiconfort (${p.produit}) est prevue demain ${p.dateFr}. Le livreur vous appellera environ 1h avant son passage. Serez-vous present ? Merci de confirmer ici : ${p.lienConfirm}`,
+    `Bonjour ${p.prenom}, livraison prevue demain ${p.dateFr}. Serez-vous la ? ${p.lienConfirm}`,
   depart: (p: any) =>
     p.heureArrivee
       ? `Bonjour ${p.prenom}, livreur en route ! Arrivee prevue vers ${p.heureArrivee}. Suivi : ${p.lienSuivi}`
@@ -125,7 +130,11 @@ Deno.serve(async (req: Request) => {
   const tracking = cmd.tracking_transporteur || '';
   // v3 : params veille (date livraison FR + creneau)
   const dateLiv = cmd.date_livraison ? new Date(cmd.date_livraison + 'T12:00:00') : null;
-  const dateFr = dateLiv ? dateLiv.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) : '';
+  // v7.5.68 : date courte JJ/MM (avant "lundi 18 juin" ~13 car) pour tenir le SMS
+  // veille sous 160 car. Le mot "demain" du template donne deja le contexte.
+  const dateFr = dateLiv
+    ? String(dateLiv.getDate()).padStart(2, '0') + '/' + String(dateLiv.getMonth() + 1).padStart(2, '0')
+    : '';
   const produit = (cmd.produit || 'votre commande').substring(0, 60);
   const creneauDeb = body.creneauDeb || '08:00';
   const creneauFin = body.creneauFin || '17:00';

@@ -2829,6 +2829,18 @@ function offlineQueueAdd(type, data) {
   if (ind) { ind.style.display = 'flex'; ind.textContent = '📵 ' + offlineQueue.length + ' action(s) en attente'; }
 }
 
+// v7.5.68 : échec d'une sauvegarde "secondaire" (dépense, produit, véhicule,
+// entretien, livreur). AVANT : en cas d'échec HTTP alors qu'on est EN LIGNE,
+// simple console.warn -> l'utilisateur voyait quand même "✅ sauvegardé" alors
+// que RIEN n'était persisté -> donnée perdue au rechargement (rechargée depuis
+// Supabase où elle n'existe pas). Désormais : mise en file d'attente offline
+// (rejouée au retour réseau, comme les commandes) + alerte visible à l'écran.
+function sbSaveEchec(type, data, ctx, status, detail) {
+  console.warn(ctx + ' save échec', status || '', detail || '');
+  try { offlineQueueAdd(type, data); } catch(e) {}
+  toast('⚠️ ' + ctx + ' non enregistré en ligne — réessai auto au retour réseau', 'err');
+}
+
 async function offlineQueueFlush() {
   if (!offlineQueue.length) return;
   var remaining = [];
@@ -2839,6 +2851,10 @@ async function offlineQueueFlush() {
       if (item.type === 'commande') await sbSaveCommande(item.data);
       else if (item.type === 'tournee') await sbSaveTournee(item.data);
       else if (item.type === 'depense') await sbSaveDepense(item.data);
+      else if (item.type === 'produit') await sbSaveProduit(item.data);
+      else if (item.type === 'vehicule') await sbSaveVehicule(item.data);
+      else if (item.type === 'entretien') await sbSaveEntretien(item.data);
+      else if (item.type === 'livreur') await sbSaveLivreur(item.data);
       flushed++;
     } catch(e) {
       remaining.push(item); // réessayer plus tard
@@ -7118,7 +7134,7 @@ function saveCmd() {
     declencherSmsExpedition = true;
   }
   const cmdData = {
-    id: isEdit ? window._editingCmdId : '#'+nextCmdId++,
+    id: isEdit ? window._editingCmdId : genererCmdId(),
     client:nom, tel, email:document.getElementById('f-email').value,
     adresse:adr, etage:document.getElementById('f-etage').value,
     asc:document.getElementById('f-asc').value, code:document.getElementById('f-code').value,
@@ -8119,6 +8135,26 @@ function nextTourneeId() {
     if (n > maxN) maxN = n;
   });
   return 'T-' + (maxN + 1);
+}
+
+// v7.5.68 : ID de commande robuste = max(numéros existants) + 1, calculé AU MOMENT
+// de la création (pas un compteur figé au démarrage). AVANT : '#'+(nextCmdId++) avec
+// nextCmdId calculé une seule fois au chargement -> si une 2e session (collaboratrice)
+// créait une commande entre-temps, le compteur local ne le voyait pas et la nouvelle
+// commande reprenait un numéro existant -> l'UPSERT merge-duplicates ÉCRASAIT la
+// commande de l'autre poste (même mécanisme que le bug tournées v7.5.66).
+// On ignore les ID #SAV... (parseInt -> NaN -> 0) qui ont leur propre numérotation.
+function genererCmdId() {
+  var maxN = 0;
+  (typeof commandes !== 'undefined' ? commandes : []).forEach(function(c){
+    var id = String(c && c.id || '');
+    if (/SAV/i.test(id)) return; // les SAV ont leur propre schéma d'ID
+    var n = parseInt(id.replace(/[^0-9]/g, '')) || 0;
+    if (n > maxN) maxN = n;
+  });
+  if (maxN < nextCmdId - 1) maxN = nextCmdId - 1; // filet : ne jamais régresser
+  nextCmdId = maxN + 2; // garde le compteur cohérent pour le reste du code
+  return '#' + (maxN + 1);
 }
 
 function renderTournees() {
@@ -11476,9 +11512,18 @@ function sauvegarderProduit() {
 
 function supprimerProduit(id) {
   const p = produits.find(x => x.id === id);
+  if (!p) return; // v7.5.68 : garde — produit introuvable (évite le crash sur p.nom)
   if (!confirm('Supprimer "' + p.nom + '" du catalogue ?')) return;
   produits = produits.filter(x => x.id !== id);
+  // v7.5.68 : persister la suppression. AVANT : seulement en mémoire -> le produit
+  // réapparaissait au rechargement (rechargé depuis Supabase où il existait encore).
+  sbDeleteProduit(id);
+  try {
+    var customProds = produits.filter(function(x){ return x.id && x.id.indexOf('pr') === 0; });
+    localStorage.setItem('mx_produits_custom', JSON.stringify(customProds));
+  } catch(e) {}
   stkRender();
+  buildProduitOptions();
   toast('Produit supprimé', 'ok');
 }
 
@@ -12889,9 +12934,10 @@ async function sbSaveProduit(p) {
     });
     if (!resp.ok) {
       var err = await resp.text();
-      console.warn('sbSaveProduit HTTP', resp.status, err);
+      sbSaveEchec('produit', p, 'Produit', resp.status, err);
+      return;
     }
-  } catch(e) { console.warn('sbSaveProduit:', e.message); }
+  } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e.message); }
 }
 
 async function sbDeleteProduit(id) {
@@ -13019,9 +13065,9 @@ async function sbSaveDepense(d) {
         tournee_id: d.tourneeId || null,
       })
     });
-    if (!resp.ok) { var e = await resp.text(); console.warn('sbSaveDepense', resp.status, e); }
+    if (!resp.ok) { var e = await resp.text(); sbSaveEchec('depense', d, 'Dépense', resp.status, e); return; }
     try { localStorage.setItem('mx_depenses_cache', JSON.stringify(depenses)); } catch(ex) {}
-  } catch(e) { console.warn('sbSaveDepense:', e.message); }
+  } catch(e) { sbSaveEchec('depense', d, 'Dépense', '', e.message); }
 }
 
 async function sbDeleteCommande(id) {
@@ -13544,7 +13590,7 @@ async function sbLoadVehicules() {
 
 async function sbSaveVehicule(v) {
   try {
-    await fetch(SUPABASE_URL + '/rest/v1/vehicules', {
+    var resp = await fetch(SUPABASE_URL + '/rest/v1/vehicules', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -13554,8 +13600,9 @@ async function sbSaveVehicule(v) {
       },
       body: JSON.stringify(v)
     });
+    if (!resp.ok) { var e = await resp.text(); sbSaveEchec('vehicule', v, 'Véhicule', resp.status, e); return; }
     localStorage.setItem('mx_vehicules_cache', JSON.stringify(vehicules));
-  } catch(e) { console.warn('sbSaveVehicule:', e.message); }
+  } catch(e) { sbSaveEchec('vehicule', v, 'Véhicule', '', e.message); }
 }
 
 async function sbDeleteVehicule(id) {
@@ -14103,15 +14150,14 @@ async function sbSaveEntretien(e) {
     });
     if (!resp.ok) {
       var err = await resp.text();
-      console.warn('sbSaveEntretien HTTP', resp.status, err);
-      toast('⚠️ Erreur sauvegarde entretien: ' + resp.status, 'err');
+      sbSaveEchec('entretien', e, 'Entretien', resp.status, err);
       return;
     }
     localStorage.setItem('mx_entretiens_cache', JSON.stringify(entretiens));
     // Recharger depuis Supabase pour confirmer
     sbLoadEntretiens();
   } catch(err) {
-    console.warn('sbSaveEntretien:', err.message);
+    sbSaveEchec('entretien', e, 'Entretien', '', err.message);
     // Sauvegarder en cache local quand même
     localStorage.setItem('mx_entretiens_cache', JSON.stringify(entretiens));
   }
@@ -14460,8 +14506,8 @@ async function sbSaveLivreur(l) {
         couleur: l.couleur||'#185FA5', actif: l.actif !== false,
       })
     });
-    if (!resp.ok) { var e = await resp.text(); console.warn('sbSaveLivreur', resp.status, e); }
-  } catch(e) { console.warn('sbSaveLivreur:', e.message); }
+    if (!resp.ok) { var er = await resp.text(); sbSaveEchec('livreur', l, 'Livreur', resp.status, er); }
+  } catch(e) { sbSaveEchec('livreur', l, 'Livreur', '', e.message); }
 }
 
 async function sbDeleteLivreur(id) {

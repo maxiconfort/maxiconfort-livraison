@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.67 - Signature : 3 choix paiement (Encaissé / Déjà payé / Non payé) - ne plus présumer "marketplace = prépayé"
+// v7.5.68 - Check-up : ID commande max+1 (anti-écrasement multi-poste) + sauvegardes secondaires en file d'attente sur échec + SMS veille <160 car
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-67';
+const CACHE_VERSION = 'maxiconfort-v7-5-68';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
