@@ -7254,6 +7254,9 @@ function saveCmd() {
   if (declencherSmsExpedition) {
     setTimeout(function(){ sendCmdSmsAsync(cmdData.id, 'expedition'); }, 1800);
   }
+  // v7.5.72 : auto-planification — range la commande dans la tournée de sa date de
+  // livraison (IDF/RANOU uniquement). La carte de tournée passe au vert à 13 clients.
+  autoPlanifierTournee(cmdData);
 }
 
 // Appel Edge Function send-cmd-sms (non bloquant, dedupe cote serveur)
@@ -8177,6 +8180,68 @@ function nextTourneeId() {
   return 'T-' + (maxN + 1);
 }
 
+// v7.5.72 : seuil de rentabilité d'une tournée — au-delà, la carte passe au vert
+// (« prêt à envoyer le livreur »). Réglable ici.
+var TOURNEE_SEUIL_RENTABLE = 13;
+
+// v7.5.72 : AUTO-PLANIFICATION des tournées par DATE de livraison.
+// Quand Borhen enregistre une commande à livrer nous-mêmes (Île-de-France / RANOU)
+// avec une date, elle se range TOUTE SEULE dans la tournée de cette date (créée si
+// elle n'existe pas). Les commandes s'accumulent par date ; la carte de tournée
+// affiche le compteur de clients et passe au vert dès TOURNEE_SEUIL_RENTABLE.
+// NE concerne PAS : les commandes GLS (province, expédiées), les SAV, les commandes
+// déjà livrées/annulées. Idempotent (pas de doublon de stop) et déplace la commande
+// si sa date change (retirée des autres tournées, stops livrés préservés).
+function autoPlanifierTournee(cmd) {
+  try {
+    if (!cmd || !cmd.id) return;
+    var date = cmd.date || '';
+    if (!date || date.length < 10) return;                       // pas de date -> pas de planif
+    if ((cmd.transporteur || 'RANOU') === 'GLS') return;         // province GLS -> expédié, pas de tournée
+    if (String(cmd.id).indexOf('#SAV') === 0) return;            // SAV : géré à la main
+    if (cmd.statut === 'livré' || cmd.statut === 'annulé') return;
+
+    // 1) tournée RANOU existante pour cette date (non terminée) ? sinon on la crée
+    var t = tournees.find(function(x){
+      return x && x.date === date && (x.livreur === 'RANOU' || !x.livreur)
+             && x.statut !== 'terminée' && Array.isArray(x.stops);
+    });
+    if (!t) {
+      t = { id: nextTourneeId(), date: date, livreur: 'RANOU', stops: [], statut: 'préparée' };
+      tournees.push(t);
+    }
+    if (!Array.isArray(t.stops)) t.stops = [];
+
+    // 2) ajouter / mettre à jour le stop de cette commande (sans doublon)
+    var infos = {
+      client: cmd.client, tel: cmd.tel, adresse: cmd.adresse,
+      etage: cmd.etage || '', asc: cmd.asc || 'Non', code: cmd.code || '',
+      produit: cmd.produit, prix: cmd.prix, paie: cmd.paie, instr: cmd.instr || '',
+    };
+    var existant = t.stops.find(function(s){ return s.cmdId === cmd.id; });
+    if (existant) {
+      // MAJ des infos (adresse/prix/produit ont pu changer) sans toucher statut/heure
+      for (var k in infos) existant[k] = infos[k];
+    } else {
+      t.stops.push(Object.assign({ num: t.stops.length + 1, cmdId: cmd.id, statut: 'en-attente', heure: '' }, infos));
+    }
+
+    // 3) si la date a changé : retirer la commande des AUTRES tournées (préserver les livrés)
+    var aMaj = [];
+    tournees.forEach(function(autre){
+      if (!autre || autre.id === t.id || !Array.isArray(autre.stops)) return;
+      var avant = autre.stops.length;
+      autre.stops = autre.stops.filter(function(s){ return !(s.cmdId === cmd.id && s.statut !== 'livré'); });
+      if (autre.stops.length !== avant) aMaj.push(autre);
+    });
+
+    // 4) persister (tournée cible + tournées modifiées) + rafraîchir l'affichage
+    sbSaveTournee(t);
+    aMaj.forEach(function(a){ try { sbSaveTournee(a); } catch(_e){} });
+    if (typeof renderTournees === 'function') renderTournees();
+  } catch(e) { console.warn('autoPlanifierTournee:', e.message); }
+}
+
 // v7.5.68 : ID de commande robuste = max(numéros existants) + 1, calculé AU MOMENT
 // de la création (pas un compteur figé au démarrage). AVANT : '#'+(nextCmdId++) avec
 // nextCmdId calculé une seule fois au chargement -> si une 2e session (collaboratrice)
@@ -8246,7 +8311,19 @@ function renderTournees() {
     var isTerm = t.statut === 'terminée';
     var isActive = t.id === currentTourneeId;
     var classes = 'trn-card' + (isTerm ? ' done' : '') + (isActive ? ' active' : '');
-    return '<div class="' + classes + '" onclick="afficherTournee(\'' + t.id + '\')">' +
+    // v7.5.72 : compteur de rentabilité — nb de clients (stops non annulés). Une tournée
+    // en préparation passe au VERT dès TOURNEE_SEUIL_RENTABLE clients = « prêt à envoyer ».
+    var clients = t.stops.filter(function(s){ return s.statut !== 'annulé'; }).length;
+    var enPrepa = (t.statut === 'préparée');
+    var rentable = enPrepa && clients >= TOURNEE_SEUIL_RENTABLE;
+    var cardStyle = rentable ? 'border:2px solid var(--green);box-shadow:0 0 0 3px rgba(34,197,94,.20)' : '';
+    var planBadge = '';
+    if (rentable) {
+      planBadge = '<div style="margin-top:7px;background:var(--gl);color:var(--gd);font-weight:800;font-size:11px;padding:5px 8px;border-radius:8px;text-align:center">✅ ' + clients + ' clients · rentable — prêt à envoyer 🚀</div>';
+    } else if (enPrepa) {
+      planBadge = '<div style="margin-top:7px;background:var(--bg);color:var(--od);font-weight:700;font-size:11px;padding:5px 8px;border-radius:8px;text-align:center">👥 ' + clients + '/' + TOURNEE_SEUIL_RENTABLE + ' clients — en remplissage</div>';
+    }
+    return '<div class="' + classes + '" style="' + cardStyle + '" onclick="afficherTournee(\'' + t.id + '\')">' +
       '<div class="trn-card-head">' +
         '<span class="trn-card-id">' + t.id + ' · ' + (t.livreur || '?') + '</span>' +
         '<span class="bdg ' + stcls + '" style="font-size:9px;padding:2px 6px">' + t.statut + '</span>' +
@@ -8257,6 +8334,7 @@ function renderTournees() {
         '<span class="trn-card-money">✓ ' + Math.round(encaisse) + ' € encaissés</span>' +
       '</div>' +
       '<div class="trn-card-prog"><div class="trn-card-prog-fill" style="width:' + pct + '%"></div></div>' +
+      planBadge +
     '</div>';
   }).join('');
 }

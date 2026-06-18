@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.71 - Commandes site Shopify : frais de port comptés dans le CA via champ frais_port dédié (edit-safe)
+// v7.5.72 - Auto-planification tournées par date de livraison + carte verte à 13 clients (seuil rentabilité)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-71';
+const CACHE_VERSION = 'maxiconfort-v7-5-72';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
