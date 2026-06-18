@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.68 - Check-up : ID commande max+1 (anti-écrasement multi-poste) + sauvegardes secondaires en file d'attente sur échec + SMS veille <160 car
+// v7.5.69 - Encaissé (choix B : total réglé, prépayé inclus) : part espèces des Mixte cohérente entre "collectées" et "remises"
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-68';
+const CACHE_VERSION = 'maxiconfort-v7-5-69';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

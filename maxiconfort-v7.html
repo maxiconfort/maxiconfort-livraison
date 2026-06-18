@@ -9999,8 +9999,11 @@ function finRender() {
       if (t.date < range.du || t.date > range.au) return;
       // v7.5.15 : utilise le statut du STOP pour eviter le double comptage
       var cmdsT = getCmdsLivresParTournee(t);
-      var espT = (cmdsT||[]).filter(function(c){ return c.paie==='Espèces' && c.stpaie==='Payé'; })
-                            .reduce(function(s,c){ return s+(c.montantEnc||c.prix); }, 0);
+      // v7.5.69 : getMontantEspecesCmd (inclut la part espèces d'un paiement Mixte) pour
+      // rester cohérent avec especesCollectees (~ligne 9987). AVANT : filtre paie==='Espèces'
+      // en dur -> la part espèces des Mixte était comptée en "collectées" mais pas en
+      // "remises" -> indicateur "espèces en attente" surestimé.
+      var espT = (cmdsT||[]).reduce(function(s,c){ return s+getMontantEspecesCmd(c); }, 0);
       var depEspT = deps.filter(function(d){
         var matchTournee = d.tourneeId ? d.tourneeId === t.id : d.date === t.date;
         return (d.livreur||'').toLowerCase() === (t.livreur||'').toLowerCase()
