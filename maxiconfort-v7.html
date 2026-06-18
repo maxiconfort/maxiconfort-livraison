@@ -12009,6 +12009,36 @@ function optimInit() {
   if (optimTourneeId) { sel.value = optimTourneeId; optimCharger(); }
 }
 
+// v7.5.75 : détecte un créneau horaire écrit en TEXTE dans la note de la commande
+// (ex « IMPERATIF AVANT 9H30 », « entre 14h-16h », « avant midi », « apres 15h »,
+// « RDV 17h ») et le transforme en créneau structuré {creneauDebut, creneauFin} pour
+// que l'optimiseur le respecte AUTOMATIQUEMENT — sans avoir à cocher « Impératif » à la
+// main. Renvoie null si aucune contrainte horaire claire (évite les faux positifs type
+// « appeler avant de livrer », « code 4521 »).
+function optimDetecterCreneau(texte) {
+  if (!texte) return null;
+  var t = (' ' + texte + ' ').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  function parseH(s){ var m = s.match(/(\d{1,2})\s*[h:]\s*(\d{2})?/); if(!m) return null; var hh=parseInt(m[1],10), mm=m[2]?parseInt(m[2],10):0; if(hh>23||mm>59) return null; return hh*60+mm; }
+  function fmt(min){ return String(Math.floor(min/60)).padStart(2,'0')+':'+String(min%60).padStart(2,'0'); }
+  // « entre 14h-16h », « de 9h a 11h », « 9h/11h »
+  var mE = t.match(/(?:entre|de)\s*(\d{1,2}\s*[h:]\s*\d{0,2})\s*(?:et|a|au|-|\/)\s*(\d{1,2}\s*[h:]\s*\d{0,2})/);
+  if (mE) { var d=parseH(mE[1]), f=parseH(mE[2]); if(d!=null&&f!=null&&f>d) return {imperatif:true, creneauDebut:fmt(d), creneauFin:fmt(f)}; }
+  // « avant midi » / « avant 9h30 »
+  if (/avant\s+midi/.test(t)) return {imperatif:true, creneauDebut:null, creneauFin:'12:00'};
+  var mA = t.match(/avant\s+(\d{1,2}\s*[h:]\s*\d{0,2})/);
+  if (mA) { var fa=parseH(mA[1]); if(fa!=null) return {imperatif:true, creneauDebut:null, creneauFin:fmt(fa)}; }
+  // « apres midi » / « apres 14h » / « a partir de 15h30 »
+  if (/apres\s+midi/.test(t)) return {imperatif:true, creneauDebut:'12:00', creneauFin:null};
+  var mP = t.match(/(?:apres|a\s*partir\s*de|des)\s+(\d{1,2}\s*[h:]\s*\d{0,2})/);
+  if (mP) { var da=parseH(mP[1]); if(da!=null) return {imperatif:true, creneauDebut:fmt(da), creneauFin:null}; }
+  // « imperatif … 9h30 » / « creneau 10h » / « RDV 17h » (mot-clé + une heure -> deadline)
+  if (/imperatif|creneau|rendez\s*-?\s*vous|\brdv\b/.test(t)) {
+    var mh = t.match(/(\d{1,2}\s*[h:]\s*\d{0,2})/);
+    if (mh) { var hd=parseH(mh[1]); if(hd!=null) return {imperatif:true, creneauDebut:null, creneauFin:fmt(hd)}; }
+  }
+  return null;
+}
+
 async function optimCharger() {
   const tid = document.getElementById('optim-tournee-sel').value;
   if (!tid) {
@@ -12026,6 +12056,9 @@ async function optimCharger() {
   optimStops = t.stops.map(function(s, i) {
     var coords = getCoordsFromAdresse(s.adresse);
     var cmd = commandes.find(function(c){ return c.id === s.cmdId; });
+    // v7.5.75 : lire la note (stop ou commande) pour en déduire un créneau horaire
+    var noteTxt = s.instr || (cmd && cmd.instr) || '';
+    var creneau = optimDetecterCreneau(noteTxt);
     return {
       idx: i,
       cmdId: s.cmdId,
@@ -12039,17 +12072,20 @@ async function optimCharger() {
       livreur: t.livreur,
       lat: coords.lat,
       lng: coords.lng,
-      imperatif: false,
-      creneauDebut: null,
-      creneauFin: null,
+      imperatif: creneau ? true : false,
+      creneauDebut: creneau ? creneau.creneauDebut : null,
+      creneauFin: creneau ? creneau.creneauFin : null,
       etaDebut: null,
       etaFin: null,
       trajetVersSuivant: 0,
       alerteEnvoyee: false,
-      instr: s.instr || '',
+      instr: noteTxt,
     };
   });
   optimStopsOrig = optimStops.map(function(s){ return Object.assign({},s); });
+  // v7.5.75 : informer combien de créneaux ont été détectés automatiquement dans les notes
+  var _nbCren = optimStops.filter(function(s){ return s.imperatif; }).length;
+  if (_nbCren > 0) toast('🕐 ' + _nbCren + ' créneau(x) horaire(s) détecté(s) dans les notes', 'info');
 
   document.getElementById('optim-empty').style.display = 'none';
   document.getElementById('optim-content').style.display = 'block';

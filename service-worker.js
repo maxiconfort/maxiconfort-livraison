@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.74 - Optimisation tournée avec fenêtres horaires (respecte créneaux début+fin) + km + dépôt/domicile
+// v7.5.75 - Optimisation lit les créneaux horaires écrits dans les NOTES de commande (ex "avant 9h30")
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-74';
+const CACHE_VERSION = 'maxiconfort-v7-5-75';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
