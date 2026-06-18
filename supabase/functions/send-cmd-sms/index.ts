@@ -55,6 +55,13 @@ const TPL = {
     `Bonjour ${p.prenom}, votre livreur arrive ! Soyez pret. Suivi : ${p.lienSuivi}`,
   expedition: (p: any) =>
     `Bonjour ${p.prenom}, commande ${p.id} expediee par GLS. Tracking ${p.tracking}. Suivi : https://gls-group.eu/FR/fr/suivi-colis.html?match=${p.tracking}`,
+  // v7.5.73 : SMS de confirmation envoye a la PRISE de commande (rassurer / fideliser
+  // le client pour qu'il n'aille pas voir ailleurs). Avec date -> annonce la date de
+  // livraison ; sans date -> message generique. <=160 car = 1 credit OVH.
+  confirmation: (p: any) =>
+    p.dateFr
+      ? `Bonjour ${p.prenom}, Maxiconfort confirme votre commande. Elle est en cours d'acheminement et sera livree le ${p.dateFr}. Merci de votre confiance !`
+      : `Bonjour ${p.prenom}, Maxiconfort confirme votre commande. Elle est en cours de traitement, nous vous communiquerons la date de livraison. Merci !`,
 };
 
 function prenomDe(client: string): string {
@@ -89,8 +96,8 @@ Deno.serve(async (req: Request) => {
     return new Response(JSON.stringify({ error: 'cmdId et type requis' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
-  if (!['veille', 'depart', 'route', 'proche', 'expedition'].includes(type)) {
-    return new Response(JSON.stringify({ error: 'type doit être : veille, depart, route, proche, expedition' }),
+  if (!['veille', 'depart', 'route', 'proche', 'expedition', 'confirmation'].includes(type)) {
+    return new Response(JSON.stringify({ error: 'type doit être : veille, depart, route, proche, expedition, confirmation' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 

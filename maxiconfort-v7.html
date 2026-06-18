@@ -7243,6 +7243,16 @@ function saveCmd() {
     sbSaveCommande(cmdData).then(function(){ showSync('✅ Commande sauvegardée', 'ok'); }).catch(function(){ showSync('⚠️ Erreur sync commande', 'err'); }); // Sync Supabase — AVANT renderDash
     try { renderCmds(); renderDash(); populateCmdChecklist(); if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres(); } catch(e) { console.warn('render err:', e.message); renderCmds(); populateCmdChecklist(); }
     toast('Commande '+cmdData.id+' créée — '+total.toLocaleString('fr-FR')+' € ✓','ok');
+    // v7.5.73 : SMS de confirmation de prise de commande au client (le rassurer/fidéliser :
+    // commande prise en charge, en cours d'acheminement, livrée à la date indiquée).
+    // Dédupe côté serveur (sms_envoyes type 'confirmation'). EXCLUS : SAV, saisie
+    // rétroactive, et GLS avec tracking déjà saisi (le SMS expédition suffit alors).
+    if (cmdData.tel && cmdData.tel.replace(/\D/g,'').length >= 8
+        && String(cmdData.id).indexOf('#SAV') !== 0
+        && !cmdData._retroactiveCreatedAt
+        && !declencherSmsExpedition) {
+      setTimeout(function(){ sendCmdSmsAsync(cmdData.id, 'confirmation'); }, 1500);
+    }
     if (!document.getElementById('f-livreur').value) {
       notifAjout('warn','commande','Commande sans livreur — '+nom,'Aucun livreur assigné pour cette commande.','Assigner livreur','commandes');
     }

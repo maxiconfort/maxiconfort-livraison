@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.72 - Auto-planification tournées par date de livraison + carte verte à 13 clients (seuil rentabilité)
+// v7.5.73 - SMS de confirmation de commande au client à la prise de commande (rassurer/fidéliser)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-72';
+const CACHE_VERSION = 'maxiconfort-v7-5-73';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
