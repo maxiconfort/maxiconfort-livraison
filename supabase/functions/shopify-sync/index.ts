@@ -64,6 +64,19 @@ function fmtAdresse(addr: any): string {
   return parts.join(', ');
 }
 
+// v6.2 (18/06/2026) : choix automatique du transporteur selon la zone de livraison.
+// Île-de-France (dép. 75/77/78/91/92/93/94/95) -> livraison RANOU (livreur interne).
+// Tout le reste (province, hors France) -> expédition GLS. Règle métier Borhen.
+const DEP_IDF = ['75', '77', '78', '91', '92', '93', '94', '95'];
+function transporteurPour(addr: any): string {
+  const pays = String(addr?.country_code || addr?.country || '').trim().toUpperCase();
+  // Hors France métropolitaine -> GLS (jamais RANOU)
+  if (pays && pays !== 'FR' && pays !== 'FRANCE') return 'GLS';
+  const zip = String(addr?.zip || '').replace(/\s+/g, '');
+  const dep = zip.substring(0, 2);
+  return DEP_IDF.includes(dep) ? 'RANOU' : 'GLS';
+}
+
 function fmtClient(o: any): string {
   // Priorité : shipping_address puis customer
   const ship = o.shipping_address;
@@ -152,6 +165,8 @@ function mapShopifyToCmd(o: any, appId: string) {
     // recroiser avec l'admin Shopify, puisque l'id app est désormais différent.
     instr: (o.name ? 'Commande site ' + o.name + '. ' : '') + (o.note || '').toString(),
     origine: 'Site Maxiconfort',
+    // v6.2 : transporteur auto — IDF -> RANOU, province/étranger -> GLS
+    transporteur: transporteurPour(o.shipping_address),
     ref_marketplace: String(o.id), // ID Shopify pour deduper
     updated_at: new Date().toISOString(),
     created_at: o.created_at || new Date().toISOString(),
