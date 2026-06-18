@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.73 - SMS de confirmation de commande au client à la prise de commande (rassurer/fidéliser)
+// v7.5.74 - Optimisation tournée avec fenêtres horaires (respecte créneaux début+fin) + km + dépôt/domicile
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-73';
+const CACHE_VERSION = 'maxiconfort-v7-5-74';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

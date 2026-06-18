@@ -11934,6 +11934,69 @@ function optim2opt(ordre, matrice, depotIdx, endpointIdx) {
   return ordre;
 }
 
+// ════════════════════════════════════════════════════════════
+// 🕐 OPTIMISATION AVEC FENÊTRES HORAIRES (v7.5.74)
+// ════════════════════════════════════════════════════════════
+// Coût d'un ordre = trajet (matriceScore : km ou temps, éventuellement pondéré trafic)
+// + GROSSE pénalité si un client impératif est servi APRÈS la fin de son créneau.
+// Le planning horaire est calculé en MINUTES réelles (matriceDuree), avec attente si on
+// arrive avant le début du créneau. Départ = entrepôt (depotIdx), arrivée = domicile
+// livreur (endpointIdx, optionnel). infos[mIdx] = { ready, due } en minutes (null = pas
+// de contrainte). LAMBDA élevé -> respecter un créneau prime sur tout gain de trajet.
+function optimCoutCreneaux(ordre, matriceScore, matriceDuree, depotIdx, endpointIdx, infos, startMin, dureeStop) {
+  var LAMBDA = 1000;
+  if (!ordre.length) return 0;
+  var trajet = matriceScore[depotIdx][ordre[0]] || 0;
+  var penalite = 0;
+  var courant = startMin + (matriceDuree[depotIdx][ordre[0]] || 0);
+  for (var i = 0; i < ordre.length; i++) {
+    var inf = infos[ordre[i]] || {};
+    if (inf.ready != null && courant < inf.ready) courant = inf.ready;   // attendre l'ouverture du créneau
+    if (inf.due != null && courant > inf.due) penalite += (courant - inf.due); // retard = arrivée après la fin
+    courant += dureeStop;
+    if (i < ordre.length - 1) {
+      trajet  += matriceScore[ordre[i]][ordre[i+1]] || 0;
+      courant += matriceDuree[ordre[i]][ordre[i+1]] || 0;
+    }
+  }
+  if (endpointIdx != null) trajet += matriceScore[ordre[ordre.length-1]][endpointIdx] || 0;
+  return trajet + LAMBDA * penalite;
+}
+
+// Amélioration locale respectant les créneaux : 2-opt (inversion de segment) + or-opt
+// (relocalisation d'un client), en minimisant optimCoutCreneaux.
+function optimAmeliorerCreneaux(ordre, ms, md, depotIdx, endpointIdx, infos, startMin, dureeStop) {
+  if (!ordre || ordre.length < 2) return ordre ? ordre.slice() : [];
+  ordre = ordre.slice();
+  function cout(o){ return optimCoutCreneaux(o, ms, md, depotIdx, endpointIdx, infos, startMin, dureeStop); }
+  var best = cout(ordre);
+  var ameliorable = true, iter = 0, maxIter = 80;
+  while (ameliorable && iter < maxIter) {
+    ameliorable = false; iter++;
+    // 2-opt : inverser un segment [i..j]
+    for (var i = 0; i < ordre.length - 1; i++) {
+      for (var j = i + 1; j < ordre.length; j++) {
+        var n2 = ordre.slice(0,i).concat(ordre.slice(i,j+1).reverse()).concat(ordre.slice(j+1));
+        var c2 = cout(n2);
+        if (c2 < best - 0.01) { ordre = n2; best = c2; ameliorable = true; }
+      }
+    }
+    // or-opt : déplacer un client à une autre position
+    for (var a = 0; a < ordre.length; a++) {
+      for (var b = 0; b <= ordre.length; b++) {
+        if (b === a || b === a + 1) continue;
+        var tmp = ordre.slice();
+        var x = tmp.splice(a, 1)[0];
+        var pos = (b > a) ? b - 1 : b;
+        tmp.splice(pos, 0, x);
+        var c3 = cout(tmp);
+        if (c3 < best - 0.01) { ordre = tmp; best = c3; ameliorable = true; }
+      }
+    }
+  }
+  return ordre;
+}
+
 // ── INIT PAGE ──
 function optimInit() {
   // Peupler le sélecteur de tournées
@@ -12071,26 +12134,17 @@ async function optimCalculer() {
   optimDerniereMatrice = { durations: matriceDuree, distances: matriceDist, tous: tous };
   optimSetStatus('');
 
-  // 3) Separer imperatifs / flexibles (on optimise SEULEMENT les flexibles, puis on injecte les imperatifs)
-  var imperatifs = [];
-  var flexiblesIdx = []; // indices dans "tous" (1..N)
-  optimStops.forEach(function(s, i) {
-    if (s.imperatif && s.creneauDebut) imperatifs.push(s);
-    else flexiblesIdx.push(i + 1); // +1 car depot est en 0
-  });
-
-  // 4) Nearest Neighbor sur les flexibles
+  // 3) Score de trajet selon la strategie. L'optimisation des KM/temps est PRESERVEE ;
+  //    on y AJOUTE le respect des creneaux horaires (etapes 4-5).
   var matriceScore = matriceDuree; // par defaut on minimise le temps
   if (strat === 'distance') matriceScore = matriceDist;
   else if (strat === 'temps') {
     // Pondere les durees par le trafic IDF approximatif (heure de pointe)
-    var startMin = (parseInt((document.getElementById('optim-hstart')?.value||'08:00').split(':')[0]))*60;
-    var dureeStop = parseInt(document.getElementById('optim-duree')?.value)||15;
+    var startMinW = (parseInt((document.getElementById('optim-hstart')?.value||'08:00').split(':')[0]))*60;
     matriceScore = matriceDuree.map(function(row, i) {
       return row.map(function(v, j) {
         if (i === j) return 0;
-        // heure approximative d'arrivee = depart + duree non ponderee (rapide approx)
-        var hArr = (startMin + v) / 60;
+        var hArr = (startMinW + v) / 60;
         var h = Math.floor(hArr) % 24;
         var fac = 1.0;
         if (h >= 8 && h < 10) fac = 1.8;
@@ -12101,37 +12155,41 @@ async function optimCalculer() {
       });
     });
   }
-  var ordreFlexiblesIdx = optimNearestNeighbor(flexiblesIdx, depotIdx, matriceScore);
 
-  // 5) 2-opt amelioration (endpoint = domicile livreur si configure)
-  if (ordreFlexiblesIdx.length >= 4) {
-    ordreFlexiblesIdx = optim2opt(ordreFlexiblesIdx, matriceScore, depotIdx, endpointIdx);
-  }
-
-  // 6) Construire l'ordre final (stops indexes dans "tous", -1 pour avoir l'index dans optimStops)
-  var ordreFinal = ordreFlexiblesIdx.map(function(idxTous){ return optimStops[idxTous - 1]; });
-
-  // 7) Injecter les imperatifs au bon endroit selon creneau horaire
-  imperatifs.sort(function(a,b){ return (a.creneauDebut||'99:99').localeCompare(b.creneauDebut||'99:99'); });
-  imperatifs.forEach(function(imp) {
-    var startH = parseInt((document.getElementById('optim-hstart')?.value||'08:00').split(':')[0]);
-    var startMin = startH * 60;
-    var dureeStop = parseInt(document.getElementById('optim-duree')?.value)||15;
-    // Estimer pour chaque position d'insertion l'heure d'arrivee
-    var [ih, im] = imp.creneauDebut.split(':').map(Number);
-    var targetMin = ih * 60 + im;
-    var courantMin = startMin;
-    var insertAt = 0;
-    // Cout : ajouter le depot pour la premiere etape
-    var prevIdx = depotIdx;
-    for (var k = 0; k < ordreFinal.length; k++) {
-      var curIdx = optimStops.indexOf(ordreFinal[k]) + 1;
-      courantMin += matriceDuree[prevIdx][curIdx] + dureeStop;
-      if (courantMin <= targetMin) insertAt = k + 1;
-      prevIdx = curIdx;
+  // 4) Fenetres horaires (impératifs) : ready=début, due=fin de créneau, en minutes.
+  var hStart0 = (document.getElementById('optim-hstart')?.value || '08:00').split(':');
+  var startMin  = (+hStart0[0]) * 60 + (+hStart0[1] || 0);
+  var dureeStop = parseInt(document.getElementById('optim-duree')?.value) || 15;
+  var infos = {};
+  optimStops.forEach(function(s){
+    var ready = null, due = null;
+    if (s.imperatif && s.creneauDebut) {
+      var p = s.creneauDebut.split(':'); ready = (+p[0]) * 60 + (+p[1] || 0);
+      if (s.creneauFin) { var q = s.creneauFin.split(':'); due = (+q[0]) * 60 + (+q[1] || 0); }
     }
-    ordreFinal.splice(insertAt, 0, imp);
+    infos[s._mIdx] = { ready: ready, due: due };
   });
+
+  // 5) Ordonnancement UNIFIE : minimise les km/temps ET respecte les creneaux (forte
+  //    penalite si arrivee apres la fin d'un creneau). Depot = depart fixe, domicile
+  //    livreur = arrivee fixe (endpointIdx). On part de 2 ordres initiaux (plus proche
+  //    voisin + tri par echeance de creneau) puis amelioration locale 2-opt + or-opt ;
+  //    on garde le meilleur. Remplace l'ancien "flexibles puis injection" (ne controlait
+  //    pas la FIN du creneau et pouvait livrer trop tard).
+  var allIdx = optimStops.map(function(s){ return s._mIdx; });
+  var coutF = function(o){ return optimCoutCreneaux(o, matriceScore, matriceDuree, depotIdx, endpointIdx, infos, startMin, dureeStop); };
+  var startNN  = optimNearestNeighbor(allIdx, depotIdx, matriceScore);
+  var startECH = allIdx.slice().sort(function(a, b){
+    var da = (infos[a] && infos[a].due != null) ? infos[a].due : 99999;
+    var db = (infos[b] && infos[b].due != null) ? infos[b].due : 99999;
+    return da - db;
+  });
+  var o1 = optimAmeliorerCreneaux(startNN,  matriceScore, matriceDuree, depotIdx, endpointIdx, infos, startMin, dureeStop);
+  var o2 = optimAmeliorerCreneaux(startECH, matriceScore, matriceDuree, depotIdx, endpointIdx, infos, startMin, dureeStop);
+  var ordreIdx = (coutF(o1) <= coutF(o2)) ? o1 : o2;
+
+  // 6) Construire l'ordre final (index matrice 1..N -> stop dans optimStops)
+  var ordreFinal = ordreIdx.map(function(mi){ return optimStops[mi - 1]; });
 
   // 8) Recalculer trajetVersSuivant pour chaque stop dans l'ordre final
   var prev = depotIdx;
