@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.80 - Inventaire : ensemble = virtuel (dispo = composants). Alertes/KPI sur le PHYSIQUE seulement + voyant ensemble cohérent
+// v7.5.81 - Optim unifiée : les 2 optimiseurs (page + bouton fiche) lisent les créneaux pareil (fix "avant 9h30" ignoré sur la page)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-80';
+const CACHE_VERSION = 'maxiconfort-v7-5-81';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

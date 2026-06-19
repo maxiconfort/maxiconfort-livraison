@@ -12139,6 +12139,27 @@ function optimDetecterCreneau(texte) {
   return null;
 }
 
+// v7.5.77b : résout le créneau horaire d'un stop de façon UNIFORME pour les DEUX optimiseurs
+// (page « Optimiser tournée » ET bouton « Optimiser » de la fiche tournée). Priorité aux
+// champs structurés (s.imperatif/creneauDebut/creneauFin) ; sinon détection dans la note
+// (s.instr). Renvoie ready/due en minutes (null = pas de contrainte). CORRIGE le bug : avant,
+// la page exigeait un creneauDebut -> les créneaux « avant 9h30 »/« avant midi » (sans heure
+// de début) étaient ignorés et le client était traité comme flexible -> ordre incohérent
+// entre les 2 optimiseurs.
+function optimResoudreCreneau(s) {
+  var imp = !!(s && s.imperatif && (s.creneauDebut || s.creneauFin));
+  var cd = imp ? s.creneauDebut : null;
+  var cf = imp ? s.creneauFin : null;
+  if (!imp) {
+    var det = (typeof optimDetecterCreneau === 'function') ? optimDetecterCreneau((s && s.instr) || '') : null;
+    if (det) { imp = true; cd = det.creneauDebut || null; cf = det.creneauFin || null; }
+  }
+  var ready = null, due = null;
+  if (cd) { var p = String(cd).split(':'); ready = (+p[0]) * 60 + (+p[1] || 0); }
+  if (cf) { var q = String(cf).split(':'); due = (+q[0]) * 60 + (+q[1] || 0); }
+  return { imperatif: imp, creneauDebut: cd, creneauFin: cf, ready: ready, due: due };
+}
+
 async function optimCharger() {
   const tid = document.getElementById('optim-tournee-sel').value;
   if (!tid) {
@@ -12296,14 +12317,13 @@ async function optimCalculer() {
   var hStart0 = (document.getElementById('optim-hstart')?.value || '08:00').split(':');
   var startMin  = (+hStart0[0]) * 60 + (+hStart0[1] || 0);
   var dureeStop = parseInt(document.getElementById('optim-duree')?.value) || 15;
+  // v7.5.77b : lecture UNIFIÉE des créneaux (même fonction que le bouton fiche tournée).
+  // Corrige le bug : « avant 9h30 »/« avant midi » (sans heure de début) étaient ignorés ici.
   var infos = {};
   optimStops.forEach(function(s){
-    var ready = null, due = null;
-    if (s.imperatif && s.creneauDebut) {
-      var p = s.creneauDebut.split(':'); ready = (+p[0]) * 60 + (+p[1] || 0);
-      if (s.creneauFin) { var q = s.creneauFin.split(':'); due = (+q[0]) * 60 + (+q[1] || 0); }
-    }
-    infos[s._mIdx] = { ready: ready, due: due };
+    var r = optimResoudreCreneau(s);
+    s.imperatif = r.imperatif; s.creneauDebut = r.creneauDebut; s.creneauFin = r.creneauFin;
+    infos[s._mIdx] = { ready: r.ready, due: r.due };
   });
 
   // 5) Ordonnancement UNIFIE : minimise les km/temps ET respecte les creneaux (forte
@@ -12707,19 +12727,14 @@ async function optimiserTourneeRapide(tid) {
     // Détecter les créneaux dans les notes -> fenêtres horaires {ready, due} (minutes)
     var startMinR = 8 * 60;   // départ 08:00 par défaut (pas de champ heure sur ce bouton)
     var dureeStopR = 15;      // ~15 min par arrêt
+    // v7.5.77b : lecture UNIFIÉE des créneaux (même fonction optimResoudreCreneau que la page).
     var infosR = {};
     var nbCrenR = 0;
     stopsAOptimiser.forEach(function(s, k){
-      var cmdR = commandes.find(function(c){ return c.id === s.cmdId; });
-      var cren = optimDetecterCreneau(s.instr || (cmdR && cmdR.instr) || '');
-      var ready = null, due = null;
-      if (cren) {
-        nbCrenR++;
-        if (cren.creneauDebut) { var p = cren.creneauDebut.split(':'); ready = (+p[0]) * 60 + (+p[1] || 0); }
-        if (cren.creneauFin)   { var q = cren.creneauFin.split(':');   due   = (+q[0]) * 60 + (+q[1] || 0); }
-        s.imperatif = true; s.creneauDebut = cren.creneauDebut; s.creneauFin = cren.creneauFin; // persisté pour affichage
-      }
-      infosR[k + 1] = { ready: ready, due: due };
+      if (!s.instr) { var cmdR = commandes.find(function(c){ return c.id === s.cmdId; }); if (cmdR) s.instr = cmdR.instr || ''; }
+      var r = optimResoudreCreneau(s);
+      if (r.imperatif) { nbCrenR++; s.imperatif = true; s.creneauDebut = r.creneauDebut; s.creneauFin = r.creneauFin; }
+      infosR[k + 1] = { ready: r.ready, due: r.due };
     });
     if (nbCrenR > 0) toast('🕐 ' + nbCrenR + ' créneau(x) horaire(s) détecté(s) dans les notes', 'info');
     // v7.5.77 : impératif le plus serré toujours en 1er, puis reste optimisé (créneaux respectés)
