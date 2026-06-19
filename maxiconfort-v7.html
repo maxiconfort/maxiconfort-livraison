@@ -3629,6 +3629,11 @@ async function sbLoadAll() {
     if (cmdsRes.data && cmdsRes.data.length > 0) {
       toast('✅ ' + commandes.length + ' commande(s) chargée(s)', 'ok');
     }
+    // v7.5.82 : rattrapage auto des tournées — UNIQUEMENT si les 2 chargements serveur
+    // ont réussi (sinon tournees pourrait être incomplet -> risque de créer des doublons).
+    if (!cmdsRes.error && !tourRes.error) {
+      try { reconcilierTournees(); } catch(eRec) { console.warn('reconcilier:', eRec.message); }
+    }
   } catch(e) {
     console.warn('sbLoadAll erreur:', e.message);
     // Fallback cache localStorage — uniquement si AUCUNE donnée chargée depuis Supabase
@@ -8253,6 +8258,59 @@ function autoPlanifierTournee(cmd) {
     aMaj.forEach(function(a){ try { sbSaveTournee(a); } catch(_e){} });
     if (typeof renderTournees === 'function') renderTournees();
   } catch(e) { console.warn('autoPlanifierTournee:', e.message); }
+}
+
+// v7.5.82 : RATTRAPAGE automatique au démarrage. Vérifie que TOUTE commande à livrer
+// nous-mêmes (IDF / RANOU) avec une date et non livrée/annulée est bien rangée dans la
+// tournée de sa date — et la crée/rattrape si elle manque. Évite les trous quand une
+// commande a été saisie pendant une coupure réseau (la création de tournée, faite en
+// mémoire, avait été perdue au rechargement). N'AJOUTE que les commandes ABSENTES de
+// toute tournée (ne déplace/ne touche pas les assignations existantes). Idempotent :
+// si tout est déjà rangé, ne fait rien (0 écriture). ⚠️ À n'appeler QUE lorsque les
+// tournées sont chargées depuis le serveur (sinon risque de doublons).
+function reconcilierTournees() {
+  try {
+    if (typeof commandes === 'undefined' || typeof tournees === 'undefined') return;
+    // cmdId déjà présents dans une tournée (quelle qu'elle soit)
+    var dansTournee = {};
+    tournees.forEach(function(t){
+      if (t && Array.isArray(t.stops)) t.stops.forEach(function(s){ if (s && s.cmdId) dansTournee[s.cmdId] = true; });
+    });
+    var aSauver = {};
+    commandes.forEach(function(cmd){
+      if (!cmd || !cmd.id) return;
+      var date = cmd.date || '';
+      if (!date || date.length < 10) return;                  // pas de date -> pas de planif
+      if ((cmd.transporteur || 'RANOU') === 'GLS') return;    // province GLS -> expédié
+      if (String(cmd.id).indexOf('#SAV') === 0) return;       // SAV géré à la main
+      if (cmd.statut === 'livré' || cmd.statut === 'annulé') return;
+      if (dansTournee[cmd.id]) return;                         // déjà dans une tournée -> OK
+      // trouver/creer la tournée RANOU de cette date (non terminée)
+      var t = tournees.find(function(x){
+        return x && x.date === date && (x.livreur === 'RANOU' || !x.livreur)
+               && x.statut !== 'terminée' && Array.isArray(x.stops);
+      });
+      if (!t) {
+        t = { id: nextTourneeId(), date: date, livreur: 'RANOU', stops: [], statut: 'préparée' };
+        tournees.push(t);
+      }
+      if (!Array.isArray(t.stops)) t.stops = [];
+      t.stops.push({
+        num: t.stops.length + 1, cmdId: cmd.id, client: cmd.client, tel: cmd.tel,
+        adresse: cmd.adresse, etage: cmd.etage || '', asc: cmd.asc || 'Non', code: cmd.code || '',
+        produit: cmd.produit, prix: cmd.prix, paie: cmd.paie, instr: cmd.instr || '',
+        statut: 'en-attente', heure: ''
+      });
+      dansTournee[cmd.id] = true;
+      aSauver[t.id] = t;
+    });
+    var ids = Object.keys(aSauver);
+    if (ids.length) {
+      ids.forEach(function(id){ try { sbSaveTournee(aSauver[id]); } catch(_e){} });
+      if (typeof renderTournees === 'function') renderTournees();
+      console.log('[reconcilierTournees] ' + ids.length + ' tournée(s) rattrapée(s).');
+    }
+  } catch(e) { console.warn('reconcilierTournees:', e.message); }
 }
 
 // v7.5.68 : ID de commande robuste = max(numéros existants) + 1, calculé AU MOMENT

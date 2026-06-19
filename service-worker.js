@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.81 - Optim unifiée : les 2 optimiseurs (page + bouton fiche) lisent les créneaux pareil (fix "avant 9h30" ignoré sur la page)
+// v7.5.82 - Rattrapage auto des tournées au démarrage : toute commande IDF datée sans tournée est récupérée (anti-trou)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-81';
+const CACHE_VERSION = 'maxiconfort-v7-5-82';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
