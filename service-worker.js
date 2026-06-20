@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.85 - Centre de notifications : retrait des 6 fausses notifications de démo (M. Fontaine, Karim B...) -> n'affiche que les vraies
+// v7.5.86 - Nettoyage données de démo : historique mouvements stock + carte GPS (plus aucun faux nom)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-85';
+const CACHE_VERSION = 'maxiconfort-v7-5-86';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

@@ -11210,13 +11210,10 @@ let produits = [
 })();
 
 // Mouvements de stock (historique)
-let stkMouvements = [
-  {date:'2026-05-14', produit:'Matelas 160×200×20 cm', type:'sortie-livraison', qte:-1, stockApres:14, motif:'Livraison #1042 → Mme Lemaire', auto:true},
-  {date:'2026-05-14', produit:'Lit coffre 160',         type:'sortie-livraison', qte:-1, stockApres:2,  motif:'Livraison #1040 → Mme Perrin', auto:true},
-  {date:'2026-05-13', produit:'Matelas 160×200×20 cm',  type:'entree',           qte:+5, stockApres:15, motif:'Réappro fournisseur', auto:false},
-  {date:'2026-05-12', produit:"Canapé d'angle convertible", type:'sortie-livraison', qte:-1, stockApres:5, motif:'Livraison #1035', auto:true},
-  {date:'2026-05-09', produit:'Matelas 90×190×18 cm',   type:'sortie-livraison', qte:-1, stockApres:0,  motif:'Livraison #1029 — RUPTURE', auto:true},
-];
+// v7.5.85 : démarre VIDE. Avant, 5 mouvements de DÉMO (Mme Lemaire, Mme Perrin, #1042…)
+// polluaient l'historique des mouvements de stock. Les VRAIS mouvements s'ajoutent via
+// stkDeduireStock/stkReCrediterStock (sortie-livraison / retour-annulation).
+let stkMouvements = [];
 
 let editProduitId = null;
 let ajustProduitId = null;
@@ -16647,16 +16644,9 @@ let gpsFilterVal = '';
 // Positions réelles Île-de-France (lat/lng)
 var GPS_LIV = []; // Initialisé dans gpsInit() depuis livreurs[]
 
-// Adresses de livraison (vraies coords)
-const GPS_STOPS = [
-  {lat:48.9100, lng:2.2960, client:'Mme Lemaire',  livreur:0, statut:'livré',    adresse:'8 av. Victor Hugo, Asnières'},
-  {lat:48.8840, lng:2.3070, client:'M. Petit',      livreur:0, statut:'en-cours', adresse:'3 cité des Fleurs, Clichy'},
-  {lat:48.8920, lng:2.2750, client:'Mme Bernard',   livreur:0, statut:'a-venir',  adresse:'12 rue des Acacias, Neuilly'},
-  {lat:48.8320, lng:2.4410, client:'M. Dubois',     livreur:1, statut:'en-cours', adresse:'34 bd Gambetta, Vincennes'},
-  {lat:48.8480, lng:2.4180, client:'M. Fontaine',   livreur:1, statut:'a-venir',  adresse:'90 av. République, Montreuil'},
-  {lat:48.7840, lng:2.4530, client:'Mme Perrin',    livreur:2, statut:'livré',    adresse:'12 rue de la Paix, Créteil'},
-  {lat:48.8060, lng:2.4420, client:'Mme Garcia',    livreur:2, statut:'a-venir',  adresse:'5 rue Molière, Maisons-Alfort'},
-];
+// v7.5.85 : données de démo retirées (étaient derrière if(false), non affichées). La carte
+// géolocalisation n'utilise que les vraies positions Supabase (gps_positions).
+const GPS_STOPS = [];
 
 const GPS_EVENTS = [];
 
