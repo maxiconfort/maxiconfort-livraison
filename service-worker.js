@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.82 - Rattrapage auto des tournées au démarrage : toute commande IDF datée sans tournée est récupérée (anti-trou)
+// v7.5.83 - FIX URGENT vue livreur : affiche la tournée du JOUR (avant : la plus lointaine -> tournée future au lieu d'aujourd'hui)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-82';
+const CACHE_VERSION = 'maxiconfort-v7-5-83';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

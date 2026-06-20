@@ -8518,6 +8518,23 @@ function renderLivreur() {
   var sel = document.getElementById('lv-tournee-select');
   var selectorWrap = document.getElementById('lv-selector-wrap');
 
+  // v7.5.83 : date du JOUR en heure locale (pas toISOString UTC qui décale le soir)
+  var _dLv = new Date();
+  var lvToday = _dLv.getFullYear() + '-' + String(_dLv.getMonth()+1).padStart(2,'0') + '-' + String(_dLv.getDate()).padStart(2,'0');
+  // v7.5.83 : parmi une liste de tournées non terminées, choisir CELLE DU JOUR en priorité,
+  // sinon la PROCHAINE à venir (date la plus proche >= aujourd'hui), sinon la plus récente.
+  // Corrige : avant on prenait la date la PLUS LOINTAINE -> avec les tournées futures créées
+  // par le rattrapage (ex 14/07), le livreur voyait une tournée future au lieu d'aujourd'hui.
+  function lvChoisirTournee(liste) {
+    var actives = liste.filter(function(t){ return t.statut !== 'terminée'; });
+    var duJour = actives.find(function(t){ return t.date === lvToday; });
+    if (duJour) return duJour;
+    var aVenir = actives.filter(function(t){ return (t.date||'') >= lvToday; })
+                        .sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+    if (aVenir.length) return aVenir[0];
+    return actives.slice().sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); })[0] || liste[0] || null;
+  }
+
   // ── Rôle : admin/collab voit sélecteur, livreur voit sa tournée ──
   var gpsWrap = document.getElementById('lv-gps-wrap');
 
@@ -8532,7 +8549,7 @@ function renderLivreur() {
             t.id+' · '+t.livreur+' · '+fmtDate(t.date)+' ('+done+'/'+t.stops.length+')</option>';
         }).join('');
       if (!currentLvTourneeId && tournees.length) {
-        var auto = tournees.find(function(t){ return t.statut !== 'terminée'; }) || tournees[0];
+        var auto = lvChoisirTournee(tournees) || tournees[0]; // v7.5.83 : défaut = tournée du jour
         currentLvTourneeId = auto.id;
         sel.value = auto.id;
       }
@@ -8541,8 +8558,8 @@ function renderLivreur() {
     if (selectorWrap) selectorWrap.style.display = 'none';
     if (gpsWrap) gpsWrap.style.display = 'block';
     var livNomLow = livNom.toLowerCase().trim();
-    var myTournees = tournees.filter(function(t){ return t.livreur && t.livreur.toLowerCase().trim() === livNomLow; }).sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
-    var myT = myTournees.find(function(t){ return t.statut !== 'terminée'; }) || myTournees[0];
+    var myTournees = tournees.filter(function(t){ return t.livreur && t.livreur.toLowerCase().trim() === livNomLow; });
+    var myT = lvChoisirTournee(myTournees); // v7.5.83 : tournée du JOUR en priorité
     if (myT) currentLvTourneeId = myT.id;
   }
 
