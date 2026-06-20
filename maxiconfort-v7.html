@@ -15966,7 +15966,10 @@ function verifierProximiteClients(latLiv, lngLiv) {
   if (!latLiv || !lngLiv) return;
   var livreur = geofenceGetLivreurActuel();
   if (!livreur) return;
-  var today = new Date().toISOString().split('T')[0];
+  // v7.5.84 : date du JOUR en heure LOCALE (pas toISOString UTC qui décale le soir et
+  // ferait rater la tournée du jour entre 22h-minuit).
+  var _dP = new Date();
+  var today = _dP.getFullYear() + '-' + String(_dP.getMonth()+1).padStart(2,'0') + '-' + String(_dP.getDate()).padStart(2,'0');
   var tourneeJour = (typeof tournees !== 'undefined' ? tournees : []).find(function(t){
     return (t.livreur||'').toUpperCase() === livreur.toUpperCase() && t.date === today;
   });
@@ -16285,6 +16288,14 @@ async function gpsEnvoyerPosition(position) {
 
   // Sauvegarder localement
   gpsPositions[nomNorm] = {lat:lat, lng:lng, heure:heure, vitesse:spd, precision:acc};
+
+  // v7.5.84 : vérifier la proximité des clients à CHAQUE position GPS pour déclencher le
+  // SMS « votre livreur arrive ». AVANT : la vérif n'était branchée que sur le watcher
+  // géofence (geofenceTraiterPosition), souvent INACTIF pendant la tournée -> le SMS
+  // « proche » ne partait JAMAIS (0 en historique). Ici, gpsEnvoyerPosition est le flux GPS
+  // confirmé actif (positions en base toutes les 30 s). Les throttles internes de
+  // verifierProximiteClients (90 s/client OSRM, dédup 1 h, géocodage 1/passage) évitent tout abus.
+  try { verifierProximiteClients(lat, lng); } catch(e) { console.warn('[GPS] proximite:', e.message); }
 
   // Throttle : envoyer à Supabase max 1x toutes les 30 secondes
   var _now = Date.now();

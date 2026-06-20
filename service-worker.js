@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.83 - FIX URGENT vue livreur : affiche la tournée du JOUR (avant : la plus lointaine -> tournée future au lieu d'aujourd'hui)
+// v7.5.84 - FIX SMS d'approche : la vérif de proximité est branchée sur le flux GPS actif (avant : jamais déclenchée -> 0 SMS proche)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-83';
+const CACHE_VERSION = 'maxiconfort-v7-5-84';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
