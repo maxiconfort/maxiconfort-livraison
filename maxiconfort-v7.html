@@ -12884,14 +12884,11 @@ function optimExport() {
 // ════════════════════════════════════════
 
 // ── Données notifications ──
-let notifications = [
-  {id:'n1', type:'urgent', cat:'stock',     lu:false, titre:'Rupture de stock — Matelas 90x190',        msg:'Stock a 0 unite. Reapprovisionnement necessaire avant les prochaines commandes.', time:'10:42', action:'Gerer le stock', page:'stock'},
-  {id:'n2', type:'warn',   cat:'livraison', lu:false, titre:'Livraison en retard — M. Fontaine',         msg:'Arret 4 non demarre. ETA depassee de 25 min. Creneau 14h-15h en danger.', time:'11:15', action:'Voir tournee', page:'tournees'},
-  {id:'n3', type:'warn',   cat:'stock',     lu:false, titre:'Stock bas — Sommier tapissier 90',           msg:'1 unite restante. Seuil alerte : 3 unites. 2 commandes en attente.', time:'09:30', action:'Reapprovisionner', page:'stock'},
-  {id:'n4', type:'warn',   cat:'commande',  lu:false, titre:'3 commandes sans livreur assigne',           msg:'Commandes #1039, #1040, #1041 sans livreur pour demain.', time:'08:00', action:'Assigner livreurs', page:'commandes'},
-  {id:'n5', type:'success',cat:'livraison', lu:true,  titre:'Tournee T-1 terminee — Karim B.',            msg:'5/5 livraisons effectuees. 1 820 EUR encaisses. Excellent !', time:'16:48', action:'Voir rapport', page:'finance'},
-  {id:'n6', type:'info',   cat:'livraison', lu:true,  titre:'Signature client — Mme Lemaire',             msg:'Livraison confirmee et signee a 09h42. Recu genere automatiquement.', time:'09:42', action:null, page:null},
-];
+// v7.5.85 : démarre VIDE. Avant, 6 notifications de DÉMO codées en dur (M. Fontaine,
+// Karim B., Mme Lemaire, fausses alertes stock #1039-1041) polluaient le centre de
+// notifications à chaque rechargement. Les VRAIES notifications s'ajoutent via notifAjout()
+// (commande sans livreur, rupture/stock bas réel, colis GLS bloqué, report de présence…).
+let notifications = [];
 
 // ── Historique SMS ──
 let smsHistorique = []; // Chargé depuis Supabase
