@@ -17428,7 +17428,9 @@ function afficherTournee(id) {
   document.getElementById('td-stops').innerHTML = t.stops.map((s, i) => {
     const [bc, dc] = stMap[s.statut] || ['b-gray','d-gray'];
     const done = s.statut === 'livré';
-    return '<div class="stop-card s-' + s.statut.replace(' ','-') + '">' +
+    // v7.5.89 : cliquer un client ouvre sa fiche commande (statut + modification)
+    const clic = s.cmdId ? ' onclick="ouvrirCmd(\'' + s.cmdId + '\')" style="cursor:pointer" title="Cliquer pour changer le statut ou modifier la fiche"' : '';
+    return '<div class="stop-card s-' + s.statut.replace(' ','-') + '"' + clic + '>' +
       '<div class="stop-top">' +
         '<div class="stop-row1">' +
           '<div class="stop-num ' + (done?'done':'') + '">' + (done?'✓':s.num) + '</div>' +

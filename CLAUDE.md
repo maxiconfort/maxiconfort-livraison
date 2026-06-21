@@ -9,6 +9,9 @@ PWA interne de gestion des livraisons Maxiconfort. **Ce dossier est le repo git 
 - Credentials : `.env` (jamais commit) · Déploiement Edge Functions autonome via token Supabase PAT (`SUPABASE_ACCESS_TOKEN` puis `npx supabase functions deploy <nom> --project-ref jmvfjtnmebstkzcfnlgp --no-verify-jwt`)
 - Rôles login PIN : admin / CV / LV (livreur mobile)
 
+## État au 21/06/2026 (version v7.5.89) — Clic client dans la fiche tournée
+- **Demande Borhen : cliquer un client dans la fiche tournée pour changer son statut ou modifier sa fiche.** Avant, les `.stop-card` de `afficherTournee` (~17428) n'étaient pas cliquables. Ajout : `onclick="ouvrirCmd(s.cmdId)"` + `cursor:pointer` sur chaque carte (si `s.cmdId`) → ouvre le panneau commande qui contient déjà les boutons de statut (`chgStatut`, qui synchronise la tournée v7.5.87/88) ET le bouton Modifier. Parse OK. Bump SW v7.5.89.
+
 ## État au 21/06/2026 (version v7.5.88) — Commande annulée = retirée de la tournée
 - **Suite v7.5.87 : Borhen veut qu'une commande annulée SORTE de la tournée** (pas juste marquée barrée). `reconcilierTournees` PASSE 1 : `if (cmd.statut === 'annulé') { change = true; return; }` → le stop non livré est **retiré** (au lieu de `s.statut='annulé'` gardé). Un stop déjà `livré` reste (historique). Testé (node) : annulée→retirée, en-attente gardée, livré gardé. Parse OK. Bump SW v7.5.88.
 

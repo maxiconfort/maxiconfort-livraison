@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.88 - Commande annulee = retiree de la tournee (avant : marquee barree). Synchro Commandes <-> Tournees
+// v7.5.89 - Fiche tournee : cliquer un client ouvre sa fiche commande (changer statut / modifier)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-88';
+const CACHE_VERSION = 'maxiconfort-v7-5-89';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
