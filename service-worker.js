@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.86 - Nettoyage données de démo : historique mouvements stock + carte GPS (plus aucun faux nom)
+// v7.5.87 - Synchro Commandes <-> Tournées complete (annuler/reporter/changer date se repercute sur la tournee)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-86';
+const CACHE_VERSION = 'maxiconfort-v7-5-87';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

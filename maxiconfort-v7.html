@@ -7502,6 +7502,10 @@ function chgStatut(id, st) {
   if (role === 'admin' && ancienStatut === 'livré' && (st === 'annulé' || st === 'reporté' || st === 'en-attente' || st === 'en-route')) {
     stkReCrediterStock(id);
   }
+  // v7.5.85b : synchroniser la TOURNÉE avec le nouveau statut (annulé -> stop annulé,
+  // reporté/date -> déplacement, etc.). Avant, changer le statut d'une commande ne
+  // touchait pas la tournée -> le client annulé restait dans la tournée.
+  if (typeof reconcilierTournees === 'function') reconcilierTournees();
   renderCmds(); renderDash(); renderTournees(); renderLivreur();
   // v7.5.39 : re-render Suivi logistique (sinon le statut reste l'ancien)
   if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres();
@@ -8210,54 +8214,11 @@ var TOURNEE_SEUIL_RENTABLE = 13;
 // NE concerne PAS : les commandes GLS (province, expédiées), les SAV, les commandes
 // déjà livrées/annulées. Idempotent (pas de doublon de stop) et déplace la commande
 // si sa date change (retirée des autres tournées, stops livrés préservés).
+// v7.5.85b : déléguée à reconcilierTournees() — UNE seule logique de synchro Commandes <->
+// Tournées (ajout, déplacement par date, retrait des annulés/inéligibles, marquage livré).
+// Évite toute divergence entre « auto-planif à l'enregistrement » et « rattrapage au chargement ».
 function autoPlanifierTournee(cmd) {
-  try {
-    if (!cmd || !cmd.id) return;
-    var date = cmd.date || '';
-    if (!date || date.length < 10) return;                       // pas de date -> pas de planif
-    if ((cmd.transporteur || 'RANOU') === 'GLS') return;         // province GLS -> expédié, pas de tournée
-    if (String(cmd.id).indexOf('#SAV') === 0) return;            // SAV : géré à la main
-    if (cmd.statut === 'livré' || cmd.statut === 'annulé') return;
-
-    // 1) tournée RANOU existante pour cette date (non terminée) ? sinon on la crée
-    var t = tournees.find(function(x){
-      return x && x.date === date && (x.livreur === 'RANOU' || !x.livreur)
-             && x.statut !== 'terminée' && Array.isArray(x.stops);
-    });
-    if (!t) {
-      t = { id: nextTourneeId(), date: date, livreur: 'RANOU', stops: [], statut: 'préparée' };
-      tournees.push(t);
-    }
-    if (!Array.isArray(t.stops)) t.stops = [];
-
-    // 2) ajouter / mettre à jour le stop de cette commande (sans doublon)
-    var infos = {
-      client: cmd.client, tel: cmd.tel, adresse: cmd.adresse,
-      etage: cmd.etage || '', asc: cmd.asc || 'Non', code: cmd.code || '',
-      produit: cmd.produit, prix: cmd.prix, paie: cmd.paie, instr: cmd.instr || '',
-    };
-    var existant = t.stops.find(function(s){ return s.cmdId === cmd.id; });
-    if (existant) {
-      // MAJ des infos (adresse/prix/produit ont pu changer) sans toucher statut/heure
-      for (var k in infos) existant[k] = infos[k];
-    } else {
-      t.stops.push(Object.assign({ num: t.stops.length + 1, cmdId: cmd.id, statut: 'en-attente', heure: '' }, infos));
-    }
-
-    // 3) si la date a changé : retirer la commande des AUTRES tournées (préserver les livrés)
-    var aMaj = [];
-    tournees.forEach(function(autre){
-      if (!autre || autre.id === t.id || !Array.isArray(autre.stops)) return;
-      var avant = autre.stops.length;
-      autre.stops = autre.stops.filter(function(s){ return !(s.cmdId === cmd.id && s.statut !== 'livré'); });
-      if (autre.stops.length !== avant) aMaj.push(autre);
-    });
-
-    // 4) persister (tournée cible + tournées modifiées) + rafraîchir l'affichage
-    sbSaveTournee(t);
-    aMaj.forEach(function(a){ try { sbSaveTournee(a); } catch(_e){} });
-    if (typeof renderTournees === 'function') renderTournees();
-  } catch(e) { console.warn('autoPlanifierTournee:', e.message); }
+  try { reconcilierTournees(); } catch(e) { console.warn('autoPlanifierTournee:', e.message); }
 }
 
 // v7.5.82 : RATTRAPAGE automatique au démarrage. Vérifie que TOUTE commande à livrer
@@ -8268,30 +8229,64 @@ function autoPlanifierTournee(cmd) {
 // toute tournée (ne déplace/ne touche pas les assignations existantes). Idempotent :
 // si tout est déjà rangé, ne fait rien (0 écriture). ⚠️ À n'appeler QUE lorsque les
 // tournées sont chargées depuis le serveur (sinon risque de doublons).
+// v7.5.85b : une commande est éligible à une tournée RANOU si : elle a une date, n'est PAS
+// GLS (province), n'est PAS un SAV, et n'est ni livrée ni annulée.
+function cmdEligibleTournee(cmd) {
+  if (!cmd || !cmd.id) return false;
+  if (!cmd.date || cmd.date.length < 10) return false;
+  if ((cmd.transporteur || 'RANOU') === 'GLS') return false;
+  if (String(cmd.id).indexOf('#SAV') === 0) return false;
+  if (cmd.statut === 'livré' || cmd.statut === 'annulé') return false;
+  return true;
+}
+
+// v7.5.85b : SYNCHRO COMPLÈTE Commandes <-> Tournées (les 2 rubriques communiquent).
+// PASSE 1 (nettoyage) : pour chaque stop, on aligne sur l'état réel de la commande —
+//   commande livrée -> stop livré (historique gardé) ; commande ANNULÉE -> stop marqué
+//   « annulé » (gardé, mais exclu du compteur « 13 clients ») ; commande passée GLS/SAV/
+//   sans date -> stop RETIRÉ ; commande dont la DATE a changé -> stop retiré d'ici (réajouté
+//   à la bonne date en passe 2). Les stops déjà « livré » et ceux sans cmdId sont préservés.
+// PASSE 2 (ajout) : toute commande éligible absente de TOUTE tournée est rangée dans la
+//   tournée de sa date (créée si besoin). Idempotent : si tout est cohérent, 0 écriture.
 function reconcilierTournees() {
   try {
     if (typeof commandes === 'undefined' || typeof tournees === 'undefined') return;
-    // cmdId déjà présents dans une tournée (quelle qu'elle soit)
-    var dansTournee = {};
-    tournees.forEach(function(t){
-      if (t && Array.isArray(t.stops)) t.stops.forEach(function(s){ if (s && s.cmdId) dansTournee[s.cmdId] = true; });
-    });
+    var cmdParId = {};
+    commandes.forEach(function(c){ if (c && c.id) cmdParId[c.id] = c; });
     var aSauver = {};
+
+    // ── PASSE 1 : nettoyer chaque tournée selon l'état des commandes
+    tournees.forEach(function(t){
+      if (!t || !Array.isArray(t.stops)) return;
+      var change = false;
+      var nouveaux = [];
+      t.stops.forEach(function(s){
+        if (!s || !s.cmdId) { nouveaux.push(s); return; }          // stop legacy sans id -> garder
+        if (s.statut === 'livré') { nouveaux.push(s); return; }    // historique livré -> garder
+        var cmd = cmdParId[s.cmdId];
+        if (!cmd) { nouveaux.push(s); return; }                    // commande introuvable -> ne pas deviner
+        if (cmd.statut === 'livré')  { if (s.statut !== 'livré')  { s.statut = 'livré';  change = true; } nouveaux.push(s); return; }
+        if (cmd.statut === 'annulé') { if (s.statut !== 'annulé') { s.statut = 'annulé'; change = true; } nouveaux.push(s); return; }
+        var horsTournee = (cmd.transporteur||'RANOU') === 'GLS' || String(cmd.id).indexOf('#SAV') === 0 || !(cmd.date && cmd.date.length >= 10);
+        if (horsTournee)       { change = true; return; }          // GLS/SAV/sans date -> retirer
+        if (cmd.date !== t.date) { change = true; return; }        // date changée -> retirer ici (réajouté ailleurs)
+        nouveaux.push(s);                                          // sinon OK, garder
+      });
+      if (change) { t.stops = nouveaux; aSauver[t.id] = t; }
+    });
+
+    // ── PASSE 2 : ajouter les commandes éligibles absentes de toute tournée
+    var dansTournee = {};
+    tournees.forEach(function(t){ if (t && Array.isArray(t.stops)) t.stops.forEach(function(s){ if (s && s.cmdId) dansTournee[s.cmdId] = true; }); });
     commandes.forEach(function(cmd){
-      if (!cmd || !cmd.id) return;
-      var date = cmd.date || '';
-      if (!date || date.length < 10) return;                  // pas de date -> pas de planif
-      if ((cmd.transporteur || 'RANOU') === 'GLS') return;    // province GLS -> expédié
-      if (String(cmd.id).indexOf('#SAV') === 0) return;       // SAV géré à la main
-      if (cmd.statut === 'livré' || cmd.statut === 'annulé') return;
-      if (dansTournee[cmd.id]) return;                         // déjà dans une tournée -> OK
-      // trouver/creer la tournée RANOU de cette date (non terminée)
+      if (!cmdEligibleTournee(cmd)) return;
+      if (dansTournee[cmd.id]) return;
       var t = tournees.find(function(x){
-        return x && x.date === date && (x.livreur === 'RANOU' || !x.livreur)
+        return x && x.date === cmd.date && (x.livreur === 'RANOU' || !x.livreur)
                && x.statut !== 'terminée' && Array.isArray(x.stops);
       });
       if (!t) {
-        t = { id: nextTourneeId(), date: date, livreur: 'RANOU', stops: [], statut: 'préparée' };
+        t = { id: nextTourneeId(), date: cmd.date, livreur: 'RANOU', stops: [], statut: 'préparée' };
         tournees.push(t);
       }
       if (!Array.isArray(t.stops)) t.stops = [];
@@ -8304,11 +8299,12 @@ function reconcilierTournees() {
       dansTournee[cmd.id] = true;
       aSauver[t.id] = t;
     });
+
     var ids = Object.keys(aSauver);
     if (ids.length) {
       ids.forEach(function(id){ try { sbSaveTournee(aSauver[id]); } catch(_e){} });
       if (typeof renderTournees === 'function') renderTournees();
-      console.log('[reconcilierTournees] ' + ids.length + ' tournée(s) rattrapée(s).');
+      console.log('[reconcilierTournees] ' + ids.length + ' tournée(s) synchronisée(s).');
     }
   } catch(e) { console.warn('reconcilierTournees:', e.message); }
 }
