@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.87 - Synchro Commandes <-> Tournées complete (annuler/reporter/changer date se repercute sur la tournee)
+// v7.5.88 - Commande annulee = retiree de la tournee (avant : marquee barree). Synchro Commandes <-> Tournees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-87';
+const CACHE_VERSION = 'maxiconfort-v7-5-88';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

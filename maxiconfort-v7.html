@@ -8242,10 +8242,10 @@ function cmdEligibleTournee(cmd) {
 
 // v7.5.85b : SYNCHRO COMPLÈTE Commandes <-> Tournées (les 2 rubriques communiquent).
 // PASSE 1 (nettoyage) : pour chaque stop, on aligne sur l'état réel de la commande —
-//   commande livrée -> stop livré (historique gardé) ; commande ANNULÉE -> stop marqué
-//   « annulé » (gardé, mais exclu du compteur « 13 clients ») ; commande passée GLS/SAV/
-//   sans date -> stop RETIRÉ ; commande dont la DATE a changé -> stop retiré d'ici (réajouté
-//   à la bonne date en passe 2). Les stops déjà « livré » et ceux sans cmdId sont préservés.
+//   commande livrée -> stop livré (historique gardé) ; commande ANNULÉE -> stop RETIRÉ de
+//   la tournée (v7.5.88) ; commande passée GLS/SAV/sans date -> stop RETIRÉ ; commande dont
+//   la DATE a changé -> stop retiré d'ici (réajouté à la bonne date en passe 2). Les stops
+//   déjà « livré » et ceux sans cmdId sont préservés.
 // PASSE 2 (ajout) : toute commande éligible absente de TOUTE tournée est rangée dans la
 //   tournée de sa date (créée si besoin). Idempotent : si tout est cohérent, 0 écriture.
 function reconcilierTournees() {
@@ -8266,7 +8266,7 @@ function reconcilierTournees() {
         var cmd = cmdParId[s.cmdId];
         if (!cmd) { nouveaux.push(s); return; }                    // commande introuvable -> ne pas deviner
         if (cmd.statut === 'livré')  { if (s.statut !== 'livré')  { s.statut = 'livré';  change = true; } nouveaux.push(s); return; }
-        if (cmd.statut === 'annulé') { if (s.statut !== 'annulé') { s.statut = 'annulé'; change = true; } nouveaux.push(s); return; }
+        if (cmd.statut === 'annulé') { change = true; return; }    // v7.5.88 : commande annulée -> RETIRER le stop de la tournée
         var horsTournee = (cmd.transporteur||'RANOU') === 'GLS' || String(cmd.id).indexOf('#SAV') === 0 || !(cmd.date && cmd.date.length >= 10);
         if (horsTournee)       { change = true; return; }          // GLS/SAV/sans date -> retirer
         if (cmd.date !== t.date) { change = true; return; }        // date changée -> retirer ici (réajouté ailleurs)
