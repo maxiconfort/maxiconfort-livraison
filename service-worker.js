@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.89 - Fiche tournee : cliquer un client ouvre sa fiche commande (changer statut / modifier)
+// v7.5.90 - Report (changement de date) reinitialise les SMS veille/depart (sinon non renvoyes)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-89';
+const CACHE_VERSION = 'maxiconfort-v7-5-90';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

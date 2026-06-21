@@ -3023,6 +3023,36 @@ async function sbSaveCommande(cmd) {
   }
 }
 
+// v7.5.90 : quand une commande est REPORTÉE (date de livraison changée), les drapeaux
+// SMS liés à la TOURNÉE (veille/depart/route/proche) doivent être réinitialisés côté
+// serveur. Sinon la dédupe (commandes.sms_envoyes) empêche le renvoi pour la NOUVELLE
+// date → le client ne reçoit NI le SMS de la veille NI celui du départ pour son nouveau
+// jour. On conserve confirmation et expedition (liés à la commande, pas au jour de tournée).
+async function resetSmsTourneeFlags(cmdId) {
+  var TYPES_TOURNEE = ['veille','depart','route','proche'];
+  try {
+    var rGet = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=sms_envoyes&id=eq.' + encodeURIComponent(cmdId), {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+    });
+    if (!rGet.ok) return;
+    var rows = await rGet.json();
+    var actuels = (rows && rows[0] && Array.isArray(rows[0].sms_envoyes)) ? rows[0].sms_envoyes : [];
+    var filtres = actuels.filter(function(e){ return e && TYPES_TOURNEE.indexOf(e.type) === -1; });
+    if (filtres.length === actuels.length) return; // rien à nettoyer
+    await fetch(SUPABASE_URL + '/rest/v1/commandes?id=eq.' + encodeURIComponent(cmdId), {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({ sms_envoyes: filtres })
+    });
+    console.log('resetSmsTourneeFlags', cmdId, 'avant', actuels.length, 'après', filtres.length);
+  } catch (e) { console.warn('resetSmsTourneeFlags', e && e.message); }
+}
+
 async function sbSaveTournee(t) {
   if (!navigator.onLine) { offlineQueueAdd('tournee', t); return; }
   try {
@@ -7146,6 +7176,9 @@ function saveCmd() {
   const isEdit = !!window._editingCmdId;
   // v7.5.47 : edition d'un SAV -> pas de validation produit, montants preserves plus bas
   const existingCmd = isEdit ? commandes.find(x => x.id === window._editingCmdId) : null;
+  // v7.5.90 : memoriser l'ancienne date de livraison pour detecter un REPORT (changement
+  // de date) -> on reinitialisera alors les drapeaux SMS de tournee (voir plus bas).
+  const _ancienneDateLiv = existingCmd ? (existingCmd.date || '') : '';
   const isSavCmd = !!(existingCmd && (((existingCmd.origine || '').indexOf('SAV') === 0) || (String(existingCmd.id).indexOf('#SAV') === 0)));
   const lignes = getLignesData();
   if (!lignes.length && !isSavCmd) { toast('Ajoutez au moins un produit','err'); return; }
@@ -7237,6 +7270,11 @@ function saveCmd() {
     showSync('⏳ Sauvegarde commande...', 'pending');
     closeModal('m-cmd');
     sbSaveCommande(cmdData).then(function(){ showSync('✅ Commande sauvegardée', 'ok'); }).catch(function(){ showSync('⚠️ Erreur sync commande', 'err'); }); // Sync Supabase — AVANT renderDash
+    // v7.5.90 : la date de livraison a changé (= report) -> réinitialiser les drapeaux SMS
+    // de tournée pour que le client reçoive bien veille + départ pour sa NOUVELLE date.
+    if (cmdData.date && _ancienneDateLiv && cmdData.date !== _ancienneDateLiv) {
+      setTimeout(function(){ resetSmsTourneeFlags(cmdData.id); }, 800);
+    }
     try { renderCmds(); renderDash(); populateCmdChecklist(); if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres(); } catch(e) { console.warn('render err:', e.message); renderCmds(); populateCmdChecklist(); }
     toast('Commande '+cmdData.id+' mise à jour ✓','ok');
   } else {
