@@ -12242,6 +12242,17 @@ function optimDetecterCreneau(texte) {
     var mh = t.match(/(\d{1,2}\s*[h:]\s*\d{0,2})/);
     if (mh) { var hd=parseH(mh[1]); if(hd!=null) return {imperatif:true, creneauDebut:null, creneauFin:fmt(hd)}; }
   }
+  // v7.5.91 : « 14h-16h », « 14h / 16h », « 9h a 11h » -> PLAGE écrite SANS "entre/de".
+  var mR = t.match(/(\d{1,2}\s*[h:]\s*\d{0,2})\s*(?:-|\/|a|au|et)\s*(\d{1,2}\s*[h:]\s*\d{0,2})/);
+  if (mR) { var dr2=parseH(mR[1]), fr2=parseH(mR[2]); if(dr2!=null&&fr2!=null&&fr2>dr2) return {imperatif:true, creneauDebut:fmt(dr2), creneauFin:fmt(fr2)}; }
+  // v7.5.91 : heure CIBLE explicite « a 8h45 », « pour 9h », « vers 10h », « livraison 8h45 »
+  // -> traitée comme une échéance (servir AVANT cette heure) => passe en début de tournée.
+  var mC = t.match(/(?:^|\s)(?:a|pour|vers|livr\w*)\s+(?:de\s+)?(\d{1,2}\s*[h:]\s*\d{0,2})/);
+  if (mC) { var hc=parseH(mC[1]); if(hc!=null) return {imperatif:true, creneauDebut:null, creneauFin:fmt(hc)}; }
+  // v7.5.91 : une SEULE heure isolée dans la note (ex « 8h45 ») et plausible pour une
+  // livraison (06:00-21:00) -> échéance. La borne évite « 1h avant » (=01:00), « 2h » etc.
+  var allH = t.match(/\d{1,2}\s*[h:]\s*\d{0,2}/g) || [];
+  if (allH.length === 1) { var hs=parseH(allH[0]); if(hs!=null && hs>=360 && hs<=1260) return {imperatif:true, creneauDebut:null, creneauFin:fmt(hs)}; }
   return null;
 }
 

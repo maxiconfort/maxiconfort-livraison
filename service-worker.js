@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.90 - Report (changement de date) reinitialise les SMS veille/depart (sinon non renvoyes)
+// v7.5.91 - Optimisation : detecte "a 8h45", "14h-16h", heure cible directe dans les notes
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-90';
+const CACHE_VERSION = 'maxiconfort-v7-5-91';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
