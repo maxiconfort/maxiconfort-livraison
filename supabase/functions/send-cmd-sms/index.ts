@@ -29,6 +29,11 @@ import { envoyerSMSOVH } from '../_shared/ovh-sms.ts';
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 const APP_BASE  = 'https://livraison.maxiconfort.fr';
+// Lien d'avis Google Business Profile Maxiconfort (fiche creee le 23/06/2026).
+// SMS post-livraison "avis" : demande d'avis HONNETE, sans condition ni recompense
+// (un cadeau lie a un avis = interdit Google + illegal FR). Pas d'emoji (sinon UCS-2
+// = 70 car/segment) ni d'accent (sansAccents applique par le helper OVH).
+const LIEN_AVIS = 'https://g.page/r/CbtQ5liS28rbEBM/review';
 
 const sb = createClient(SB_URL, SB_SR_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
@@ -62,6 +67,10 @@ const TPL = {
     p.dateFr
       ? `Bonjour ${p.prenom}, votre commande a bien ete expediee. Elle est en cours d'acheminement et sera livree le ${p.dateFr}. Merci de votre confiance. Maxiconfort.`
       : `Bonjour ${p.prenom}, votre commande a bien ete expediee et est en cours d'acheminement. Nous vous communiquerons la date de livraison. Merci. Maxiconfort.`,
+  // 23/06/2026 : SMS post-livraison (lendemain) -> demande d'avis Google honnete,
+  // SANS condition ni recompense. ~149 car = 1 segment = 1 credit OVH.
+  avis: (p: any) =>
+    `Bonjour ${p.prenom}, merci pour votre achat chez Maxiconfort ! Votre avis en 1 clic : ${p.lienAvis} Merci de votre confiance.`,
 };
 
 function prenomDe(client: string): string {
@@ -96,8 +105,8 @@ Deno.serve(async (req: Request) => {
     return new Response(JSON.stringify({ error: 'cmdId et type requis' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
-  if (!['veille', 'depart', 'route', 'proche', 'expedition', 'confirmation'].includes(type)) {
-    return new Response(JSON.stringify({ error: 'type doit être : veille, depart, route, proche, expedition, confirmation' }),
+  if (!['veille', 'depart', 'route', 'proche', 'expedition', 'confirmation', 'avis'].includes(type)) {
+    return new Response(JSON.stringify({ error: 'type doit être : veille, depart, route, proche, expedition, confirmation, avis' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
@@ -147,7 +156,7 @@ Deno.serve(async (req: Request) => {
   const creneauFin = body.creneauFin || '17:00';
   const contenu = TPL[type as keyof typeof TPL]({
     prenom, lienSuivi, lienConfirm, tracking, id: cmd.id, heureArrivee,
-    dateFr, produit, creneauDeb, creneauFin,
+    dateFr, produit, creneauDeb, creneauFin, lienAvis: LIEN_AVIS,
   });
 
   // Envoi OVH (transactionnel — pas de clause STOP)
