@@ -59,6 +59,18 @@ async function ovh(method: string, path: string, body?: any): Promise<{ status: 
   return { status: resp.status, data };
 }
 
+// Lit le solde de crédits SMS restant chez OVH (pour les alertes/rapports).
+// Renvoie le nombre de crédits, ou null si indisponible.
+export async function creditsOVH(): Promise<number | null> {
+  if (!OVH_AK || !OVH_AS || !OVH_CK) return null;
+  try {
+    const r = await ovh('GET', `/sms/${OVH_SERVICE}`);
+    if (r.status !== 200) return null;
+    const c = r.data?.creditsLeft;
+    return (typeof c === 'number') ? c : null;
+  } catch { return null; }
+}
+
 // Normalisation téléphone FR → +336/+337 (mobiles uniquement)
 export function telIntl(tel: string): string {
   if (!tel) return '';
