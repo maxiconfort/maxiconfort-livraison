@@ -94,8 +94,13 @@ function parseAdresseFR(adresse: string): { streetNumber: string; street: string
   const idx = adresse.indexOf(zipCode);
   const beforeZip = adresse.substring(0, idx).trim().replace(/,\s*$/, '');
   const afterZip  = adresse.substring(idx + 5).trim();
-  // Apres le ZIP = ville
-  const city = afterZip.split(/[,\n]/)[0].trim().replace(/,?\s*France\s*$/i, '');
+  // Apres le ZIP = ville. FIX 24/06 : les adresses au format "Rue, CP, Ville, France"
+  // ont une VIRGULE juste apres le code postal -> afterZip commence par ", Ville, France"
+  // et l'ancien split[0] renvoyait une chaine VIDE -> la ville retombait sur "Paris".
+  // On prend desormais le 1er segment NON vide, et on ignore un segment "France".
+  const segments = afterZip.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+  let city = (segments.find((s) => !/^france$/i.test(s)) || '')
+    .replace(/,?\s*France\s*$/i, '').trim();
   // Avant le ZIP = numero + rue
   const numMatch = beforeZip.match(/^(\d+\s*(?:bis|ter)?)\s+(.+)$/i);
   if (numMatch) {
