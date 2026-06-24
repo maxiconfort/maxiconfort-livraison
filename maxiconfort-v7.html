@@ -8903,6 +8903,8 @@ function renderLivreur() {
           sendCmdSmsAsync(_wcmdId, 'route');
         }
       }
+      // v7.5.92 : le clic Waze passe AUSSI ce client en "En route" (ouvre le suivi temps reel)
+      wazePasserEnRoute(_wcmdId);
       // Avertir le livreur de garder Maxiconfort ouvert
       toast('🚗 Waze ouvert — revenez sur Maxiconfort pour valider la livraison', 'info');
       // Ouverture en nouvel onglet + flags pour éviter de capturer le focus permanent
@@ -9680,6 +9682,26 @@ function setLvSt(tid, idx, st) {
   toast({'en-route':'🚚 En route !','arrivé':'📍 Arrivé !','reporté':'📅 Reporté','absent':'🔔 Absent signalé'}[st]||'Statut mis à jour','info');
   // ✅ SAUVEGARDER DANS SUPABASE → déclenche le Realtime admin
   sbSaveTournee(t);
+}
+
+// v7.5.92 : passe un client en "En route" depuis un clic Waze. RANOU ne touche JAMAIS le
+// bouton statut -> sans ca la commande reste "en-attente" et le SUIVI TEMPS REEL ne s'ouvre
+// pas pour le client (track-livreur exige 'en-route'/'arrive'). Ne touche qu'un stop encore
+// "en-attente" (ne regresse pas un livre/arrive). setLvSt synchronise stop+commande+tournee
+// + gere le SMS depart groupe (la dedupe serveur evite tout double envoi).
+function wazePasserEnRoute(cmdId) {
+  if (!cmdId) return;
+  for (var i = 0; i < tournees.length; i++) {
+    var t = tournees[i];
+    if (!t.stops) continue;
+    var si = t.stops.findIndex(function(x){ return x.cmdId === cmdId; });
+    if (si >= 0) {
+      if (t.stops[si].statut === 'en-attente') {
+        try { setLvSt(t.id, si, 'en-route'); } catch(e) { console.warn('[waze] setLvSt:', e.message); }
+      }
+      return;
+    }
+  }
 }
 
 // ════════════════════════════════════════
@@ -13781,6 +13803,8 @@ function lancerWazeProchainStop() {
       sendCmdSmsAsync(prochain.cmdId, 'route');
     }
   }
+  // v7.5.92 : passe ce client en "En route" (ouvre le suivi temps reel)
+  wazePasserEnRoute(prochain.cmdId);
   var adresse = encodeURIComponent(prochain.adresse + ', France');
   window.open('https://waze.com/ul?q=' + adresse + '&navigate=yes', '_blank');
   toast('🚗 Waze ouvert : ' + prochain.client, 'ok');
@@ -13809,6 +13833,8 @@ function ouvrirWazeTournee() {
       sendCmdSmsAsync(premier.cmdId, 'route');
     }
   }
+  // v7.5.92 : passe le 1er client en "En route" (ouvre le suivi temps reel)
+  wazePasserEnRoute(premier.cmdId);
   var adresseP = encodeURIComponent(premier.adresse + ', France');
   window.open('https://waze.com/ul?q=' + adresseP + '&navigate=yes', '_blank');
   // Copier la liste complete dans le presse-papier pour referencement

@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.91 - Optimisation : detecte "a 8h45", "14h-16h", heure cible directe dans les notes
+// v7.5.92 - Clic Waze = client passe auto en "En route" (ouvre le suivi temps reel client)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-91';
+const CACHE_VERSION = 'maxiconfort-v7-5-92';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
