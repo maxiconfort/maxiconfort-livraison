@@ -12214,7 +12214,13 @@ function optimOrdonnerCreneaux(allIdx, depotIdx, endpointIdx, ms, md, infos, sta
       if (inf.due < bestDue || (inf.due === bestDue && rd < bestReady)) { bestDue = inf.due; bestReady = rd; forced = mi; }
     }
   });
-  if (forced == null) return meilleur(allIdx, depotIdx, startMin); // aucun impératif -> normal
+  // v7.5.93 : on n'EPINGLE l'impératif en 1ère position QUE s'il est MATINAL (créneau qui
+  // se termine avant ~midi). Pour un créneau d'APRES-MIDI (ex 13h-16h), l'épingler en 1er
+  // gâchait la matinée et créait un zigzag (la tournée démarrait l'après-midi par ce client).
+  // Dans ce cas on laisse l'optimisation par fenêtres horaires (optimAmeliorerCreneaux gère
+  // le respect du créneau + l'attente si on arrive trop tôt) placer l'impératif à la bonne heure.
+  var SEUIL_EPINGLE_MATIN = 12 * 60; // 12:00 — au-delà, pas d'épinglage forcé en 1er
+  if (forced == null || bestDue > SEUIL_EPINGLE_MATIN) return meilleur(allIdx, depotIdx, startMin);
   // Servir le plus urgent en 1er : heure de départ APRÈS l'avoir livré
   var rest = allIdx.filter(function(x){ return x !== forced; });
   var startApres = startMin + (md[depotIdx][forced] || 0);
