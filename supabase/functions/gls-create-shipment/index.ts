@@ -66,6 +66,11 @@ const GLS_PASSWORD   = Deno.env.get('GLS_SHIPIT_PASSWORD') || '';
 const GLS_CONTACT_ID = Deno.env.get('GLS_SHIPIT_CONTACT_ID') || '';
 const SB_URL         = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY      = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+// v5.13 : accès Shopify (mêmes secrets que shopify-sync) pour synchroniser le statut
+// "Expédiée" de la commande du site dès la création de l'étiquette GLS.
+const SHOPIFY_DOMAIN  = Deno.env.get('SHOPIFY_STORE_DOMAIN') || '';
+const SHOPIFY_TOKEN   = Deno.env.get('SHOPIFY_ACCESS_TOKEN') || '';
+const SHOPIFY_VERSION = Deno.env.get('SHOPIFY_API_VERSION') || '2026-04';
 
 const GLS_API_URL = 'https://wbm-fr02.shipit.gls-group.com:443/backend/rs/shipments';
 
@@ -420,6 +425,49 @@ Deno.serve(async (req: Request) => {
   }
 });
 
+// v5.13 (24/06) : synchronise la commande du SITE (Shopify) en "Expédiée" (Fulfilled)
+// avec le n° de suivi GLS, dès que l'étiquette est créée. NON BLOQUANT : toute erreur est
+// capturée et renvoyée dans la réponse sans empêcher la création d'étiquette. Ne s'applique
+// QUE si la commande vient du site (ref_marketplace = ID Shopify numérique).
+async function syncShopifyFulfillment(cmd: any, trackingPremier: string): Promise<any> {
+  const shopId = String(cmd?.ref_marketplace || '').trim();
+  if (!shopId || !/^\d+$/.test(shopId)) return { skipped: 'pas une commande site' };
+  if (!SHOPIFY_DOMAIN || !SHOPIFY_TOKEN) return { skipped: 'secrets Shopify absents' };
+  if (!trackingPremier) return { skipped: 'pas de tracking' };
+  const base = `https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_VERSION}`;
+  const headers = {
+    'X-Shopify-Access-Token': SHOPIFY_TOKEN,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
+  try {
+    // 1) Récupérer les fulfillment orders OUVERTS de la commande
+    const foResp = await fetch(`${base}/orders/${shopId}/fulfillment_orders.json`, { headers });
+    if (!foResp.ok) return { error: `GET fulfillment_orders HTTP ${foResp.status}`, detail: (await foResp.text()).slice(0, 300) };
+    const foData = await foResp.json();
+    const fos = (foData.fulfillment_orders || []).filter((f: any) =>
+      f.status === 'open' || f.status === 'in_progress' || f.status === 'scheduled');
+    if (!fos.length) return { skipped: 'aucun fulfillment_order ouvert (deja expediee ?)' };
+    // 2) Créer le fulfillment avec le tracking GLS (notify_customer = email Shopify au client)
+    const trackUrl = `https://gls-group.eu/FR/fr/suivi-colis.html?match=${trackingPremier}`;
+    const fulfillmentBody = {
+      fulfillment: {
+        line_items_by_fulfillment_order: fos.map((f: any) => ({ fulfillment_order_id: f.id })),
+        tracking_info: { number: trackingPremier, company: 'GLS', url: trackUrl },
+        notify_customer: true,
+      },
+    };
+    const fResp = await fetch(`${base}/fulfillments.json`, {
+      method: 'POST', headers, body: JSON.stringify(fulfillmentBody),
+    });
+    const fJson = await fResp.json().catch(() => ({}));
+    if (!fResp.ok) return { error: `POST fulfillment HTTP ${fResp.status}`, detail: JSON.stringify(fJson).slice(0, 300) };
+    return { ok: true, fulfillment_id: fJson?.fulfillment?.id || null, statut: fJson?.fulfillment?.status || null };
+  } catch (e: any) {
+    return { error: e?.message || String(e) };
+  }
+}
+
 async function handleRequest(req: Request): Promise<Response> {
   const startTime = Date.now();
   let body: any = {};
@@ -453,6 +501,33 @@ async function handleRequest(req: Request): Promise<Response> {
         produit: data.produit,
         cached: true,
       }), { headers: JSON_HEADERS });
+    } catch (e: any) {
+      return new Response(JSON.stringify({ ok: false, error: e.message }), { status: 500, headers: JSON_HEADERS });
+    }
+  }
+
+  // v5.13 : action=testShopify — verifie EN LECTURE SEULE l'acces Shopify pour une
+  // commande site (GET fulfillment_orders, ne marque rien). Pour valider le token/scope.
+  if (action === 'testShopify') {
+    if (!cmdId) return new Response(JSON.stringify({ ok: false, error: 'cmdId requis' }), { status: 400, headers: JSON_HEADERS });
+    const { data } = await sb.from('commandes').select('id, ref_marketplace, client').eq('id', cmdId).single();
+    if (!data) return new Response(JSON.stringify({ ok: false, error: 'commande introuvable' }), { status: 404, headers: JSON_HEADERS });
+    const shopId = String(data.ref_marketplace || '').trim();
+    if (!/^\d+$/.test(shopId)) {
+      return new Response(JSON.stringify({ ok: false, reason: 'pas une commande site', ref_marketplace: data.ref_marketplace }), { headers: JSON_HEADERS });
+    }
+    if (!SHOPIFY_DOMAIN || !SHOPIFY_TOKEN) {
+      return new Response(JSON.stringify({ ok: false, reason: 'secrets Shopify absents', a_domaine: !!SHOPIFY_DOMAIN, a_token: !!SHOPIFY_TOKEN }), { headers: JSON_HEADERS });
+    }
+    try {
+      const base = `https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_VERSION}`;
+      const foResp = await fetch(`${base}/orders/${shopId}/fulfillment_orders.json`, {
+        headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN, 'Accept': 'application/json' },
+      });
+      const txt = await foResp.text();
+      let fos: any = null;
+      try { fos = (JSON.parse(txt).fulfillment_orders || []).map((f: any) => ({ id: f.id, status: f.status })); } catch {}
+      return new Response(JSON.stringify({ ok: foResp.ok, http: foResp.status, client: data.client, shopId, fulfillment_orders: fos, brut: foResp.ok ? undefined : txt.slice(0, 400) }), { headers: JSON_HEADERS });
     } catch (e: any) {
       return new Response(JSON.stringify({ ok: false, error: e.message }), { status: 500, headers: JSON_HEADERS });
     }
@@ -541,6 +616,7 @@ async function handleRequest(req: Request): Promise<Response> {
   // Update commande Supabase avec le TrackID (si pas testMode)
   // v5 : concatene tous les trackIDs separes par virgule si multi-colis
   let smsSent: any = null;
+  let shopifySync: any = null;
   if (cmdId && trackId && !testMode) {
     try {
       const trackingValue = allParcels.map((p: any) => p.trackId).filter(Boolean).join(',');
@@ -570,6 +646,16 @@ async function handleRequest(req: Request): Promise<Response> {
         console.warn('Auto-SMS expedition failed:', e.message);
         smsSent = { error: e.message };
       }
+
+      // v5.13 : synchro statut commande SITE (Shopify) -> "Expediee" + tracking GLS,
+      // en temps reel des la creation de l'etiquette. Non bloquant (try/catch isole).
+      try {
+        shopifySync = await syncShopifyFulfillment(cmd, trackId);
+        console.log('Shopify fulfillment:', JSON.stringify(shopifySync));
+      } catch (e: any) {
+        console.warn('Shopify fulfillment failed:', e.message);
+        shopifySync = { error: e.message };
+      }
     } catch (e: any) {
       console.warn('Update commande failed:', e.message);
     }
@@ -589,6 +675,7 @@ async function handleRequest(req: Request): Promise<Response> {
     pdfBase64Full: pdfBase64, // Le PDF complet pour download/print cote client (toutes etiquettes incluses)
     gls_response: created,
     smsSent,                  // v5.8 : retour de l'envoi auto SMS expedition
+    shopifySync,              // v5.13 : retour de la synchro statut Shopify (Expediee)
     duration_ms: Date.now() - startTime,
   }), { headers: JSON_HEADERS });
 }
