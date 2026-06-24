@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.93 - Optim : creneau d'apres-midi n'est plus epingle en 1er (corrige le zigzag)
+// v7.5.94 - Un SAV ajoute manuellement a une tournee n'est plus retire au rechargement
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-93';
+const CACHE_VERSION = 'maxiconfort-v7-5-94';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

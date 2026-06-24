@@ -8305,8 +8305,12 @@ function reconcilierTournees() {
         if (!cmd) { nouveaux.push(s); return; }                    // commande introuvable -> ne pas deviner
         if (cmd.statut === 'livré')  { if (s.statut !== 'livré')  { s.statut = 'livré';  change = true; } nouveaux.push(s); return; }
         if (cmd.statut === 'annulé') { change = true; return; }    // v7.5.88 : commande annulée -> RETIRER le stop de la tournée
-        var horsTournee = (cmd.transporteur||'RANOU') === 'GLS' || String(cmd.id).indexOf('#SAV') === 0 || !(cmd.date && cmd.date.length >= 10);
-        if (horsTournee)       { change = true; return; }          // GLS/SAV/sans date -> retirer
+        // v7.5.94 : on NE retire PLUS les SAV ajoutés MANUELLEMENT à une tournée (Borhen y
+        // place certains SAV à livrer par RANOU, ex échange). Les SAV restent juste exclus de
+        // l'auto-AJOUT (passe 2 via cmdEligibleTournee). On retire seulement GLS (province
+        // expédiée) et les commandes sans date de livraison.
+        var horsTournee = (cmd.transporteur||'RANOU') === 'GLS' || !(cmd.date && cmd.date.length >= 10);
+        if (horsTournee)       { change = true; return; }          // GLS/sans date -> retirer
         if (cmd.date !== t.date) { change = true; return; }        // date changée -> retirer ici (réajouté ailleurs)
         nouveaux.push(s);                                          // sinon OK, garder
       });
