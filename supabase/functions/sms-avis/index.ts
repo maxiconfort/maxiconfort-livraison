@@ -1,20 +1,20 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis (v1 — 23/06/2026)
+// Edge Function : sms-avis (v1.1 — 24/06/2026)
 // ════════════════════════════════════════════════════════════════════
 // Tourne en CRON 1x/jour (~11h Paris) : demande d'avis Google le LENDEMAIN
 // de la livraison.
 //
 // Scan : commandes livrees HIER (date_livraison = J-1 Paris), statut="livré",
-//        tel valide, hors #SAV, pas deja sollicitee (dedupe sms_envoyes type "avis").
-// Pour chaque : appelle send-cmd-sms { type:"avis" } (qui gere envoi OVH + log +
-// dedupe + marquage sms_envoyes).
+//        tel valide, hors #SAV, NON exclues (note), pas deja sollicitee
+//        (dedupe sms_envoyes type "avis").
+// Pour chaque : appelle send-cmd-sms { type:"avis" }.
 //
-// ⚠️ Demande d'avis HONNETE, sans condition ni recompense (un cadeau lie a un avis
-//    = interdit Google + illegal FR). 1 SMS = 1 credit OVH.
+// EXCLUSION "client a risque" (v1.1) : si la note de commande (instr) contient
+//   "PAS D'AVIS" / "SANS AVIS" / "NO AVIS" -> pas de demande d'avis.
+//
+// ⚠️ Demande d'avis HONNETE, sans condition ni recompense. 1 SMS = 1 credit OVH.
 //
 // Body : { dryRun?: boolean, dateCible?: "YYYY-MM-DD" }
-//   - dryRun=true  -> n'ENVOIE RIEN, liste juste les clients qui seraient contactes.
-//   - dateCible    -> force la date livraison ciblee (defaut = hier, heure Paris).
 // ════════════════════════════════════════════════════════════════════
 
 // deno-lint-ignore-file no-explicit-any
@@ -35,10 +35,15 @@ const CORS = {
 };
 
 function toLocalDateStr(d: Date): string {
-  // Paris ~ UTC+1/+2 (offset manuel, simplifie comme sms-auto)
   const utc = d.getTime() + d.getTimezoneOffset() * 60000;
   const paris = new Date(utc + 3600000);
   return paris.toISOString().split('T')[0];
+}
+
+// Note contient un mot-cle d'exclusion ? (insensible casse/ponctuation)
+function noteExclut(instr: string): boolean {
+  const clean = String(instr || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+  return /\b(noavis|no avis|sans avis|pas d avis|pas avis|pasdavis)\b/.test(clean);
 }
 
 Deno.serve(async (req: Request) => {
@@ -50,7 +55,6 @@ Deno.serve(async (req: Request) => {
 
   const dryRun = body.dryRun === true;
 
-  // Date cible = hier (Paris) par defaut
   let dateCible: string = body.dateCible;
   if (!dateCible) {
     const hier = new Date();
@@ -58,9 +62,8 @@ Deno.serve(async (req: Request) => {
     dateCible = toLocalDateStr(hier);
   }
 
-  // Commandes livrees ce jour-la
   const { data: cmds, error } = await sb.from('commandes')
-    .select('id,client,tel,statut,transporteur,sms_envoyes,date_livraison')
+    .select('id,client,tel,statut,transporteur,sms_envoyes,date_livraison,instr')
     .eq('date_livraison', dateCible)
     .eq('statut', 'livré');
 
@@ -78,6 +81,10 @@ Deno.serve(async (req: Request) => {
     if (/sav/i.test(String(c.id))) {
       skipped++; details.push({ id: c.id, action: 'skip_sav' }); continue;
     }
+    // Exclusion manuelle "client a risque" (mot-cle dans la note)
+    if (noteExclut(c.instr)) {
+      skipped++; details.push({ id: c.id, action: 'skip_exclu_note', client: c.client }); continue;
+    }
     // Tel valide
     const tel = (c.tel || '').replace(/[^0-9+]/g, '');
     if (!tel || tel.length < 8) {
@@ -90,7 +97,7 @@ Deno.serve(async (req: Request) => {
     }
     // Mode test : on liste sans envoyer
     if (dryRun) {
-      sent++; // compte comme "serait envoye"
+      sent++;
       details.push({ id: c.id, action: 'would_send', client: c.client, to: tel });
       continue;
     }
