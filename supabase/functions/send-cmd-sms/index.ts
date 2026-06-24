@@ -58,8 +58,11 @@ const TPL = {
     `Bonjour ${p.prenom}, votre livreur arrive dans ~15 min. Soyez joignable. Suivi : ${p.lienSuivi}`,
   proche: (p: any) =>
     `Bonjour ${p.prenom}, votre livreur arrive ! Soyez pret. Suivi : ${p.lienSuivi}`,
+  // v3.2 (24/06) : n'envoie que le 1er n° de suivi (suffit pour suivre tout l'envoi chez
+  // GLS) + le nombre de colis -> SMS court = 1 seul credit OVH meme pour un envoi 10 colis
+  // (avant : toute la liste des trackings = SMS de 2-3 segments + lien illisible).
   expedition: (p: any) =>
-    `Bonjour ${p.prenom}, commande ${p.id} expediee par GLS. Tracking ${p.tracking}. Suivi : https://gls-group.eu/FR/fr/suivi-colis.html?match=${p.tracking}`,
+    `Bonjour ${p.prenom}, commande ${p.id} expediee par GLS${p.nbColis > 1 ? ' (' + p.nbColis + ' colis)' : ''}. Suivi colis ${p.tracking} : https://gls-group.eu/FR/fr/suivi-colis.html?match=${p.tracking}`,
   // v7.5.73 : SMS de confirmation envoye a la PRISE de commande (rassurer / fideliser
   // le client pour qu'il n'aille pas voir ailleurs). Avec date -> annonce la date de
   // livraison ; sans date -> message generique. <=160 car = 1 credit OVH.
@@ -143,7 +146,12 @@ Deno.serve(async (req: Request) => {
   const lienConfirm = cmd.tracking_token
     ? `${APP_BASE}/confirmer.html?t=${cmd.tracking_token}`
     : APP_BASE;
-  const tracking = cmd.tracking_transporteur || '';
+  // v3.2 : pour le SMS expedition, ne garder que le 1er n° de suivi (suffit chez GLS) +
+  // compter les colis. Avant : toute la liste -> SMS long (2-3 credits) et lien illisible.
+  const trackingList = String(cmd.tracking_transporteur || '')
+    .split(',').map((s: string) => s.trim()).filter(Boolean);
+  const tracking = trackingList[0] || '';
+  const nbColis = trackingList.length;
   // v3 : params veille (date livraison FR + creneau)
   const dateLiv = cmd.date_livraison ? new Date(cmd.date_livraison + 'T12:00:00') : null;
   // v7.5.68 : date courte JJ/MM (avant "lundi 18 juin" ~13 car) pour tenir le SMS
@@ -155,7 +163,7 @@ Deno.serve(async (req: Request) => {
   const creneauDeb = body.creneauDeb || '08:00';
   const creneauFin = body.creneauFin || '17:00';
   const contenu = TPL[type as keyof typeof TPL]({
-    prenom, lienSuivi, lienConfirm, tracking, id: cmd.id, heureArrivee,
+    prenom, lienSuivi, lienConfirm, tracking, nbColis, id: cmd.id, heureArrivee,
     dateFr, produit, creneauDeb, creneauFin, lienAvis: LIEN_AVIS,
   });
 
