@@ -155,6 +155,9 @@ const MULTICOLIS_RULES: { label: string; match: RegExp; colis: number[] }[] = [
   { label: 'Lit Coffre (tete + 2 longueurs)', match: /lit\s*coffre/i, colis: [6, 15, 15] },
   // Lit NICO : 2 colis (tete 6kg + 1 longueur 15kg)
   { label: 'Lit NICO (tete + 1 longueur)',    match: /lit\s*nico/i, colis: [6, 15] },
+  // Lit superpose DUO / 2 places (90x190) : 2 colis (structure metal). Regle Borhen 29/06.
+  // Cible le DUO (1+1, 2 personnes) et PAS le modele "2+1 Places / 3 Personnes" (a definir).
+  { label: 'Lit superpose DUO 2 places (2 colis)', match: /lit\s*superpos[\s\S]*?(duo|2\s*places|2\s*personnes)/i, colis: [20, 20] },
 
   // ─── SOMMIERS SEULS (sans matelas) — regle Borhen 15/06/2026 (v5.12) ───
   // Sommier BOIS A LATTES = 1 colis (se transporte a plat, quelle que soit la taille).
