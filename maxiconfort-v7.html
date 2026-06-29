@@ -10990,12 +10990,18 @@ function sauvegarderDepense() {
 
   console.log('[DEBUG dépense] → mode retenu:', depModePaie);
 
+  // v7.5.95 : garde-fou — une depense ESPECES sans livreur n'etait deduite de la caisse de
+  // PERSONNE (l'argent "disparaissait" du calcul, ex achat fournisseur 430€ du 27/06). Comme
+  // RANOU est le livreur principal, on le met par defaut sur toute depense ESPECES sans
+  // livreur. Les depenses CB (compte societe) gardent "General" (pas d'impact caisse especes).
+  var _depLivreur = (document.getElementById('dep-livreur').value||'').toUpperCase();
+  if (!_depLivreur && depModePaie !== 'CB') _depLivreur = 'RANOU';
   depenses.unshift({
     id: generateId('d'),
     date,
     cat:      document.getElementById('dep-cat').value,
     montant,
-    livreur:  (document.getElementById('dep-livreur').value||'').toUpperCase(),
+    livreur:  _depLivreur,
     comment:  document.getElementById('dep-comment').value,
     modePaie: depModePaie, // 'Espèces' = déduit de la caisse livreur | 'CB' = compte société
   });
