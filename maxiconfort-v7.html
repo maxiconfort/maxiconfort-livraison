@@ -8497,7 +8497,8 @@ function renderTournees() {
       '<div class="trn-card-meta">' +
         '<span>📅 ' + fmtDate(t.date) + '</span>' +
         '<span>📦 ' + done + '/' + total + '</span>' +
-        '<span class="trn-card-money">✓ ' + Math.round(encaisse) + ' € encaissés</span>' +
+        // v7.5.98 : le montant encaissé n'est visible que par l'admin (pas les collaboratrices)
+        (role === 'admin' ? '<span class="trn-card-money">✓ ' + Math.round(encaisse) + ' € encaissés</span>' : '') +
       '</div>' +
       '<div class="trn-card-prog"><div class="trn-card-prog-fill" style="width:' + pct + '%"></div></div>' +
       planBadge +
@@ -17566,7 +17567,8 @@ function afficherTournee(id) {
 
   var _gtd_livres=document.getElementById('td-livres'); if(_gtd_livres) _gtd_livres.textContent=t.stops.filter(s => s.statut === 'livré').length;
 
-  var _gtd_total=document.getElementById('td-total'); if(_gtd_total) _gtd_total.textContent=t.stops.filter(s => s.statut !== 'livré').reduce((s, x) => s + x.prix, 0) + ' €';
+  // v7.5.98 : total € masqué pour les non-admin (collaboratrices) — confidentialité
+  var _gtd_total=document.getElementById('td-total'); if(_gtd_total) _gtd_total.textContent=(role === 'admin' ? (t.stops.filter(s => s.statut !== 'livré').reduce((s, x) => s + x.prix, 0) + ' €') : '—');
 
   const stcls = {préparée:'b-gray','en cours':'b-blue',terminée:'b-green'}[t.statut] || 'b-gray';
   document.getElementById('td-badge').className = 'bdg ' + stcls;
@@ -17587,7 +17589,7 @@ function afficherTournee(id) {
         '</div>' +
         (s.etage ? '<div class="iline">🏢 <span>' + s.etage + (s.asc==='Oui'?' · Asc. ✓':'') + (s.code?' · Code : <strong>'+s.code+'</strong>':'') + '</span></div>' : '') +
         (s.instr ? '<div class="iline" style="color:var(--od);font-weight:600">ℹ️ ' + s.instr + '</div>' : '') +
-        '<div class="arow"><div style="font-size:13px;color:var(--t2)">' + s.produit + '</div><div style="font-size:16px;font-weight:800;color:var(--green)">' + s.prix + ' € <span style="font-size:11px;color:var(--t3);font-weight:400">' + s.paie + '</span></div></div>' +
+        '<div class="arow"><div style="font-size:13px;color:var(--t2)">' + s.produit + '</div>' + (role === 'admin' ? '<div style="font-size:16px;font-weight:800;color:var(--green)">' + s.prix + ' € <span style="font-size:11px;color:var(--t3);font-weight:400">' + s.paie + '</span></div>' : '') + '</div>' +
       '</div>' +
     '</div>';
   }).join('');
