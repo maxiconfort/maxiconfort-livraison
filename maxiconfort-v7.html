@@ -5410,6 +5410,38 @@ function pBdg(s){
 }
 
 // v7.5.12 : Indicateur des commandes prises aujourd'hui (created_at = today, vraie date d'entree)
+// v7.5.96 : périodes SÉLECTIONNABLES sur les 3 compteurs Commandes (comparer les mois /
+// semaines / jours précédents selon le choix). cmdStatsSel = période choisie par carte
+// ('' = période EN COURS, comportement par défaut inchangé). cmdFetchRange fetch+calcule
+// une plage [dMin,dMaxExcl) avec EXACTEMENT les mêmes filtres que les compteurs (hors
+// annulé, hors SAV, hors saisie rétroactive). Les plages entièrement PASSÉES (immuables)
+// sont mises en cache pour ne pas re-fetcher. N'altère AUCUN calcul financier (affichage seul).
+var cmdStatsSel = { jour: '', sem: '', mois: '' };
+var cmdStatsCache = {};
+async function cmdFetchRange(dMin, dMaxExcl) {
+  var key = dMin + '_' + dMaxExcl;
+  var tn = new Date();
+  var tk = tn.getFullYear() + '-' + String(tn.getMonth()+1).padStart(2,'0') + '-' + String(tn.getDate()).padStart(2,'0');
+  var immuable = dMaxExcl <= tk; // plage entierement passee -> ne changera plus
+  if (immuable && cmdStatsCache[key]) return cmdStatsCache[key];
+  var res = { nb: 0, total: 0 };
+  try {
+    var url = SUPABASE_URL + '/rest/v1/commandes?select=id,prix,date_commande,date_livraison,statut,origine&date_commande=gte.' + dMin + '&date_commande=lt.' + dMaxExcl + '&statut=not.eq.annul%C3%A9&limit=2000';
+    var r = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
+    if (r.ok) {
+      var data = await r.json();
+      var vr = (data || []).filter(function(c){
+        if (!c.date_commande) return false;
+        var notRetro = !c.date_livraison || c.date_livraison >= c.date_commande;
+        return notRetro && (c.origine || '').toUpperCase().indexOf('SAV') !== 0;
+      });
+      res = { nb: vr.length, total: vr.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0) };
+    }
+  } catch(e) { console.warn('cmdFetchRange', e.message); }
+  if (immuable) cmdStatsCache[key] = res;
+  return res;
+}
+
 // v7.5.22 : 3 encarts : Aujourd'hui / Semaine / Mois (cote a cote)
 // v7.5.23 : chiffres EXACTS via fetch direct Supabase (cache local pouvait fausser les totaux)
 async function renderCmdStatsJour() {
@@ -5494,35 +5526,58 @@ async function renderCmdStatsJour() {
     return { nb: nb, total: total };
   }
 
-  var j = statsPeriode(todayStr, demainStr);
-  var s = statsPeriode(debutSemStr, demainStr);
-  var m = statsPeriode(debutMoisStr, demainStr);
-
-  // v7.5.40 : Logs console pour debug (visible via F12)
-  console.log('[StatsJour]', {
-    now: now.toString(),
-    todayStr: todayStr,
-    debutSemStr: debutSemStr,
-    debutMoisStr: debutMoisStr,
-    demainStr: demainStr,
-    moisDataTotal: moisData.length,
-    vraiesAprFiltre: vraies.length,
-    aujourdhui: j,
-    semaine: s,
-    mois: m,
-    excluesRetroactives: moisData.length - vraies.length
-  });
-
-  // Formats plage pour tooltip
+  // v7.5.96 : chaque carte affiche la période EN COURS par défaut (depuis le fetch du mois
+  // déjà fait = statsPeriode/vraies), OU une période passée choisie (fetch dédié cmdFetchRange).
   function fmtJour(d){ return d.substring(8,10)+'/'+d.substring(5,7); }
-  var plageJour = "Cmds creees le " + fmtJour(todayStr);
-  var plageSem  = "Du lundi " + fmtJour(debutSemStr) + " au " + fmtJour(todayStr);
-  var plageMois = "Du 01/" + (now.getMonth()+1).toString().padStart(2,'0') + " au " + fmtJour(todayStr);
+  var moisFrLong = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+
+  // ── JOUR ──
+  var jStats, jourVal;
+  if (!cmdStatsSel.jour || cmdStatsSel.jour === todayStr) { cmdStatsSel.jour = ''; jStats = statsPeriode(todayStr, demainStr); jourVal = todayStr; }
+  else { var _jd = new Date(cmdStatsSel.jour+'T00:00:00'); var _jf = new Date(_jd); _jf.setDate(_jd.getDate()+1); jStats = await cmdFetchRange(cmdStatsSel.jour, toLocalDateStr(_jf)); jourVal = cmdStatsSel.jour; }
+
+  // ── SEMAINE ──
+  var sStats, semVal;
+  if (!cmdStatsSel.sem || cmdStatsSel.sem === debutSemStr) { cmdStatsSel.sem = ''; sStats = statsPeriode(debutSemStr, demainStr); semVal = debutSemStr; }
+  else { var _sd = new Date(cmdStatsSel.sem+'T00:00:00'); var _sf = new Date(_sd); _sf.setDate(_sd.getDate()+7); sStats = await cmdFetchRange(cmdStatsSel.sem, toLocalDateStr(_sf)); semVal = cmdStatsSel.sem; }
+
+  // ── MOIS ──
+  var mStats, moisVal;
+  var curMoisVal = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
+  if (!cmdStatsSel.mois || cmdStatsSel.mois === curMoisVal) { cmdStatsSel.mois = ''; mStats = statsPeriode(debutMoisStr, demainStr); moisVal = curMoisVal; }
+  else { var _py = parseInt(cmdStatsSel.mois.split('-')[0],10), _pm = parseInt(cmdStatsSel.mois.split('-')[1],10); mStats = await cmdFetchRange(toLocalDateStr(new Date(_py,_pm-1,1)), toLocalDateStr(new Date(_py,_pm,1))); moisVal = cmdStatsSel.mois; }
+
+  // ── Construire les sélecteurs ──
+  var inStyle = 'border:none;background:rgba(255,255,255,.55);border-radius:6px;padding:2px 5px;font-size:12px;font-weight:800;font-family:var(--font);color:inherit;cursor:pointer';
+  var jourSel = '<input type="date" value="'+jourVal+'" max="'+todayStr+'" onchange="cmdStatsSel.jour=this.value; renderCmdStatsJour();" style="'+inStyle+'" title="Choisir un jour">';
+  var semOpts = '';
+  var _dwNow = (now.getDay()+6)%7;
+  for (var w = 0; w < 8; w++) {
+    var _wd = new Date(now); _wd.setDate(now.getDate()-_dwNow-7*w);
+    var _wv = toLocalDateStr(_wd); var _we = new Date(_wd); _we.setDate(_wd.getDate()+6);
+    semOpts += '<option value="'+_wv+'"'+(_wv===semVal?' selected':'')+'>'+(w===0?'Cette semaine':'Sem. '+fmtJour(_wv)+'→'+fmtJour(toLocalDateStr(_we)))+'</option>';
+  }
+  var semSel = '<select onchange="cmdStatsSel.sem=this.value; renderCmdStatsJour();" style="'+inStyle+'" title="Choisir une semaine">'+semOpts+'</select>';
+  var moisOpts = '';
+  for (var k = 0; k < 12; k++) {
+    var _dM = new Date(now.getFullYear(), now.getMonth()-k, 1);
+    var _mv = _dM.getFullYear()+'-'+String(_dM.getMonth()+1).padStart(2,'0');
+    moisOpts += '<option value="'+_mv+'"'+(_mv===moisVal?' selected':'')+'>'+moisFrLong[_dM.getMonth()]+' '+_dM.getFullYear()+'</option>';
+  }
+  var moisSel = '<select onchange="cmdStatsSel.mois=this.value; renderCmdStatsJour();" style="'+inStyle+'" title="Choisir un mois">'+moisOpts+'</select>';
+
+  function carte(ico, lbl, selHtml, nb, total, bg, brd, txt) {
+    var h = '<div style="background:'+bg+';border:1px solid '+brd+';border-radius:8px;padding:6px 10px;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:'+txt+'">'+
+      '<span>'+ico+(lbl?' '+lbl:'')+'</span>'+selHtml+
+      '<span><strong>'+nb+'</strong> cmd'+(nb>1?'s':'')+'</span>';
+    if (showMontants) h += '<span style="opacity:.5">·</span><span style="font-weight:900">'+total.toLocaleString('fr-FR')+' €</span>';
+    return h + '</div>';
+  }
 
   box.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
-    mini('📊', "Aujourd'hui", plageJour, j.nb, j.total, 'var(--bl)', 'var(--blue)', 'var(--bd)') +
-    mini('📅', 'Semaine', plageSem, s.nb, s.total, 'var(--gl)', 'var(--green)', 'var(--gd)') +
-    mini('📆', lblMois, plageMois, m.nb, m.total, 'var(--ol)', 'var(--orange)', 'var(--od)') +
+    carte('📊', '',     jourSel, jStats.nb, jStats.total, 'var(--bl)', 'var(--blue)', 'var(--bd)') +
+    carte('📅', 'Sem.', semSel,  sStats.nb, sStats.total, 'var(--gl)', 'var(--green)', 'var(--gd)') +
+    carte('📆', '',     moisSel, mStats.nb, mStats.total, 'var(--ol)', 'var(--orange)', 'var(--od)') +
   '</div>';
 }
 

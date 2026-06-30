@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.95 - Depense especes sans livreur -> RANOU par defaut (sinon non deduite de la caisse)
+// v7.5.96 - Compteurs Commandes : periodes selectionnables (comparer mois/semaines/jours passes)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-95';
+const CACHE_VERSION = 'maxiconfort-v7-5-96';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
