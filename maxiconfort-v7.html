@@ -10509,94 +10509,94 @@ function finRender() {
     if (!tourneesLv.length && !livreursList.length) {
       caisseEl.innerHTML = blocCaisseGen || '<div style="padding:16px;text-align:center;color:var(--t3)">Aucune donnée sur cette période</div>';
     } else {
-      caisseEl.innerHTML = blocCaisseGen + tourneesLv.map(function(t) {
+      // v7.5.99 : REFONTE "Retours de tournée" — cartes "à traiter" en haut (calcul clair +
+      // 1 bouton valider), tournées déjà validées repliées en bas. Les CALCULS sont IDENTIQUES
+      // (getMontantEspecesCmd/CB, dépenses espèces déduites, aRemettre) — seule la présentation
+      // et l'organisation changent. validerRemiseCaisse/annulerRemiseCaisse inchangés.
+      var retInfos = tourneesLv.map(function(t) {
         var lv = t.livreur || '';
-        // v7.5.15 : utilise le statut du STOP pour eviter le double comptage des cmds presentes
-        // dans plusieurs tournees (reporte dans T-A puis relivre dans T-B).
         var cmdsLv = getCmdsLivresParTournee(t) || [];
-        // v7.3.3 : helpers gèrent le mode Mixte (split Espèces + CB)
         var especes  = cmdsLv.reduce(function(s,c){ return s + getMontantEspecesCmd(c); }, 0);
         var cb       = cmdsLv.reduce(function(s,c){ return s + getMontantCBCmd(c); }, 0);
         var virement = cmdsLv.filter(function(c){ return c.paie==='Virement' && c.stpaie==='Payé'; }).reduce(function(s,c){ return s+(c.montantEnc||c.prix); },0);
         var prepaye  = cmdsLv.filter(function(c){ return MODES_PAIE.filter(function(m){return m.cat==='prepaye';}).map(function(m){ return m.id; }).includes(c.paie) && c.stpaie==='Payé'; }).reduce(function(s,c){ return s+(c.montantEnc||c.prix); },0);
         var nonEnc   = cmdsLv.filter(function(c){ return c.stpaie!=='Payé'; }).reduce(function(s,c){ return s+c.prix; },0);
-        // Dépenses de la date exacte de la tournée uniquement
         var tExact = t.date || '';
-        var depEspLv = deps.filter(function(d){
-          var matchTournee = d.tourneeId ? d.tourneeId === (t ? t.id : '') : d.date === tExact;
+        var depEspDetail = deps.filter(function(d){
+          var matchTournee = d.tourneeId ? d.tourneeId === t.id : d.date === tExact;
           return (d.livreur||'').toLowerCase() === lv.toLowerCase() && (d.livreur||'').toUpperCase() !== 'CAISSE' && d.modePaie !== 'CB' && matchTournee;
-        })
-                          .reduce(function(s,d){ return s + d.montant; }, 0);
-        var depCbLv  = deps.filter(function(d){
-          var matchTournee = d.tourneeId ? d.tourneeId === (t ? t.id : '') : d.date === tExact;
-          return (d.livreur||'').toLowerCase() === lv.toLowerCase() && d.modePaie === 'CB' && matchTournee;
-        })
-                          .reduce(function(s,d){ return s + d.montant; }, 0);
-        var totalLv  = cmdsLv.reduce(function(s,c){ return s+c.prix; },0);
+        });
+        var depEspLv = depEspDetail.reduce(function(s,d){ return s + d.montant; }, 0);
         var caisseKey = 't_' + t.id;
         var remiseInfo = caissesRemises[caisseKey] || null;
-        var dejaRemis = !!remiseInfo;
-        var remiseDateStr = '';
-        if (remiseInfo && remiseInfo.date) {
-          var rd = new Date(remiseInfo.date);
-          remiseDateStr = rd.toLocaleDateString('fr-FR') + ' ' + rd.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
-        }
-
-        var borderColor = dejaRemis ? 'var(--green)' : 'var(--brd)';
-        var avatarBg    = dejaRemis ? 'var(--green)' : 'var(--blue)';
-        var avatarChar  = dejaRemis ? '✓' : lv.charAt(0).toUpperCase();
-
         var aRemettre = Math.max(0, especes - depEspLv);
-        var btnValider = (!dejaRemis && aRemettre > 0)
-          ? '<button onclick="validerRemiseCaisse(\'' + caisseKey + '\')" style="padding:8px 14px;border-radius:10px;border:none;background:var(--green);color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">💵 Valider remise</button>'
-          : '';
-        var btnAnnuler = dejaRemis
-          ? '<button onclick="annulerRemiseCaisse(\'' + caisseKey + '\')" style="padding:6px 10px;border-radius:8px;border:1px solid var(--brd2);background:var(--bg);color:var(--t2);font-size:12px;cursor:pointer;font-family:var(--font)">↩ Annuler</button>'
-          : '';
+        return { t:t, lv:lv, cmdsLv:cmdsLv, especes:especes, cb:cb, virement:virement, prepaye:prepaye, nonEnc:nonEnc,
+                 depEspDetail:depEspDetail, depEspLv:depEspLv, caisseKey:caisseKey, remiseInfo:remiseInfo,
+                 dejaRemis:!!remiseInfo, aRemettre:aRemettre, totalLv: cmdsLv.reduce(function(s,c){ return s+c.prix; },0) };
+      });
 
-        // Bloc détail dépenses du livreur
-        var depDetailHtml = '';
-        if (depEspLv > 0 || depCbLv > 0) {
-          depDetailHtml = '<div style="background:var(--bg2);border-radius:10px;padding:10px;margin-bottom:10px;font-size:12px">' +
-            '<div style="font-weight:700;margin-bottom:6px;color:var(--t2)">Dépenses de tournée</div>' +
-            (depEspLv > 0 ? '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--brd)">' +
-              '<span>💵 Payées en espèces caisse <span style="font-size:11px;color:var(--red)">(déduit du retour)</span></span>' +
-              '<strong style="color:var(--red)">− ' + depEspLv.toLocaleString('fr-FR') + ' €</strong></div>' : '') +
-            (depCbLv > 0 ? '<div style="display:flex;justify-content:space-between;padding:4px 0">' +
-              '<span>💳 Payées CB société <span style="font-size:11px;color:var(--t3)">(hors caisse)</span></span>' +
-              '<strong style="color:var(--t2)">' + depCbLv.toLocaleString('fr-FR') + ' €</strong></div>' : '') +
-          '</div>';
-        }
+      var aTraiter = retInfos.filter(function(r){ return !r.dejaRemis && r.aRemettre > 0; })
+                             .sort(function(a,b){ return (b.t.date||'').localeCompare(a.t.date||''); });
+      var traitees = retInfos.filter(function(r){ return r.dejaRemis; })
+                             .sort(function(a,b){ return (b.t.date||'').localeCompare(a.t.date||''); });
+      var rienARem = retInfos.filter(function(r){ return !r.dejaRemis && r.aRemettre <= 0; })
+                             .sort(function(a,b){ return (b.t.date||'').localeCompare(a.t.date||''); });
+      var totalARem = aTraiter.reduce(function(s,r){ return s + r.aRemettre; }, 0);
+      function dFr(d){ return d ? new Date(d).toLocaleDateString('fr-FR') : '—'; }
+      var eur = function(n){ return Math.round(n).toLocaleString('fr-FR') + ' €'; };
 
-        var blocRemise = dejaRemis
-          ? '<div style="background:var(--gl);border-radius:12px;padding:12px;display:flex;align-items:center;gap:10px"><span style="font-size:18px">✅</span><div style="font-size:14px;font-weight:700;color:var(--gd)">Caisse remise et validée — ' + aRemettre.toLocaleString('fr-FR') + ' €' + (remiseDateStr ? '<div style="font-size:11px;color:var(--gd);margin-top:2px">Le ' + remiseDateStr + (remiseInfo && remiseInfo.par ? ' · ' + remiseInfo.par : '') + '</div>' : '') + '</div></div>'
-          : (aRemettre > 0
-            ? '<div style="background:var(--green);border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center"><div style="color:#fff;font-size:14px;font-weight:700">💵 À remettre en espèces</div><div style="color:#fff;font-size:20px;font-weight:900">' + aRemettre.toLocaleString('fr-FR') + ' €</div></div>'
-            : '<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center;color:var(--t3);font-size:13px">Aucun encaissement espèces à remettre</div>'
-          );
-
-        return '<div style="background:var(--card);border:1.5px solid ' + borderColor + ';border-radius:16px;padding:18px;margin-bottom:12px">' +
-          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">' +
-            '<div style="width:36px;height:36px;border-radius:50%;background:' + avatarBg + ';color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;flex-shrink:0">' + avatarChar + '</div>' +
-            '<div style="flex:1">' +
-              '<div style="font-size:16px;font-weight:800">' + lv +
-                (dejaRemis ? ' <span style="font-size:12px;font-weight:600;background:var(--gl);color:var(--gd);padding:2px 8px;border-radius:20px;margin-left:6px">✅ Remise validée' + (remiseDateStr ? ' · ' + remiseDateStr : '') + '</span>' : '') +
-              '</div>' +
-              '<div style="font-size:12px;color:var(--t2)">Tournée du ' + (t.date ? new Date(t.date).toLocaleDateString('fr-FR') : '—') + ' · ' + cmdsLv.length + ' livraison(s) · CA : ' + totalLv.toLocaleString('fr-FR') + ' €' +
+      var html = '';
+      // En-tête récap (seulement s'il y a des retours à traiter)
+      if (aTraiter.length > 0) {
+        html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding:0 2px">' +
+          '<div><div style="font-size:16px;font-weight:800">💵 Retours de tournée à traiter</div>' +
+          '<div style="font-size:12px;color:var(--t2)">Compte les espèces que RANOU te rend, puis valide.</div></div>' +
+          '<div style="text-align:right"><div style="font-size:24px;font-weight:900;color:var(--od)">' + eur(totalARem) + '</div>' +
+          '<div style="font-size:11px;color:var(--t2)">' + aTraiter.length + ' à remettre</div></div></div>';
+      }
+      // Cartes À TRAITER
+      html += aTraiter.map(function(r){
+        var depLignes = r.depEspDetail.map(function(d){
+          return (d.cat||'Dépense') + (d.comment ? ' (' + String(d.comment).substring(0,22) + ')' : '') + ' −' + Math.round(d.montant) + ' €';
+        }).join(' · ');
+        var dejaEnc = [];
+        if (r.cb>0)       dejaEnc.push('💳 ' + eur(r.cb) + ' CB');
+        if (r.virement>0) dejaEnc.push('🏦 ' + eur(r.virement));
+        if (r.prepaye>0)  dejaEnc.push('✅ ' + eur(r.prepaye) + ' prépayé');
+        return '<div style="background:var(--card);border:1.5px solid var(--orange);border-radius:16px;padding:16px;margin-bottom:12px">' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">' +
+            '<div style="font-size:15px;font-weight:800">📅 Tournée du ' + dFr(r.t.date) + ' · ' + r.lv + '</div>' +
+            '<span style="background:var(--ol);color:var(--od);font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px">à traiter · ' + r.cmdsLv.length + ' livr.</span>' +
+          '</div>' +
+          '<div style="font-size:14px">' +
+            '<div style="display:flex;justify-content:space-between;padding:5px 0"><span style="color:var(--t2)">💰 Espèces encaissées</span><span style="color:var(--green);font-weight:700">+ ' + eur(r.especes) + '</span></div>' +
+            '<div style="display:flex;justify-content:space-between;padding:5px 0"><span style="color:var(--t2)">🧾 Dépenses payées en espèces</span><span style="color:' + (r.depEspLv>0?'var(--red)':'var(--t3)') + ';font-weight:700">' + (r.depEspLv>0?('− '+eur(r.depEspLv)):'0 €') + '</span></div>' +
+            (r.depEspLv>0 ? '<div style="padding:0 0 6px 22px;font-size:11px;color:var(--t3)">' + depLignes + '</div>' : '') +
+            '<div style="border-top:1px solid var(--brd);margin-top:4px;padding-top:10px;display:flex;align-items:center;justify-content:space-between">' +
+              '<span style="font-weight:800">À remettre en caisse</span>' +
+              '<span style="font-size:24px;font-weight:900;color:var(--gd)">' + eur(r.aRemettre) + '</span>' +
             '</div>' +
-            btnValider + btnAnnuler +
-          '</div>' +
-          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">' +
-            (especes > 0  ? '<div style="background:var(--ol);border-radius:10px;padding:10px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--od)">' + especes.toLocaleString('fr-FR') + ' €</div><div style="font-size:11px;color:var(--t2)">💵 Espèces</div></div>' : '') +
-            (cb > 0       ? '<div style="background:var(--bl);border-radius:10px;padding:10px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--bd)">' + cb.toLocaleString('fr-FR') + ' €</div><div style="font-size:11px;color:var(--t2)">💳 CB TPE</div></div>' : '') +
-            (virement > 0 ? '<div style="background:var(--gl);border-radius:10px;padding:10px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--gd)">' + virement.toLocaleString('fr-FR') + ' €</div><div style="font-size:11px;color:var(--t2)">🏦 Virement</div></div>' : '') +
-            (prepaye > 0  ? '<div style="background:#f3f0ff;border-radius:10px;padding:10px;text-align:center"><div style="font-size:20px;font-weight:800;color:#534AB7">' + prepaye.toLocaleString('fr-FR') + ' €</div><div style="font-size:11px;color:var(--t2)">✅ Pré-payé</div></div>' : '') +
-            (nonEnc > 0   ? '<div style="background:var(--rl);border-radius:10px;padding:10px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--rd)">' + nonEnc.toLocaleString('fr-FR') + ' €</div><div style="font-size:11px;color:var(--t2)">❌ Non encaissé</div></div>' : '') +
-          '</div>' +
-          depDetailHtml +
-          blocRemise +
-        '</div>';
+            (dejaEnc.length ? '<div style="font-size:11px;color:var(--t3);margin:6px 0 12px">ℹ️ Déjà encaissé, rien à rendre : ' + dejaEnc.join(' · ') + '</div>' : '<div style="margin-bottom:12px"></div>') +
+            '<button onclick="validerRemiseCaisse(\'' + r.caisseKey + '\')" style="width:100%;padding:13px;border-radius:12px;border:none;background:var(--green);color:#fff;font-size:14px;font-weight:800;cursor:pointer;font-family:var(--font)">✅ RANOU a remis ' + eur(r.aRemettre) + ' — valider</button>' +
+          '</div></div>';
       }).join('');
+      // Tournées sans espèces à remettre (non validées) — lignes compactes discrètes
+      html += rienARem.map(function(r){
+        return '<div style="background:var(--bg2);border-radius:10px;padding:8px 12px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--t3)">' +
+          '<span>📅 ' + dFr(r.t.date) + ' · ' + r.lv + ' — aucune espèce à remettre</span><span>' + r.cmdsLv.length + ' livr.</span></div>';
+      }).join('');
+      // Retours VALIDÉS (repliés en bas)
+      if (traitees.length > 0) {
+        html += '<div style="margin:18px 2px 8px;font-size:13px;font-weight:800;color:var(--gd)">✅ Retours validés (' + traitees.length + ')</div>';
+        html += traitees.map(function(r){
+          var rDate = (r.remiseInfo && r.remiseInfo.date) ? new Date(r.remiseInfo.date).toLocaleDateString('fr-FR') : '';
+          return '<div style="background:var(--gl);border-radius:10px;padding:9px 12px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">' +
+            '<span style="font-size:13px;color:var(--gd)">✓ Tournée du ' + dFr(r.t.date) + ' — ' + eur(r.aRemettre) + ' remis' + (rDate?(' le '+rDate):'') + '</span>' +
+            '<button onclick="annulerRemiseCaisse(\'' + r.caisseKey + '\')" style="padding:4px 10px;border-radius:8px;border:1px solid var(--brd2);background:var(--card);color:var(--t2);font-size:11px;cursor:pointer;font-family:var(--font)">↩ Annuler</button></div>';
+        }).join('');
+      }
+      if (!html) html = '<div style="padding:16px;text-align:center;color:var(--t3)">Aucune tournée sur cette période</div>';
+      caisseEl.innerHTML = blocCaisseGen + html;
     }
   }
 

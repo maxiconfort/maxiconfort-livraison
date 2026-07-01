@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.98 - Tournees : montants EUR masques pour les collaboratrices (role non-admin)
+// v7.5.99 - Encaissements : refonte "Retours de tournee" (a traiter en haut, valides replies)
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-98';
+const CACHE_VERSION = 'maxiconfort-v7-5-99';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
