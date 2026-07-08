@@ -8729,6 +8729,7 @@ function renderLivreur() {
     'reporté':    {bg:'#534AB7', bdg:'b-violet', btn:'a-violet'},
     'absent':     {bg:'#A32D2D', bdg:'b-red', btn:'a-red'},
     'problème':   {bg:'#A32D2D', bdg:'b-red', btn:'a-red'},
+    'annulé':     {bg:'#5F5E5A', bdg:'b-gray', btn:'a-gray'},
   };
   var stDefs = [
     {k:'en-attente', ico:'⏳', lbl:'En attente'},
@@ -8737,6 +8738,7 @@ function renderLivreur() {
     {k:'livré',      ico:'✅', lbl:'Livré'},
     {k:'reporté',    ico:'📅', lbl:'Reporté'},
     {k:'absent',     ico:'🔔', lbl:'Absent'},
+    {k:'annulé',     ico:'❌', lbl:'Annulé'},
   ];
 
   document.getElementById('lv-list').innerHTML = t.stops.map(function(s, i) {
@@ -9708,7 +9710,11 @@ function setLvSt(tid, idx, st) {
       }
       var q = document.getElementById('sig-paie-question'); if (q) q.style.display = '';
       sigTogglePaie(true);       // défaut : Encaissé
-      sigSelectMode('Espèces');  // + Espèces (le livreur change si CB / Mixte / Déjà payé / Non payé)
+      // v7.5.100 : pré-sélectionner le mode DÉJÀ choisi par le livreur sur la carte (sélecteur
+      // Espèces/CB), sinon Espèces. AVANT : le modal repartait toujours sur "Espèces" et
+      // ÉCRASAIT le CB choisi sur la carte -> tout remontait en Espèces en base (bug caisse).
+      var _modeInit = (s.paie === 'CB' || s.paie === 'Mixte') ? s.paie : 'Espèces';
+      sigSelectMode(_modeInit);  // le livreur peut encore changer (CB / Mixte / Déjà payé / Non payé)
     }, 100);
     setTimeout(initSig,80);
     return;
