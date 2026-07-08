@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.100 - Vue livreur : bouton Annule + fix mode paie (CB ne remonte plus en Especes)
+// v7.5.101 - Encaissements : 3 sous-onglets (A traiter / Analyse / Journal) - simplification
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-100';
+const CACHE_VERSION = 'maxiconfort-v7-5-101';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

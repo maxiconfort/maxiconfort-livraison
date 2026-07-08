@@ -1089,6 +1089,15 @@ textarea{resize:vertical;min-height:65px}
       <div style="margin-left:auto;font-size:12px;color:var(--t3)" id="fin-periode-label"></div>
     </div>
 
+    <!-- v7.5.101 : sous-onglets — separe l'OPERATIONNEL (a traiter) de l'ANALYSE et du JOURNAL.
+         Aucun calcul modifie : les memes blocs/IDs sont juste ranges dans 3 conteneurs. -->
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap" id="fin-sub-bar">
+      <button class="fin-sub-btn" data-sub="traiter" onclick="showFinSub('traiter')" style="padding:9px 18px;border-radius:20px;border:1.5px solid var(--blue);background:var(--blue);color:#fff;font-size:13px;font-weight:800;cursor:pointer;font-family:var(--font)">💵 À traiter</button>
+      <button class="fin-sub-btn" data-sub="analyse" onclick="showFinSub('analyse')" style="padding:9px 18px;border-radius:20px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);font-size:13px;font-weight:800;cursor:pointer;font-family:var(--font)">📊 Analyse</button>
+      <button class="fin-sub-btn" data-sub="journal" onclick="showFinSub('journal')" style="padding:9px 18px;border-radius:20px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);font-size:13px;font-weight:800;cursor:pointer;font-family:var(--font)">📜 Journal</button>
+    </div>
+
+    <div id="fin-sub-traiter">
     <!-- KPIs -->
     <div class="g4" style="margin-bottom:18px">
       <div class="kpi gr"><div class="kpi-ico">💶</div><div class="kpi-v" id="fin-ca">—</div><div class="kpi-l">CA période</div></div>
@@ -1097,6 +1106,48 @@ textarea{resize:vertical;min-height:65px}
       <div class="kpi re"><div class="kpi-ico">💹</div><div class="kpi-v" id="fin-net">—</div><div class="kpi-l">Net période</div></div>
     </div>
 
+    <!-- RETOURS DE TOURNEE (v7.5.101 : remonte en tete de l'onglet A traiter) -->
+    <div id="fin-caisse" style="margin-bottom:18px"></div>
+
+    <!-- Alerte À encaisser (creances) -->
+    <div id="fin-enc-alert"></div>
+
+    <!-- Dépenses (v7.5.101 : pleine largeur dans A traiter) -->
+    <div class="card" style="margin-bottom:18px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
+        <div>
+          <div class="card-t" style="margin:0">🧾 Dépenses</div>
+          <div id="fin-dep-soustitre" style="font-size:11px;color:var(--t3);margin-top:2px">—</div>
+        </div>
+        <button class="btn btn-sm btn-p" onclick="ouvrirAjoutDepense()">+ Ajouter</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;background:var(--bg2);padding:6px 8px;border-radius:8px">
+        <button onclick="finNavMois(-1)" title="Mois précédent" style="background:var(--card);border:1px solid var(--brd);border-radius:6px;padding:5px 10px;font-size:14px;cursor:pointer;font-weight:700;color:var(--text);font-family:var(--font)">◀</button>
+        <span id="fin-dep-mois-label" style="flex:1;text-align:center;font-size:13px;font-weight:800;color:var(--text)">—</span>
+        <button onclick="finNavMois(1)" title="Mois suivant" style="background:var(--card);border:1px solid var(--brd);border-radius:6px;padding:5px 10px;font-size:14px;cursor:pointer;font-weight:700;color:var(--text);font-family:var(--font)">▶</button>
+        <button onclick="finNavMois('today')" title="Revenir au mois en cours" style="background:var(--bl);border:1px solid var(--blue);border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;color:var(--bd);font-family:var(--font)">📅 Aujourd'hui</button>
+      </div>
+      <div id="fin-dep-cats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+      <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+        <input type="text" id="fin-dep-search" placeholder="🔍 Rechercher..." oninput="finRender()" style="flex:1;min-width:120px;padding:6px 10px;border:1px solid var(--brd);border-radius:8px;background:var(--bg);font-size:12px;font-family:var(--font);color:var(--text)">
+        <select id="fin-dep-filter-cat" onchange="finRender()" style="padding:6px 10px;border:1px solid var(--brd);border-radius:8px;background:var(--bg);font-size:12px;font-family:var(--font);color:var(--text)">
+          <option value="">📂 Toutes catégories</option>
+        </select>
+        <select id="fin-dep-filter-mode" onchange="finRender()" style="padding:6px 10px;border:1px solid var(--brd);border-radius:8px;background:var(--bg);font-size:12px;font-family:var(--font);color:var(--text)">
+          <option value="">💳 Tous modes</option>
+          <option value="Espèces">💵 Espèces</option>
+          <option value="CB">💳 CB</option>
+        </select>
+      </div>
+      <div id="fin-dep-list" style="max-height:340px;overflow-y:auto"></div>
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--brd);display:flex;justify-content:space-between">
+        <span style="font-size:13px;font-weight:700">Total dépenses</span>
+        <span style="font-size:15px;font-weight:800;color:var(--red)" id="fin-dep-total">0 €</span>
+      </div>
+    </div>
+    </div><!-- /fin-sub-traiter -->
+
+    <div id="fin-sub-analyse" style="display:none">
     <!-- Graphique mensuel CA vs Encaissé -->
     <div class="card" style="margin-bottom:18px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -1111,53 +1162,14 @@ textarea{resize:vertical;min-height:65px}
       </div>
     </div>
 
-    <div class="g2" style="margin-bottom:18px">
-      <!-- Encaissements par mode -->
-      <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <div class="card-t" style="margin:0">Répartition encaissements</div>
-        </div>
-        <div id="fin-repartition"></div>
-        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--brd)">
-          <button class="btn btn-sm btn-p" onclick="ouvrirModifPaiement()" style="width:100%;justify-content:center">✏️ Modifier un encaissement</button>
-        </div>
+    <!-- Encaissements par mode (v7.5.101 : Analyse) -->
+    <div class="card" style="margin-bottom:18px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div class="card-t" style="margin:0">Répartition encaissements</div>
       </div>
-
-      <!-- Dépenses (v7.5.13 : refonte UI claire / v7.5.14 : navigation mois) -->
-      <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
-          <div>
-            <div class="card-t" style="margin:0">🧾 Dépenses</div>
-            <div id="fin-dep-soustitre" style="font-size:11px;color:var(--t3);margin-top:2px">—</div>
-          </div>
-          <button class="btn btn-sm btn-p" onclick="ouvrirAjoutDepense()">+ Ajouter</button>
-        </div>
-        <!-- v7.5.14 : navigation rapide mois precedent / suivant -->
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;background:var(--bg2);padding:6px 8px;border-radius:8px">
-          <button onclick="finNavMois(-1)" title="Mois précédent" style="background:var(--card);border:1px solid var(--brd);border-radius:6px;padding:5px 10px;font-size:14px;cursor:pointer;font-weight:700;color:var(--text);font-family:var(--font)">◀</button>
-          <span id="fin-dep-mois-label" style="flex:1;text-align:center;font-size:13px;font-weight:800;color:var(--text)">—</span>
-          <button onclick="finNavMois(1)" title="Mois suivant" style="background:var(--card);border:1px solid var(--brd);border-radius:6px;padding:5px 10px;font-size:14px;cursor:pointer;font-weight:700;color:var(--text);font-family:var(--font)">▶</button>
-          <button onclick="finNavMois('today')" title="Revenir au mois en cours" style="background:var(--bl);border:1px solid var(--blue);border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;color:var(--bd);font-family:var(--font)">📅 Aujourd'hui</button>
-        </div>
-        <!-- Mini-recap par categorie -->
-        <div id="fin-dep-cats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
-        <!-- Filtres rapides -->
-        <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">
-          <input type="text" id="fin-dep-search" placeholder="🔍 Rechercher..." oninput="finRender()" style="flex:1;min-width:120px;padding:6px 10px;border:1px solid var(--brd);border-radius:8px;background:var(--bg);font-size:12px;font-family:var(--font);color:var(--text)">
-          <select id="fin-dep-filter-cat" onchange="finRender()" style="padding:6px 10px;border:1px solid var(--brd);border-radius:8px;background:var(--bg);font-size:12px;font-family:var(--font);color:var(--text)">
-            <option value="">📂 Toutes catégories</option>
-          </select>
-          <select id="fin-dep-filter-mode" onchange="finRender()" style="padding:6px 10px;border:1px solid var(--brd);border-radius:8px;background:var(--bg);font-size:12px;font-family:var(--font);color:var(--text)">
-            <option value="">💳 Tous modes</option>
-            <option value="Espèces">💵 Espèces</option>
-            <option value="CB">💳 CB</option>
-          </select>
-        </div>
-        <div id="fin-dep-list" style="max-height:340px;overflow-y:auto"></div>
-        <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--brd);display:flex;justify-content:space-between">
-          <span style="font-size:13px;font-weight:700">Total dépenses</span>
-          <span style="font-size:15px;font-weight:800;color:var(--red)" id="fin-dep-total">0 €</span>
-        </div>
+      <div id="fin-repartition"></div>
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--brd)">
+        <button class="btn btn-sm btn-p" onclick="ouvrirModifPaiement()" style="width:100%;justify-content:center">✏️ Modifier un encaissement</button>
       </div>
     </div>
 
@@ -1171,15 +1183,9 @@ textarea{resize:vertical;min-height:65px}
     </div>
     <div id="fin-ca-jour" style="margin-bottom:18px"></div>
 
-    <!-- RETOUR DE CAISSE -->
-    <div class="sh" style="margin-top:8px">
-      <div class="st">💼 Retour de caisse — Par livreur</div>
-    </div>
-    <div id="fin-caisse" style="margin-bottom:18px"></div>
+    </div><!-- /fin-sub-analyse -->
 
-    <!-- Alerte À encaisser -->
-    <div id="fin-enc-alert"></div>
-
+    <div id="fin-sub-journal" style="display:none">
     <!-- Journal des encaissements -->
     <div class="sh">
       <div class="st">Journal des encaissements</div>
@@ -1206,6 +1212,7 @@ textarea{resize:vertical;min-height:65px}
       <button onclick="resetFiltresJournal()" style="padding:6px 12px;border-radius:8px;border:1px solid var(--brd);background:var(--card);font-size:12px;font-family:var(--font);cursor:pointer;color:var(--t2)">✕ Reset</button>
     </div>
     <div class="tw" id="fin-journal"></div>
+    </div><!-- /fin-sub-journal -->
   </div>
 
   <!-- MODAL MODIFIER PAIEMENT -->
@@ -10747,6 +10754,22 @@ async function annulerRemiseCaisse(key) {
   } catch(e) {}
   finRender();
   toast('↩ Remise annulée', 'ok');
+}
+
+// v7.5.101 : bascule des sous-onglets de la page Encaissements (À traiter / Analyse / Journal).
+// Affichage seul : les 3 conteneurs restent dans le DOM et finRender() remplit leurs IDs
+// normalement (un bloc en display:none est quand même rendu) -> AUCUN calcul touché.
+function showFinSub(key) {
+  ['traiter','analyse','journal'].forEach(function(k){
+    var el = document.getElementById('fin-sub-' + k);
+    if (el) el.style.display = (k === key) ? 'block' : 'none';
+  });
+  document.querySelectorAll('.fin-sub-btn').forEach(function(b){
+    var act = (b.dataset.sub === key);
+    b.style.background  = act ? 'var(--blue)' : 'var(--card)';
+    b.style.color       = act ? '#fff' : 'var(--t2)';
+    b.style.borderColor = act ? 'var(--blue)' : 'var(--brd2)';
+  });
 }
 
 function resetFiltresJournal() {
