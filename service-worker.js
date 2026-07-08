@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.101 - Encaissements : 3 sous-onglets (A traiter / Analyse / Journal) - simplification
+// v7.5.102 - Non encaisse : clic sur le client ouvre sa fiche commande
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-101';
+const CACHE_VERSION = 'maxiconfort-v7-5-102';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

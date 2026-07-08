@@ -10658,9 +10658,11 @@ function finRender() {
       '<table><thead><tr><th>Client</th><th>Produit</th><th>Montant</th><th>Mode</th><th>Statut</th><th>Livreur</th><th></th></tr></thead>' +
       '<tbody>' + aEncaisser.map(function(c) {
         var stCls = c.stpaie === 'Partiel' ? 'color:var(--orange)' : 'color:var(--red)';
+        // v7.5.102 : cliquer le client (ou le produit) ouvre sa fiche commande (comme v7.5.89
+        // dans les tournees). Les selects Mode/Statut de la ligne restent independants.
         return '<tr style="background:var(--rl)">' +
-          '<td class="td-m">' + c.client + '</td>' +
-          '<td style="font-size:12px">' + c.produit + '</td>' +
+          '<td class="td-m" onclick="ouvrirCmd(\'' + c.id + '\')" style="cursor:pointer;text-decoration:underline;text-underline-offset:3px" title="Ouvrir la fiche commande">' + c.client + '</td>' +
+          '<td style="font-size:12px;cursor:pointer" onclick="ouvrirCmd(\'' + c.id + '\')" title="Ouvrir la fiche commande">' + c.produit + '</td>' +
           '<td><strong>' + c.prix + ' €</strong></td>' +
           '<td><select onchange="chgPaieMode(\'' + c.id + '\',this.value)" style="padding:4px 8px;border:1px solid var(--brd);border-radius:6px;font-size:12px;font-family:var(--font);background:var(--card);color:var(--text)">' +
             ['Espèces','CB','Virement','Déjà payé'].map(function(m){ return '<option value="'+m+'" '+(c.paie===m?'selected':'')+'>'+m+'</option>'; }).join('') +
