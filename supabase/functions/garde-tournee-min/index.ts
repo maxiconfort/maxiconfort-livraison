@@ -65,6 +65,21 @@ Deno.serve(async (req: Request) => {
   const dateCible = (typeof body.dateCible === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.dateCible)) ? body.dateCible : dateParis(1);
   const nouvelleDate = (typeof body.nouvelleDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.nouvelleDate)) ? body.nouvelleDate : plusJours(dateCible, 1);
 
+  // v1.1 : EXCEPTIONS — dates verrouillées par Borhen (la tournée part même < seuil).
+  // Table parametres, cle 'gardefou_skip_dates', valeur = JSON array ["2026-07-22", ...].
+  if (!force) {
+    try {
+      const { data: prm } = await sb.from('parametres').select('valeur').eq('cle', 'gardefou_skip_dates').maybeSingle();
+      if (prm && prm.valeur) {
+        const skips = JSON.parse(prm.valeur);
+        if (Array.isArray(skips) && skips.indexOf(dateCible) !== -1) {
+          return new Response(JSON.stringify({ ok: true, action: 'rien', raison: 'date verrouillee par Borhen (exception)', dateCible }),
+            { headers: { 'Content-Type': 'application/json' } });
+        }
+      }
+    } catch (_e) { /* pas d'exception configurée */ }
+  }
+
   // Commandes RANOU en attente pour la date cible (hors SAV)
   const { data: cmds, error } = await sb.from('commandes')
     .select('id, client, tel, date_livraison, sms_envoyes')
