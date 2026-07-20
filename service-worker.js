@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.102 - Non encaisse : clic sur le client ouvre sa fiche commande
+// v7.5.103 - Tournees : la fiche du stop (produit/prix/adresse...) suit les modifs de la commande
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-102';
+const CACHE_VERSION = 'maxiconfort-v7-5-103';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

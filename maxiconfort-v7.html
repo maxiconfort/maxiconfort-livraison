@@ -8376,6 +8376,15 @@ function reconcilierTournees() {
         var horsTournee = (cmd.transporteur||'RANOU') === 'GLS' || !(cmd.date && cmd.date.length >= 10);
         if (horsTournee)       { change = true; return; }          // GLS/sans date -> retirer
         if (cmd.date !== t.date) { change = true; return; }        // date changée -> retirer ici (réajouté ailleurs)
+        // v7.5.103 : rafraîchir la FICHE du stop depuis la commande (produit/prix/adresse/tel/
+        // etage/asc/code/instr). Avant, le stop gardait la "photo" prise à l'ajout -> une
+        // commande MODIFIÉE ensuite (ex produit changé) affichait l'ancien produit dans la
+        // tournée (cas Qasmi #1460 : stop "Lit Superposé" vs commande "Lit NICO"). Les stops
+        // livrés ne passent pas ici (retournés plus haut) -> historique intact. paie/stpaie
+        // restent gérés par le polling (v7.5.51) et la signature — pas touchés ici.
+        ['produit','prix','tel','adresse','etage','asc','code','instr'].forEach(function(k){
+          if (cmd[k] !== undefined && cmd[k] !== null && s[k] !== cmd[k]) { s[k] = cmd[k]; change = true; }
+        });
         nouveaux.push(s);                                          // sinon OK, garder
       });
       if (change) { t.stops = nouveaux; aSauver[t.id] = t; }
