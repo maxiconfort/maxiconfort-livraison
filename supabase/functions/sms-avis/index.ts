@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis (v1.1 — 24/06/2026)
+// Edge Function : sms-avis (v1.2 — 17/07/2026)
 // ════════════════════════════════════════════════════════════════════
 // Tourne en CRON 1x/jour (~11h Paris) : demande d'avis Google le LENDEMAIN
 // de la livraison.
@@ -12,6 +12,12 @@
 // EXCLUSION "client a risque" (v1.1) : si la note de commande (instr) contient
 //   "PAS D'AVIS" / "SANS AVIS" / "NO AVIS" -> pas de demande d'avis.
 //
+// ⏸️ PAUSE PROVINCE/GLS (v1.2, demande Borhen 17/07/2026) : le temps de
+//   rattraper le retard des livraisons GLS, la demande d'avis n'est envoyee
+//   QU'AUX clients livres en region parisienne par notre equipe (RANOU).
+//   Les clients GLS (province) sont sautes (action "skip_pause_gls").
+//   POUR REACTIVER la province : passer PAUSE_AVIS_GLS a false + redeployer.
+//
 // ⚠️ Demande d'avis HONNETE, sans condition ni recompense. 1 SMS = 1 credit OVH.
 //
 // Body : { dryRun?: boolean, dateCible?: "YYYY-MM-DD" }
@@ -22,6 +28,11 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+
+// ⏸️ true = demande d'avis UNIQUEMENT pour les livraisons RANOU (region
+// parisienne). Les clients GLS (province, retard en cours de rattrapage)
+// sont sautes. Repasser a false + redeployer pour reactiver la province.
+const PAUSE_AVIS_GLS = true;
 
 const sb = createClient(SB_URL, SB_SR_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
@@ -80,6 +91,10 @@ Deno.serve(async (req: Request) => {
     // Hors SAV
     if (/sav/i.test(String(c.id))) {
       skipped++; details.push({ id: c.id, action: 'skip_sav' }); continue;
+    }
+    // ⏸️ Pause province : on ne sollicite pas les clients livres par GLS
+    if (PAUSE_AVIS_GLS && /gls/i.test(String(c.transporteur || ''))) {
+      skipped++; details.push({ id: c.id, action: 'skip_pause_gls', client: c.client }); continue;
     }
     // Exclusion manuelle "client a risque" (mot-cle dans la note)
     if (noteExclut(c.instr)) {
