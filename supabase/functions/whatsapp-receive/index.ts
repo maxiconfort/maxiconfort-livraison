@@ -118,13 +118,19 @@ function extraireDimensions(s: string): string[] {
   return matches.map(m => m.replace(/\s/g, ''));
 }
 
+// v2.1 (20/07) : ordre corrigé — les produits COMPOSÉS d'abord. Avant, « Lit Superposé
+// DUO ... + 2 Matelas 90×190×15 » était classé "matelas" (son nom contient « matelas »)
+// → il rivalisait avec le vrai matelas 90×190×15 et pouvait gagner (bug commande #1461 :
+// « matelas 90x190x15 119e » transformé en lit superposé).
 function detecterCategorie(s: string): string | null {
   const n = normaliserTexte(s);
-  if (n.includes('ensemble')) return 'ensemble';
-  if (n.includes('matelas') && !n.includes('ensemble')) return 'matelas';
-  if (n.includes('lit coffre') || n.includes('coffre')) return 'lit coffre';
-  if (n.includes('lit superpose') || n.includes('superpose')) return 'lit superpose';
-  if (n.includes('lit nico') || (n.includes('lit') && !n.includes('matelas') && !n.includes('coffre') && !n.includes('superpose'))) return 'lit';
+  if (n.includes('ensemble') || n.includes('pack')) return 'ensemble';
+  if (n.includes('superpose')) return 'lit superpose';
+  if (n.includes('coffre')) return 'lit coffre';
+  if (n.includes('lit nico')) return 'lit';
+  if (n.includes('lit') && !n.includes('matelas') && !n.includes('sommier')) return 'lit';
+  if (n.includes('matelas') && n.includes('sommier')) return 'ensemble';
+  if (n.includes('matelas')) return 'matelas';
   if (n.includes('sommier')) return 'sommier';
   if (n.includes('canape')) return 'canape';
   return null;
@@ -151,7 +157,10 @@ function chercherProduit(catalogue: any[], description: string, prixAttendu: num
       const matchDim = dimsDesc.some(d => dimsProd.includes(d));
       if (matchDim) score += 40;
     }
+    // v2.1 : bonus si même catégorie, MALUS si catégories DIFFÉRENTES (un « matelas »
+    // demandé ne doit jamais matcher un lit superposé même si les dimensions collent)
     if (catDesc && catProd && catDesc === catProd) score += 20;
+    else if (catDesc && catProd && catDesc !== catProd) score -= 25;
     let motsMatch = 0;
     motsDesc.forEach(m => {
       if (motsProd.some((mp: string) => mp.includes(m) || m.includes(mp))) motsMatch++;
