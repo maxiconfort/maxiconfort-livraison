@@ -377,7 +377,16 @@ Deno.serve(async (req: Request) => {
     }
 
     const nbColis = trackIds.length;
-    const tousLivre = (nbLivre === nbColis && nbErreurs === 0);
+    // v13 (27/07) : GLS ne scanne pas toujours TOUS les colis a la livraison (constat :
+    // #1438 Xavier 2/3 livres, #1463 Julie 1/2 — le colis restant sans scan depuis des
+    // jours) -> la commande restait "en-attente" pour TOUJOURS (aucun statut remonte).
+    // Regle assouplie : livre si TOUS les colis le sont, OU si AU MOINS UN colis est
+    // livre ET qu'aucun colis restant n'a eu de scan depuis 48h (les colis d'un meme
+    // envoi voyagent ensemble ; un colis silencieux apres la livraison des autres =
+    // simplement pas scanne par le livreur GLS).
+    const SILENCE_LIVRE_MS = 48 * 3600 * 1000;
+    const resteSilencieux = (dernierScanNonLivre === null) || (Date.now() - dernierScanNonLivre > SILENCE_LIVRE_MS);
+    const tousLivre = (nbErreurs === 0) && (nbLivre === nbColis || (nbLivre >= 1 && resteSilencieux));
 
     if (tousLivre) {
       // Tous les colis livres -> cmd = livré
