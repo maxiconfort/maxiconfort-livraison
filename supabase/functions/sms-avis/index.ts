@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis (v1.2 — 17/07/2026)
+// Edge Function : sms-avis (v1.3 — 29/07/2026)
 // ════════════════════════════════════════════════════════════════════
 // Tourne en CRON 1x/jour (~11h Paris) : demande d'avis Google le LENDEMAIN
 // de la livraison.
@@ -66,16 +66,30 @@ Deno.serve(async (req: Request) => {
 
   const dryRun = body.dryRun === true;
 
-  let dateCible: string = body.dateCible;
-  if (!dateCible) {
+  // v1.3 (29/07/2026) : fenetre de 3 jours au lieu de la seule veille.
+  // Cause reelle constatee : une commande marquee "livré" APRES le passage
+  // du cron (11h) n'etait plus jamais scannee (le lendemain le cron ne
+  // regarde que J-1) -> ~30% des livraisons IDF jamais sollicitees
+  // (ex 22-25/07 : #1471, #1472, #1475, #1489). La dedupe sms_envoyes
+  // garantit qu'un client deja sollicite n'est jamais renvoye.
+  // body.dateCible (jour unique) reste prioritaire pour les tests/rattrapages.
+  let dateMin: string, dateMax: string;
+  if (body.dateCible) {
+    dateMin = body.dateCible; dateMax = body.dateCible;
+  } else {
     const hier = new Date();
     hier.setDate(hier.getDate() - 1);
-    dateCible = toLocalDateStr(hier);
+    dateMax = toLocalDateStr(hier);
+    const j3 = new Date();
+    j3.setDate(j3.getDate() - 3);
+    dateMin = toLocalDateStr(j3);
   }
+  const dateCible = dateMin === dateMax ? dateMin : `${dateMin}..${dateMax}`;
 
   const { data: cmds, error } = await sb.from('commandes')
     .select('id,client,tel,statut,transporteur,sms_envoyes,date_livraison,instr')
-    .eq('date_livraison', dateCible)
+    .gte('date_livraison', dateMin)
+    .lte('date_livraison', dateMax)
     .eq('statut', 'livré');
 
   if (error) {
