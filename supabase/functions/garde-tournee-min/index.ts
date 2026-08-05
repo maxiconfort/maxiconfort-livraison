@@ -61,8 +61,8 @@ Deno.serve(async (req: Request) => {
   let body: any; try { body = await req.json(); } catch { body = {}; }
   const dryRun = !!body.dryRun;
   const force = !!body.force;
-  // v1.2 (28/07) : seuil par defaut abaisse 10 -> 8 (demande Borhen)
-  const seuilMin = (typeof body.seuilMin === 'number' && body.seuilMin > 0) ? body.seuilMin : 8;
+  // v1.2 (28/07) : seuil 10 -> 8 ; v1.3 (05/08) : 8 -> 7 (demandes Borhen)
+  const seuilMin = (typeof body.seuilMin === 'number' && body.seuilMin > 0) ? body.seuilMin : 7;
   const dateCible = (typeof body.dateCible === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.dateCible)) ? body.dateCible : dateParis(1);
   const nouvelleDate = (typeof body.nouvelleDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.nouvelleDate)) ? body.nouvelleDate : plusJours(dateCible, 1);
 
