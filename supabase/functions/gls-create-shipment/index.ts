@@ -144,10 +144,12 @@ const MULTICOLIS_RULES: { label: string; match: RegExp; colis: number[] }[] = [
   // ─── ENSEMBLES / PACKS LITERIE (matelas + sommier scinde) ───
   // Ordre : avant matelas/sommier pour matcher en premier
   { label: 'Ensemble/Pack 180x200 (mat. + sommier 1 colis)', match: /(ensemble|pack)[\s\S]*?180\s*[xX×]\s*200/i, colis: [15, 15] },
-  { label: 'Ensemble/Pack 160x200 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?160\s*[xX×]\s*200/i, colis: [15, 8, 8] },
-  { label: 'Ensemble/Pack 140x200 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?140\s*[xX×]\s*200/i, colis: [15, 7, 7] },
-  { label: 'Ensemble/Pack 140x190 (mat. + 2 demi-som.)', match: /(ensemble|pack)[\s\S]*?140\s*[xX×]\s*190/i, colis: [15, 7, 7] },
-  { label: 'Ensemble/Pack 120x190 (mat. + 2 demi-som.)',  match: /(ensemble|pack)[\s\S]*?120\s*[xX×]\s*190/i, colis: [15, 5, 5] },
+  // v5.14 (10/08) : les sommiers arrivent desormais en 1 SEUL colis (toutes dimensions,
+  // info Borhen apres reception fournisseur) -> ensemble = 2 colis (matelas + sommier)
+  { label: 'Ensemble/Pack 160x200 (mat. + sommier)', match: /(ensemble|pack)[\s\S]*?160\s*[xX×]\s*200/i, colis: [15, 16] },
+  { label: 'Ensemble/Pack 140x200 (mat. + sommier)', match: /(ensemble|pack)[\s\S]*?140\s*[xX×]\s*200/i, colis: [15, 14] },
+  { label: 'Ensemble/Pack 140x190 (mat. + sommier)', match: /(ensemble|pack)[\s\S]*?140\s*[xX×]\s*190/i, colis: [15, 14] },
+  { label: 'Ensemble/Pack 120x190 (mat. + sommier)',  match: /(ensemble|pack)[\s\S]*?120\s*[xX×]\s*190/i, colis: [15, 10] },
   { label: 'Ensemble/Pack 90 (mat. + sommier)',          match: /(ensemble|pack)[\s\S]*?90\s*[xX×]\s*(190|200)/i, colis: [7, 7] },
 
   // ─── LITS ───
@@ -159,16 +161,15 @@ const MULTICOLIS_RULES: { label: string; match: RegExp; colis: number[] }[] = [
   // Cible le DUO (1+1, 2 personnes) et PAS le modele "2+1 Places / 3 Personnes" (a definir).
   { label: 'Lit superpose DUO 2 places (2 colis)', match: /lit\s*superpos[\s\S]*?(duo|2\s*places|2\s*personnes)/i, colis: [20, 20] },
 
-  // ─── SOMMIERS SEULS (sans matelas) — regle Borhen 15/06/2026 (v5.12) ───
-  // Sommier BOIS A LATTES = 1 colis (se transporte a plat, quelle que soit la taille).
-  // Sommier TAPISSIER (capitonne) = 2 demi-colis pour 120/190, 140/190, 140/200, 160/200, 180/200.
-  // ⚠️ matcher "lattes" et NON "bois" : les sommiers tapissier ont "Pieds Bois" dans le nom.
+  // ─── SOMMIERS SEULS (sans matelas) ───
+  // v5.14 (10/08, info Borhen) : le fournisseur livre desormais TOUS les sommiers en
+  // 1 SEUL colis, toutes dimensions (fini les 2 demi-colis de la regle v5.12).
   { label: 'Sommier bois a lattes (1 colis, 15kg)', match: /sommier[\s\S]*?lattes?/i, colis: [15] },
-  { label: 'Sommier tapissier 180x200 (2 colis, 9kg)', match: /sommier[\s\S]*?180\s*[xX×]\s*200/i, colis: [9, 9] },
-  { label: 'Sommier tapissier 160x200 (2 colis, 8kg)', match: /sommier[\s\S]*?160\s*[xX×]\s*200/i, colis: [8, 8] },
-  { label: 'Sommier tapissier 140x200 (2 colis, 7kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*200/i, colis: [7, 7] },
-  { label: 'Sommier tapissier 140x190 (2 colis, 7kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*190/i, colis: [7, 7] },
-  { label: 'Sommier tapissier 120x190 (2 colis, 5kg)', match: /sommier[\s\S]*?120\s*[xX×]\s*190/i, colis: [5, 5] },
+  { label: 'Sommier tapissier 180x200 (1 colis, 18kg)', match: /sommier[\s\S]*?180\s*[xX×]\s*200/i, colis: [18] },
+  { label: 'Sommier tapissier 160x200 (1 colis, 16kg)', match: /sommier[\s\S]*?160\s*[xX×]\s*200/i, colis: [16] },
+  { label: 'Sommier tapissier 140x200 (1 colis, 14kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*200/i, colis: [14] },
+  { label: 'Sommier tapissier 140x190 (1 colis, 14kg)', match: /sommier[\s\S]*?140\s*[xX×]\s*190/i, colis: [14] },
+  { label: 'Sommier tapissier 120x190 (1 colis, 10kg)', match: /sommier[\s\S]*?120\s*[xX×]\s*190/i, colis: [10] },
   // Sommier d'une autre taille (ex 90) ou type non precise = 1 colis
   { label: 'Sommier (autre, 1 colis, 12kg)',   match: /sommier/i, colis: [12] },
 
