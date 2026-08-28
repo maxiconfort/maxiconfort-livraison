@@ -213,6 +213,37 @@ Deno.serve(async (req: Request) => {
   const startTime = Date.now();
   const result = { imported: 0, skipped: 0, errors: 0, errorDetails: [] as string[] };
 
+  // v6.3 : mode DIAGNOSTIC — { diag: true, heures?: 72 } liste TOUTES les commandes
+  // Shopify de la periode (sans filtre financial_status) avec leur statut de paiement et
+  // leur presence en base. N'importe RIEN, ne touche pas au curseur. Sert a repondre a
+  // « telle commande du site n'est pas remontee » : on voit si elle est juste non payee.
+  try {
+    const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
+    if (body?.diag) {
+      const heures = Number(body.heures) > 0 ? Number(body.heures) : 72;
+      const depuis = new Date(Date.now() - heures * 3600 * 1000).toISOString();
+      const urlD = `https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_VERSION}/orders.json` +
+        `?created_at_min=${encodeURIComponent(depuis)}&status=any&limit=250`;
+      const rD = await fetch(urlD, { headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN, 'Accept': 'application/json' } });
+      if (!rD.ok) {
+        return new Response(JSON.stringify({ diag: true, error: `Shopify HTTP ${rD.status}`, detail: (await rD.text()).slice(0, 300) }),
+          { headers: { 'Content-Type': 'application/json' } });
+      }
+      const ordersD = (await rD.json()).orders || [];
+      const lignes: any[] = [];
+      for (const o of ordersD) {
+        const { data: enBase } = await sb.from('commandes').select('id').eq('ref_marketplace', String(o.id)).maybeSingle();
+        lignes.push({
+          shopify: o.name, client: `${o.customer?.first_name || ''} ${o.customer?.last_name || ''}`.trim(),
+          total: o.current_total_price, paiement: o.financial_status, cree: o.created_at,
+          en_base: enBase ? enBase.id : 'NON IMPORTEE',
+        });
+      }
+      return new Response(JSON.stringify({ diag: true, heures, total: ordersD.length, commandes: lignes }, null, 2),
+        { headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch (_e) { /* mode normal */ }
+
   try {
     // 1. Date de derniere sync
     const sinceIso = await getLastSync();
