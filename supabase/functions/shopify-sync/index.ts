@@ -157,7 +157,10 @@ function mapShopifyToCmd(o: any, appId: string) {
     paie: 'Site Maxiconfort',
     stpaie: mapStatutPaie(o.financial_status),
     montant_enc: o.financial_status === 'paid' ? prixTotal : 0,
-    livreur: '',
+    // v6.4 (28/08) : pour une expedition province, le champ "Livreur assigne" affiche
+    // aussi GLS (avant : vide -> "Non assigne" dans la fiche et "—" dans la liste).
+    // IDF : laisse vide, Borhen assigne son livreur interne (RANOU).
+    livreur: transporteurPour(o.shipping_address) === 'GLS' ? 'GLS' : '',
     statut: 'en-attente',
     date_livraison: '',  // a planifier par Borhen ensuite
     date_commande: (o.created_at || '').substring(0, 10), // YYYY-MM-DD
