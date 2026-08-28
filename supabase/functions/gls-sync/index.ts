@@ -328,7 +328,7 @@ Deno.serve(async (req: Request) => {
 
   const { data: cmds, error: errCmds } = await sb
     .from('commandes')
-    .select('id, client, tracking_transporteur, statut, gls_bloque')
+    .select('id, client, tracking_transporteur, statut, gls_bloque, date_livraison')
     .eq('transporteur', 'GLS')
     .not('tracking_transporteur', 'is', null)
     .not('statut', 'in', '(livré,annulé)');
@@ -394,8 +394,20 @@ Deno.serve(async (req: Request) => {
         summary.cmds_livre++;
         summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, nbColis, parcels: parcelResults, status: 'would_update_livre' });
       } else {
-        // v12 : livre -> on efface aussi le flag bloque
-        const { error: errUpd } = await sb.from('commandes').update({ statut: 'livré', gls_bloque: false }).eq('id', cmd.id);
+        // v14 (28/08) : renseigner AUSSI la date de livraison si elle est vide. AVANT, une
+        // commande GLS passait en "livré" SANS date_livraison -> elle n'apparaissait dans
+        // AUCUN CA mensuel (le CA se calcule sur date_livraison) : 2 343 € manquants sur
+        // le seul mois d'août. On prend la date du dernier scan "livré" (date reelle de
+        // remise au client), sinon aujourd'hui. On n'ECRASE JAMAIS une date deja saisie.
+        const scansLivres = parcelResults
+          .filter((p: any) => p.livre && p.dernier_scan)
+          .map((p: any) => new Date(p.dernier_scan).getTime());
+        const dateLivree = scansLivres.length
+          ? new Date(Math.max(...scansLivres)).toISOString().split('T')[0]
+          : new Date().toISOString().split('T')[0];
+        const majLivre: any = { statut: 'livré', gls_bloque: false };
+        if (!cmd.date_livraison) majLivre.date_livraison = dateLivree;
+        const { error: errUpd } = await sb.from('commandes').update(majLivre).eq('id', cmd.id);
         if (errUpd) {
           summary.cmds_erreur++;
           summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, status: 'update_failed', error: errUpd.message });
