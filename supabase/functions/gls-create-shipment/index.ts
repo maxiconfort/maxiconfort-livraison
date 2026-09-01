@@ -219,6 +219,45 @@ function buildColis(cmd: any): { poids: number; nom: string }[] {
   return out;
 }
 
+// v5.15 (01/09) : PICK & RETURN — GLS va CHERCHER un colis chez le client et le
+// rapporte au depot Maxiconfort (cas : erreur de colisage, retour SAV).
+// Le colis part de chez le client (PickupAddress) vers notre depot (Consignee).
+function buildPickReturnPayload(cmd: any, poidsKg: number, libelle: string, serviceName = 'PickAndReturnService'): any {
+  const parsed = parseAdresseFR(cmd.adresse || '');
+  const tel = normalizeTel(cmd.tel || '');
+  const today = new Date().toISOString().split('T')[0];
+  const reference = 'RETOUR-' + (cmd.id || '').replace(/^#/, '');
+  const pickup: any = {
+    Name1: glsSafe((cmd.client || 'Client').trim(), 40) || 'Client',
+    CountryCode: 'FR',
+    ZIPCode: parsed.zipCode || '75001',
+    City: glsSafe(parsed.city || 'Paris', 40) || 'Paris',
+    Street: glsSafe(parsed.street || 'Rue', 40) || 'Rue',
+    StreetNumber: glsSafe(parsed.streetNumber, 10),
+  };
+  if (tel) pickup.MobilePhoneNumber = tel;
+  return {
+    Shipment: {
+      ShipmentReference: [reference],
+      ShippingDate: today,
+      Product: 'PARCEL',
+      // Destinataire du retour = notre depot
+      Consignee: { Address: { ...SHIPPER_ADDRESS, MobilePhoneNumber: '0033744289321' } },
+      Shipper: { ContactID: GLS_CONTACT_ID },
+      ShipmentUnit: [{
+        ShipmentUnitReference: [reference + '-1'],
+        Weight: poidsKg,
+        Note1: glsSafe(libelle, 40),
+        Note2: glsSafe('RETOUR SAV - enlevement client', 50),
+      }],
+      // GLS FPCS : Service[] contient des objets { Service: { ServiceName: "..." } }.
+      // Pour un Pick&Return, l'adresse d'ENLEVEMENT (le client) passe par AlternativeShipper.
+      Service: [{ Service: { ServiceName: serviceName } }],
+    },
+    PrintingOptions: { ReturnLabels: { TemplateSet: 'NONE', LabelFormat: 'PDF' } },
+  };
+}
+
 // ── Construit le payload Shipment GLS depuis une commande Supabase
 function buildShipmentPayload(cmd: any, testMode: boolean): any {
   const parsed = parseAdresseFR(cmd.adresse || '');
@@ -535,6 +574,43 @@ async function handleRequest(req: Request): Promise<Response> {
     } catch (e: any) {
       return new Response(JSON.stringify({ ok: false, error: e.message }), { status: 500, headers: JSON_HEADERS });
     }
+  }
+
+  // v5.15 : action=pickReturn — GLS enleve un colis CHEZ LE CLIENT et le rapporte au depot.
+  // Body : { action:'pickReturn', cmdId, poids?:15, libelle?:'Matelas 140x190', dryRun? }
+  if (action === 'pickReturn') {
+    if (!cmdId) return new Response(JSON.stringify({ ok: false, error: 'cmdId requis' }), { status: 400, headers: JSON_HEADERS });
+    const { data: cmdR, error: errR } = await sb.from('commandes').select('*').eq('id', cmdId).single();
+    if (errR || !cmdR) return new Response(JSON.stringify({ ok: false, error: 'commande introuvable' }), { status: 404, headers: JSON_HEADERS });
+    const poidsR = (typeof body.poids === 'number' && body.poids > 0) ? body.poids : 15;
+    const libR = body.libelle || ('RETOUR ' + (cmdR.produit || 'colis'));
+    // v5.15 : service GLS valide = 'service_shopreturn' (teste OK le 01/09 : le client
+    // depose le colis en point relais GLS, retour au depot Maxiconfort). Les variantes
+    // PickAndReturnService / PickAndShipService / ShopReturnService sont REJETEES par
+    // l'API FPCS ; la structure attendue est Service:[{Service:{ServiceName:"..."}}].
+    const payloadR = buildPickReturnPayload(cmdR, poidsR, libR, body.service || 'service_shopreturn');
+    if (dryRun) {
+      return new Response(JSON.stringify({ ok: true, dryRun: true, mode: 'pickReturn', payload: payloadR }), { headers: JSON_HEADERS });
+    }
+    const resR = await createShipment(payloadR);
+    if (!resR.ok) {
+      return new Response(JSON.stringify({ ok: false, mode: 'pickReturn', error: 'GLS API error', status: resR.status, gls_response: resR.data, payload_envoye: payloadR }), { status: 502, headers: JSON_HEADERS });
+    }
+    const createdR = resR.data?.CreatedShipment || {};
+    const parcelsR = (createdR.ParcelData || []).map((p: any) => ({ trackId: p?.TrackID || null }));
+    let pdfR: string | null = null;
+    const pdR = createdR.PrintData;
+    if (typeof pdR === 'string') pdfR = pdR;
+    else if (Array.isArray(pdR) && pdR[0]?.Data) pdfR = pdR[0].Data;
+    // v5.15 : stocker l'etiquette retour en base (colonnes dediees) pour pouvoir la
+    // reimprimer/renvoyer au client sans recreer une expedition facturable.
+    try {
+      await sb.from('commandes').update({
+        gls_retour_tracking: parcelsR[0]?.trackId || null,
+        gls_retour_pdf_base64: pdfR,
+      }).eq('id', cmdId);
+    } catch (_e) { /* colonnes absentes -> non bloquant */ }
+    return new Response(JSON.stringify({ ok: true, mode: 'pickReturn', trackId: parcelsR[0]?.trackId || null, parcels: parcelsR, pdfBase64Full: pdfR, gls_response: createdR }), { headers: JSON_HEADERS });
   }
 
   if (!cmdId && !testMode) {
