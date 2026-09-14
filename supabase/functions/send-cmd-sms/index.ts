@@ -70,10 +70,19 @@ const TPL = {
     p.dateFr
       ? `Bonjour ${p.prenom}, votre commande a bien ete expediee. Elle est en cours d'acheminement et sera livree le ${p.dateFr}. Merci de votre confiance. Maxiconfort.`
       : `Bonjour ${p.prenom}, votre commande a bien ete expediee et est en cours d'acheminement. Nous vous communiquerons la date de livraison. Merci. Maxiconfort.`,
-  // 23/06/2026 : SMS post-livraison (lendemain) -> demande d'avis Google honnete,
-  // SANS condition ni recompense. ~149 car = 1 segment = 1 credit OVH.
+  // 23/06/2026 : SMS post-livraison -> demande d'avis Google honnete, SANS
+  // condition ni recompense. ~149 car = 1 segment = 1 credit OVH.
+  // 02/09/2026 (v2) : reecrit apres constat d'un taux de retour de ~4% sur 204
+  // envois. Change : (1) suppression du "en 1 clic" MENSONGER (le lien ouvre
+  // Google Maps, il faut etre connecte puis noter/publier = ~5 etapes) ;
+  // (2) QUESTION ouverte au lieu d'une affirmation -> cree l'engagement ;
+  // (3) plus court et plus direct.
   avis: (p: any) =>
-    `Bonjour ${p.prenom}, merci pour votre achat chez Maxiconfort ! Votre avis en 1 clic : ${p.lienAvis} Merci de votre confiance.`,
+    `Bonjour ${p.prenom}, votre livraison Maxiconfort s'est bien passee ? Votre avis nous aide beaucoup : ${p.lienAvis}`,
+  // 02/09/2026 : relance unique J+7 pour les clients qui n'ont pas laisse d'avis.
+  // Ton different (rappel bref et non insistant), une seule fois, jamais plus.
+  'avis-relance': (p: any) =>
+    `Bonjour ${p.prenom}, si vous avez 30 secondes, votre avis sur Maxiconfort compte beaucoup pour nous : ${p.lienAvis}`,
 };
 
 function prenomDe(client: string): string {
@@ -108,8 +117,8 @@ Deno.serve(async (req: Request) => {
     return new Response(JSON.stringify({ error: 'cmdId et type requis' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
-  if (!['veille', 'depart', 'route', 'proche', 'expedition', 'confirmation', 'avis'].includes(type)) {
-    return new Response(JSON.stringify({ error: 'type doit être : veille, depart, route, proche, expedition, confirmation, avis' }),
+  if (!['veille', 'depart', 'route', 'proche', 'expedition', 'confirmation', 'avis', 'avis-relance'].includes(type)) {
+    return new Response(JSON.stringify({ error: 'type doit être : veille, depart, route, proche, expedition, confirmation, avis, avis-relance' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
