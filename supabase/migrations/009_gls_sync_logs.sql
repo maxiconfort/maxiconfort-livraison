@@ -26,7 +26,7 @@ ALTER TABLE gls_sync_logs ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS require_app_secret ON gls_sync_logs;
 CREATE POLICY require_app_secret ON gls_sync_logs
   FOR ALL
-  USING ((SELECT current_setting('request.headers', true)::json->>'x-app-secret') = '9fefa508934706dba95559be02e2033f0df05f593a4b4d81da7d7aac307ce257')
-  WITH CHECK ((SELECT current_setting('request.headers', true)::json->>'x-app-secret') = '9fefa508934706dba95559be02e2033f0df05f593a4b4d81da7d7aac307ce257');
+  USING ((SELECT current_setting('request.headers', true)::json->>'x-app-secret') = '<APP_SECRET_DU_FICHIER_ENV>')
+  WITH CHECK ((SELECT current_setting('request.headers', true)::json->>'x-app-secret') = '<APP_SECRET_DU_FICHIER_ENV>');
 
 COMMENT ON TABLE gls_sync_logs IS 'Logs d''exécution de l''Edge Function gls-sync (auto-tracking colis GLS via API officielle)';

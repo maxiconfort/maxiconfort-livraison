@@ -28,7 +28,7 @@ DECLARE
     'stock_camion','stock_mouvements','tournees','vehicules','zones'
   ];
   -- ⚠ Remplacer le SECRET ci-dessous par la valeur de APP_SECRET du .env :
-  app_secret text := '9fefa508934706dba95559be02e2033f0df05f593a4b4d81da7d7aac307ce257';
+  app_secret text := '<APP_SECRET_DU_FICHIER_ENV>';
 BEGIN
   FOREACH tbl IN ARRAY tables
   LOOP
