@@ -26,8 +26,10 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 
-// Meme regle que sms-avis : province/GLS en pause, IDF/RANOU seulement.
-const PAUSE_AVIS_GLS = true;
+// Meme regle que sms-avis : province reactivee le 14/09/2026 pour les
+// livraisons GLS a partir de AVIS_GLS_DEPUIS (pas de rattrapage).
+const PAUSE_AVIS_GLS = false;
+const AVIS_GLS_DEPUIS = '2026-09-14';
 const JOURS_RELANCE_DEFAUT = 7;
 
 const sb = createClient(SB_URL, SB_SR_KEY, {
@@ -94,8 +96,12 @@ Deno.serve(async (req: Request) => {
     if (/sav/i.test(String(c.id))) {
       skipped++; details.push({ id: c.id, action: 'skip_sav' }); continue;
     }
-    if (PAUSE_AVIS_GLS && /gls/i.test(String(c.transporteur || ''))) {
+    const estGls = /gls/i.test(String(c.transporteur || ''));
+    if (PAUSE_AVIS_GLS && estGls) {
       skipped++; details.push({ id: c.id, action: 'skip_pause_gls' }); continue;
+    }
+    if (estGls && String(c.date_livraison || '') < AVIS_GLS_DEPUIS) {
+      skipped++; details.push({ id: c.id, action: 'skip_gls_avant_reprise' }); continue;
     }
     if (noteExclut(c.instr)) {
       skipped++; details.push({ id: c.id, action: 'skip_exclu_note', client: c.client }); continue;

@@ -30,9 +30,12 @@ const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 
 // ⏸️ true = demande d'avis UNIQUEMENT pour les livraisons RANOU (region
-// parisienne). Les clients GLS (province, retard en cours de rattrapage)
-// sont sautes. Repasser a false + redeployer pour reactiver la province.
-const PAUSE_AVIS_GLS = true;
+// parisienne). Les clients GLS (province) sont sautes.
+// ▶️ v1.4 (14/09/2026, decision Borhen) : province REACTIVEE, mais uniquement
+//   pour les livraisons GLS a partir du AVIS_GLS_DEPUIS (pas de rattrapage
+//   des anciennes livraisons province).
+const PAUSE_AVIS_GLS = false;
+const AVIS_GLS_DEPUIS = '2026-09-14';
 
 const sb = createClient(SB_URL, SB_SR_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
@@ -107,8 +110,13 @@ Deno.serve(async (req: Request) => {
       skipped++; details.push({ id: c.id, action: 'skip_sav' }); continue;
     }
     // ⏸️ Pause province : on ne sollicite pas les clients livres par GLS
-    if (PAUSE_AVIS_GLS && /gls/i.test(String(c.transporteur || ''))) {
+    const estGls = /gls/i.test(String(c.transporteur || ''));
+    if (PAUSE_AVIS_GLS && estGls) {
       skipped++; details.push({ id: c.id, action: 'skip_pause_gls', client: c.client }); continue;
+    }
+    // Province : seulement les livraisons a partir de AVIS_GLS_DEPUIS
+    if (estGls && String(c.date_livraison || '') < AVIS_GLS_DEPUIS) {
+      skipped++; details.push({ id: c.id, action: 'skip_gls_avant_reprise', client: c.client }); continue;
     }
     // Exclusion manuelle "client a risque" (mot-cle dans la note)
     if (noteExclut(c.instr)) {
