@@ -26,3 +26,9 @@ node_modules/
 base_clients.xlsx
 contacts_sms_base_autres.csv
 supabase/.temp/
+
+# Agent impression GLS (fichiers locaux)
+print-agent/spool/
+print-agent/journal/
+print-agent/bin/
+print-agent/etat.json
