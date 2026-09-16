@@ -141,6 +141,18 @@ function normalizeTel(tel: string): string {
 // v5.1 (08/06) : refactor en array de poids pour gerer les colis de poids differents
 // (ex : Lit Coffre = [tete 6kg, longueur 15kg, longueur 15kg])
 const MULTICOLIS_RULES: { label: string; match: RegExp; colis: number[] }[] = [
+  // ─── LITS COFFRE / NICO (v5.16, 16/09, regle Borhen) ───
+  // Lit Coffre = 2 colis ; Lit NICO = 1 colis. Poids = anciens totaux repartis
+  // (coffre 6+15+15=36 -> 18+18 ; NICO 6+15=21 -> 21).
+  // Places EN TETE : "Ensemble Lit NICO 160x200 + Matelas" matcherait sinon la regle
+  // "Ensemble 160x200" (= matelas + sommier) ci-dessous. Les libelles vendus AVEC le
+  // matelas ("... + Matelas DODOCONFORT") ajoutent 1 colis matelas (15kg).
+  // Le "Sommier a Lattes" des lits coffre fait partie du lit (pas de colis en plus).
+  { label: 'Lit Coffre + Matelas (2 colis lit + 1 matelas)', match: /lit\s*coffre[\s\S]*?matelas/i, colis: [18, 18, 15] },
+  { label: 'Lit Coffre (2 colis)',                           match: /lit\s*coffre/i,                colis: [18, 18] },
+  { label: 'Lit NICO + Matelas (1 colis lit + 1 matelas)',   match: /lit\s*nico[\s\S]*?matelas/i,   colis: [21, 15] },
+  { label: 'Lit NICO (1 colis)',                             match: /lit\s*nico/i,                  colis: [21] },
+
   // ─── ENSEMBLES / PACKS LITERIE (matelas + sommier scinde) ───
   // Ordre : avant matelas/sommier pour matcher en premier
   { label: 'Ensemble/Pack 180x200 (mat. + sommier 1 colis)', match: /(ensemble|pack)[\s\S]*?180\s*[xX×]\s*200/i, colis: [15, 15] },
@@ -152,11 +164,7 @@ const MULTICOLIS_RULES: { label: string; match: RegExp; colis: number[] }[] = [
   { label: 'Ensemble/Pack 120x190 (mat. + sommier)',  match: /(ensemble|pack)[\s\S]*?120\s*[xX×]\s*190/i, colis: [15, 10] },
   { label: 'Ensemble/Pack 90 (mat. + sommier)',          match: /(ensemble|pack)[\s\S]*?90\s*[xX×]\s*(190|200)/i, colis: [7, 7] },
 
-  // ─── LITS ───
-  // Lit Coffre : 3 colis (tete 6kg + 2 longueurs 15kg chacune)
-  { label: 'Lit Coffre (tete + 2 longueurs)', match: /lit\s*coffre/i, colis: [6, 15, 15] },
-  // Lit NICO : 2 colis (tete 6kg + 1 longueur 15kg)
-  { label: 'Lit NICO (tete + 1 longueur)',    match: /lit\s*nico/i, colis: [6, 15] },
+  // ─── LITS (coffre / NICO : voir en tete de table, v5.16) ───
   // Lit superpose DUO / 2 places (90x190) : 2 colis (structure metal). Regle Borhen 29/06.
   // Cible le DUO (1+1, 2 personnes) et PAS le modele "2+1 Places / 3 Personnes" (a definir).
   { label: 'Lit superpose DUO 2 places (2 colis)', match: /lit\s*superpos[\s\S]*?(duo|2\s*places|2\s*personnes)/i, colis: [20, 20] },
