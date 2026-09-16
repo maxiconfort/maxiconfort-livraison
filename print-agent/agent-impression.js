@@ -6,6 +6,7 @@
 // l'étiquette vient d'être créée (tracking rempli, PDF présent) et pas
 // encore imprimée (gls_etiquette_imprimee_at NULL), imprime le PDF sur
 // l'imprimante thermique Phomemo PM-344-WF, puis marque la commande.
+// L'impression est 100 % Windows (imprimer-pdf.ps1) : ni Adobe, ni logiciel tiers.
 //
 // Garde-fous :
 //  - ne touche JAMAIS à l'API GLS (lecture seule du PDF déjà en base)
@@ -19,7 +20,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawn, spawnSync, execFileSync } = require('child_process');
+const { spawnSync } = require('child_process');
 
 // ── Réglages ────────────────────────────────────────────────────────
 const IMPRIMANTE = process.env.IMPRIMANTE_GLS || 'PM-344-WF (WiFi)';
@@ -31,12 +32,6 @@ const RACINE = path.resolve(__dirname, '..');
 const DOSSIER_SPOOL = path.join(__dirname, 'spool');
 const DOSSIER_JOURNAL = path.join(__dirname, 'journal');
 const FICHIER_ETAT = path.join(__dirname, 'etat.json');
-const SUMATRA = path.join(__dirname, 'bin', 'SumatraPDF.exe');
-const ACROBAT_CANDIDATS = [
-  'C:\\Program Files\\Adobe\\Acrobat DC\\Acrobat\\Acrobat.exe',
-  'C:\\Program Files (x86)\\Adobe\\Acrobat DC\\Acrobat\\Acrobat.exe',
-  'C:\\Program Files (x86)\\Adobe\\Acrobat Reader DC\\Reader\\AcroRd32.exe',
-];
 
 for (const d of [DOSSIER_SPOOL, DOSSIER_JOURNAL]) fs.mkdirSync(d, { recursive: true });
 
@@ -115,46 +110,19 @@ async function marquerImprimee(id, ok, detail) {
   if (detail) log(detail);
 }
 
-// ── Impression ──────────────────────────────────────────────────────
-function moteurImpression() {
-  if (fs.existsSync(SUMATRA)) return { nom: 'SumatraPDF', exe: SUMATRA };
-  const acro = ACROBAT_CANDIDATS.find((p) => fs.existsSync(p));
-  if (acro) return { nom: 'Acrobat', exe: acro };
-  return null;
-}
+// ── Impression : 100 % Windows, sans Adobe ni logiciel tiers ────────
+// print-agent\imprimer-pdf.ps1 rend le PDF en image avec le composant PDF natif de Windows
+// et l'envoie au pilote de l'imprimante sur le papier 4x6". Code 0 + "OK ..." = envoyé au spouleur.
+const SCRIPT_IMPRESSION = path.join(__dirname, 'imprimer-pdf.ps1');
+function moteurImpression() { return fs.existsSync(SCRIPT_IMPRESSION) ? { nom: 'Windows natif' } : null; }
 function imprimerPdf(fichier) {
-  const moteur = moteurImpression();
-  if (!moteur) throw new Error('Aucun moteur d\'impression : placer SumatraPDF.exe dans print-agent\\bin ou installer Adobe Acrobat');
-  if (moteur.nom === 'SumatraPDF') {
-    // -silent : pas de fenêtre ; -print-settings fit : ajuste 100x150 → 4x6" ; ferme à la fin
-    const r = spawnSync(moteur.exe, ['-print-to', IMPRIMANTE, '-print-settings', 'fit', '-silent', '-exit-when-done', fichier], { timeout: 120000 });
-    if (r.status !== 0) throw new Error(`SumatraPDF code ${r.status} ${String(r.stderr || '').slice(0, 200)}`);
-    return moteur.nom;
-  }
-  // Acrobat : /t <fichier> <imprimante> = impression silencieuse. Acrobat ne se ferme pas tout seul
-  // → lancement détaché (sans attendre sa fin), surveillance de la file Windows, puis fermeture forcée.
-  const enfant = spawn(moteur.exe, ['/t', fichier, IMPRIMANTE], { detached: true, stdio: 'ignore' });
-  enfant.unref();
-  const debut = Date.now();
-  let travailVu = false, travailFini = false;
-  while (Date.now() - debut < 45000) {
-    pause(1000);
-    const n = travauxEnAttente();
-    if (n > 0) travailVu = true;
-    else if (travailVu) { travailFini = true; break; }
-    if (!travailVu && Date.now() - debut > 20000) break; // petit PDF déjà parti entre deux sondages, ou Acrobat muet
-  }
-  try { execFileSync('taskkill', ['/IM', 'Acrobat.exe', '/F'], { stdio: 'ignore' }); } catch { /* déjà fermé */ }
-  log(`   spouleur : travail ${travailVu ? (travailFini ? 'vu puis transmis à l\'imprimante' : 'vu, encore en cours') : 'non observé (transmis trop vite ou échec silencieux)'} en ${Math.round((Date.now() - debut) / 1000)} s`);
-  return moteur.nom;
-}
-// Pause synchrone sans dépendance
-function pause(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
-function travauxEnAttente() {
-  try {
-    const out = execFileSync('powershell', ['-NoProfile', '-Command', `(Get-PrintJob -PrinterName '${IMPRIMANTE.replace(/'/g, "''")}' -ErrorAction SilentlyContinue | Measure-Object).Count`], { encoding: 'utf8', timeout: 20000 });
-    return Number(out.trim()) || 0;
-  } catch { return 0; }
+  if (!moteurImpression()) throw new Error(`Script d'impression introuvable : ${SCRIPT_IMPRESSION}`);
+  const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT_IMPRESSION, '-Fichier', fichier, '-Imprimante', IMPRIMANTE], { encoding: 'utf8', timeout: 120000, windowsHide: true });
+  const sortie = `${r.stdout || ''}${r.stderr || ''}`.trim();
+  if (r.error) throw r.error;
+  if (r.status !== 0 || !/^OK /m.test(sortie)) throw new Error(`impression Windows code ${r.status} : ${sortie.slice(0, 300)}`);
+  log(`   ${sortie.split(/\r?\n/).find((l) => l.startsWith('OK '))}`);
+  return 'Windows natif';
 }
 
 // ── Boucle principale ───────────────────────────────────────────────
