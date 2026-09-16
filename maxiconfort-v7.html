@@ -3541,7 +3541,7 @@ function calculerProgressionChargement(t) {
 
 // Colonnes chargées pour les commandes — EXCLUT gls_pdf_base64 (PDF étiquette 50-400 Ko/cmd,
 // stocké par gls-create-shipment, récupéré uniquement à la demande via l'action getLabel)
-var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at,frais_port,stock_deduit';
+var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_etiquette_imprimee_at,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at,frais_port,stock_deduit';
 
 async function sbLoadAll() {
   // Afficher cache immédiatement (UX rapide) pendant chargement Supabase
@@ -3607,7 +3607,7 @@ async function sbLoadAll() {
           paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
           montantEnc:parseFloat(r.montant_enc)||0,
           livreur:r.livreur||'', statut:r.statut||'en-attente',
-          date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'',
+          date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r.gls_etiquette_imprimee_at||'',
           litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
           glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
           origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
@@ -3731,7 +3731,7 @@ async function sbChargerPlusCommandes() {
           paie:r2.paie||'Espèces', stpaie:r2.stpaie||'Non payé',
           montantEnc:parseFloat(r2.montant_enc)||0,
           livreur:r2.livreur||'', statut:r2.statut||'en-attente',
-          date:r2.date_livraison||'', dateCmd:r2.date_commande||'', createdAt:r2.created_at||'', instr:r2.instr||'', tracking_token:r2.tracking_token||'', transporteur:r2.transporteur||'RANOU', trackingTransporteur:r2.tracking_transporteur||'', glsDateEtiquette:r2.gls_date_etiquette||'',
+          date:r2.date_livraison||'', dateCmd:r2.date_commande||'', createdAt:r2.created_at||'', instr:r2.instr||'', tracking_token:r2.tracking_token||'', transporteur:r2.transporteur||'RANOU', trackingTransporteur:r2.tracking_transporteur||'', glsDateEtiquette:r2.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r2.gls_etiquette_imprimee_at||'',
           litigeType:r2.litige_type||'', litigeNumReclamation:r2.litige_num_reclamation||'', litigeDateOuverture:r2.litige_date_ouverture||'', litigeStatut:r2.litige_statut||'', litigeDescription:r2.litige_description||'',
           glsBloque:!!r2.gls_bloque, glsDernierScan:r2.gls_dernier_scan||'',
           origine:r2.origine||'', refMarketplace:r2.ref_marketplace||'',
@@ -3801,7 +3801,7 @@ function startPolling() {
               paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
               montantEnc:parseFloat(r.montant_enc)||0,
               livreur:r.livreur||'', statut:r.statut||'en-attente',
-              date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'',
+              date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r.gls_etiquette_imprimee_at||'',
               litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
               glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
               origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
@@ -3908,7 +3908,7 @@ function sbStartRealtime() {
         remiseGlobaleVal:r.remise_globale_val, remiseGlobaleType:r.remise_globale_type,
         remiseMotif:r.remise_motif, paie:r.paie, stpaie:r.stpaie,
         montantEnc:r.montant_enc, livreur:r.livreur, statut:r.statut,
-        date:r.date_livraison, dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'',
+        date:r.date_livraison, dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r.gls_etiquette_imprimee_at||'',
         litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
         glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
         confirmationPresence:r.confirmation_presence||'', confirmationAt:r.confirmation_at||'',
@@ -6041,6 +6041,8 @@ function suiviAppliquerFiltres() {
       : '<span style="color:var(--t3)">—</span>';
     // v7.5.49 : colis bloque detecte par gls-sync (aucun scan 4j+)
     if (c.glsBloque && c.statut !== 'livré' && c.statut !== 'annulé') tracking = '<span title="Colis bloqué — aucun scan GLS depuis le ' + (c.glsDernierScan ? new Date(c.glsDernierScan).toLocaleDateString('fr-FR') : '?') + '" style="font-weight:900;color:var(--rd)">🚨</span> ' + tracking;
+    // v7.5.106 : etiquette imprimee au bureau par l'agent print-agent
+    if (trackVal && c.glsEtiquetteImprimeeAt) tracking += ' <span title="Étiquette imprimée au bureau le ' + new Date(c.glsEtiquetteImprimeeAt).toLocaleString('fr-FR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) + '" style="font-size:12px">🖨️</span>';
     var dStr = c.date ? String(c.date).split('T')[0] : '';
     var isRetard = dStr && dStr < todayStr && c.statut !== 'livré' && c.statut !== 'annulé';
     var dateAffich = c.date ? fmtDate(c.date) : '—';
@@ -7512,6 +7514,12 @@ function ouvrirCmd(id) {
           '<button id="pa-reprint-label-btn" data-cmdid="'+c.id+'" class="btn" style="width:100%;padding:12px;background:linear-gradient(135deg,#4A90E2,#357ABD);color:#fff;font-weight:800;font-size:14px;border:none;margin-bottom:10px;box-shadow:0 2px 6px rgba(74,144,226,.3)">📄 Réimprimer l\'étiquette GLS</button>' +
           // v7.5.63 : nombre de colis enregistrés chez GLS + tous les n° de suivi (multi-colis)
           (glsTracks.length ? '<div style="background:#E6F1FB;border:1px solid rgba(24,95,165,.25);border-radius:8px;padding:9px 11px;margin-bottom:10px;font-size:12.5px;color:#0C447C">📦 <strong>'+glsTracks.length+' colis</strong> enregistré'+(glsTracks.length>1?'s':'')+' chez GLS'+(glsTracks.length>1?' :<br><span style="font-family:monospace;font-size:11px;font-weight:600;line-height:1.6">'+glsTracks.join('&nbsp;&middot;&nbsp;')+'</span>':'')+'</div>' : '') +
+          // v7.5.106 : badge impression automatique (agent print-agent du bureau, colonne gls_etiquette_imprimee_at)
+          (c.glsEtiquetteImprimeeAt
+            ? '<div style="background:#E6F7EC;border:1px solid rgba(39,138,79,.35);border-radius:8px;padding:8px 11px;margin-bottom:10px;font-size:12.5px;color:#1E6B3E;font-weight:700">🖨️ Étiquette imprimée au bureau le ' + new Date(c.glsEtiquetteImprimeeAt).toLocaleString('fr-FR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) + '</div>'
+            : ((c.glsDateEtiquette||'') >= '2026-09-16'
+              ? '<div style="background:#FFF4E5;border:1px solid rgba(221,107,32,.35);border-radius:8px;padding:8px 11px;margin-bottom:10px;font-size:12.5px;color:#9C4221;font-weight:700">🖨️ Impression au bureau en attente… (PC du bureau allumé ?)</div>'
+              : '')) +
           // v7.5.49 : Banniere colis bloque (detecte par gls-sync v12, aucun scan depuis 4j+)
           (c.glsBloque ? '<div style="background:#FED7D7;border:1.5px solid #E53E3E;border-radius:8px;padding:10px;margin-bottom:10px;font-size:12.5px;color:#9B2C2C;font-weight:800">🚨 Colis bloqué chez GLS — aucun scan depuis le ' + (c.glsDernierScan ? new Date(c.glsDernierScan).toLocaleDateString('fr-FR') : '?') + '. Si ça persiste, déclare un litige ci-dessous.</div>' : '') +
           // v7.5.48 : Bouton litige GLS (dossier d'indemnisation)
@@ -15348,6 +15356,7 @@ function litigeOuvrir(cmdId) {
         '<strong>' + litigeEsc(c.client) + '</strong> — ' + litigeEsc(c.produit) + '<br>' +
         '📦 ' + (tracks.length || 1) + ' colis : <span style="font-family:monospace">' + litigeEsc(tracks.join(', ') || '—') + '</span>' +
         (c.glsDateEtiquette ? '<br>🏷️ Étiquette créée le ' + new Date(c.glsDateEtiquette+'T12:00:00').toLocaleDateString('fr-FR') : '') +
+        (c.glsEtiquetteImprimeeAt ? '<br>🖨️ Imprimée au bureau le ' + new Date(c.glsEtiquetteImprimeeAt).toLocaleString('fr-FR', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '') +
       '</div>' +
       '<label style="' + lblStyle + '">Type de litige</label>' +
       '<select id="lit-type" style="' + selStyle + '">' + typeOpts + '</select>' +
