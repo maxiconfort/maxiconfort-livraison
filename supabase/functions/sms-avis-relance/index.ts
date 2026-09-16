@@ -1,23 +1,31 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis-relance (v1.0 — 02/09/2026)
+// Edge Function : sms-avis-relance (v2.0 — 16/09/2026)
 // ════════════════════════════════════════════════════════════════════
-// RELANCE UNIQUE d'avis Google, ~7 jours apres la premiere demande.
+// RELANCES d'avis Google apres la premiere demande (sms-avis, J+1).
 //
-// Pourquoi : constat du 02/09/2026 — 204 SMS "avis" envoyes depuis juin
-// pour seulement ~12 avis Google (taux ~4%, la norme du SMS froid).
-// Une relance unique double typiquement le taux de retour.
+// v1.0 (02/09/2026) : relance unique a J+7. Constat : 204 SMS "avis" pour
+//   ~12 avis (taux ~4%). Une relance double typiquement le taux de retour.
+// v2.0 (16/09/2026, demande Borhen "plus de relances, que ca aille plus
+//   vite") : DEUX relances, plus tot — J+4 ("avis-relance") puis J+10
+//   ("avis-relance2"). Jamais de 3e. Textes differents (send-cmd-sms).
 //
-// Scan : commandes livrees il y a JOURS_RELANCE jours (defaut 7), statut
-//        "livré", tel valide, hors #SAV, non exclues (note "PAS D'AVIS"),
-//        AYANT DEJA recu la 1re demande (type "avis" dans sms_envoyes)
-//        et PAS ENCORE relancees (type "avis-relance").
-// Pour chaque : appelle send-cmd-sms { type:"avis-relance" }.
+// Scan, pour chaque etape : commandes livrees il y a J jours (fenetre de
+//   2 jours J..J+1 comme sms-avis), statut "livré", tel valide, hors #SAV,
+//   non exclues (note "PAS D'AVIS"), AYANT DEJA recu la 1re demande (type
+//   "avis" dans sms_envoyes) et PAS ENCORE recu cette etape (dedupe par type).
+//   L'etape 2 ne depend pas de l'etape 1 (si elle a ete ratee, on n'envoie
+//   quand meme qu'une seule relance 2).
 //
-// ⚠️ UNE SEULE relance par client, jamais plus (dedupe sms_envoyes).
-// ⚠️ Meme pause province/GLS que sms-avis (RANOU / Ile-de-France seulement).
+// ⚠️ Chaque etape = 1 SMS max par commande (dedupe sms_envoyes).
+// ⚠️ Meme regle province/GLS que sms-avis (reprise a partir du 14/09/2026).
 // ⚠️ Demande HONNETE, sans condition ni recompense. 1 SMS = 1 credit OVH.
 //
-// Body : { dryRun?: boolean, dateCible?: "YYYY-MM-DD", jours?: number }
+// Body : { dryRun?: boolean, dateCible?: "YYYY-MM-DD", jours?: number|number[],
+//          etape?: 1|2 }
+//   - jours : delais en jours des etapes (defaut [4, 10]) ; un nombre seul
+//     = uniquement l'etape 1 a ce delai (compat v1).
+//   - dateCible : force la date de livraison scannee (test/rattrapage) ;
+//     s'applique a l'etape `etape` (defaut 1).
 // ════════════════════════════════════════════════════════════════════
 
 // deno-lint-ignore-file no-explicit-any
@@ -30,7 +38,12 @@ const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 // livraisons GLS a partir de AVIS_GLS_DEPUIS (pas de rattrapage).
 const PAUSE_AVIS_GLS = false;
 const AVIS_GLS_DEPUIS = '2026-09-14';
-const JOURS_RELANCE_DEFAUT = 7;
+
+// Etapes de relance : delai (jours apres la livraison) + type SMS.
+const ETAPES_DEFAUT = [
+  { jours: 4,  type: 'avis-relance'  },
+  { jours: 10, type: 'avis-relance2' },
+];
 
 const sb = createClient(SB_URL, SB_SR_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
@@ -62,88 +75,105 @@ Deno.serve(async (req: Request) => {
   try { body = await req.json(); } catch { /* empty */ }
 
   const dryRun = body.dryRun === true;
-  const jours  = Number(body.jours) > 0 ? Number(body.jours) : JOURS_RELANCE_DEFAUT;
 
-  // Fenetre de 2 jours autour de J-7 (comme sms-avis, pour rattraper les
-  // commandes passees en "livré" apres l'heure du cron).
-  let dateMin: string, dateMax: string;
-  if (body.dateCible) {
-    dateMin = body.dateCible; dateMax = body.dateCible;
-  } else {
-    const d1 = new Date(); d1.setDate(d1.getDate() - jours);
-    const d2 = new Date(); d2.setDate(d2.getDate() - (jours + 1));
-    dateMax = toLocalDateStr(d1);
-    dateMin = toLocalDateStr(d2);
+  // Etapes a traiter (jours = nombre -> etape 1 seule ; tableau -> 1 par valeur)
+  let etapes = ETAPES_DEFAUT.map(e => ({ ...e }));
+  if (Array.isArray(body.jours)) {
+    etapes = body.jours.slice(0, 2).map((j: any, i: number) => ({
+      jours: Number(j) > 0 ? Number(j) : ETAPES_DEFAUT[i].jours, type: ETAPES_DEFAUT[i].type,
+    }));
+  } else if (Number(body.jours) > 0) {
+    etapes = [{ jours: Number(body.jours), type: ETAPES_DEFAUT[0].type }];
   }
-  const dateCible = dateMin === dateMax ? dateMin : `${dateMin}..${dateMax}`;
-
-  const { data: cmds, error } = await sb.from('commandes')
-    .select('id,client,tel,statut,transporteur,sms_envoyes,date_livraison,instr')
-    .gte('date_livraison', dateMin)
-    .lte('date_livraison', dateMax)
-    .eq('statut', 'livré');
-
-  if (error) {
-    return new Response(JSON.stringify({ error: 'select commandes failed', details: error.message }),
-      { status: 500, headers: CORS });
+  if (body.dateCible) {
+    const idx = Number(body.etape) === 2 ? 1 : 0;
+    etapes = [etapes[idx] || ETAPES_DEFAUT[idx]];
   }
 
   let scanned = 0, sent = 0, skipped = 0, failed = 0;
   const details: any[] = [];
+  const fenetres: any[] = [];
 
-  for (const c of cmds || []) {
-    scanned++;
-    if (/sav/i.test(String(c.id))) {
-      skipped++; details.push({ id: c.id, action: 'skip_sav' }); continue;
+  for (const etape of etapes) {
+    // Fenetre de 2 jours autour de J-jours (rattrape les commandes passees en
+    // "livré" apres l'heure du cron).
+    let dateMin: string, dateMax: string;
+    if (body.dateCible) {
+      dateMin = body.dateCible; dateMax = body.dateCible;
+    } else {
+      const d1 = new Date(); d1.setDate(d1.getDate() - etape.jours);
+      const d2 = new Date(); d2.setDate(d2.getDate() - (etape.jours + 1));
+      dateMax = toLocalDateStr(d1);
+      dateMin = toLocalDateStr(d2);
     }
-    const estGls = /gls/i.test(String(c.transporteur || ''));
-    if (PAUSE_AVIS_GLS && estGls) {
-      skipped++; details.push({ id: c.id, action: 'skip_pause_gls' }); continue;
-    }
-    if (estGls && String(c.date_livraison || '') < AVIS_GLS_DEPUIS) {
-      skipped++; details.push({ id: c.id, action: 'skip_gls_avant_reprise' }); continue;
-    }
-    if (noteExclut(c.instr)) {
-      skipped++; details.push({ id: c.id, action: 'skip_exclu_note', client: c.client }); continue;
-    }
-    const tel = (c.tel || '').replace(/[^0-9+]/g, '');
-    if (!tel || tel.length < 8) {
-      skipped++; details.push({ id: c.id, action: 'skip_no_tel' }); continue;
-    }
+    fenetres.push({ type: etape.type, jours: etape.jours, dateMin, dateMax });
 
-    const dejaEnvoyes: any[] = Array.isArray(c.sms_envoyes) ? c.sms_envoyes : [];
-    // Il FAUT avoir recu la 1re demande (sinon c'est sms-avis qui doit agir).
-    if (!dejaEnvoyes.some((e: any) => e.type === 'avis')) {
-      skipped++; details.push({ id: c.id, action: 'skip_pas_de_1re_demande', client: c.client }); continue;
-    }
-    // Une seule relance, jamais deux.
-    if (dejaEnvoyes.some((e: any) => e.type === 'avis-relance')) {
-      skipped++; details.push({ id: c.id, action: 'skip_deja_relance' }); continue;
+    const { data: cmds, error } = await sb.from('commandes')
+      .select('id,client,tel,statut,transporteur,sms_envoyes,date_livraison,instr')
+      .gte('date_livraison', dateMin)
+      .lte('date_livraison', dateMax)
+      .eq('statut', 'livré');
+
+    if (error) {
+      return new Response(JSON.stringify({ error: 'select commandes failed', details: error.message }),
+        { status: 500, headers: CORS });
     }
 
-    if (dryRun) {
-      sent++;
-      details.push({ id: c.id, action: 'would_send', client: c.client, to: tel });
-      continue;
-    }
+    for (const c of cmds || []) {
+      scanned++;
+      const base = { id: c.id, etape: etape.type };
+      if (/sav/i.test(String(c.id))) {
+        skipped++; details.push({ ...base, action: 'skip_sav' }); continue;
+      }
+      const estGls = /gls/i.test(String(c.transporteur || ''));
+      if (PAUSE_AVIS_GLS && estGls) {
+        skipped++; details.push({ ...base, action: 'skip_pause_gls' }); continue;
+      }
+      if (estGls && String(c.date_livraison || '') < AVIS_GLS_DEPUIS) {
+        skipped++; details.push({ ...base, action: 'skip_gls_avant_reprise' }); continue;
+      }
+      if (noteExclut(c.instr)) {
+        skipped++; details.push({ ...base, action: 'skip_exclu_note', client: c.client }); continue;
+      }
+      const tel = (c.tel || '').replace(/[^0-9+]/g, '');
+      if (!tel || tel.length < 8) {
+        skipped++; details.push({ ...base, action: 'skip_no_tel' }); continue;
+      }
 
-    try {
-      const resp = await fetch(`${SB_URL}/functions/v1/send-cmd-sms`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${SB_SR_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cmdId: c.id, type: 'avis-relance' }),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (data.sent) { sent++; details.push({ id: c.id, action: 'sent', to: data.to }); }
-      else if (data.skipped) { skipped++; details.push({ id: c.id, action: 'skip_send', reason: data.reason }); }
-      else { failed++; details.push({ id: c.id, action: 'failed', error: data.error }); }
-    } catch (e: any) {
-      failed++; details.push({ id: c.id, action: 'exception', error: e.message });
+      const dejaEnvoyes: any[] = Array.isArray(c.sms_envoyes) ? c.sms_envoyes : [];
+      // Il FAUT avoir recu la 1re demande (sinon c'est sms-avis qui doit agir).
+      if (!dejaEnvoyes.some((e: any) => e.type === 'avis')) {
+        skipped++; details.push({ ...base, action: 'skip_pas_de_1re_demande', client: c.client }); continue;
+      }
+      // Une seule fois par etape, jamais deux.
+      if (dejaEnvoyes.some((e: any) => e.type === etape.type)) {
+        skipped++; details.push({ ...base, action: 'skip_deja_envoye' }); continue;
+      }
+
+      if (dryRun) {
+        sent++;
+        details.push({ ...base, action: 'would_send', client: c.client, to: tel });
+        continue;
+      }
+
+      try {
+        const resp = await fetch(`${SB_URL}/functions/v1/send-cmd-sms`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${SB_SR_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cmdId: c.id, type: etape.type }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (data.sent) { sent++; details.push({ ...base, action: 'sent', to: data.to }); }
+        else if (data.skipped) { skipped++; details.push({ ...base, action: 'skip_send', reason: data.reason }); }
+        else { failed++; details.push({ ...base, action: 'failed', error: data.error }); }
+      } catch (e: any) {
+        failed++; details.push({ ...base, action: 'exception', error: e.message });
+      }
     }
   }
 
   return new Response(JSON.stringify({
-    ok: true, dryRun, dateCible, jours, scanned, sent, skipped, failed,
+    ok: true, dryRun, fenetres, scanned, sent, skipped, failed,
     duration_ms: Date.now() - t0, details,
   }), { headers: CORS });
 });

@@ -83,6 +83,10 @@ const TPL = {
   // Ton different (rappel bref et non insistant), une seule fois, jamais plus.
   'avis-relance': (p: any) =>
     `Bonjour ${p.prenom}, si vous avez 30 secondes, votre avis sur Maxiconfort compte beaucoup pour nous : ${p.lienAvis}`,
+  // 16/09/2026 : 2e relance (demande Borhen "plus de relances"), ton encore plus
+  // court, derniere sollicitation. Jamais de 3e.
+  'avis-relance2': (p: any) =>
+    `Bonjour ${p.prenom}, dernier petit rappel de l'equipe Maxiconfort : un avis, meme court, nous aide vraiment. Merci ! ${p.lienAvis}`,
 };
 
 function prenomDe(client: string): string {
@@ -117,8 +121,8 @@ Deno.serve(async (req: Request) => {
     return new Response(JSON.stringify({ error: 'cmdId et type requis' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
-  if (!['veille', 'depart', 'route', 'proche', 'expedition', 'confirmation', 'avis', 'avis-relance'].includes(type)) {
-    return new Response(JSON.stringify({ error: 'type doit être : veille, depart, route, proche, expedition, confirmation, avis, avis-relance' }),
+  if (!['veille', 'depart', 'route', 'proche', 'expedition', 'confirmation', 'avis', 'avis-relance', 'avis-relance2'].includes(type)) {
+    return new Response(JSON.stringify({ error: 'type doit être : veille, depart, route, proche, expedition, confirmation, avis, avis-relance, avis-relance2' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
