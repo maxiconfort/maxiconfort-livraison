@@ -3541,7 +3541,7 @@ function calculerProgressionChargement(t) {
 
 // Colonnes chargées pour les commandes — EXCLUT gls_pdf_base64 (PDF étiquette 50-400 Ko/cmd,
 // stocké par gls-create-shipment, récupéré uniquement à la demande via l'action getLabel)
-var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_etiquette_imprimee_at,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at,frais_port,stock_deduit';
+var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_etiquette_imprimee_at,gls_creation_statut,gls_creation_at,gls_creation_erreur,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at,frais_port,stock_deduit';
 
 async function sbLoadAll() {
   // Afficher cache immédiatement (UX rapide) pendant chargement Supabase
@@ -3607,7 +3607,7 @@ async function sbLoadAll() {
           paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
           montantEnc:parseFloat(r.montant_enc)||0,
           livreur:r.livreur||'', statut:r.statut||'en-attente',
-          date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r.gls_etiquette_imprimee_at||'',
+          date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r.gls_etiquette_imprimee_at||'', glsCreationStatut:r.gls_creation_statut||'', glsCreationAt:r.gls_creation_at||'', glsCreationErreur:r.gls_creation_erreur||'',
           litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
           glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
           origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
@@ -3731,7 +3731,7 @@ async function sbChargerPlusCommandes() {
           paie:r2.paie||'Espèces', stpaie:r2.stpaie||'Non payé',
           montantEnc:parseFloat(r2.montant_enc)||0,
           livreur:r2.livreur||'', statut:r2.statut||'en-attente',
-          date:r2.date_livraison||'', dateCmd:r2.date_commande||'', createdAt:r2.created_at||'', instr:r2.instr||'', tracking_token:r2.tracking_token||'', transporteur:r2.transporteur||'RANOU', trackingTransporteur:r2.tracking_transporteur||'', glsDateEtiquette:r2.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r2.gls_etiquette_imprimee_at||'',
+          date:r2.date_livraison||'', dateCmd:r2.date_commande||'', createdAt:r2.created_at||'', instr:r2.instr||'', tracking_token:r2.tracking_token||'', transporteur:r2.transporteur||'RANOU', trackingTransporteur:r2.tracking_transporteur||'', glsDateEtiquette:r2.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r2.gls_etiquette_imprimee_at||'', glsCreationStatut:r2.gls_creation_statut||'', glsCreationAt:r2.gls_creation_at||'', glsCreationErreur:r2.gls_creation_erreur||'',
           litigeType:r2.litige_type||'', litigeNumReclamation:r2.litige_num_reclamation||'', litigeDateOuverture:r2.litige_date_ouverture||'', litigeStatut:r2.litige_statut||'', litigeDescription:r2.litige_description||'',
           glsBloque:!!r2.gls_bloque, glsDernierScan:r2.gls_dernier_scan||'',
           origine:r2.origine||'', refMarketplace:r2.ref_marketplace||'',
@@ -3801,7 +3801,7 @@ function startPolling() {
               paie:r.paie||'Espèces', stpaie:r.stpaie||'Non payé',
               montantEnc:parseFloat(r.montant_enc)||0,
               livreur:r.livreur||'', statut:r.statut||'en-attente',
-              date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r.gls_etiquette_imprimee_at||'',
+              date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r.gls_etiquette_imprimee_at||'', glsCreationStatut:r.gls_creation_statut||'', glsCreationAt:r.gls_creation_at||'', glsCreationErreur:r.gls_creation_erreur||'',
               litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
               glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
               origine:r.origine||'', refMarketplace:r.ref_marketplace||'',
@@ -3908,7 +3908,7 @@ function sbStartRealtime() {
         remiseGlobaleVal:r.remise_globale_val, remiseGlobaleType:r.remise_globale_type,
         remiseMotif:r.remise_motif, paie:r.paie, stpaie:r.stpaie,
         montantEnc:r.montant_enc, livreur:r.livreur, statut:r.statut,
-        date:r.date_livraison, dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r.gls_etiquette_imprimee_at||'',
+        date:r.date_livraison, dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r.gls_etiquette_imprimee_at||'', glsCreationStatut:r.gls_creation_statut||'', glsCreationAt:r.gls_creation_at||'', glsCreationErreur:r.gls_creation_erreur||'',
         litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
         glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
         confirmationPresence:r.confirmation_presence||'', confirmationAt:r.confirmation_at||'',
@@ -7508,6 +7508,8 @@ function ouvrirCmd(id) {
         // v7.5.29 : Bouton "Créer étiquette GLS auto" (visible si pas encore de tracking)
         // v7.5.34 : Bouton "Réimprimer étiquette" (visible si tracking existe)
         (((c.trackingTransporteur||c.tracking_transporteur||'') === '') ?
+          // v7.5.107 : état de la création AUTOMATIQUE (Edge Function gls-auto-etiquette, 30 min après la commande)
+          glsAutoBandeau(c) +
           '<button id="pa-create-label-btn" data-cmdid="'+c.id+'" class="btn" style="width:100%;padding:12px;background:linear-gradient(135deg,#FFB347,#FF8C42);color:#fff;font-weight:800;font-size:14px;border:none;margin-bottom:10px;box-shadow:0 2px 6px rgba(255,140,66,.3)">📦 Créer l\'étiquette GLS automatiquement</button>' +
           '<div style="text-align:center;color:var(--t3);font-size:11px;margin-bottom:10px;font-weight:700">— OU SAISIE MANUELLE —</div>'
           :
@@ -7692,6 +7694,31 @@ async function panelEnregistrerTracking(cmdId) {
 //   2. Ouvre le PDF dans un nouvel onglet (blob URL)
 //   3. Rafraichit la modale pour afficher le tracking
 // ════════════════════════════════════════════════════════════
+// v7.5.107 : bandeau d'état de la création automatique d'étiquette GLS
+// (miroir des règles de supabase/functions/gls-auto-etiquette : 30 min après la commande,
+//  hors #SAV, commandes créées depuis le 17/09/2026, note « SANS ETIQUETTE » / « YOURGLS » = exclue)
+var GLS_AUTO_MISE_EN_SERVICE = '2026-09-16T22:00:00Z';
+var GLS_AUTO_DELAI_MIN = 30;
+function glsAutoBandeau(c) {
+  var st = c.glsCreationStatut || '';
+  var bd = function(bg, brd, col, txt) {
+    return '<div style="background:'+bg+';border:1px solid '+brd+';border-radius:8px;padding:9px 11px;margin-bottom:10px;font-size:12.5px;color:'+col+';font-weight:700;line-height:1.45">'+txt+'</div>';
+  };
+  var err = c.glsCreationErreur ? '<br><span style="font-weight:600">'+String(c.glsCreationErreur).replace(/</g,'&lt;')+'</span>' : '';
+  if (st === 'en_cours') return bd('#E6F1FB','rgba(24,95,165,.3)','#0C447C','⏳ Création de l\'étiquette GLS en cours… Ne cliquez pas, rouvrez la fiche dans 1 minute.');
+  if (st === 'incertain') return bd('#FED7D7','#E53E3E','#9B2C2C','⚠️ Création interrompue : vérifiez sur YourGLS si l\'étiquette existe AVANT de la recréer (risque de doublon facturé).'+err);
+  if (st === 'echec') return bd('#FED7D7','#E53E3E','#9B2C2C','❌ La création automatique a échoué, rien n\'a été facturé. Corrigez la commande puis créez l\'étiquette à la main.'+err);
+  if (st === 'ignore') return bd('#F1F1EF','rgba(0,0,0,.12)','#5F5E5A','🚫 Pas d\'étiquette automatique pour cette commande ('+String(c.glsCreationErreur||'note').replace(/</g,'&lt;')+').');
+  if (st) return '';
+  if (c.statut !== 'en-attente' || String(c.id).indexOf('#SAV') === 0 || !c.createdAt || c.createdAt < GLS_AUTO_MISE_EN_SERVICE) return '';
+  var prevue = new Date(new Date(c.createdAt).getTime() + GLS_AUTO_DELAI_MIN * 60000);
+  var h = prevue.getHours(), apresFermeture = (h >= 22 || h < 7);
+  var quand = prevue.getTime() <= Date.now()
+    ? 'dans les 5 prochaines minutes'
+    : (apresFermeture ? 'demain vers 7h' : 'vers ' + prevue.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}));
+  return bd('#E6F7EC','rgba(39,138,79,.35)','#1E6B3E','🤖 Étiquette GLS créée et imprimée automatiquement '+quand+'.<br><span style="font-weight:600">Pour l\'empêcher : annulez la commande ou écrivez « SANS ETIQUETTE » dans la note.</span>');
+}
+
 async function panelCreerEtiquetteGLS(cmdId) {
   var c = commandes.find(function(x){ return x.id === cmdId; });
   if (!c) { toast('Commande introuvable', 'err'); return; }

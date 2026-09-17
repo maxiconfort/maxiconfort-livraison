@@ -1,6 +1,10 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : gls-create-shipment (v5.12 — 15/06/2026)
+// Edge Function : gls-create-shipment (v5.17 — 17/09/2026)
 // ════════════════════════════════════════════════════════════════════
+// v5.17 : VERROU ANTI-DOUBLON (RPC gls_reserver_creation, migration 014) pour la
+//         création automatique (gls-auto-etiquette, body.auto=true) et le clic app.
+//         Refus 409 si étiquette déjà présente (pour recréer : vider le tracking) ou création en cours.
+//         Statuts : cree | echec (refus GLS, auto) | incertain (coupure : vérifier YourGLS).
 // v5.12 : regles colis sommier (Borhen) — BOIS A LATTES = 1 colis (a plat),
 //         TAPISSIER = 2 demi-colis (120/190, 140/190, 140/200, 160/200, 180/200).
 //         Matcher "lattes" et non "bois" (les tapissiers ont "Pieds Bois").
@@ -641,9 +645,60 @@ async function handleRequest(req: Request): Promise<Response> {
     return new Response(JSON.stringify({ ok: true, dryRun: true, payload, duration_ms: Date.now() - startTime }), { headers: JSON_HEADERS });
   }
 
-  const result = await createShipment(payload);
+  // v5.17 (17/09) : VERROU ANTI-DOUBLON — la création automatique (gls-auto-etiquette,
+  // body.auto=true) et le clic dans l'app ne peuvent plus créer 2 étiquettes facturées
+  // pour la même commande. Rien n'est envoyé à GLS si le verrou n'est pas obtenu.
+  const auto: boolean = !!body.auto;
+  const avecVerrou = !!cmdId && !testMode;
+  const libererVerrou = async (statut: string | null, erreur: string | null) => {
+    if (!avecVerrou) return;
+    try {
+      await sb.from('commandes').update({ gls_creation_statut: statut, gls_creation_erreur: erreur })
+        .eq('id', cmdId).eq('gls_creation_statut', 'en_cours');
+    } catch (_e) { /* non bloquant */ }
+  };
+  if (avecVerrou) {
+    if (String(cmd.tracking_transporteur || '').trim()) {
+      return new Response(JSON.stringify({
+        ok: false, code: 'deja_creee',
+        error: 'Étiquette GLS déjà créée pour cette commande (' + cmd.tracking_transporteur + '). Utilisez « Réimprimer ».',
+      }), { status: 409, headers: JSON_HEADERS });
+    }
+    if (auto && (cmd.transporteur !== 'GLS' || cmd.statut !== 'en-attente')) {
+      return new Response(JSON.stringify({
+        ok: false, code: 'non_eligible',
+        error: 'Création auto annulée : commande ' + cmd.statut + ' / transporteur ' + cmd.transporteur,
+      }), { status: 409, headers: JSON_HEADERS });
+    }
+    const { data: verrou, error: errVerrou } = await sb.rpc('gls_reserver_creation', { p_id: cmdId, p_auto: auto });
+    if (errVerrou) {
+      return new Response(JSON.stringify({ ok: false, code: 'verrou_erreur', error: 'Verrou anti-doublon indisponible : ' + errVerrou.message }),
+        { status: 500, headers: JSON_HEADERS });
+    }
+    if (verrou !== true) {
+      const src = cmd.gls_creation_source === 'auto' ? 'automatique' : 'depuis l\'app';
+      const msg = cmd.gls_creation_statut === 'en_cours'
+        ? 'Création ' + src + ' déjà en cours pour cette commande. Patientez 1 minute puis rouvrez la fiche.'
+        : 'Création non lancée (statut : ' + (cmd.gls_creation_statut || 'inconnu') + ').';
+      return new Response(JSON.stringify({ ok: false, code: 'verrou', error: msg }), { status: 409, headers: JSON_HEADERS });
+    }
+  }
+
+  let result: any;
+  try {
+    result = await createShipment(payload);
+  } catch (e: any) {
+    // Coupure pendant l'appel : GLS a PEUT-ÊTRE créé l'expédition → jamais de nouvelle tentative auto
+    const msg = (e?.message || String(e)) + ' — vérifiez YourGLS avant de recréer';
+    await libererVerrou('incertain', msg.slice(0, 500));
+    return new Response(JSON.stringify({ ok: false, code: 'incertain', error: msg }), { status: 502, headers: JSON_HEADERS });
+  }
 
   if (!result.ok) {
+    // Refus explicite de GLS : rien n'a été créé. Clic app → on libère (nouvel essai possible) ;
+    // création auto → 'echec' (plus retentée, Borhen est alerté par SMS).
+    const msgGls = String(result.data?.message || result.data?.error || JSON.stringify(result.data || '')).slice(0, 500);
+    await libererVerrou(auto ? 'echec' : null, 'GLS HTTP ' + result.status + ' : ' + msgGls);
     return new Response(JSON.stringify({
       ok: false,
       error: 'GLS API error',
@@ -715,6 +770,9 @@ async function handleRequest(req: Request): Promise<Response> {
         gls_pdf_base64: pdfBase64,
         // v5.9 : date de creation de l'etiquette (heure Paris) pour le rapport journalier
         gls_date_etiquette: new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' }),
+        // v5.17 : verrou levé, création terminée
+        gls_creation_statut: 'cree',
+        gls_creation_erreur: null,
       }).eq('id', cmdId);
 
       // v5.8 : envoi SMS expedition cote server (independant du cache navigateur)
@@ -747,6 +805,11 @@ async function handleRequest(req: Request): Promise<Response> {
     } catch (e: any) {
       console.warn('Update commande failed:', e.message);
     }
+  }
+
+  // v5.17 : réponse GLS "ok" mais sans n° de suivi exploitable → état incertain (ne jamais retenter)
+  if (cmdId && !testMode && !trackId) {
+    await libererVerrou('incertain', 'GLS a répondu OK sans numéro de suivi — vérifiez YourGLS');
   }
 
   // v5 : multi-colis detection pour la reponse
