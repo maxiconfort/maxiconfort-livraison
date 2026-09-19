@@ -118,7 +118,18 @@ function mapLignes(items: any[]): any[] {
   }));
 }
 
+// v6.5 (19/09/2026) : moyen de paiement manuel « Paiement à la livraison (Île-de-France
+// uniquement) » activé sur le site. Ces commandes restent « pending » dans Shopify : il
+// faut quand même les importer (sinon jamais livrées), en Espèces / Non payé pour que le
+// livreur encaisse (espèces ou CB) à la livraison.
+function estPaiementLivraison(o: any): boolean {
+  if (o.cancelled_at) return false;
+  if (o.financial_status !== 'pending') return false;
+  return (o.payment_gateway_names || []).some((g: string) => /livraison/i.test(String(g)));
+}
+
 function mapShopifyToCmd(o: any, appId: string) {
+  const cod = estPaiementLivraison(o);
   const lignes = mapLignes(o.line_items || []);
   const produitConcat = lignes.map(l => l.qte + '× ' + l.produit).join(' | ');
   // v6 (18/06/2026) : MONTANT = produits seuls (subtotal_price, APRES remise, HORS frais
@@ -154,7 +165,7 @@ function mapShopifyToCmd(o: any, appId: string) {
     remise_globale_val: remiseVal,
     remise_globale_type: 'eur',
     remise_motif: remiseVal > 0 ? 'Remise site' : '',
-    paie: 'Site Maxiconfort',
+    paie: cod ? 'Espèces' : 'Site Maxiconfort',
     stpaie: mapStatutPaie(o.financial_status),
     montant_enc: o.financial_status === 'paid' ? prixTotal : 0,
     // v6.4 (28/08) : pour une expedition province, le champ "Livreur assigne" affiche
@@ -166,7 +177,10 @@ function mapShopifyToCmd(o: any, appId: string) {
     date_commande: (o.created_at || '').substring(0, 10), // YYYY-MM-DD
     // v6 : on garde le n° Shopify (o.name, ex "#1030") dans l'instruction pour pouvoir
     // recroiser avec l'admin Shopify, puisque l'id app est désormais différent.
-    instr: (o.name ? 'Commande site ' + o.name + '. ' : '') + (o.note || '').toString(),
+    instr: (o.name ? 'Commande site ' + o.name + '. ' : '') +
+      (cod ? '💵 PAIEMENT À LA LIVRAISON : ' + prixTotal + ' € à encaisser (espèces ou CB). ' +
+        (transporteurPour(o.shipping_address) === 'GLS' ? '⚠️ HORS ÎLE-DE-FRANCE : appeler le client pour un paiement en ligne avant expédition. ' : '') : '') +
+      (o.note || '').toString(),
     origine: 'Site Maxiconfort',
     // v6.2 : transporteur auto — IDF -> RANOU, province/étranger -> GLS
     transporteur: transporteurPour(o.shipping_address),
@@ -255,11 +269,12 @@ Deno.serve(async (req: Request) => {
     // Filtres :
     //   - updated_at_min : on prend aussi les commandes dont le statut a change
     //     (ex: pending devenu paid plus tard)
-    //   - financial_status=paid : uniquement les commandes payees (regle metier Borhen)
+    //   - uniquement les commandes payees (regle metier Borhen) + les commandes en
+    //     paiement a la livraison (v6.5, filtre dans la boucle)
     //   - status=any : ne pas filtrer par statut de fulfillment
     const url = `https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_VERSION}/orders.json` +
       `?updated_at_min=${encodeURIComponent(sinceIso)}` +
-      `&financial_status=paid` +
+      `&financial_status=any` +
       `&status=any&limit=250`;
 
     const resp = await fetch(url, {
@@ -283,6 +298,10 @@ Deno.serve(async (req: Request) => {
     for (const o of orders) {
       try {
         const shopifyId = String(o.id);
+        if (o.financial_status !== 'paid' && !estPaiementLivraison(o)) {
+          result.skipped++;
+          continue;
+        }
         if (await commandeDejaImportee(shopifyId)) {
           result.skipped++;
           continue;
