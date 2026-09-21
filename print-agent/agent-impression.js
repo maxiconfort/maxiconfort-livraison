@@ -77,7 +77,13 @@ const ENTETES = {
   'Content-Type': 'application/json',
 };
 async function rest(chemin, options = {}) {
-  const rep = await fetch(`${SUPABASE_URL}/rest/v1/${chemin}`, { ...options, headers: { ...ENTETES, ...(options.headers || {}) } });
+  // 20/09/2026 : sans délai maximal, un appel peut rester suspendu indéfiniment
+  // (Wi-Fi qui se rendort) et l'agent ne redemande plus rien = étiquettes jamais imprimées.
+  const rep = await fetch(`${SUPABASE_URL}/rest/v1/${chemin}`, {
+    ...options,
+    signal: AbortSignal.timeout(45000),
+    headers: { ...ENTETES, ...(options.headers || {}) },
+  });
   if (!rep.ok) throw new Error(`Supabase ${rep.status} ${rep.statusText} — ${chemin.slice(0, 120)} — ${(await rep.text()).slice(0, 200)}`);
   return rep;
 }
@@ -117,7 +123,9 @@ const SCRIPT_IMPRESSION = path.join(__dirname, 'imprimer-pdf.ps1');
 function moteurImpression() { return fs.existsSync(SCRIPT_IMPRESSION) ? { nom: 'Windows natif' } : null; }
 function imprimerPdf(fichier) {
   if (!moteurImpression()) throw new Error(`Script d'impression introuvable : ${SCRIPT_IMPRESSION}`);
-  const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT_IMPRESSION, '-Fichier', fichier, '-Imprimante', IMPRIMANTE], { encoding: 'utf8', timeout: 120000, windowsHide: true });
+  // 21/09/2026 : 120 s ne suffisaient pas quand le PC est chargé (3 échecs ETIMEDOUT
+  // alors que la même impression lancée à la main prenait 6-8 s) → 5 min.
+  const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT_IMPRESSION, '-Fichier', fichier, '-Imprimante', IMPRIMANTE], { encoding: 'utf8', timeout: 300000, windowsHide: true });
   const sortie = `${r.stdout || ''}${r.stderr || ''}`.trim();
   if (r.error) throw r.error;
   if (r.status !== 0 || !/^OK /m.test(sortie)) throw new Error(`impression Windows code ${r.status} : ${sortie.slice(0, 300)}`);
@@ -126,6 +134,10 @@ function imprimerPdf(fichier) {
 }
 
 // ── Boucle principale ───────────────────────────────────────────────
+// Chien de garde (20/09/2026) : si plus aucune lecture de la base ne réussit
+// pendant 15 min, l'agent s'arrête et lancer-agent.cmd le redémarre (20 s).
+const CHIEN_DE_GARDE_MS = 15 * 60000;
+let dernierSucces = Date.now();
 let enCours = false;
 async function tour() {
   if (enCours) return;
@@ -133,10 +145,19 @@ async function tour() {
   const etat = lireEtat();
   try {
     const cmds = await listerAImprimer();
+    dernierSucces = Date.now();
     etat.derniere_verif = new Date().toISOString();
     for (const cmd of cmds) {
-      const nbEchecs = etat.echecs[cmd.id] || 0;
-      if (nbEchecs >= MAX_ECHECS) continue; // signalé une fois, on n'insiste plus
+      etat.dernier_echec = etat.dernier_echec || {};
+      let nbEchecs = etat.echecs[cmd.id] || 0;
+      if (nbEchecs >= MAX_ECHECS) {
+        // 21/09/2026 : une commande abandonnée n'était plus jamais réessayée → nouvelle
+        // série de tentatives 30 min après le dernier échec (souvent un ralentissement passager).
+        const depuis = Date.now() - (etat.dernier_echec[cmd.id] || 0);
+        if (depuis < 30 * 60000) continue;
+        log(`   ↻ nouvelle série de tentatives pour ${cmd.id} (dernier échec il y a ${Math.round(depuis / 60000)} min)`);
+        nbEchecs = 0;
+      }
       const nbColis = String(cmd.tracking_transporteur).split(',').filter(Boolean).length;
       log(`→ ${cmd.id} ${cmd.client || ''} — ${nbColis} colis (${cmd.tracking_transporteur}) — étiquette du ${cmd.gls_date_etiquette}`);
       try {
@@ -149,12 +170,14 @@ async function tour() {
         delete etat.echecs[cmd.id];
       } catch (e) {
         etat.echecs[cmd.id] = nbEchecs + 1;
+        etat.dernier_echec[cmd.id] = Date.now();
         log(`   ❌ échec ${etat.echecs[cmd.id]}/${MAX_ECHECS} pour ${cmd.id} : ${e.message}`);
         if (etat.echecs[cmd.id] >= MAX_ECHECS) log(`   ⛔ ${cmd.id} abandonnée après ${MAX_ECHECS} échecs — à imprimer à la main (bouton Réimprimer dans l'app)`);
       }
     }
   } catch (e) {
-    log(`⚠️ tour interrompu : ${e.message}`);
+    const cause = e?.cause?.code || e?.cause?.message || '';
+    log(`⚠️ tour interrompu : ${e.message}${cause ? ' (' + cause + ')' : ''}`);
   } finally {
     ecrireEtat(etat);
     enCours = false;
@@ -167,4 +190,11 @@ if (process.argv.includes('--une-fois')) {
 } else {
   tour();
   setInterval(tour, INTERVALLE_MS);
+  setInterval(() => {
+    const minutes = Math.round((Date.now() - dernierSucces) / 60000);
+    if (Date.now() - dernierSucces > CHIEN_DE_GARDE_MS) {
+      log(`⛔ aucune lecture réussie depuis ${minutes} min — redémarrage de l'agent`);
+      process.exit(1);
+    }
+  }, 60000);
 }
