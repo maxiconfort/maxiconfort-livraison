@@ -245,13 +245,16 @@ Deno.serve(async (req: Request) => {
       return json({ diag: true, heures, total: all.length, commandes: lignes });
     }
 
-    // Commandes payées, prêtes à expédier
-    const orders = await searchOrders(token, cipher, 'AWAITING_SHIPMENT');
+    // Commandes payées, prêtes à expédier.
+    // Test : { dryRun:true, status:'AWAITING_COLLECTION', mapOnly:true } montre le mapping
+    // de commandes déjà en base sans rien écrire (contrôle du format adresse/lignes).
+    const statut = dryRun && typeof body?.status === 'string' ? body.status : 'AWAITING_SHIPMENT';
+    const orders = await searchOrders(token, cipher, statut);
     let prochainNum = (await maxNumeroCommande()) + 1;
     for (const o of orders) {
       try {
         const existante = await dejaImportee(String(o.id));
-        if (existante) { result.skipped++; result.details.push({ tiktok: o.id, deja: existante }); continue; }
+        if (existante && !(dryRun && body?.mapOnly)) { result.skipped++; result.details.push({ tiktok: o.id, deja: existante }); continue; }
         const cmd = mapTiktokToCmd(o, '#' + prochainNum);
         if (dryRun) { result.details.push(cmd); result.imported++; prochainNum++; continue; }
         const { error } = await sb.from('commandes').upsert(cmd, { onConflict: 'id' });
