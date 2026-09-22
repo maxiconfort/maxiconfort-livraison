@@ -159,7 +159,7 @@ export function mapTiktokToCmd(o: any, appId: string) {
   const addr = o.recipient_address || {};
   const created = o.create_time ? new Date(o.create_time * 1000) : new Date();
   const instr = [
-    `Commande TikTok Shop ${o.id}` + (o.user_id ? ` (client ${o.buyer_username || o.user_id})` : '') + '.',
+    `Commande TikTok Shop ${o.id}` + (o.buyer_username ? ` (client ${o.buyer_username})` : '') + '.',
     o.shipping_due_time ? `A expedier avant le ${fmtDateFr(o.shipping_due_time)}.` : '',
     o.payment_method_name ? `Payé ${o.payment_method_name}.` : '',
     ugs ? `UGS ${ugs}.` : '',
