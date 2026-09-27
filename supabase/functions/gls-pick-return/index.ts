@@ -1,3 +1,4 @@
+import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 // ════════════════════════════════════════════════════════════════════
 // Edge Function : gls-pick-return (v1 — 03/09/2026)
 // ════════════════════════════════════════════════════════════════════
@@ -35,6 +36,8 @@ function normalizeTel(tel: string): string {
 }
 
 Deno.serve(async (req: Request) => {
+  // 27/09/2026 : controle d'appelant (crons = x-cron-secret ; fonctions/scripts serveur = cle secrete sb_secret_)
+  if (req.method !== 'OPTIONS' && !appelInterne(req)) return refus();
   if (req.method === 'OPTIONS') return new Response('ok', { headers: JSON_HEADERS });
   let body: any = {};
   try { body = await req.json(); } catch { /* silent */ }

@@ -21,6 +21,7 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
@@ -32,7 +33,7 @@ const sb = createClient(SB_URL, SB_SR_KEY, {
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, content-type, apikey',
+  'Access-Control-Allow-Headers': EN_TETES_AUTORISES,
   'Content-Type': 'application/json',
 };
 
@@ -44,6 +45,8 @@ function toLocalDateStr(d: Date): string {
 }
 
 Deno.serve(async (req: Request) => {
+  // 27/09/2026 : controle d'appelant (crons/fonctions = x-cron-secret ou cle secrete ; app = x-app-secret)
+  if (req.method !== 'OPTIONS' && !appelInterne(req) && !appelApp(req)) return refus();
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
 
   const t0 = Date.now();

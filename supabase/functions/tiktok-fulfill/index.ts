@@ -26,6 +26,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { refreshAccessToken, signedRequest } from '../_shared/tiktok.ts';
+import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 
 const GLS_PROVIDER_ID = Deno.env.get('TIKTOK_GLS_PROVIDER_ID') || '7352739121363683088';
 
@@ -70,6 +71,8 @@ async function marquer(id: string, champs: Record<string, unknown>) {
 }
 
 Deno.serve(async (req: Request) => {
+  // 27/09/2026 : controle d'appelant (crons = x-cron-secret ; fonctions/scripts serveur = cle secrete sb_secret_)
+  if (req.method !== 'OPTIONS' && !appelInterne(req)) return refus();
   const start = Date.now();
   const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
   const dryRun = !!body?.dryRun;

@@ -24,6 +24,7 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 
 const SHOPIFY_DOMAIN  = Deno.env.get('SHOPIFY_STORE_DOMAIN') || '';
 const SHOPIFY_TOKEN   = Deno.env.get('SHOPIFY_ACCESS_TOKEN') || '';
@@ -221,6 +222,8 @@ async function maxNumeroCommande(): Promise<number> {
 
 // ── Handler ────────────────────────────────────────────────────────
 Deno.serve(async (req: Request) => {
+  // 27/09/2026 : controle d'appelant (crons = x-cron-secret ; fonctions/scripts serveur = cle secrete sb_secret_)
+  if (req.method !== 'OPTIONS' && !appelInterne(req)) return refus();
   if (!SHOPIFY_DOMAIN || !SHOPIFY_TOKEN) {
     return new Response(JSON.stringify({
       error: 'Configuration manquante : SHOPIFY_STORE_DOMAIN / SHOPIFY_ACCESS_TOKEN'

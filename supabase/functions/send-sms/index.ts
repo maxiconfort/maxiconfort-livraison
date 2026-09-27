@@ -16,6 +16,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { envoyerSMSOVH } from '../_shared/ovh-sms.ts';
+import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
@@ -24,7 +25,7 @@ const sb = createClient(SB_URL, SB_SR_KEY, { auth: { autoRefreshToken: false, pe
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, content-type, apikey, x-client-info',
+  'Access-Control-Allow-Headers': EN_TETES_AUTORISES,
   'Access-Control-Max-Age': '86400',
 };
 const JSON_HEADERS = { 'Content-Type': 'application/json', ...CORS_HEADERS };
@@ -45,6 +46,8 @@ async function logHistorique(tel: string, type: string, message: string, statut:
 }
 
 Deno.serve(async (req: Request) => {
+  // 27/09/2026 : controle d'appelant (crons/fonctions = x-cron-secret ou cle secrete ; app = x-app-secret)
+  if (req.method !== 'OPTIONS' && !appelInterne(req) && !appelApp(req)) return refus();
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
   if (req.method !== 'POST') {
     return new Response(JSON.stringify({ success: false, error: 'POST uniquement' }), { status: 405, headers: JSON_HEADERS });

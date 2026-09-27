@@ -21,12 +21,15 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 const sb = createClient(SB_URL, SB_SR_KEY, { auth: { autoRefreshToken: false, persistSession: false } });
 
 Deno.serve(async (req: Request) => {
+  // 27/09/2026 : controle d'appelant (crons = x-cron-secret ; fonctions/scripts serveur = cle secrete sb_secret_)
+  if (req.method !== 'OPTIONS' && !appelInterne(req)) return refus();
   if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
   let body: any; try { body = await req.json(); } catch { body = {}; }
   const dryRun = !!body.dryRun;

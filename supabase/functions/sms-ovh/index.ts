@@ -37,6 +37,7 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 
 const OVH_AK      = Deno.env.get('OVH_APP_KEY') || '';
 const OVH_AS      = Deno.env.get('OVH_APP_SECRET') || '';
@@ -201,6 +202,8 @@ function fenetreLegaleOK(): boolean {
 }
 
 Deno.serve(async (req: Request) => {
+  // 27/09/2026 : controle d'appelant (crons = x-cron-secret ; fonctions/scripts serveur = cle secrete sb_secret_)
+  if (req.method !== 'OPTIONS' && !appelInterne(req)) return refus();
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
   try {
     return await handleRequest(req);

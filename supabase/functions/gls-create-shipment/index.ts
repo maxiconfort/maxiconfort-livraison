@@ -64,6 +64,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { PDFDocument } from 'https://esm.sh/pdf-lib@1.17.1';
+import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 
 const GLS_USER       = Deno.env.get('GLS_SHIPIT_USER') || '';
 const GLS_PASSWORD   = Deno.env.get('GLS_SHIPIT_PASSWORD') || '';
@@ -457,12 +458,14 @@ async function createShipment(payload: any): Promise<any> {
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, content-type, apikey, x-client-info',
+  'Access-Control-Allow-Headers': EN_TETES_AUTORISES,
   'Access-Control-Max-Age': '86400',
 };
 const JSON_HEADERS = { 'Content-Type': 'application/json', ...CORS_HEADERS };
 
 Deno.serve(async (req: Request) => {
+  // 27/09/2026 : controle d'appelant (crons/fonctions = x-cron-secret ou cle secrete ; app = x-app-secret)
+  if (req.method !== 'OPTIONS' && !appelInterne(req) && !appelApp(req)) return refus();
   // v5.2 : CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS_HEADERS });

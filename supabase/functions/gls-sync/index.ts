@@ -31,6 +31,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { envoyerSMSOVH } from '../_shared/ovh-sms.ts';
+import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 
 const GLS_API_KEY       = Deno.env.get('GLS_API_KEY') || '';
 const GLS_CLIENT_SECRET = Deno.env.get('GLS_CLIENT_SECRET') || '';
@@ -297,6 +298,8 @@ async function envoyerAlerteSMS(contenu: string): Promise<boolean> {
 }
 
 Deno.serve(async (req: Request) => {
+  // 27/09/2026 : controle d'appelant (crons = x-cron-secret ; fonctions/scripts serveur = cle secrete sb_secret_)
+  if (req.method !== 'OPTIONS' && !appelInterne(req)) return refus();
   const startTime = Date.now();
   let body: any = {};
   if (req.method === 'POST') { try { body = await req.json(); } catch { /* silent */ } }

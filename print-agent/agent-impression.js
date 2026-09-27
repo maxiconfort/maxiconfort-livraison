@@ -15,7 +15,7 @@
 //  - aucune dépendance npm : Node 18+ (fetch natif)
 //
 // Lancement : node print-agent\agent-impression.js
-// Secrets   : lus dans ..\.env (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+// Secrets   : lus dans ..\.env (SUPABASE_URL, PRINT_AGENT_SUPABASE_KEY)
 // ════════════════════════════════════════════════════════════════════
 
 const fs = require('fs');
@@ -48,8 +48,10 @@ function lireEnv() {
 }
 const ENV = lireEnv();
 const SUPABASE_URL = (ENV.SUPABASE_URL || '').replace(/\/$/, '');
-const CLE = ENV.SUPABASE_SERVICE_ROLE_KEY;
-if (!SUPABASE_URL || !CLE) throw new Error('SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY manquants dans .env');
+// 27/09/2026 : clé secrète DÉDIÉE à l'agent (révocable seule dans Supabase → Settings → API Keys → « print_agent »).
+// Repli sur SUPABASE_SERVICE_ROLE_KEY (clé « scripts_locaux ») si la variable dédiée est absente.
+const CLE = ENV.PRINT_AGENT_SUPABASE_KEY || ENV.SUPABASE_SERVICE_ROLE_KEY;
+if (!SUPABASE_URL || !CLE) throw new Error('SUPABASE_URL / PRINT_AGENT_SUPABASE_KEY manquants dans .env');
 
 // ── Journal ─────────────────────────────────────────────────────────
 function horodatage() {

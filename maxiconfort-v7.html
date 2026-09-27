@@ -2759,7 +2759,7 @@ const MODES_PAIE = [
 const MODES_OPTIONS = MODES_PAIE.map(m => '<option value="'+m.id+'">'+m.icon+' '+m.label+'</option>').join('');
 
 const SUPABASE_URL = 'https://jmvfjtnmebstkzcfnlgp.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImptdmZqdG5tZWJzdGt6Y2ZubGdwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg3OTYxODYsImV4cCI6MjA5NDM3MjE4Nn0.t_zyGmY96wUB_hk63WOSYZniBy_9oHwfpDvcxwl2s5U';
+const SUPABASE_KEY = 'C:\Users\moind\maxiconfort-livraison\maxiconfort-v7.html';
 const APP_SECRET = 'mc_Sp9GO_aM9QBSGX9-rRFHlv4NMERtZWpG3krCD-GV';
 
 // Intercepteur fetch : injecte x-app-secret sur les appels REST Supabase
@@ -4164,7 +4164,7 @@ async function brevoSendSMS(tel, message) {
   try {
     var resp = await fetch(SMS_EDGE_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'x-app-secret': APP_SECRET }, // 27/09 : controle d'appelant serveur
       body: JSON.stringify({ tel: num, message: message })
     });
     var data = await resp.json();
@@ -4310,7 +4310,7 @@ async function envoyerVeilleConfirmation() {
   try {
     var r = await fetch(SUPABASE_URL + '/functions/v1/sms-auto', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'x-app-secret': APP_SECRET },
       body: JSON.stringify({ phase: 'veille' })
     });
     var d = await r.json().catch(function(){ return {}; });
@@ -7730,7 +7730,7 @@ async function panelCreerEtiquetteGLS(cmdId) {
   try {
     var resp = await fetch(SUPABASE_URL + '/functions/v1/gls-create-shipment', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'x-app-secret': APP_SECRET },
       body: JSON.stringify({ cmdId: cmdId, withPdf: true })
     });
     var data = await resp.json();
@@ -7804,7 +7804,7 @@ async function panelReimprimerEtiquetteGLS(cmdId) {
   try {
     var resp = await fetch(SUPABASE_URL + '/functions/v1/gls-create-shipment', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'x-app-secret': APP_SECRET },
       body: JSON.stringify({ cmdId: cmdId, action: 'getLabel' })
     });
     var data = await resp.json();
