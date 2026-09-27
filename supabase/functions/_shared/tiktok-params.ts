@@ -24,7 +24,8 @@ export async function getParamsTiktok(sb: any): Promise<Record<string, string>> 
 }
 
 export async function setParamTiktok(sb: any, cle: string, valeur: string) {
-  if (CLES_SECRETES_TIKTOK.has(cle)) {
+  // 27/09 soir : TOUTES les cles tiktok_* sont desormais cote serveur (plus rien dans parametres)
+  if (CLES_SECRETES_TIKTOK.has(cle) || cle.startsWith('tiktok_')) {
     const { error } = await sb.from('secrets_serveur').upsert({ cle, valeur, updated_at: new Date().toISOString() }, { onConflict: 'cle' });
     if (error) throw new Error('secrets_serveur ' + cle + ': ' + error.message);
     return;
