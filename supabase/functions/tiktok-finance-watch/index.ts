@@ -21,6 +21,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { refreshAccessToken, signedRequest } from '../_shared/tiktok.ts';
+import { getParamsTiktok, setParamTiktok } from '../_shared/tiktok-params.ts';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 
 const RETARD_JOURS = Number(Deno.env.get('TIKTOK_FINANCE_RETARD_JOURS') || '3');
@@ -31,13 +32,10 @@ const sb = createClient(Deno.env.get('SUPABASE_URL') || '', Deno.env.get('SUPABA
 });
 
 async function getParams(): Promise<Record<string, string>> {
-  const { data } = await sb.from('parametres').select('cle,valeur').like('cle', 'tiktok_%');
-  const out: Record<string, string> = {};
-  for (const r of (data || [])) out[(r as any).cle] = (r as any).valeur;
-  return out;
+  return await getParamsTiktok(sb); // 27/09 : jetons dans secrets_serveur
 }
 async function setParam(cle: string, valeur: string) {
-  await sb.from('parametres').upsert({ cle, valeur }, { onConflict: 'cle' });
+  await setParamTiktok(sb, cle, valeur); // jetons -> secrets_serveur, reste -> parametres
 }
 async function ensureAccessToken(p: Record<string, string>): Promise<string> {
   const exp = Date.parse(p.tiktok_access_token_expire_at || '') || 0;
