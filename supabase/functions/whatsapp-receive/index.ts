@@ -341,14 +341,40 @@ Si une info essentielle manque (client, tel, adresse OU aucun produit), reponds 
 // MAIN HANDLER
 // ════════════════════════════════════════════════════════════
 
+// Signature Twilio : base64(HMAC-SHA1(TWILIO_AUTH_TOKEN, URL publique + clés/valeurs POST triées))
+// https://www.twilio.com/docs/usage/security#validating-requests
+async function signatureTwilioValide(req: Request, params: [string, string][]): Promise<boolean> {
+  const token = Deno.env.get('TWILIO_AUTH_TOKEN') || '';
+  const sig = req.headers.get('x-twilio-signature') || '';
+  if (!token || !sig) return false;
+  const search = new URL(req.url).search;
+  const base = (Deno.env.get('SUPABASE_URL') || '').replace(/\/$/, '') + '/functions/v1/whatsapp-receive';
+  const tries = [...params].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(([k, v]) => k + v).join('');
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(token), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  for (const url of [base + search, base]) {
+    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(url + tries)));
+    const b64 = btoa(String.fromCharCode(...mac));
+    if (b64.length === sig.length) { let d = 0; for (let i = 0; i < b64.length; i++) d |= b64.charCodeAt(i) ^ sig.charCodeAt(i); if (d === 0) return true; }
+  }
+  return false;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
   let from = '', body = '';
+  let params: [string, string][] = [];
   try {
-    const form = await req.formData();
-    from = String(form.get('From') || '');
-    body = String(form.get('Body') || '');
+    const sp = new URLSearchParams(await req.text());
+    params = [...sp.entries()];
+    from = String(sp.get('From') || '');
+    body = String(sp.get('Body') || '');
   } catch { return twiml('❌ Format de requete invalide'); }
+  // 27/09/2026 (incident clés) : seule une requête SIGNÉE par Twilio est acceptée
+  // (avant, n'importe qui pouvait forger « From » et créer des commandes).
+  if (!(await signatureTwilioValide(req, params))) {
+    console.warn('whatsapp-receive : signature Twilio absente ou invalide — refus');
+    return new Response('Forbidden', { status: 403 });
+  }
   // v2 : Liste de numeros autorises (separes par virgule)
   if (ALLOWED) {
     const autorisees = ALLOWED.split(',').map(s => s.trim()).filter(Boolean);

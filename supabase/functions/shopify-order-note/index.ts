@@ -247,8 +247,29 @@ Deno.serve(async (req: Request) => {
   }
   if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
 
+  // 27/09/2026 (incident clés) : seul un webhook SIGNÉ par Shopify est accepté
+  // (en-tête X-Shopify-Hmac-Sha256 = base64(HMAC-SHA256(SHOPIFY_WEBHOOK_SECRET, corps brut))).
+  // Tant que le secret n'est pas posé : fonction en maintenance (503), aucune écriture.
+  const WEBHOOK_SECRET = Deno.env.get('SHOPIFY_WEBHOOK_SECRET') || '';
+  const brut = await req.text();
+  if (!WEBHOOK_SECRET) {
+    console.warn('shopify-order-note : SHOPIFY_WEBHOOK_SECRET absent — maintenance');
+    return new Response(JSON.stringify({ ok: false, error: 'maintenance : signature webhook non configuree' }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+  }
+  {
+    const cle = await crypto.subtle.importKey('raw', new TextEncoder().encode(WEBHOOK_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const mac = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign('HMAC', cle, new TextEncoder().encode(brut)))));
+    const recu = req.headers.get('x-shopify-hmac-sha256') || '';
+    let d = mac.length === recu.length ? 0 : 1;
+    for (let i = 0; i < Math.min(mac.length, recu.length); i++) d |= mac.charCodeAt(i) ^ recu.charCodeAt(i);
+    if (d !== 0) {
+      console.warn('shopify-order-note : signature HMAC invalide — refus');
+      return new Response('Unauthorized', { status: 401 });
+    }
+  }
+
   try {
-    const payload = await req.json();
+    const payload = JSON.parse(brut);
     const orderId = payload.id;
     const orderName = payload.name || `#${orderId}`;
     const lineItems = payload.line_items || [];

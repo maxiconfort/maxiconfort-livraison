@@ -464,8 +464,8 @@ const CORS_HEADERS = {
 const JSON_HEADERS = { 'Content-Type': 'application/json', ...CORS_HEADERS };
 
 Deno.serve(async (req: Request) => {
-  // 27/09/2026 : controle d'appelant (crons/fonctions = x-cron-secret ou cle secrete ; app = x-app-secret)
-  if (req.method !== 'OPTIONS' && !appelInterne(req) && !appelApp(req)) return refus();
+  // 27/09/2026 : controle d'appelant (crons/fonctions = x-cron-secret ou cle secrete ; app = x-app-secret + session PIN valide)
+  if (req.method !== 'OPTIONS' && !appelInterne(req) && !(await appelApp(req, ['admin', 'collab']))) return refus();
   // v5.2 : CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS_HEADERS });

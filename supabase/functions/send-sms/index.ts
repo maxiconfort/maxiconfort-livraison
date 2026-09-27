@@ -46,8 +46,8 @@ async function logHistorique(tel: string, type: string, message: string, statut:
 }
 
 Deno.serve(async (req: Request) => {
-  // 27/09/2026 : controle d'appelant (crons/fonctions = x-cron-secret ou cle secrete ; app = x-app-secret)
-  if (req.method !== 'OPTIONS' && !appelInterne(req) && !appelApp(req)) return refus();
+  // 27/09/2026 : controle d'appelant (crons/fonctions = x-cron-secret ou cle secrete ; app = x-app-secret + session PIN valide)
+  if (req.method !== 'OPTIONS' && !appelInterne(req) && !(await appelApp(req, ['admin', 'collab', 'livreur']))) return refus();
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
   if (req.method !== 'POST') {
     return new Response(JSON.stringify({ success: false, error: 'POST uniquement' }), { status: 405, headers: JSON_HEADERS });

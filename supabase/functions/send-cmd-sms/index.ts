@@ -110,8 +110,8 @@ async function logHistorique(c: any, type: string, contenu: string, statut: stri
 }
 
 Deno.serve(async (req: Request) => {
-  // 27/09/2026 : controle d'appelant (crons/fonctions = x-cron-secret ou cle secrete ; app = x-app-secret)
-  if (req.method !== 'OPTIONS' && !appelInterne(req) && !appelApp(req)) return refus();
+  // 27/09/2026 : controle d'appelant (crons/fonctions = x-cron-secret ou cle secrete ; app = x-app-secret + session PIN valide)
+  if (req.method !== 'OPTIONS' && !appelInterne(req) && !(await appelApp(req, ['admin', 'collab', 'livreur']))) return refus();
   if (req.method !== 'POST') {
     return new Response('Method not allowed', { status: 405 });
   }

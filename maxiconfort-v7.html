@@ -2772,11 +2772,21 @@ const APP_SECRET = 'mc_Sp9GO_aM9QBSGX9-rRFHlv4NMERtZWpG3krCD-GV';
     var url = typeof input === 'string' ? input : (input && input.url) || '';
     var isSupabaseRest = url.indexOf(SUPABASE_URL) === 0 && url.indexOf('/functions/') === -1;
     if (isSupabaseRest) {
+      // v7.5.111 : jeton de session serveur (obtenu par le PIN) exige par la RLS de toutes les tables
+      var _tok = null;
+      try { var _s = JSON.parse(localStorage.getItem('mx_session_app') || 'null'); if (_s && _s.jeton && Date.parse(_s.expire) > Date.now()) _tok = _s.jeton; } catch(e) {}
+      var extra = { 'x-app-secret': APP_SECRET };
+      if (_tok) extra['x-session-token'] = _tok;
+      else if (url.indexOf('/rpc/') === -1) { try { if (typeof role !== 'undefined' && role && typeof sessionExpireeRetourPin === 'function') sessionExpireeRetourPin(); } catch(e) {} }
       var h = init.headers;
       if (h instanceof Headers) {
         h.set('x-app-secret', APP_SECRET);
+        if (_tok) h.set('x-session-token', _tok);
+      } else if (input && typeof input !== 'string' && input.headers && !init.headers) {
+        // Request objet (supabase-js) : recopier ses en-tetes
+        var hh = new Headers(input.headers); hh.set('x-app-secret', APP_SECRET); if (_tok) hh.set('x-session-token', _tok); init.headers = hh;
       } else {
-        init.headers = Object.assign({}, h || {}, { 'x-app-secret': APP_SECRET });
+        init.headers = Object.assign({}, h || {}, extra);
       }
     }
     return orig.call(this, input, init);
@@ -4164,7 +4174,7 @@ async function brevoSendSMS(tel, message) {
   try {
     var resp = await fetch(SMS_EDGE_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'x-app-secret': APP_SECRET }, // 27/09 : controle d'appelant serveur
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'x-app-secret': APP_SECRET, 'x-session-token': jetonSession() }, // 27/09 : session PIN exigee par la fonction
       body: JSON.stringify({ tel: num, message: message })
     });
     var data = await resp.json();
@@ -4310,7 +4320,7 @@ async function envoyerVeilleConfirmation() {
   try {
     var r = await fetch(SUPABASE_URL + '/functions/v1/sms-auto', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'x-app-secret': APP_SECRET },
+      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'x-app-secret': APP_SECRET, 'x-session-token': jetonSession() },
       body: JSON.stringify({ phase: 'veille' })
     });
     var d = await r.json().catch(function(){ return {}; });
@@ -4404,6 +4414,22 @@ function sessionLire() {
 }
 function sessionEcrire(s) { try { localStorage.setItem(SESSION_CLE, JSON.stringify(s)); } catch(e) {} }
 function sessionEffacer() { try { localStorage.removeItem(SESSION_CLE); } catch(e) {} }
+function jetonSession() { var s = sessionLire(); return s ? s.jeton : ''; }
+// v7.5.111 : la session protege l'acces aux DONNEES (RLS). Expiree ou revoquee -> retour a l'ecran PIN.
+var _sessionAlerte = false;
+function sessionExpireeRetourPin(msg) {
+  if (!role || _sessionAlerte) return;
+  _sessionAlerte = true;
+  try { toast(msg || '🔒 Session expirée : saisissez à nouveau votre code', 'err'); } catch(e) {}
+  setTimeout(function(){ _sessionAlerte = false; sessionEffacer(); doLogout(); }, 1500);
+}
+setInterval(async function(){
+  if (!role) return;
+  var s = sessionLire();
+  if (!s) { sessionExpireeRetourPin(); return; }
+  if (!navigator.onLine) return;
+  try { var v = await rpcPin('verifier_session', { p_jeton: s.jeton }); if (v && v.ok === false && !v.erreur) sessionExpireeRetourPin('🔒 Session terminée (code modifié ou déconnexion) : saisissez votre code'); } catch(e) {}
+}, 5 * 60 * 1000);
 async function rpcPin(fn, body) {
   var ctrl = new AbortController(); var tm = setTimeout(function(){ ctrl.abort(); }, 12000);
   try {
@@ -4473,7 +4499,7 @@ async function checkPin() {
   _checkPinEnCours = true;
   if (errEl) errEl.textContent = 'Vérification…';
   var res = null, horsLigne = false;
-  try { res = await rpcPin('verifier_pin', { p_role: r0, p_pin: essai, p_livreur: nomLv || null }); }
+  try { res = await rpcPin('connexion_pin', { p_role: r0, p_pin: essai, p_livreur: nomLv || null }); }
   catch(e) { horsLigne = true; }
   finally { _checkPinEnCours = false; }
   if (horsLigne) {
@@ -4520,7 +4546,8 @@ function loginOk(r) {
 
 function doLogout() {
   role=null; pinStr=''; selRole=null;
-  sessionEffacer(); // v7.5.110 : fin de la session locale 12 h
+  // v7.5.111 : fin de session cote serveur (le jeton ne donne plus acces aux donnees) puis locale
+  try { rpcPin('deconnexion', {}).catch(function(){}).finally(function(){ sessionEffacer(); }); } catch(e) { sessionEffacer(); }
   document.getElementById('app').classList.remove('on');
   document.getElementById('login').style.display='flex';
   backLogin();
@@ -7776,7 +7803,7 @@ async function panelCreerEtiquetteGLS(cmdId) {
   try {
     var resp = await fetch(SUPABASE_URL + '/functions/v1/gls-create-shipment', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'x-app-secret': APP_SECRET },
+      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'x-app-secret': APP_SECRET, 'x-session-token': jetonSession() },
       body: JSON.stringify({ cmdId: cmdId, withPdf: true })
     });
     var data = await resp.json();
@@ -7850,7 +7877,7 @@ async function panelReimprimerEtiquetteGLS(cmdId) {
   try {
     var resp = await fetch(SUPABASE_URL + '/functions/v1/gls-create-shipment', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'x-app-secret': APP_SECRET },
+      headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'x-app-secret': APP_SECRET, 'x-session-token': jetonSession() },
       body: JSON.stringify({ cmdId: cmdId, action: 'getLabel' })
     });
     var data = await resp.json();
@@ -9309,7 +9336,7 @@ async function sasDeblocageAdmin() {
   if (!pin) return;
   // v7.5.110 : PIN admin verifie cote serveur (plus aucun PIN dans le navigateur)
   var _v = null;
-  try { _v = await rpcPin('verifier_pin', { p_role: 'admin', p_pin: String(pin).trim(), p_livreur: null }); }
+  try { _v = await rpcPin('connexion_pin', { p_role: 'admin', p_pin: String(pin).trim(), p_livreur: null }); }
   catch(e) { alert('❌ Pas de connexion : le PIN admin ne peut pas être vérifié hors ligne'); return; }
   if (!_v || !_v.ok) {
     alert(_v && _v.erreur === 'trop_d_essais' ? '❌ Trop d\'essais — patientez 15 minutes' : '❌ PIN incorrect');
