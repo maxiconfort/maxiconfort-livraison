@@ -1,0 +1,18 @@
+# GitHub Pages (Jekyll) : fichiers du depot NON publies sur livraison.maxiconfort.fr
+# (incident cles Supabase 27/09/2026). Le depot GitHub reste public : ces fichiers
+# restent lisibles sur github.com tant que le depot est public (et dans l'historique git).
+exclude:
+  - CLAUDE.md
+  - README.md
+  - app.apk
+  - supabase
+  - print-agent
+  - outils
+  - "*.sql"
+  - "*.xlsx"
+  - "*.csv"
+  - "*.docx"
+  - "*.pdf"
+  - .gitignore
+  - .inventaire_map.json
+  - inventaire-depot.html
