@@ -4391,11 +4391,31 @@ async function brevoEnvoiVeille() {
 let role = null, livNom = '', pinStr = '', selRole = null;
 let sigCtx = null, sigDraw = false, sigStopId = null;
 
-const PINS = {
-  admin:   localStorage.getItem('pin_admin')   || '1234',
-  collab:  localStorage.getItem('pin_collab')  || '5678',
-  livreur: localStorage.getItem('pin_livreur') || '9012',
-};
+// v7.5.110 (27/09/2026, incident cles) : les PIN ne sont PLUS JAMAIS lus ni stockes
+// dans le navigateur. Verification cote serveur (RPC verifier_pin : empreintes bcrypt,
+// limite d'essais). Apres une connexion reussie : session locale 12 h (jeton serveur,
+// pas le PIN) qui permet de rentrer HORS LIGNE sur le meme appareil et le meme role.
+try { ['pin_admin','pin_collab','pin_livreur'].forEach(function(k){ localStorage.removeItem(k); }); } catch(e) {}
+try { var _pc0 = JSON.parse(localStorage.getItem('mx_params_cache') || 'null'); if (_pc0 && _pc0.pins) { delete _pc0.pins; localStorage.setItem('mx_params_cache', JSON.stringify(_pc0)); } } catch(e) {}
+var SESSION_CLE = 'mx_session_app';
+function sessionLire() {
+  try { var s = JSON.parse(localStorage.getItem(SESSION_CLE) || 'null'); if (s && s.jeton && s.expire && Date.parse(s.expire) > Date.now()) return s; } catch(e) {}
+  return null;
+}
+function sessionEcrire(s) { try { localStorage.setItem(SESSION_CLE, JSON.stringify(s)); } catch(e) {} }
+function sessionEffacer() { try { localStorage.removeItem(SESSION_CLE); } catch(e) {} }
+async function rpcPin(fn, body) {
+  var ctrl = new AbortController(); var tm = setTimeout(function(){ ctrl.abort(); }, 12000);
+  try {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/' + fn, {
+      method: 'POST', signal: ctrl.signal,
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+  } finally { clearTimeout(tm); }
+}
 
 // ── DONNÉES ──
 let commandes = []; // Chargé depuis Supabase
@@ -4437,20 +4457,46 @@ function updDots() {
   for(let i=0;i<4;i++) document.getElementById('pd'+i).className='pdot'+(i<pinStr.length?' on'+cls:'');
 }
 
-function checkPin() {
-  if (!PINS[selRole]) { toast('⚠️ PIN non configuré — contactez l\'administrateur', 'err'); pinStr=''; updDots(); return; }
-  if (pinStr !== PINS[selRole]) {
-    var _gpin_err=document.getElementById('pin-err'); if(_gpin_err) _gpin_err.textContent='Code incorrect — réessayez';
-
-    pinStr=''; setTimeout(()=>{updDots();document.getElementById('pin-err').textContent='';},1200);
+var _checkPinEnCours = false;
+async function checkPin() {
+  if (_checkPinEnCours) return;
+  var r0 = selRole, essai = pinStr, nomLv = '';
+  var errEl = document.getElementById('pin-err');
+  function echec(msg) {
+    if (errEl) errEl.textContent = msg;
+    pinStr=''; setTimeout(function(){ updDots(); if (errEl) errEl.textContent=''; }, 1800);
+  }
+  if (r0==='livreur') {
+    nomLv = document.getElementById('lv-name').value.trim();
+    if (!nomLv) { pinStr=''; updDots(); if (errEl) errEl.textContent='Entrez votre prénom'; return; }
+  }
+  _checkPinEnCours = true;
+  if (errEl) errEl.textContent = 'Vérification…';
+  var res = null, horsLigne = false;
+  try { res = await rpcPin('verifier_pin', { p_role: r0, p_pin: essai, p_livreur: nomLv || null }); }
+  catch(e) { horsLigne = true; }
+  finally { _checkPinEnCours = false; }
+  if (horsLigne) {
+    // Hors ligne : on ne peut pas verifier le PIN -> session locale de moins de 12 h exigee (meme role)
+    var s = sessionLire();
+    if (s && s.role === r0) {
+      if (errEl) errEl.textContent = '';
+      if (r0==='livreur') livNom = (s.livreur || nomLv).toUpperCase();
+      toast('📴 Hors ligne : session de cet appareil (valable jusqu\'à ' + new Date(s.expire).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}) + ')', 'info');
+      loginOk(r0);
+      return;
+    }
+    echec('Pas de connexion : impossible de vérifier le code');
     return;
   }
-  if (selRole==='livreur') {
-    const n = document.getElementById('lv-name').value.trim();
-    if (!n) { pinStr=''; updDots(); document.getElementById('pin-err').textContent='Entrez votre prénom'; return; }
-    livNom = n.toUpperCase();
+  if (!res || !res.ok) {
+    echec(res && res.erreur === 'trop_d_essais' ? 'Trop d\'essais — patientez 15 minutes' : 'Code incorrect — réessayez');
+    return;
   }
-  loginOk(selRole);
+  sessionEcrire({ jeton: res.jeton, role: r0, expire: res.expire_at, livreur: nomLv ? nomLv.toUpperCase() : null });
+  if (errEl) errEl.textContent = '';
+  if (r0==='livreur') livNom = nomLv.toUpperCase();
+  loginOk(r0);
 }
 
 function backLogin() {
@@ -4474,6 +4520,7 @@ function loginOk(r) {
 
 function doLogout() {
   role=null; pinStr=''; selRole=null;
+  sessionEffacer(); // v7.5.110 : fin de la session locale 12 h
   document.getElementById('app').classList.remove('on');
   document.getElementById('login').style.display='flex';
   backLogin();
@@ -4610,7 +4657,6 @@ function buildUI(r) {
   if (paramsCache) {
     try {
       var pc = JSON.parse(paramsCache);
-      if (pc.pins) { PINS.admin=pc.pins.admin||PINS.admin; PINS.collab=pc.pins.collab||PINS.collab; PINS.livreur=pc.pins.livreur||PINS.livreur; }
       if (pc.societe) { Object.assign(societe, pc.societe); }
       if (pc.legalText) legalText = pc.legalText;
     } catch(e) {}
@@ -9258,12 +9304,15 @@ function sasValiderEtDemarrer(tid) {
 }
 
 // Déblocage admin urgence (PIN admin)
-function sasDeblocageAdmin() {
+async function sasDeblocageAdmin() {
   var pin = prompt('🔓 DÉBLOCAGE ADMIN\n\nCette action permettra au livreur de partir SANS avoir tout coché.\nL\'action sera tracée.\n\nSaisir le PIN admin :');
   if (!pin) return;
-  // v7.5.52 : utiliser le vrai PIN admin (PINS.admin) et non '1234' en dur
-  if (pin !== PINS.admin) {
-    alert('❌ PIN incorrect');
+  // v7.5.110 : PIN admin verifie cote serveur (plus aucun PIN dans le navigateur)
+  var _v = null;
+  try { _v = await rpcPin('verifier_pin', { p_role: 'admin', p_pin: String(pin).trim(), p_livreur: null }); }
+  catch(e) { alert('❌ Pas de connexion : le PIN admin ne peut pas être vérifié hors ligne'); return; }
+  if (!_v || !_v.ok) {
+    alert(_v && _v.erreur === 'trop_d_essais' ? '❌ Trop d\'essais — patientez 15 minutes' : '❌ PIN incorrect');
     return;
   }
   if (!confirm('⚠️ Confirmer le déblocage admin ?\n\nLe livreur va partir sans avoir validé tout le chargement. À utiliser UNIQUEMENT en cas d\'urgence.')) return;
@@ -15071,16 +15120,14 @@ try { livreursDomiciles = JSON.parse(localStorage.getItem('mx_livreurs_domiciles
 
 async function sbLoadParametres() {
   try {
-    var resp = await fetch(SUPABASE_URL + '/rest/v1/parametres?select=*', {
+    // v7.5.110 : plus de select=* (jamais de PIN ni de jeton lu par le navigateur)
+    var resp = await fetch(SUPABASE_URL + '/rest/v1/parametres?select=cle,valeur&cle=not.like.pin_*&cle=not.like.tiktok_*', {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
     });
     if (!resp.ok) return;
     var data = await resp.json();
     if (!data || !data.length) return;
     data.forEach(function(r) {
-      if (r.cle === 'pin_admin')   PINS.admin   = r.valeur;
-      if (r.cle === 'pin_collab')  PINS.collab  = r.valeur;
-      if (r.cle === 'pin_livreur') PINS.livreur = r.valeur;
       if (r.cle === 'soc_nom')     societe.nom      = r.valeur;
       if (r.cle === 'soc_tel')     societe.tel      = r.valeur;
       if (r.cle === 'soc_adresse') societe.adresse  = r.valeur;
@@ -15093,17 +15140,8 @@ async function sbLoadParametres() {
       }
     });
     try { localStorage.setItem('mx_livreurs_domiciles', JSON.stringify(livreursDomiciles)); } catch(e) {}
-    // v7.5.52 : ecrire les PIN dans le localStorage INDIVIDUEL (pin_admin/collab/livreur).
-    // L'ecran de login lit ces cles AU DEMARRAGE (ligne ~4245), AVANT que
-    // sbLoadParametres ne s'execute. Sans ca, le login retombait sur le defaut
-    // '1234' et ignorait la valeur de la base -> PIN admin change en base sans effet.
-    try {
-      localStorage.setItem('pin_admin',   PINS.admin);
-      localStorage.setItem('pin_collab',  PINS.collab);
-      localStorage.setItem('pin_livreur', PINS.livreur);
-    } catch(e) {}
-    // Sauvegarder en cache
-    localStorage.setItem('mx_params_cache', JSON.stringify({pins:PINS, societe:societe, legalText:legalText}));
+    // v7.5.110 : les PIN ne sont plus en cache local (verification serveur uniquement)
+    localStorage.setItem('mx_params_cache', JSON.stringify({societe:societe, legalText:legalText}));
   } catch(e) { console.warn('sbLoadParametres:', e.message); }
 }
 
@@ -17515,21 +17553,26 @@ function saveSociete() {
 // ════════════════════════════════════════
 // GESTION PINS
 // ════════════════════════════════════════
+// v7.5.110 : les PIN actuels ne sont plus affichables (seule leur empreinte existe cote serveur).
+// Changement via la fonction serveur changer_pin, reservee a une session ADMIN (< 12 h).
 function initPinFields(){
   ['admin','collab','livreur'].forEach(function(r){
     var el=document.getElementById('pin-'+r);
-    if(el) el.value=PINS[r];
+    if(el) { el.value=''; el.placeholder='nouveau code'; }
   });
 }
-function savePin(r){
-  const v=document.getElementById('pin-'+r)?.value?.trim()||'';
+async function savePin(r){
+  const el=document.getElementById('pin-'+r);
+  const v=el?.value?.trim()||'';
   if(!/^\d{4}$/.test(v)){toast('Le PIN doit contenir exactement 4 chiffres','err');return;}
-  PINS[r]=v;
-  localStorage.setItem('pin_'+r,v);
-  // v7.5.52 : enregistrer AUSSI en base (source de verite) pour propager le
-  // changement a tous les appareils. Avant, le PIN ne vivait qu'en local.
-  if (typeof sbSaveParametre === 'function') sbSaveParametre('pin_'+r, v);
-  toast('PIN '+r+' mis à jour ✓','ok');
+  var s = sessionLire();
+  if (!s || s.role !== 'admin') { toast('Session admin expirée : déconnectez-vous puis reconnectez-vous en admin','err'); return; }
+  try {
+    var res = await rpcPin('changer_pin', { p_jeton: s.jeton, p_role: r, p_nouveau: v });
+    if (!res || !res.ok) { toast('❌ PIN non modifié : ' + ((res && res.erreur) || 'erreur'), 'err'); return; }
+  } catch(e) { toast('❌ Pas de connexion : PIN non modifié', 'err'); return; }
+  if (el) el.value='';
+  toast('PIN '+r+' mis à jour ✓ (les appareils connectés avec ce rôle devront se reconnecter)','ok');
 }
 
 // ════════════════════════════════════════
