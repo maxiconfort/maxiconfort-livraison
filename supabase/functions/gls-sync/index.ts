@@ -1,6 +1,20 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : gls-sync (v12 — 11/06/2026)
+// Edge Function : gls-sync (v15 — 28/09/2026)
 // ════════════════════════════════════════════════════════════════════
+// v15 (28/09) : FIN DU FAUX « LIVRÉ ».
+//   - Analyse de l'historique GLS par _shared/gls-analyse.ts (testé en Node) :
+//     un « delivered » APRÈS un retour à l'expéditeur, au dépôt d'origine
+//     (Garonor/Noisy) pour un client hors IDF, ou un simple dépôt ParcelShop
+//     ne compte PAS comme livraison client.
+//   - Une commande ne passe en « livré » que si TOUS ses colis sont livrés au
+//     client (la règle v13 « 1 livré + reste silencieux 48 h » est supprimée).
+//   - Livraison partielle (X/N) ou retour : la commande reste non livrée,
+//     colonnes gls_livraison_etat / gls_livraison_detail renseignées
+//     (ex. « livraison partielle 2/3 ») + SMS à Borhen à chaque changement
+//     (anti-doublon table gls_alertes).
+//   - Mode AUDIT lecture seule : { cmdIds:[...] } ou { auditLivres:true, jours? }.
+//   Aucune commande déjà « livré » n'est modifiée (elles ne sont plus scannées).
+//
 // v12 (11/06) : DETECTION COLIS BLOQUES + alerte SMS Borhen.
 //   Pour chaque colis non livre, on extrait la date du dernier evenement
 //   de tracking (UnitDetail.History[].Date). Si AUCUN scan depuis
@@ -32,6 +46,10 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { envoyerSMSOVH } from '../_shared/ovh-sms.ts';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
+import {
+  analyserColis, analyserCommande, colisErreur, numerosColis, historiqueDe,
+  type AnalyseColis, type AnalyseCommande,
+} from '../_shared/gls-analyse.ts';
 
 const GLS_API_KEY       = Deno.env.get('GLS_API_KEY') || '';
 const GLS_CLIENT_SECRET = Deno.env.get('GLS_CLIENT_SECRET') || '';
@@ -250,38 +268,13 @@ async function trackParcel(trackId: string, opts: { useRstt002?: boolean; useShi
   return { ok: false, tried };
 }
 
-function isParcelDelivered(trackData: any): boolean {
-  if (!trackData) return false;
-  // Format ShipIT-FARM : History node
-  const history = trackData.History || trackData.history || [];
-  if (Array.isArray(history)) {
-    for (const ev of history) {
-      const code = (ev.StatusCode || ev.Code || ev.EventCode || ev.code || '').toString().toUpperCase();
-      const desc = (ev.Description || ev.StatusDescription || ev.text || ev.Text || ev.label || '').toString().toLowerCase();
-      const status = (ev.Status || ev.status || '').toString().toUpperCase();
-      if (['DELIVERED','LIVRE','LIVREE','DELIVERY_COMPLETE'].includes(code)) return true;
-      if (['DELIVERED','LIVRE','LIVREE','DELIVERY_COMPLETE'].includes(status)) return true;
-      if (code.includes('LIVR') || code.includes('DELIVER')) return true;
-      if (status.includes('LIVR') || status.includes('DELIVER')) return true;
-      if (desc.includes('delivered') || desc.includes('livré') || desc.includes('livre') || desc.includes('remise au destinataire')) return true;
-    }
-  }
-  // Format rstt002 : peut etre different, on cherche n'importe quel "delivered" dans le JSON
-  const topStatus = (trackData.Status || trackData.status || trackData.deliveryStatus || '').toString().toUpperCase();
-  if (topStatus.includes('DELIVERED') || topStatus.includes('LIVRE')) return true;
-  // Fallback : sérialise tout et cherche
-  try {
-    const json = JSON.stringify(trackData).toLowerCase();
-    if (json.includes('"delivered"') || json.includes('"livré"') || json.includes('"livre"')) return true;
-  } catch (_) {}
-  return false;
-}
+// v15 (28/09/2026) : l'ancienne fonction isParcelDelivered (tout "delivered"
+// trouvé n'importe où dans le JSON) est remplacée par l'analyse d'historique
+// de _shared/gls-analyse.ts (retour expéditeur, ParcelShop, dépôt d'origine).
 
 // v12 : date (ms epoch) du dernier evenement de tracking d'un colis, ou null.
-// Format reel ShipIT-FARM : data.UnitDetail.History[] avec Date ISO "2026-06-10T15:33:54+02:00"
 function getLastEventMs(trackData: any): number | null {
-  const history = trackData?.UnitDetail?.History || trackData?.History || trackData?.history || [];
-  if (!Array.isArray(history)) return null;
+  const history = historiqueDe(trackData);
   let max: number | null = null;
   for (const ev of history) {
     const raw = ev?.Date || ev?.date || ev?.Timestamp || ev?.DateTime || null;
@@ -297,6 +290,35 @@ async function envoyerAlerteSMS(contenu: string): Promise<boolean> {
   return await envoyerSMSOVH(ALERT_SMS_TO, contenu);
 }
 
+function jourParis(): string {
+  return new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' });
+}
+
+// Suit tous les colis d'une commande (séquentiel, comme avant).
+async function suivreCommande(tracking: string, opts: any): Promise<{ analyse: AnalyseCommande; bruts: Record<string, any> }> {
+  const ids = numerosColis(tracking);
+  const colis: AnalyseColis[] = [];
+  const bruts: Record<string, any> = {};
+  for (const trackId of ids) {
+    const r = await trackParcel(trackId, opts);
+    if (!r.ok) { colis.push(colisErreur(trackId)); continue; }
+    bruts[trackId] = r.data;
+    colis.push(analyserColis(trackId, r.data));
+  }
+  return { analyse: analyserCommande(colis), bruts };
+}
+
+// Résumé lisible d'un colis (sans données client) pour les rapports.
+function resumeColis(c: AnalyseColis): any {
+  return { trackId: c.trackId, etat: c.etat, motif: c.motif, priseEnCharge: c.priseEnChargeAt, livreClient: c.livreClientAt, retour: c.retourAt, dernier: c.dernierEvenementAt, dernierLibelle: c.dernierLibelle };
+}
+
+// Enregistre une alerte (anti-doublon) ; renvoie false si déjà présente.
+async function reserverAlerte(type: string, cle: string, cmdId: string, message: string): Promise<boolean> {
+  const { error } = await sb.from('gls_alertes').insert({ type, cle, jour: jourParis(), cmd_id: cmdId, message });
+  return !error; // conflit de clé primaire = déjà alerté aujourd'hui
+}
+
 Deno.serve(async (req: Request) => {
   // 27/09/2026 : controle d'appelant (crons = x-cron-secret ; fonctions/scripts serveur = cle secrete sb_secret_)
   if (req.method !== 'OPTIONS' && !appelInterne(req)) return refus();
@@ -308,171 +330,191 @@ Deno.serve(async (req: Request) => {
   const useProd: boolean = !!body.useProd;
   const useRstt002: boolean = !!body.useRstt002;
   const useShipIT: boolean = !!body.useShipIT;
+  const opts = { useRstt002, useShipIT, useProd };
   // v12 : seuil de detection colis bloque (jours sans scan)
   const stuckDays: number = (typeof body.stuckDays === 'number' && body.stuckDays > 0) ? body.stuckDays : STUCK_DAYS_DEFAULT;
   const summary = {
+    version: 'v15',
     started_at: new Date().toISOString(),
     dryRun, useProd, useRstt002, useShipIT, stuckDays,
-    cmds_a_checker: 0, cmds_livre: 0, cmds_erreur: 0, cmds_bloquees: 0, alertes_sms: 0,
+    cmds_a_checker: 0, cmds_livre: 0, cmds_partiel: 0, cmds_retour: 0, cmds_erreur: 0, cmds_bloquees: 0, alertes_sms: 0,
     duration_ms: 0,
     details: [] as any[],
   };
+  const json = (o: any, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'Content-Type': 'application/json' } });
 
+  // ── Mode test 1 colis ─────────────────────────────────────────────
   if (testTrackId) {
-    const result = await trackParcel(testTrackId, { useRstt002, useShipIT, useProd });
+    const result = await trackParcel(testTrackId, opts);
     summary.details.push({ trackId: testTrackId, ...result });
     if (result.ok) {
-      const livre = isParcelDelivered(result.data);
-      summary.details[0].interprete_livre = livre;
+      const a = analyserColis(testTrackId, result.data);
+      summary.details[0].analyse = resumeColis(a);
+      summary.details[0].interprete_livre = a.livreClient;
     }
     summary.duration_ms = Date.now() - startTime;
-    return new Response(JSON.stringify({ ok: result.ok, summary }), { headers: { 'Content-Type': 'application/json' } });
+    return json({ ok: result.ok, summary });
   }
 
+  // ── Mode AUDIT (lecture seule, JAMAIS d'écriture) ─────────────────
+  // { cmdIds: ["#1561", ...] } : analyse ces commandes quel que soit leur statut
+  // { auditLivres: true, jours?: 45 } : commandes déjà « livré » (étiquette de
+  //   moins de N jours) dont la preuve GLS est contestée (pas « livre »).
+  if (Array.isArray(body.cmdIds) || body.auditLivres) {
+    let q = sb.from('commandes').select('id, statut, tracking_transporteur, gls_date_etiquette, date_livraison, litige_statut')
+      .eq('transporteur', 'GLS').not('tracking_transporteur', 'is', null);
+    if (Array.isArray(body.cmdIds)) q = q.in('id', body.cmdIds.map(String));
+    else {
+      const jours = Math.max(1, Math.min(120, Number(body.jours) || 45));
+      const lim = new Date(Date.now() - jours * 86400000).toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' });
+      q = q.eq('statut', 'livré').gte('gls_date_etiquette', lim);
+    }
+    const { data: rows, error } = await q;
+    if (error) return json({ ok: false, error: error.message }, 500);
+    const liste: any[] = [];
+    const file = [...(rows || [])];
+    const worker = async () => {
+      while (file.length) {
+        const c: any = file.shift();
+        const { analyse } = await suivreCommande(c.tracking_transporteur, opts);
+        liste.push({
+          cmdId: c.id, statut_base: c.statut, date_livraison_base: c.date_livraison || null, litige: c.litige_statut || null,
+          etat_gls: analyse.etat, detail: analyse.detail, date_livraison_gls: analyse.dateLivraison,
+          conteste: c.statut === 'livré' && analyse.etat !== 'livre' && analyse.etat !== 'erreur',
+          colis: analyse.colis.map(resumeColis),
+        });
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    liste.sort((a, b) => String(a.cmdId).localeCompare(String(b.cmdId)));
+    return json({
+      ok: true, mode: Array.isArray(body.cmdIds) ? 'cmdIds' : 'auditLivres', lectureSeule: true,
+      nb: liste.length, nbContestes: liste.filter((x) => x.conteste).length,
+      commandes: body.auditLivres ? liste.filter((x) => x.conteste || x.etat_gls === 'erreur') : liste,
+      duration_ms: Date.now() - startTime,
+    });
+  }
+
+  // ── Synchro normale : commandes GLS non livrées / non annulées ────
   const { data: cmds, error: errCmds } = await sb
     .from('commandes')
-    .select('id, client, tracking_transporteur, statut, gls_bloque, date_livraison')
+    .select('id, client, tracking_transporteur, statut, gls_bloque, date_livraison, gls_livraison_etat, gls_livraison_detail')
     .eq('transporteur', 'GLS')
     .not('tracking_transporteur', 'is', null)
     .not('statut', 'in', '(livré,annulé)');
 
   if (errCmds) {
     summary.duration_ms = Date.now() - startTime;
-    return new Response(JSON.stringify({ ok: false, error: 'Erreur SQL: ' + errCmds.message, summary }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    return json({ ok: false, error: 'Erreur SQL: ' + errCmds.message, summary }, 500);
   }
 
-  const cmdsValid = (cmds || []).filter((c: any) => c.tracking_transporteur && c.tracking_transporteur.length >= 6);
+  const cmdsValid = (cmds || []).filter((c: any) => numerosColis(c.tracking_transporteur).length > 0);
   summary.cmds_a_checker = cmdsValid.length;
+  const seuilMs = stuckDays * 24 * 3600 * 1000;
 
   for (const cmd of cmdsValid) {
     const trackingFull: string = cmd.tracking_transporteur;
-    // v10 : SPLIT multi-trackings (1 cmd peut avoir N colis depuis create-shipment v5)
-    const trackIds = trackingFull.split(',').map((t: string) => t.trim()).filter((t: string) => t.length >= 6);
-    if (trackIds.length === 0) {
-      summary.cmds_erreur++;
-      summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, status: 'no_valid_trackid' });
+    const { analyse, bruts } = await suivreCommande(trackingFull, opts);
+    const parcels = analyse.colis.map(resumeColis);
+    const base = { cmdId: cmd.id, client: cmd.client, tracking: trackingFull, nbColis: analyse.nbColis, etat_gls: analyse.etat, detail: analyse.detail, parcels };
+
+    // Détection « bloqué » (v12, inchangée) : colis non livré sans scan depuis stuckDays
+    let dernierScanNonLivre: number | null = null;
+    let bloque = false;
+    for (const c of analyse.colis) {
+      if (c.etat === 'livre' || c.etat === 'erreur') continue;
+      const lastMs = getLastEventMs(bruts[c.trackId]);
+      if (lastMs === null) continue;
+      if (dernierScanNonLivre === null || lastMs > dernierScanNonLivre) dernierScanNonLivre = lastMs;
+      if (Date.now() - lastMs > seuilMs) bloque = true;
+    }
+
+    const majEtat: any = { gls_livraison_etat: analyse.etat, gls_livraison_detail: analyse.detail, gls_livraison_verif_at: new Date().toISOString() };
+
+    if (analyse.etat === 'livre') {
+      // v15 : TOUS les colis livrés au client (plus de règle « 1 livré + reste silencieux 48 h »)
+      if (dryRun) {
+        summary.cmds_livre++;
+        summary.details.push({ ...base, status: 'would_update_livre', date_livraison_gls: analyse.dateLivraison });
+        continue;
+      }
+      // v14 : date_livraison renseignée si vide (date réelle du dernier colis livré)
+      const majLivre: any = { ...majEtat, statut: 'livré', gls_bloque: false };
+      if (!cmd.date_livraison) majLivre.date_livraison = analyse.dateLivraison || jourParis();
+      const { error: errUpd } = await sb.from('commandes').update(majLivre).eq('id', cmd.id);
+      if (errUpd) { summary.cmds_erreur++; summary.details.push({ ...base, status: 'update_failed', error: errUpd.message }); }
+      else { summary.cmds_livre++; summary.details.push({ ...base, status: 'updated_to_livre' }); }
       continue;
     }
 
-    // Track CHAQUE colis individuellement
-    const parcelResults: any[] = [];
-    let nbErreurs = 0;
-    let nbLivre = 0;
-    // v12 : dernier scan des colis NON livres (pour la detection bloque)
-    let dernierScanNonLivre: number | null = null;
-    let auMoinsUnNonLivreSansScanRecent = false;
-    const seuilMs = stuckDays * 24 * 3600 * 1000;
-    for (const trackId of trackIds) {
-      const result = await trackParcel(trackId, { useRstt002, useShipIT, useProd });
-      if (!result.ok) {
-        nbErreurs++;
-        parcelResults.push({ trackId, status: 'api_error', tried: result.tried });
-        continue;
-      }
-      const livre = isParcelDelivered(result.data);
-      const lastMs = getLastEventMs(result.data);
-      parcelResults.push({ trackId, livre, status: livre ? 'livre' : 'transit', dernier_scan: lastMs ? new Date(lastMs).toISOString() : null });
-      if (livre) nbLivre++;
-      else if (lastMs !== null) {
-        if (dernierScanNonLivre === null || lastMs > dernierScanNonLivre) dernierScanNonLivre = lastMs;
-        if (Date.now() - lastMs > seuilMs) auMoinsUnNonLivreSansScanRecent = true;
-      }
-    }
-
-    const nbColis = trackIds.length;
-    // v13 (27/07) : GLS ne scanne pas toujours TOUS les colis a la livraison (constat :
-    // #1438 Xavier 2/3 livres, #1463 Julie 1/2 — le colis restant sans scan depuis des
-    // jours) -> la commande restait "en-attente" pour TOUJOURS (aucun statut remonte).
-    // Regle assouplie : livre si TOUS les colis le sont, OU si AU MOINS UN colis est
-    // livre ET qu'aucun colis restant n'a eu de scan depuis 48h (les colis d'un meme
-    // envoi voyagent ensemble ; un colis silencieux apres la livraison des autres =
-    // simplement pas scanne par le livreur GLS).
-    const SILENCE_LIVRE_MS = 48 * 3600 * 1000;
-    const resteSilencieux = (dernierScanNonLivre === null) || (Date.now() - dernierScanNonLivre > SILENCE_LIVRE_MS);
-    const tousLivre = (nbErreurs === 0) && (nbLivre === nbColis || (nbLivre >= 1 && resteSilencieux));
-
-    if (tousLivre) {
-      // Tous les colis livres -> cmd = livré
-      if (dryRun) {
-        summary.cmds_livre++;
-        summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, nbColis, parcels: parcelResults, status: 'would_update_livre' });
-      } else {
-        // v14 (28/08) : renseigner AUSSI la date de livraison si elle est vide. AVANT, une
-        // commande GLS passait en "livré" SANS date_livraison -> elle n'apparaissait dans
-        // AUCUN CA mensuel (le CA se calcule sur date_livraison) : 2 343 € manquants sur
-        // le seul mois d'août. On prend la date du dernier scan "livré" (date reelle de
-        // remise au client), sinon aujourd'hui. On n'ECRASE JAMAIS une date deja saisie.
-        const scansLivres = parcelResults
-          .filter((p: any) => p.livre && p.dernier_scan)
-          .map((p: any) => new Date(p.dernier_scan).getTime());
-        const dateLivree = scansLivres.length
-          ? new Date(Math.max(...scansLivres)).toISOString().split('T')[0]
-          : new Date().toISOString().split('T')[0];
-        const majLivre: any = { statut: 'livré', gls_bloque: false };
-        if (!cmd.date_livraison) majLivre.date_livraison = dateLivree;
-        const { error: errUpd } = await sb.from('commandes').update(majLivre).eq('id', cmd.id);
-        if (errUpd) {
-          summary.cmds_erreur++;
-          summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, status: 'update_failed', error: errUpd.message });
-        } else {
-          summary.cmds_livre++;
-          summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, nbColis, parcels: parcelResults, status: 'updated_to_livre' });
-        }
-      }
-    } else if (nbErreurs === nbColis) {
-      // Tous les colis en erreur API -> erreur globale
+    if (analyse.etat === 'erreur' && analyse.nbErreurs === analyse.nbColis) {
       summary.cmds_erreur++;
-      summary.details.push({ cmdId: cmd.id, client: cmd.client, tracking: trackingFull, nbColis, parcels: parcelResults, status: 'all_api_error' });
-    } else {
-      // En cours (au moins 1 colis pas encore livre ou 1 colis en erreur partielle)
-      // v12 : detection colis bloque (aucun scan depuis stuckDays jours sur un colis non livre)
-      const bloque = auMoinsUnNonLivreSansScanRecent;
-      const etaitBloque = !!cmd.gls_bloque;
-      let alerteSms = false;
-      if (!dryRun) {
-        try {
-          await sb.from('commandes').update({
-            gls_bloque: bloque,
-            gls_dernier_scan: dernierScanNonLivre ? new Date(dernierScanNonLivre).toISOString() : null,
-          }).eq('id', cmd.id);
-        } catch (_e) { /* non bloquant */ }
-        // Alerte SMS uniquement au PASSAGE a bloque (pas de re-alerte toutes les 2h)
-        if (bloque && !etaitBloque) {
-          const dernierFr = dernierScanNonLivre ? new Date(dernierScanNonLivre).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' }) : '?';
-          alerteSms = await envoyerAlerteSMS(
-            '🚨 GLS : colis bloqué !\nCmd ' + cmd.id + ' — ' + (cmd.client || '') +
-            '\nAucun scan depuis le ' + dernierFr + ' (' + stuckDays + 'j+)' +
-            '\nColis : ' + trackingFull +
-            '\nSi ça persiste : déclare un litige dans l\'app (bouton ⚠️ sur la commande).'
-          );
-          if (alerteSms) summary.alertes_sms++;
-        }
-      }
-      if (bloque) summary.cmds_bloquees++;
-      summary.details.push({
-        cmdId: cmd.id, client: cmd.client, tracking: trackingFull, nbColis,
-        livreCount: nbLivre, errorCount: nbErreurs,
-        parcels: parcelResults,
-        bloque, etaitBloque, alerteSms,
-        dernier_scan: dernierScanNonLivre ? new Date(dernierScanNonLivre).toISOString() : null,
-        status: `still_in_transit (${nbLivre}/${nbColis} livré${nbLivre > 1 ? 's' : ''}${nbErreurs > 0 ? ', ' + nbErreurs + ' err' : ''})`,
-      });
+      summary.details.push({ ...base, status: 'all_api_error' });
+      continue; // rien n'est écrit : on réessaie au prochain passage
     }
+
+    // Pas livré (transit / partiel / retour / non pris en charge / erreur partielle)
+    const etaitBloque = !!cmd.gls_bloque;
+    const nouveauProbleme = (analyse.etat === 'partiel' || analyse.etat === 'retour')
+      && (cmd.gls_livraison_detail !== analyse.detail);
+    let alerteSms = false;
+    let alerteLivraison = false;
+    if (analyse.etat === 'partiel') summary.cmds_partiel++;
+    if (analyse.etat === 'retour') summary.cmds_retour++;
+    if (!dryRun) {
+      try {
+        await sb.from('commandes').update({
+          ...majEtat,
+          gls_bloque: bloque,
+          gls_dernier_scan: dernierScanNonLivre ? new Date(dernierScanNonLivre).toISOString() : null,
+        }).eq('id', cmd.id);
+      } catch (_e) { /* non bloquant */ }
+      // v15 : alerte livraison PARTIELLE ou RETOUR (1 fois par changement d'état, max 1/jour/commande)
+      if (nouveauProbleme && await reserverAlerte('livraison-' + analyse.etat, cmd.id, cmd.id, analyse.detail)) {
+        const lignes = analyse.colis.filter((c) => c.etat !== 'livre').map((c) => c.trackId + ' ' + c.etat).join(', ');
+        alerteLivraison = await envoyerAlerteSMS(
+          'GLS ' + (analyse.etat === 'retour' ? 'RETOUR' : 'LIVRAISON PARTIELLE') + ' ' + cmd.id + ' : ' + analyse.detail +
+          '. Non livres : ' + lignes + '. Commande laissee NON livree (a verifier).'
+        );
+        if (alerteLivraison) summary.alertes_sms++;
+      }
+      // Alerte « bloqué » uniquement au PASSAGE a bloque (pas de re-alerte chaque heure)
+      if (bloque && !etaitBloque) {
+        const dernierFr = dernierScanNonLivre ? new Date(dernierScanNonLivre).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' }) : '?';
+        alerteSms = await envoyerAlerteSMS(
+          '🚨 GLS : colis bloqué !\nCmd ' + cmd.id + ' — ' + (cmd.client || '') +
+          '\nAucun scan depuis le ' + dernierFr + ' (' + stuckDays + 'j+)' +
+          '\nColis : ' + trackingFull +
+          '\nSi ça persiste : déclare un litige dans l\'app (bouton ⚠️ sur la commande).'
+        );
+        if (alerteSms) summary.alertes_sms++;
+      }
+    }
+    if (bloque) summary.cmds_bloquees++;
+    if (analyse.etat === 'erreur') summary.cmds_erreur++;
+    summary.details.push({
+      ...base, livreCount: analyse.nbLivres, errorCount: analyse.nbErreurs,
+      bloque, etaitBloque, alerteSms, alerteLivraison, nouveauProbleme,
+      dernier_scan: dernierScanNonLivre ? new Date(dernierScanNonLivre).toISOString() : null,
+      status: `${analyse.etat} (${analyse.nbLivres}/${analyse.nbColis} livré${analyse.nbLivres > 1 ? 's' : ''}${analyse.nbErreurs > 0 ? ', ' + analyse.nbErreurs + ' err' : ''})`,
+    });
   }
 
   summary.duration_ms = Date.now() - startTime;
 
-  try {
-    await sb.from('gls_sync_logs').insert({
-      id: 'glssync_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
-      run_at: summary.started_at,
-      cmds_a_checker: summary.cmds_a_checker,
-      cmds_livre: summary.cmds_livre,
-      cmds_erreur: summary.cmds_erreur,
-      duration_ms: summary.duration_ms,
-      details: summary.details,
-    });
-  } catch (_e) { /* silent */ }
+  if (!dryRun) {
+    try {
+      await sb.from('gls_sync_logs').insert({
+        id: 'glssync_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+        run_at: summary.started_at,
+        cmds_a_checker: summary.cmds_a_checker,
+        cmds_livre: summary.cmds_livre,
+        cmds_erreur: summary.cmds_erreur,
+        duration_ms: summary.duration_ms,
+        details: summary.details,
+      });
+    } catch (_e) { /* silent */ }
+  }
 
-  return new Response(JSON.stringify({ ok: true, summary }), { headers: { 'Content-Type': 'application/json' } });
+  return json({ ok: true, summary });
 });

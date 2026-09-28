@@ -1,6 +1,11 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis-relance (v2.0 — 16/09/2026)
+// Edge Function : sms-avis-relance (v2.1 — 28/09/2026)
 // ════════════════════════════════════════════════════════════════════
+// v2.1 (28/09/2026) : AUCUNE relance pour une commande qui a (ou a eu) un
+//   litige ou un SAV lié, ou une livraison GLS partielle/retour
+//   (_shared/avis-garde.ts). Après clôture : seule la demande unique de
+//   sms-avis (J+2 après clôture) est envoyée, jamais de relance.
+//
 // RELANCES d'avis Google apres la premiere demande (sms-avis, J+1).
 //
 // v1.0 (02/09/2026) : relance unique a J+7. Constat : 204 SMS "avis" pour
@@ -30,7 +35,9 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
+import { appelInterne, refus } from '../_shared/controle-appelant.ts';
+import { evaluerAvis, indexerSav, noteExclut } from '../_shared/avis-garde.ts';
+import { livraisonGlsContestee } from '../_shared/avis-gls.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
@@ -63,11 +70,6 @@ function toLocalDateStr(d: Date): string {
   return paris.toISOString().split('T')[0];
 }
 
-function noteExclut(instr: string): boolean {
-  const clean = String(instr || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ');
-  return /\b(noavis|no avis|sans avis|pas d avis|pas avis|pasdavis)\b/.test(clean);
-}
-
 Deno.serve(async (req: Request) => {
   // 27/09/2026 : controle d'appelant (crons = x-cron-secret ; fonctions/scripts serveur = cle secrete sb_secret_)
   if (req.method !== 'OPTIONS' && !appelInterne(req)) return refus();
@@ -77,7 +79,9 @@ Deno.serve(async (req: Request) => {
   let body: any = {};
   try { body = await req.json(); } catch { /* empty */ }
 
-  const dryRun = body.dryRun === true;
+  // Mode test { cmdIds:[...] } : evalue ces commandes pour chaque etape, sans filtre de date (toujours dryRun)
+  const testIds: string[] | null = Array.isArray(body.cmdIds) ? body.cmdIds.map(String) : null;
+  const dryRun = body.dryRun === true || !!testIds;
 
   // Etapes a traiter (jours = nombre -> etape 1 seule ; tableau -> 1 par valeur)
   let etapes = ETAPES_DEFAUT.map(e => ({ ...e }));
@@ -92,6 +96,12 @@ Deno.serve(async (req: Request) => {
     const idx = Number(body.etape) === 2 ? 1 : 0;
     etapes = [etapes[idx] || ETAPES_DEFAUT[idx]];
   }
+
+  // SAV (non annulés) : index « commande d'origine -> SAV liés »
+  const { data: savs, error: errSav } = await sb.from('commandes')
+    .select('id,statut,instr,date_livraison,updated_at').ilike('id', '%sav%').neq('statut', 'annulé');
+  if (errSav) return new Response(JSON.stringify({ error: 'select SAV failed', details: errSav.message }), { status: 500, headers: CORS });
+  const savIdx = indexerSav(savs || []);
 
   let scanned = 0, sent = 0, skipped = 0, failed = 0;
   const details: any[] = [];
@@ -111,11 +121,12 @@ Deno.serve(async (req: Request) => {
     }
     fenetres.push({ type: etape.type, jours: etape.jours, dateMin, dateMax });
 
-    const { data: cmds, error } = await sb.from('commandes')
-      .select('id,client,tel,statut,transporteur,sms_envoyes,date_livraison,instr')
-      .gte('date_livraison', dateMin)
-      .lte('date_livraison', dateMax)
-      .eq('statut', 'livré');
+    const q0 = sb.from('commandes')
+      .select('id,client,tel,statut,transporteur,tracking_transporteur,sms_envoyes,date_livraison,instr,litige_statut,litige_clos_at,gls_livraison_etat,gls_livraison_detail')
+      ;
+    const { data: cmds, error } = testIds
+      ? await q0.in('id', testIds)
+      : await q0.gte('date_livraison', dateMin).lte('date_livraison', dateMax).eq('statut', 'livré');
 
     if (error) {
       return new Response(JSON.stringify({ error: 'select commandes failed', details: error.message }),
@@ -132,11 +143,19 @@ Deno.serve(async (req: Request) => {
       if (PAUSE_AVIS_GLS && estGls) {
         skipped++; details.push({ ...base, action: 'skip_pause_gls' }); continue;
       }
-      if (estGls && String(c.date_livraison || '') < AVIS_GLS_DEPUIS) {
-        skipped++; details.push({ ...base, action: 'skip_gls_avant_reprise' }); continue;
-      }
       if (noteExclut(c.instr)) {
         skipped++; details.push({ ...base, action: 'skip_exclu_note', client: c.client }); continue;
+      }
+      // v2.1 : litige / SAV (ouvert OU clos) / livraison partielle -> jamais de relance
+      const ev = evaluerAvis(c, savIdx);
+      if (ev.bloque) {
+        skipped++; details.push({ ...base, action: 'skip_suspendu', motif: ev.bloque, client: c.client }); continue;
+      }
+      if (ev.historique) {
+        skipped++; details.push({ ...base, action: 'skip_litige_sav_sans_relance', savLies: ev.savLies, client: c.client }); continue;
+      }
+      if (estGls && String(c.date_livraison || '') < AVIS_GLS_DEPUIS) {
+        skipped++; details.push({ ...base, action: 'skip_gls_avant_reprise' }); continue;
       }
       const tel = (c.tel || '').replace(/[^0-9+]/g, '');
       if (!tel || tel.length < 8) {
@@ -151,6 +170,11 @@ Deno.serve(async (req: Request) => {
       // Une seule fois par etape, jamais deux.
       if (dejaEnvoyes.some((e: any) => e.type === etape.type)) {
         skipped++; details.push({ ...base, action: 'skip_deja_envoye' }); continue;
+      }
+      // v2.1 : client GLS -> relecture des colis chez GLS (faux livre / partiel / retour)
+      const contestee = await livraisonGlsContestee(c);
+      if (contestee) {
+        skipped++; details.push({ ...base, action: 'skip_suspendu', motif: contestee, client: c.client }); continue;
       }
 
       if (dryRun) {

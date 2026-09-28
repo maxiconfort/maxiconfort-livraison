@@ -1,22 +1,26 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis (v1.3 — 29/07/2026)
+// Edge Function : sms-avis (v2.0 — 28/09/2026)
 // ════════════════════════════════════════════════════════════════════
 // Tourne en CRON 1x/jour (~11h Paris) : demande d'avis Google le LENDEMAIN
 // de la livraison.
 //
-// Scan : commandes livrees HIER (date_livraison = J-1 Paris), statut="livré",
-//        tel valide, hors #SAV, NON exclues (note), pas deja sollicitee
-//        (dedupe sms_envoyes type "avis").
+// Scan : commandes livrees HIER (date_livraison = J-1 Paris, fenetre J-3..J-1),
+//        statut="livré", tel valide, hors #SAV, NON exclues (note), pas deja
+//        sollicitee (dedupe sms_envoyes type "avis").
 // Pour chaque : appelle send-cmd-sms { type:"avis" }.
 //
 // EXCLUSION "client a risque" (v1.1) : si la note de commande (instr) contient
 //   "PAS D'AVIS" / "SANS AVIS" / "NO AVIS" -> pas de demande d'avis.
 //
-// ⏸️ PAUSE PROVINCE/GLS (v1.2, demande Borhen 17/07/2026) : le temps de
-//   rattraper le retard des livraisons GLS, la demande d'avis n'est envoyee
-//   QU'AUX clients livres en region parisienne par notre equipe (RANOU).
-//   Les clients GLS (province) sont sautes (action "skip_pause_gls").
-//   POUR REACTIVER la province : passer PAUSE_AVIS_GLS a false + redeployer.
+// v2.0 (28/09/2026) : SUSPENSION PENDANT LITIGE / SAV (_shared/avis-garde.ts)
+//   - bloque : litige ouvert, SAV ouvert lie (note du SAV « cmd origine #... »),
+//     livraison GLS partielle ou retour (gls_livraison_etat), note PAS D'AVIS.
+//   - reprise : quand litige ET SAV lies sont clos, UNE seule demande a J+2
+//     apres la cloture (fenetre 3 jours) ; sms-avis-relance ne relance jamais
+//     ces commandes.
+//
+// ⏸️ PAUSE PROVINCE/GLS (v1.2, demande Borhen 17/07/2026) — levee le 14/09
+//   (v1.4) pour les livraisons GLS a partir de AVIS_GLS_DEPUIS.
 //
 // ⚠️ Demande d'avis HONNETE, sans condition ni recompense. 1 SMS = 1 credit OVH.
 //
@@ -25,16 +29,13 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
+import { appelInterne, refus } from '../_shared/controle-appelant.ts';
+import { livraisonGlsContestee } from '../_shared/avis-gls.ts';
+import { ajouterJours, demandeDueAujourdhui, estSav, evaluerAvis, indexerSav } from '../_shared/avis-garde.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 
-// ⏸️ true = demande d'avis UNIQUEMENT pour les livraisons RANOU (region
-// parisienne). Les clients GLS (province) sont sautes.
-// ▶️ v1.4 (14/09/2026, decision Borhen) : province REACTIVEE, mais uniquement
-//   pour les livraisons GLS a partir du AVIS_GLS_DEPUIS (pas de rattrapage
-//   des anciennes livraisons province).
 const PAUSE_AVIS_GLS = false;
 const AVIS_GLS_DEPUIS = '2026-09-14';
 
@@ -49,16 +50,10 @@ const CORS = {
   'Content-Type': 'application/json',
 };
 
-function toLocalDateStr(d: Date): string {
-  const utc = d.getTime() + d.getTimezoneOffset() * 60000;
-  const paris = new Date(utc + 3600000);
-  return paris.toISOString().split('T')[0];
-}
+const COLS = 'id,client,tel,statut,transporteur,tracking_transporteur,sms_envoyes,date_livraison,instr,litige_statut,litige_clos_at,gls_livraison_etat,gls_livraison_detail';
 
-// Note contient un mot-cle d'exclusion ? (insensible casse/ponctuation)
-function noteExclut(instr: string): boolean {
-  const clean = String(instr || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ');
-  return /\b(noavis|no avis|sans avis|pas d avis|pas avis|pasdavis)\b/.test(clean);
+function jourParis(): string {
+  return new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' });
 }
 
 Deno.serve(async (req: Request) => {
@@ -70,78 +65,86 @@ Deno.serve(async (req: Request) => {
   let body: any = {};
   try { body = await req.json(); } catch { /* empty */ }
 
-  const dryRun = body.dryRun === true;
+  // Mode test { cmdIds:[...] } : evalue ces commandes quelle que soit leur date (toujours dryRun)
+  const testIds: string[] | null = Array.isArray(body.cmdIds) ? body.cmdIds.map(String) : null;
+  const dryRun = body.dryRun === true || !!testIds;
+  const aujourdhui = jourParis();
 
-  // v1.3 (29/07/2026) : fenetre de 3 jours au lieu de la seule veille.
-  // Cause reelle constatee : une commande marquee "livré" APRES le passage
-  // du cron (11h) n'etait plus jamais scannee (le lendemain le cron ne
-  // regarde que J-1) -> ~30% des livraisons IDF jamais sollicitees
-  // (ex 22-25/07 : #1471, #1472, #1475, #1489). La dedupe sms_envoyes
-  // garantit qu'un client deja sollicite n'est jamais renvoye.
-  // body.dateCible (jour unique) reste prioritaire pour les tests/rattrapages.
-  let dateMin: string, dateMax: string;
-  if (body.dateCible) {
-    dateMin = body.dateCible; dateMax = body.dateCible;
-  } else {
-    const hier = new Date();
-    hier.setDate(hier.getDate() - 1);
-    dateMax = toLocalDateStr(hier);
-    const j3 = new Date();
-    j3.setDate(j3.getDate() - 3);
-    dateMin = toLocalDateStr(j3);
-  }
+  // v1.3 : fenetre de 3 jours (J-3..J-1) ; body.dateCible (jour unique) pour tests/rattrapages.
+  const dateMin: string = body.dateCible || ajouterJours(aujourdhui, -3);
+  const dateMax: string = body.dateCible || ajouterJours(aujourdhui, -1);
   const dateCible = dateMin === dateMax ? dateMin : `${dateMin}..${dateMax}`;
 
-  const { data: cmds, error } = await sb.from('commandes')
-    .select('id,client,tel,statut,transporteur,sms_envoyes,date_livraison,instr')
-    .gte('date_livraison', dateMin)
-    .lte('date_livraison', dateMax)
-    .eq('statut', 'livré');
+  // SAV (non annules) pour savoir quelles commandes ont un SAV ouvert / clos
+  const { data: savs, error: errSav } = await sb.from('commandes')
+    .select('id,statut,instr,date_livraison,updated_at').ilike('id', '%sav%').neq('statut', 'annulé');
+  if (errSav) return new Response(JSON.stringify({ error: 'select SAV failed', details: errSav.message }), { status: 500, headers: CORS });
+  const savIdx = indexerSav(savs || []);
 
+  // 1) livraisons de la fenetre normale
+  const { data: cmds, error } = testIds
+    ? await sb.from('commandes').select(COLS).in('id', testIds)
+    : await sb.from('commandes').select(COLS)
+      .gte('date_livraison', dateMin)
+      .lte('date_livraison', dateMax)
+      .eq('statut', 'livré');
   if (error) {
     return new Response(JSON.stringify({ error: 'select commandes failed', details: error.message }),
       { status: 500, headers: CORS });
   }
 
+  // 2) reprises : litige clos ou SAV lie livre dans les 6 derniers jours
+  const candidats = new Map<string, any>();
+  for (const c of cmds || []) candidats.set(c.id, { ...c, _source: 'livraison' });
+  if (!body.dateCible && !testIds) {
+    const depuis = ajouterJours(aujourdhui, -6);
+    const idsReprise = new Set<string>();
+    for (const [cible, l] of savIdx) if (l.some((s) => !s.ouvert && s.cloture && s.cloture >= depuis)) idsReprise.add(cible);
+    const { data: clos } = await sb.from('commandes').select(COLS).eq('statut', 'livré').gte('litige_clos_at', depuis + 'T00:00:00Z');
+    for (const c of clos || []) if (!candidats.has(c.id)) candidats.set(c.id, { ...c, _source: 'reprise' });
+    const manquants = [...idsReprise].filter((id) => !candidats.has(id));
+    if (manquants.length) {
+      const { data: r2 } = await sb.from('commandes').select(COLS).in('id', manquants).eq('statut', 'livré');
+      for (const c of r2 || []) candidats.set(c.id, { ...c, _source: 'reprise' });
+    }
+  }
+
   let scanned = 0, sent = 0, skipped = 0, failed = 0;
   const details: any[] = [];
 
-  for (const c of cmds || []) {
+  for (const c of candidats.values()) {
     scanned++;
-    // Hors SAV
-    if (/sav/i.test(String(c.id))) {
-      skipped++; details.push({ id: c.id, action: 'skip_sav' }); continue;
-    }
-    // ⏸️ Pause province : on ne sollicite pas les clients livres par GLS
+    const base = { id: c.id, source: c._source };
+    if (estSav(c.id)) { skipped++; details.push({ ...base, action: 'skip_sav' }); continue; }
     const estGls = /gls/i.test(String(c.transporteur || ''));
-    if (PAUSE_AVIS_GLS && estGls) {
-      skipped++; details.push({ id: c.id, action: 'skip_pause_gls', client: c.client }); continue;
+    if (PAUSE_AVIS_GLS && estGls) { skipped++; details.push({ ...base, action: 'skip_pause_gls', client: c.client }); continue; }
+    // v2.0 : litige / SAV / note / livraison partielle
+    const ev = evaluerAvis(c, savIdx);
+    if (ev.bloque) {
+      skipped++; details.push({ ...base, action: ev.bloque.startsWith('note') ? 'skip_exclu_note' : 'skip_suspendu', motif: ev.bloque, client: c.client }); continue;
     }
-    // Province : seulement les livraisons a partir de AVIS_GLS_DEPUIS
     if (estGls && String(c.date_livraison || '') < AVIS_GLS_DEPUIS) {
-      skipped++; details.push({ id: c.id, action: 'skip_gls_avant_reprise', client: c.client }); continue;
+      skipped++; details.push({ ...base, action: 'skip_gls_avant_reprise', client: c.client }); continue;
     }
-    // Exclusion manuelle "client a risque" (mot-cle dans la note)
-    if (noteExclut(c.instr)) {
-      skipped++; details.push({ id: c.id, action: 'skip_exclu_note', client: c.client }); continue;
+    if (ev.historique || testIds) {
+      const due = demandeDueAujourdhui(String(c.date_livraison || '').substring(0, 10), ev, aujourdhui);
+      if (due !== 'oui') {
+        skipped++; details.push({ ...base, action: due === 'trop_tot' ? 'skip_attente_reprise_J+2' : (ev.historique ? 'skip_reprise_expiree' : 'skip_hors_fenetre'), cloture: ev.cloture, client: c.client }); continue;
+      }
     }
-    // Tel valide
     const tel = (c.tel || '').replace(/[^0-9+]/g, '');
-    if (!tel || tel.length < 8) {
-      skipped++; details.push({ id: c.id, action: 'skip_no_tel' }); continue;
-    }
-    // Dedupe : avis deja demande ?
+    if (!tel || tel.length < 8) { skipped++; details.push({ ...base, action: 'skip_no_tel' }); continue; }
     const dejaEnvoyes: any[] = Array.isArray(c.sms_envoyes) ? c.sms_envoyes : [];
-    if (dejaEnvoyes.some((e: any) => e.type === 'avis')) {
-      skipped++; details.push({ id: c.id, action: 'skip_already_sent' }); continue;
-    }
-    // Mode test : on liste sans envoyer
+    if (dejaEnvoyes.some((e: any) => e.type === 'avis')) { skipped++; details.push({ ...base, action: 'skip_already_sent' }); continue; }
+    // v2.0 : client GLS -> relecture des colis chez GLS (faux livre / partiel / retour)
+    const contestee = await livraisonGlsContestee(c);
+    if (contestee) { skipped++; details.push({ ...base, action: 'skip_suspendu', motif: contestee, client: c.client }); continue; }
+
     if (dryRun) {
       sent++;
-      details.push({ id: c.id, action: 'would_send', client: c.client, to: tel });
+      details.push({ ...base, action: 'would_send', client: c.client, to: tel, reprise: ev.historique ? ev.cloture : undefined });
       continue;
     }
-    // Envoi reel via send-cmd-sms
     try {
       const resp = await fetch(`${SB_URL}/functions/v1/send-cmd-sms`, {
         method: 'POST',
@@ -149,16 +152,16 @@ Deno.serve(async (req: Request) => {
         body: JSON.stringify({ cmdId: c.id, type: 'avis' }),
       });
       const data = await resp.json().catch(() => ({}));
-      if (data.sent) { sent++; details.push({ id: c.id, action: 'sent', to: data.to }); }
-      else if (data.skipped) { skipped++; details.push({ id: c.id, action: 'skip_send', reason: data.reason }); }
-      else { failed++; details.push({ id: c.id, action: 'failed', error: data.error }); }
+      if (data.sent) { sent++; details.push({ ...base, action: 'sent', to: data.to }); }
+      else if (data.skipped) { skipped++; details.push({ ...base, action: 'skip_send', reason: data.reason }); }
+      else { failed++; details.push({ ...base, action: 'failed', error: data.error }); }
     } catch (e: any) {
-      failed++; details.push({ id: c.id, action: 'exception', error: e.message });
+      failed++; details.push({ ...base, action: 'exception', error: e.message });
     }
   }
 
   return new Response(JSON.stringify({
-    ok: true, dryRun, dateCible, scanned, sent, skipped, failed,
+    ok: true, version: 'v2.0', dryRun, dateCible, scanned, sent, skipped, failed,
     duration_ms: Date.now() - t0, details,
   }), { headers: CORS });
 });

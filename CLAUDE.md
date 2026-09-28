@@ -28,6 +28,19 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - Dossier d'incident complet (privé) : `C:\Users\moind\maxiconfort-brain\incidents\2026-09-27-cles-supabase\DOSSIER_INCIDENT.md`.
 - ⚠️ L'historique git de ce dépôt public contient encore les anciennes versions de ce fichier et des secrets désormais révoqués.
 
+## GLS : preuves de livraison et alerte « sans premier scan » (28/09/2026)
+- Analyse des historiques GLS centralisée dans `supabase/functions/_shared/gls-analyse.ts` (module pur, tests Node : `node --test supabase/tests/*.test.mjs`).
+- **gls-sync v15** : une commande ne passe en « livré » que si **tous** ses colis ont une livraison client. Ne comptent pas : « delivered » après un « returned to sender », « delivered » final au dépôt de l'expéditeur (Garonor FR0093 / Noisy) pour un client hors IDF, dépôt en ParcelShop non retiré. Partiel ou retour → commande laissée non livrée, colonnes `gls_livraison_etat` / `gls_livraison_detail` (ex. « livraison partielle 2/3 ») + SMS à Borhen (anti-doublon `gls_alertes`). Mode audit lecture seule : `{"cmdIds":[...]}` ou `{"auditLivres":true,"jours":45}`. Les commandes déjà « livré » ne sont jamais modifiées.
+- **alerte-gls-sans-scan** : colis dont l'étiquette a ≥ 24 h sans aucun événement autre que `DATA_RECEIVED` → 1 SMS/jour à Borhen (8 colis max) + copie complète sur Telegram, 1 alerte max par colis et par jour (`gls_alertes`), cache des colis pris en charge (`gls_colis`). Crons `alerte-gls-sans-scan-semaine` (18h Paris lun-ven) et `-samedi` (10h Paris), corps `{"creneau":true}`. Ignorer un colis : note « SANS SCAN OK 00Lxxxxx » (ou « SANS SCAN OK » seul = toute la commande). Test : `{"dryRun":true}`.
+- Migration : `supabase/migrations/021_gls_preuves_livraison_avis_litiges.sql`.
+
+## Demandes d'avis : suspension pendant un litige ou un SAV (règle du 28/09/2026)
+- Code : `supabase/functions/_shared/avis-garde.ts` (+ `avis-gls.ts`), utilisé par `sms-avis` v2.0 et `sms-avis-relance` v2.1.
+- **Aucune demande ni relance** si : note « PAS D AVIS » (manuel = définitif), commande non livrée, livraison GLS partielle/retour (colonne ou relecture GLS en direct juste avant l'envoi), litige ouvert (`litige_statut` non vide et pas `indemnise`/`refuse`), SAV ouvert lié (commande `#SAV…` non livrée/non annulée dont la note cite « cmd origine #NNNN »).
+- **Reprise à la clôture** (litige clos — date posée automatiquement dans `litige_clos_at` par un déclencheur — et SAV liés livrés) : **une seule** demande d'avis à J+2 après la dernière clôture (fenêtre de 3 jours), **jamais de relance**. Si une demande était déjà partie avant le litige : rien de plus.
+- Le libellé « PAS D AVIS - litige/SAV ouvert (JJ/MM/AAAA). » est une **suspension provisoire** : il bloque tant qu'aucune clôture n'est prouvée, puis il est ignoré (le texte de la note n'est pas modifié). Tout autre « PAS D AVIS » reste une exclusion définitive (mécontentement non résolu).
+- Vérifier une liste : `sms-avis` / `sms-avis-relance` avec `{"cmdIds":["#NNNN",...]}` (toujours en test, rien n'est envoyé).
+
 ## Pièges connus
 - PATCH Supabase via PowerShell : encoder le corps en UTF-8 (`[Text.Encoding]::UTF8.GetBytes`) et URL-encoder `#` en `%23`.
 - Variables PowerShell insensibles à la casse (`$p` = `$P`) : ne pas réutiliser un nom pour deux valeurs (incident du 27/09 : chemin local publié à la place de la clé pendant 2 min).
