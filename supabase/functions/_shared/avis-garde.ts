@@ -14,9 +14,10 @@
 //     avec UNE SEULE demande d'avis à J+2 après la dernière clôture (fenêtre de
 //     3 jours J+2..J+4 pour rattraper un cron manqué), et AUCUNE relance.
 //     Si une demande avait déjà été envoyée avant le litige : rien de plus.
-//  3. Note : « PAS D AVIS - litige/SAV ouvert (JJ/MM/AAAA). » = suspension
-//     PROVISOIRE (ignorée une fois la clôture prouvée) ; tout autre « PAS D AVIS »
-//     = exclusion DÉFINITIVE (mécontentement non résolu, posé à la main).
+//  3. Note « PAS D AVIS » sous TOUTES ses formes (y compris le marqueur automatique
+//     « PAS D AVIS - litige/SAV ouvert (JJ/MM/AAAA). ») = exclusion DÉFINITIVE, même
+//     après clôture (consigne du 28/09/2026 soir ; avant : marqueur provisoire).
+//     La reprise J+2 ne concerne donc que les dossiers SANS cette note.
 // ════════════════════════════════════════════════════════════════════
 
 // deno-lint-ignore-file no-explicit-any
@@ -35,10 +36,13 @@ export function marqueurSuspension(instr: string | null | undefined): boolean {
   return new RegExp(RE_MARQUEUR_SUSPENSION.source, 'i').test(String(instr || ''));
 }
 
-/** Exclusion DÉFINITIVE (« PAS D'AVIS » manuel), le marqueur provisoire étant retiré avant le test. */
+/**
+ * Exclusion DÉFINITIVE : TOUTE note « PAS D'AVIS » (manuelle OU marqueur automatique du 28/09),
+ * même après la clôture du litige/SAV. Consigne Borhen du 28/09/2026 : la note « PAS D AVIS »
+ * reste définitive pour les demandes d'avis. Aucun traitement automatique ne l'efface.
+ */
 export function noteExclut(instr: string | null | undefined): boolean {
-  const sansMarqueur = String(instr || '').replace(RE_MARQUEUR_SUSPENSION, ' ');
-  const clean = sansMarqueur.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+  const clean = String(instr || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ');
   return /\b(noavis|no avis|sans avis|pas d avis|pas avis|pasdavis)\b/.test(clean);
 }
 

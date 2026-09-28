@@ -84,18 +84,23 @@ test('litige clos sans date de clôture → reste bloquée (pas de reprise hasar
   assert.match(evaluerAvis(cmd({ litige_statut: 'refuse' }), new Map()).bloque, /sans date/);
 });
 
-test('marqueur provisoire « PAS D AVIS - litige/SAV ouvert (28/09/2026). » : suspend, puis ignoré après clôture', async () => {
+test('marqueur automatique « PAS D AVIS - litige/SAV ouvert (28/09/2026). » : exclusion DÉFINITIVE, même après clôture (consigne 28/09 soir)', async () => {
   const { marqueurSuspension } = await import('../functions/_shared/avis-garde.ts');
   const note = 'PAS D AVIS - litige/SAV ouvert (28/09/2026). Commande site #1124.';
   assert.equal(marqueurSuspension(note), true);
-  assert.equal(noteExclut(note), false); // pas une exclusion définitive
-  // aucun dossier rattaché ni clôture prouvée -> reste suspendu
-  assert.match(evaluerAvis(cmd({ instr: note }), new Map()).bloque, /marqueur/);
-  // SAV lié livré -> reprise J+2, sans relance (historique)
+  assert.equal(noteExclut(note), true);
+  assert.match(evaluerAvis(cmd({ instr: note }), new Map()).bloque, /PAS D AVIS/);
+  // SAV lié livré (clôture prouvée) -> reste bloquée
   const idx = indexerSav([{ id: '#SAV9', statut: 'livré', instr: 'cmd origine #2000', date_livraison: '2026-09-29' }]);
-  const ev = evaluerAvis(cmd({ instr: note }), idx);
+  assert.match(evaluerAvis(cmd({ instr: note }), idx).bloque, /PAS D AVIS/);
+  // litige clos daté -> reste bloquée
+  assert.match(evaluerAvis(cmd({ instr: note, litige_statut: 'clos', litige_clos_at: '2026-09-30T10:00:00Z' }), new Map()).bloque, /PAS D AVIS/);
+});
+
+test('dossier SANS note PAS D AVIS : reprise J+2 après clôture (inchangé)', () => {
+  const idx = indexerSav([{ id: '#SAV9', statut: 'livré', instr: 'cmd origine #2000', date_livraison: '2026-09-29' }]);
+  const ev = evaluerAvis(cmd({}), idx);
   assert.equal(ev.bloque, null);
-  assert.equal(ev.historique, true);
   assert.equal(demandeDueAujourdhui('2026-09-19', ev, '2026-10-01'), 'oui');
 });
 
