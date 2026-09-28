@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : klaviyo-exclusion (v1 — 28/09/2026)
+// Edge Function : klaviyo-exclusion (v2 — 28/09/2026 soir)
 // ════════════════════════════════════════════════════════════════════
 // Tient à jour la liste Klaviyo « Maxiconfort - SAV ou litige en cours »
 // (KLAVIYO_LISTE_LITIGES, défaut VDLBXr). Les automatisations « relance panier »
@@ -26,7 +26,9 @@
 // (création sans abonnement), pour être exclu d'avance. Réconciliation : plus de 5 retraits
 // d'un coup = anomalie → rien n'est retiré, alerte. 2 échecs consécutifs de réconciliation →
 // les automatisations « panier » et « J+30 » passent en « manuel » (plus aucun envoi
-// automatique) + alerte ; elles repassent « live » à la première réconciliation réussie.
+// automatique) + UNE seule alerte (SMS + Telegram). v2 : AUCUNE remise en service automatique
+// (le devenir des e-mails mis en file pendant le mode manuel n'est pas vérifiable par l'API) ;
+// reprise uniquement par { reprendre: true, confirmeFileControlee: true } après contrôle de la file.
 // ════════════════════════════════════════════════════════════════════
 
 // deno-lint-ignore-file no-explicit-any
@@ -193,12 +195,25 @@ Deno.serve(async (req: Request) => {
   let body: any = {}; try { body = await req.json(); } catch { /* vide */ }
   const dryRun = body.dryRun === true || !!body.test;
   PREFIXE = body.simulerEchec || body.filtreFlowsTest ? '[TEST] ' : '';
-  const res: any = { ok: true, version: 'v1', mode: body.reconcile ? 'reconcile' : body.cmdId ? 'commande' : body.test ? 'test' : '?', dryRun };
+  const res: any = { ok: true, version: 'v2', mode: body.reconcile ? 'reconcile' : body.cmdId ? 'commande' : body.test ? 'test' : '?', dryRun };
   try {
     if (!KL_KEY && !body.test) throw new Error('secret KLAVIYO_API_KEY absent');
     if (body.simulerEchec) throw new Error('echec simule (test)');
     const { rows, remb, rembTous } = await chargerDonnees(body.test);
     const clients = analyser(rows, remb, rembTous);
+
+    // Reprise EXPLICITE après contrôle de la file d'attente (jamais automatique)
+    if (body.reprendre) {
+      const e = await etat();
+      const suspendus: string[] = e.flows_suspendus || [];
+      if (e.derniere_erreur) return json({ ...res, ok: false, error: 'synchronisation toujours en echec : reprise refusee' });
+      if (body.confirmeFileControlee !== true) return json({ ...res, ok: false, error: 'confirmeFileControlee:true requis (file d\'attente controlee)' });
+      const fait: any[] = [];
+      for (const id of suspendus) fait.push({ id, http: await statutFlow(id, 'live') });
+      await majEtat({ flows_suspendus: [], echecs_consecutifs: 0 });
+      await alerter(`KLAVIYO : ${fait.length} relance(s) remise(s) en service apres controle de la file d'attente.`, false);
+      return json({ ...res, mode: 'reprise', repris: fait });
+    }
 
     if (body.test) {
       res.clients = clients.map((c) => ({ cmds: c.cmds, ouvert: c.ouvert, raisons: c.raisons, nb_emails: c.emails.length, nb_tels: c.tels.length }));
@@ -233,11 +248,15 @@ Deno.serve(async (req: Request) => {
       } else if (!dryRun) await modifierListe(ajouts, retraits);
       if (!dryRun) {
         const e = await etat();
-        if ((e.flows_suspendus || []).length) {
-          for (const id of e.flows_suspendus) await statutFlow(id, 'live');
-          await alerter(`KLAVIYO : synchronisation retablie, ${e.flows_suspendus.length} relance(s) remise(s) en service.`, true);
+        const suspendus: string[] = e.flows_suspendus || [];
+        // v2 (28/09 soir) : PAS de remise en service automatique. Test du 28/09 : le devenir des
+        // e-mails mis en file pendant le mode « manuel » n'est pas vérifiable par l'API → on laisse
+        // les relances suspendues jusqu'à un contrôle de la file et une reprise explicite ({reprendre}).
+        if (suspendus.length && e.derniere_erreur) {
+          await alerter(`KLAVIYO : synchronisation SAV/litige retablie. Les ${suspendus.length} relance(s) RESTENT SUSPENDUES jusqu'au controle de la file d'attente (aucune reprise automatique).`, false);
         }
-        await majEtat({ echecs_consecutifs: 0, flows_suspendus: [], dernier_ok: new Date().toISOString(), derniere_erreur: null });
+        res.flows_suspendus = suspendus;
+        await majEtat({ echecs_consecutifs: 0, flows_suspendus: suspendus, dernier_ok: new Date().toISOString(), derniere_erreur: null });
       }
       res.duration_ms = Date.now() - t0;
       return json(res);
@@ -256,18 +275,17 @@ Deno.serve(async (req: Request) => {
             const fl = (await flowsProteges(body.filtreFlowsTest)).filter((f: any) => f.attributes.status === 'live');
             for (const f of fl) if ((await statutFlow(f.id, 'manual')) < 300) suspendus.push(f.id);
             res.flows_suspendus = suspendus;
-            await alerter(`KLAVIYO : synchronisation SAV/litige en echec (${n} fois : ${msg.slice(0, 80)}). ${suspendus.length} relance(s) suspendue(s) (mode manuel) pour eviter un envoi inadapte.`, true);
+            await alerter(`KLAVIYO : relances panier et J+30 SUSPENDUES (mode manuel) : la liste des clients en SAV/litige ne se met plus a jour (${msg.slice(0, 60)}). Aucune reprise automatique. Avant de les relancer : controler dans Klaviyo les e-mails en attente de revue (annuler ceux des clients en litige), puis demander la reprise.`, true);
           } catch (e2) {
             await alerter(`KLAVIYO : synchronisation SAV/litige en echec (${n} fois) ET suspension impossible (${String((e2 as any)?.message || e2).slice(0, 60)}). Suspendre les relances a la main.`, true);
           }
-        } else if (n === 1) {
-          await alerter(`KLAVIYO : 1er echec de la synchronisation SAV/litige (${msg.slice(0, 80)}). Nouvel essai dans 15 min ; suspension des relances au 2e echec.`, false);
         }
+        // 1er échec : silencieux (nouvel essai dans 15 min) ; une seule alerte, au moment de la suspension.
         await majEtat({ echecs_consecutifs: n, flows_suspendus: suspendus, derniere_erreur: msg.slice(0, 300) });
       } catch { /* */ }
-    } else if (body.cmdId) {
-      await alerter(`KLAVIYO : exclusion immediate impossible pour ${body.cmdId} (${msg.slice(0, 80)}). La reconciliation de 15 min reessaiera.`, false);
     }
+    // échec d'une exclusion immédiate ({cmdId}) : pas d'alerte (la réconciliation de 15 min la rattrape
+    // et c'est elle qui suspend les relances si la panne dure).
     res.duration_ms = Date.now() - t0;
     return json(res, 200);
   }
