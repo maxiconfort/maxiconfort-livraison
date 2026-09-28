@@ -266,6 +266,31 @@ export function numerosColis(tracking: string | null | undefined): string[] {
 }
 
 /**
+ * Marqueur de note générique : « <MOT> » seul → toute la commande ; suivi de n° → ces colis.
+ * Ex. marqueurNote(instr, 'VERIF DEPOT') pour « VERIF DEPOT 00L2QLV5 00L2QLV6 ».
+ */
+export function marqueurNote(note: string | null | undefined, mot: string): null | 'tout' | string[] {
+  const txt = String(note || '').toUpperCase();
+  const motRe = mot.toUpperCase().trim().split(/\s+/).join('[\\s_-]*');
+  const re = new RegExp(motRe + '\\b([^\\n]*)', 'g');
+  let m: RegExpExecArray | null;
+  let trouve = false;
+  const ids: string[] = [];
+  while ((m = re.exec(txt))) {
+    trouve = true;
+    const n = (m[1] || '').match(/\b[0-9A-Z]{8,}\b/g) || [];
+    for (const x of n) if (/\d/.test(x)) ids.push(x);
+    if (!n.some((x) => /\d/.test(x))) return 'tout';
+  }
+  return trouve ? ids : null;
+}
+
+export function colisMarque(note: string | null | undefined, mot: string, trackId: string): boolean {
+  const m = marqueurNote(note, mot);
+  return m === 'tout' || (Array.isArray(m) && m.includes(trackId.toUpperCase()));
+}
+
+/**
  * Mot-clé d'exclusion de l'alerte « sans premier scan » dans la note.
  * « SANS SCAN OK » seul → toute la commande ; suivi de n° → ces colis seulement.
  * Retourne null (pas d'exclusion), 'tout', ou la liste des n° exclus.
