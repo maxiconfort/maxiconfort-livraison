@@ -20,7 +20,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 
 // ── Réglages ────────────────────────────────────────────────────────
 const IMPRIMANTE = process.env.IMPRIMANTE_GLS || 'PM-344-WF (WiFi)';
@@ -123,16 +123,41 @@ async function marquerImprimee(id, ok, detail) {
 // et l'envoie au pilote de l'imprimante sur le papier 4x6". Code 0 + "OK ..." = envoyé au spouleur.
 const SCRIPT_IMPRESSION = path.join(__dirname, 'imprimer-pdf.ps1');
 function moteurImpression() { return fs.existsSync(SCRIPT_IMPRESSION) ? { nom: 'Windows natif' } : null; }
+// 29/09/2026 : l'impression était lancée en spawnSync — donc BLOQUANTE. Le 29/09 à 10h09
+// le PowerShell d'impression a disparu sans rendre la main : spawnSync n'est jamais
+// revenu (son délai de 5 min n'a rien tué), l'agent est resté figé, et comme le chien de
+// garde est un timer, il ne pouvait pas se déclencher non plus (boucle d'événements
+// bloquée) — la surveillance externe ne voyait qu'un process node bien vivant.
+// Désormais : spawn ASYNCHRONE + arrêt forcé de l'arbre de processus (taskkill /T /F).
+// L'agent garde la main, donc le chien de garde peut faire son travail.
+const DELAI_IMPRESSION_MS = 300000; // 5 min (PC chargé = rendu PDF lent)
 function imprimerPdf(fichier) {
-  if (!moteurImpression()) throw new Error(`Script d'impression introuvable : ${SCRIPT_IMPRESSION}`);
-  // 21/09/2026 : 120 s ne suffisaient pas quand le PC est chargé (3 échecs ETIMEDOUT
-  // alors que la même impression lancée à la main prenait 6-8 s) → 5 min.
-  const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT_IMPRESSION, '-Fichier', fichier, '-Imprimante', IMPRIMANTE], { encoding: 'utf8', timeout: 300000, windowsHide: true });
-  const sortie = `${r.stdout || ''}${r.stderr || ''}`.trim();
-  if (r.error) throw r.error;
-  if (r.status !== 0 || !/^OK /m.test(sortie)) throw new Error(`impression Windows code ${r.status} : ${sortie.slice(0, 300)}`);
-  log(`   ${sortie.split(/\r?\n/).find((l) => l.startsWith('OK '))}`);
-  return 'Windows natif';
+  if (!moteurImpression()) return Promise.reject(new Error(`Script d'impression introuvable : ${SCRIPT_IMPRESSION}`));
+  return new Promise((resolve, reject) => {
+    const p = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT_IMPRESSION, '-Fichier', fichier, '-Imprimante', IMPRIMANTE], { windowsHide: true });
+    let sortie = '';
+    let fini = false;
+    p.stdout.on('data', (d) => { sortie += d; });
+    p.stderr.on('data', (d) => { sortie += d; });
+    const terminer = (fn, arg) => { if (fini) return; fini = true; clearTimeout(minuteur); clearTimeout(grace); fn(arg); };
+    // Un petit-fils qui garde le tuyau ouvert empêcherait 'close' : on se base sur 'exit'
+    // (déclenché dès que le processus se termine) avec 2 s pour ramasser la sortie.
+    let grace = null;
+    p.on('exit', (code) => {
+      grace = setTimeout(() => {
+        const txt = sortie.trim();
+        if (code !== 0 || !/^OK /m.test(txt)) return terminer(reject, new Error(`impression Windows code ${code} : ${txt.slice(0, 300)}`));
+        log(`   ${txt.split(/\r?\n/).find((l) => l.startsWith('OK '))}`);
+        terminer(resolve, 'Windows natif');
+      }, 2000);
+    });
+    p.on('error', (e) => terminer(reject, e));
+    const minuteur = setTimeout(() => {
+      try { spawn('taskkill', ['/PID', String(p.pid), '/T', '/F'], { windowsHide: true }); } catch (_e) { /* rien */ }
+      // Si même 'exit' n'arrive pas après le taskkill, on abandonne quand même.
+      setTimeout(() => terminer(reject, new Error(`impression bloquée plus de ${DELAI_IMPRESSION_MS / 60000} min — processus arrêté de force`)), 10000);
+    }, DELAI_IMPRESSION_MS);
+  });
 }
 
 // ── Boucle principale ───────────────────────────────────────────────
@@ -167,7 +192,7 @@ async function tour() {
         if (!b64) { log(`   PDF absent en base pour ${cmd.id}, réessai au prochain tour`); continue; }
         const fichier = path.join(DOSSIER_SPOOL, `GLS_${cmd.id.replace(/[^A-Za-z0-9_-]/g, '')}.pdf`);
         fs.writeFileSync(fichier, Buffer.from(b64, 'base64'));
-        const moteur = imprimerPdf(fichier);
+        const moteur = await imprimerPdf(fichier);
         await marquerImprimee(cmd.id, true, `   ✅ imprimée via ${moteur} sur "${IMPRIMANTE}" (${Math.round(fs.statSync(fichier).size / 1024)} Ko)`);
         delete etat.echecs[cmd.id];
       } catch (e) {
