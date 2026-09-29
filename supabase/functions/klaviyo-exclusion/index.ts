@@ -202,6 +202,23 @@ Deno.serve(async (req: Request) => {
     const { rows, remb, rembTous } = await chargerDonnees(body.test);
     const clients = analyser(rows, remb, rembTous);
 
+    // Vérification SERVEUR qu'un contrôle programmé (tâche Claude, qui ne tourne que si l'app est
+    // ouverte) a bien laissé sa trace dans gls_alertes (type 'klaviyo-controle', cle '<jour>-<etape>').
+    // Sinon : SMS + Telegram avec la procédure manuelle. Ne fait rien un autre jour que <jour>.
+    if (body.verifControle) {
+      const { jour, etape } = body.verifControle;
+      const auj = new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' });
+      if (auj !== jour) return json({ ...res, mode: 'verif', info: 'autre jour, rien a faire' });
+      const { data } = await sb.from('gls_alertes').select('cle').eq('type', 'klaviyo-controle').eq('cle', `${jour}-${etape}`).limit(1);
+      if (data && data.length) return json({ ...res, mode: 'verif', trace: true });
+      const court = etape === 'demarre'
+        ? "KLAVIYO : le controle de 9h n'a PAS tourne (app Claude fermee ?). Ouvre l'app Claude et ecris : controle Klaviyo. Les 4 relances restent en manuel, rien ne part."
+        : "KLAVIYO : le controle de 9h n'est PAS termine. Ouvre l'app Claude et ecris : controle Klaviyo. Les relances restent en manuel.";
+      await alerter(court, true);
+      await alerter("PROCEDURE MANUELLE KLAVIYO (si l'app Claude ne peut pas tourner) :\n1. Klaviyo > Parametres > Facturation : le compteur d'e-mails doit etre a 0 sur 500.\n2. Klaviyo > Flux : Panier, Bienvenue, J+30 et J+2 doivent etre en « Manuel ». Si l'un est « Actif », le remettre en Manuel.\n3. NE RIEN remettre en « Actif » et n'envoyer aucun message de la file.\n4. Rouvrir l'app Claude des que possible pour les tests.", false);
+      return json({ ...res, mode: 'verif', trace: false, alerte: true });
+    }
+
     // Reprise EXPLICITE après contrôle de la file d'attente (jamais automatique)
     if (body.reprendre) {
       const e = await etat();
