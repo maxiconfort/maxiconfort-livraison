@@ -20,11 +20,26 @@
 //      - Insère via upsert (resolution=merge-duplicates)
 //   4. Met à jour `last_shopify_sync` à now()
 //   5. Retourne { imported, skipped, errors }
+//
+// v7 (29/09/2026, PAS ENCORE DÉPLOYÉE — à déployer après le comptage du stock) :
+//   (a) lignes[].produitId renseigné d'après la variante Shopify (table
+//       stock_correspondance) -> les ventes du site déduisent enfin le stock de l'app
+//       à la livraison (un ensemble déduit ses composants). Variante non reliée -> null
+//       (comportement d'avant).
+//   (b) annulations propagées : commande déjà importée puis annulée sur Shopify ->
+//       statut 'annulé' + « Annulée sur Shopify le … » dans instr, si elle n'est ni livrée
+//       ni annulée. Déjà livrée -> rien n'est modifié, elle est listée (annuleesLivrees).
+//       Aucun recrédit de stock côté serveur (stock_deduit=false avant livraison) ; si le
+//       stock a déjà été déduit sans livraison -> rien n'est modifié, listée (aTraiter).
+//       Une commande annulée n'est plus jamais importée.
+//   (c) { dryRun: true, jours?: N } : liste ce qui serait importé / annulé, n'écrit RIEN
+//       et ne bouge pas le curseur. { jours: N } élargit la fenêtre (rattrapage).
 // ════════════════════════════════════════════════════════════════════
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
+import { appelInterne, refus } from '../_shared/controle-appelant.ts';
+import { mapLignes, decisionAnnulation, type Correspondance } from '../_shared/stock-logique.ts';
 
 const SHOPIFY_DOMAIN  = Deno.env.get('SHOPIFY_STORE_DOMAIN') || '';
 const SHOPIFY_TOKEN   = Deno.env.get('SHOPIFY_ACCESS_TOKEN') || '';
@@ -104,20 +119,7 @@ function mapStatutPaie(financial: string): string {
   return 'Non payé';
 }
 
-function mapLignes(items: any[]): any[] {
-  if (!items?.length) return [];
-  return items.map((li: any) => ({
-    produitId: null,
-    produit: li.title + (li.variant_title ? ' — ' + li.variant_title : ''),
-    qte: Number(li.quantity) || 1,
-    prixUnit: Number(li.price) || 0,
-    prixBrut: (Number(li.price) || 0) * (Number(li.quantity) || 1),
-    remiseLigne: 0,
-    remiseVal: 0,
-    remiseType: 'pct',
-    sousTotal: (Number(li.price) || 0) * (Number(li.quantity) || 1),
-  }));
-}
+// v7 : mapLignes est dans ../_shared/stock-logique.ts (produitId via stock_correspondance)
 
 // v6.5 (19/09/2026) : moyen de paiement manuel « Paiement à la livraison (Île-de-France
 // uniquement) » activé sur le site. Ces commandes restent « pending » dans Shopify : il
@@ -129,9 +131,9 @@ function estPaiementLivraison(o: any): boolean {
   return (o.payment_gateway_names || []).some((g: string) => /livraison/i.test(String(g)));
 }
 
-function mapShopifyToCmd(o: any, appId: string) {
+function mapShopifyToCmd(o: any, appId: string, corr: Correspondance) {
   const cod = estPaiementLivraison(o);
-  const lignes = mapLignes(o.line_items || []);
+  const lignes = mapLignes(o.line_items || [], corr); // v7 : produitId via stock_correspondance
   const produitConcat = lignes.map(l => l.qte + '× ' + l.produit).join(' | ');
   // v6 (18/06/2026) : MONTANT = produits seuls (subtotal_price, APRES remise, HORS frais
   // de port et HORS TVA séparée). AVANT : current_total_price incluait les frais de
@@ -191,13 +193,38 @@ function mapShopifyToCmd(o: any, appId: string) {
   };
 }
 
-async function commandeDejaImportee(shopifyId: string): Promise<boolean> {
-  const { data } = await sb
+// v7 : renvoie la commande de l'app (ou null) — sert au dédoublonnage ET aux annulations
+async function commandeImportee(shopifyId: string): Promise<any | null> {
+  const { data, error } = await sb
     .from('commandes')
-    .select('id')
+    .select('id, statut, stock_deduit, instr')
     .eq('ref_marketplace', shopifyId)
     .limit(1);
-  return !!(data && data.length);
+  if (error) throw new Error('lecture commandes : ' + error.message); // jamais d'import en double sur erreur
+  return data && data.length ? data[0] : null;
+}
+
+// v7 : correspondance variante Shopify -> produit app (lue une fois par exécution).
+// En cas d'erreur de lecture : Map vide -> produitId null (comportement v6), import non bloqué.
+async function chargerCorrespondance(): Promise<{ corr: Correspondance; erreur?: string }> {
+  const { data, error } = await sb.from('stock_correspondance')
+    .select('shopify_variant_id, app_produit_id').not('app_produit_id', 'is', null);
+  if (error) return { corr: new Map(), erreur: error.message };
+  return { corr: new Map((data || []).map((r: any) => [String(r.shopify_variant_id), String(r.app_produit_id)])) };
+}
+
+// v7 : toutes les pages (en-tête Link rel="next") — la v6 s'arrêtait à 250 commandes
+async function commandesShopify(url: string): Promise<any[]> {
+  const out: any[] = [];
+  let u: string | null = url;
+  for (let page = 0; u && page < 20; page++) {
+    const r: Response = await fetch(u, { headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN, 'Accept': 'application/json' } });
+    if (!r.ok) throw new Error(`Shopify HTTP ${r.status} : ${(await r.text()).slice(0, 300)}`);
+    out.push(...(((await r.json()).orders) || []));
+    const m = (r.headers.get('link') || '').match(/<([^>]+)>;\s*rel="next"/);
+    u = m ? m[1] : null;
+  }
+  return out;
 }
 
 // v6 (18/06/2026) : prochain numéro de commande APP = max(numéros existants) + 1.
@@ -231,14 +258,25 @@ Deno.serve(async (req: Request) => {
   }
 
   const startTime = Date.now();
-  const result = { imported: 0, skipped: 0, errors: 0, errorDetails: [] as string[] };
+  const result = {
+    imported: 0, skipped: 0, errors: 0, errorDetails: [] as string[],
+    // v7
+    lignesImportees: 0, lignesAvecProduitId: 0,
+    lignesSansCorrespondance: [] as string[],           // « #1164 : Ensemble … — Blanc »
+    annulees: [] as string[],                           // commandes app passées en 'annulé'
+    annuleesLivrees: [] as string[],                    // annulées sur Shopify mais déjà livrées : rien modifié
+    aTraiter: [] as string[],                           // stock déjà déduit sans livraison : rien modifié
+    correspondanceErreur: undefined as string | undefined,
+  };
+  const body: any = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
+  const dryRun = body?.dryRun === true;
+  const jours = Number(body?.jours) > 0 ? Math.min(Number(body.jours), 90) : 0;
 
   // v6.3 : mode DIAGNOSTIC — { diag: true, heures?: 72 } liste TOUTES les commandes
   // Shopify de la periode (sans filtre financial_status) avec leur statut de paiement et
   // leur presence en base. N'importe RIEN, ne touche pas au curseur. Sert a repondre a
   // « telle commande du site n'est pas remontee » : on voit si elle est juste non payee.
   try {
-    const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
     if (body?.diag) {
       const heures = Number(body.heures) > 0 ? Number(body.heures) : 72;
       const depuis = new Date(Date.now() - heures * 3600 * 1000).toISOString();
@@ -265,8 +303,10 @@ Deno.serve(async (req: Request) => {
   } catch (_e) { /* mode normal */ }
 
   try {
-    // 1. Date de derniere sync
-    const sinceIso = await getLastSync();
+    // 1. Date de derniere sync (v7 : { jours: N } -> fenêtre élargie, rattrapage / test)
+    const sinceIso = jours ? new Date(Date.now() - jours * 86400000).toISOString() : await getLastSync();
+    const { corr, erreur: errCorr } = await chargerCorrespondance();
+    if (errCorr) result.correspondanceErreur = errCorr;
 
     // 2. Appeler Shopify
     // Filtres :
@@ -280,36 +320,65 @@ Deno.serve(async (req: Request) => {
       `&financial_status=any` +
       `&status=any&limit=250`;
 
-    const resp = await fetch(url, {
-      headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN, 'Accept': 'application/json' }
-    });
-    if (!resp.ok) {
-      return new Response(JSON.stringify({
-        error: 'Shopify API error',
-        status: resp.status,
-        body: await resp.text()
-      }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+    let orders: any[];
+    try {
+      orders = await commandesShopify(url);
+    } catch (e: any) {
+      return new Response(JSON.stringify({ error: 'Shopify API error', detail: e.message }),
+        { status: 502, headers: { 'Content-Type': 'application/json' } });
     }
-    const json = await resp.json();
-    const orders: any[] = json.orders || [];
 
     // v6 : numérotation APP (max+1) pour les imports -> plus de collision/écrasement.
     // On lit le max UNE fois, puis on incrémente localement pour chaque NOUVELLE commande.
     let prochainNum = (await maxNumeroCommande()) + 1;
+    const aImporter: string[] = []; // dryRun : ce qui serait importé
 
     // 3. Pour chaque commande, mapper + upsert si pas deja en BD
     for (const o of orders) {
       try {
         const shopifyId = String(o.id);
+        const enBase = await commandeImportee(shopifyId);
+
+        // v7 (b) : propagation des annulations (AVANT le filtre de paiement : une commande
+        // annulée passe en « refunded/voided » et était ignorée par la v6).
+        if (o.cancelled_at) {
+          result.skipped++;
+          if (!enBase) continue; // annulée avant import : on ne l'importe jamais
+          const d = decisionAnnulation(o, enBase);
+          const lib = `${enBase.id} (site ${o.name})`;
+          if (d.action === 'deja-livree') result.annuleesLivrees.push(lib);
+          else if (d.action === 'stock-deja-deduit') result.aTraiter.push(lib + ' : stock déjà déduit, à recréditer dans l\'app');
+          else if (d.action === 'annuler') {
+            if (!dryRun) {
+              const { error } = await sb.from('commandes')
+                .update({ statut: 'annulé', instr: d.instr, updated_at: new Date().toISOString() })
+                .eq('id', enBase.id).not('statut', 'in', '("livré","annulé")'); // garde : jamais une livrée
+              if (error) { result.errors++; result.errorDetails.push(`${o.name}: annulation : ${error.message}`); continue; }
+            }
+            result.annulees.push(lib + ' — annulée sur Shopify le ' + String(o.cancelled_at).slice(0, 10));
+          }
+          continue;
+        }
+
         if (o.financial_status !== 'paid' && !estPaiementLivraison(o)) {
           result.skipped++;
           continue;
         }
-        if (await commandeDejaImportee(shopifyId)) {
+        if (enBase) {
           result.skipped++;
           continue;
         }
-        const cmd = mapShopifyToCmd(o, '#' + (prochainNum++));
+        const cmd = mapShopifyToCmd(o, '#' + (prochainNum++), corr);
+        for (const l of cmd.lignes) {
+          result.lignesImportees++;
+          if (l.produitId) result.lignesAvecProduitId++;
+          else result.lignesSansCorrespondance.push(`${o.name} : ${l.produit}`);
+        }
+        if (dryRun) {
+          aImporter.push(`${o.name} -> ${cmd.id} : ` + cmd.lignes.map((l: any) => `${l.qte}× ${l.produit} [${l.produitId || 'sans produitId'}]`).join(' | '));
+          result.imported++;
+          continue;
+        }
         const { error } = await sb.from('commandes').upsert(cmd, { onConflict: 'id' });
         if (error) {
           result.errors++;
@@ -323,11 +392,14 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // 4. Mettre a jour le timestamp de derniere sync
-    await setLastSync(new Date().toISOString());
+    // 4. Mettre a jour le timestamp de derniere sync (jamais en dryRun ni en rattrapage)
+    //    v7 : heure de DÉBUT d'exécution -> une commande modifiée pendant l'exécution
+    //    sera revue au passage suivant (la v6 prenait l'heure de fin).
+    if (!dryRun && !jours) await setLastSync(new Date(startTime).toISOString());
 
     return new Response(JSON.stringify({
       ...result,
+      ...(dryRun ? { dryRun: true, aImporter } : {}),
       since: sinceIso,
       total_shopify: orders.length,
       duration_ms: Date.now() - startTime,
