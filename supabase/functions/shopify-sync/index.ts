@@ -23,7 +23,7 @@
 //
 // v7 (29/09/2026, PAS ENCORE DÉPLOYÉE — à déployer après le comptage du stock) :
 //   (a) lignes[].produitId renseigné d'après la variante Shopify (table
-//       stock_correspondance) -> les ventes du site déduisent enfin le stock de l'app
+//       stock_correspondance, fiabilite = certaine uniquement) -> les ventes du site déduisent enfin le stock de l'app
 //       à la livraison (un ensemble déduit ses composants). Variante non reliée -> null
 //       (comportement d'avant).
 //   (b) annulations propagées : commande déjà importée puis annulée sur Shopify ->
@@ -39,7 +39,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { appelInterne, refus } from '../_shared/controle-appelant.ts';
-import { mapLignes, decisionAnnulation, type Correspondance } from '../_shared/stock-logique.ts';
+import { mapLignes, decisionAnnulation, correspondanceCertaine, type Correspondance } from '../_shared/stock-logique.ts';
 
 const SHOPIFY_DOMAIN  = Deno.env.get('SHOPIFY_STORE_DOMAIN') || '';
 const SHOPIFY_TOKEN   = Deno.env.get('SHOPIFY_ACCESS_TOKEN') || '';
@@ -205,12 +205,14 @@ async function commandeImportee(shopifyId: string): Promise<any | null> {
 }
 
 // v7 : correspondance variante Shopify -> produit app (lue une fois par exécution).
+// SEULES les correspondances fiabilite='certaine' sont utilisées (30/09) : une correspondance
+// incertaine ou absente laisse produitId à null (jamais de déduction sur un produit supposé).
 // En cas d'erreur de lecture : Map vide -> produitId null (comportement v6), import non bloqué.
 async function chargerCorrespondance(): Promise<{ corr: Correspondance; erreur?: string }> {
   const { data, error } = await sb.from('stock_correspondance')
-    .select('shopify_variant_id, app_produit_id').not('app_produit_id', 'is', null);
+    .select('shopify_variant_id, app_produit_id, fiabilite').eq('fiabilite', 'certaine');
   if (error) return { corr: new Map(), erreur: error.message };
-  return { corr: new Map((data || []).map((r: any) => [String(r.shopify_variant_id), String(r.app_produit_id)])) };
+  return { corr: correspondanceCertaine(data || []) };
 }
 
 // v7 : toutes les pages (en-tête Link rel="next") — la v6 s'arrêtait à 250 commandes
