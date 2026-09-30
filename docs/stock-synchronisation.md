@@ -2,6 +2,8 @@
 
 État au 30/09/2026 : **préparé, rien n'est écrit dans Shopify**. La référence est un
 **comptage physique horodaté** ; Shopify reçoit seulement la quantité « disponible à la vente ».
+Correspondances : 55 variantes actives sur 62 reliées `certaine` ; 96 % des lignes des commandes
+du site des 30 derniers jours reconnues (voir « Fiches créées le 30/09/2026 »).
 
 ## Pièces
 
@@ -63,7 +65,7 @@ tables du tableau de bord Supabase y a accès). Aucune donnée client.
 2. **Saisir les lignes** (`stock_comptage_lignes`) : une ligne par produit **simple** de l'app
    (matelas, sommier, lit, canapé…), `quantite` comptée. Ne pas compter les ensembles : ils sont
    calculés depuis leurs composants. Pour les doublons de l'app, compter sur le produit relié
-   (pr11, pr12, pr31/pr32 à trancher).
+   (pr11, pr12, pr31). Les sommiers à lattes créés le 30/09 se comptent par couleur.
 3. **Aperçu** (rien écrit) : `{"apercu_comptage": <id>}` → liste `a_verifier` / `dans_stock`.
    Puis `{"comptage_id": <id>}` → tableau complet (brouillon, non figé).
 4. **Valider** : `{"valider_comptage": <id>, "confirme": "valider"}` → instantané figé, comptage
@@ -84,13 +86,68 @@ Tester la chaîne sans comptage : `{"simulation": {"debut": "...", "fin": "..."}
 
 ## À faire avant la première écriture
 
-1. Créer dans l'app les composants manquants (sommiers à lattes contour cuir PU par taille et
-   couleur) et donner des composants exacts aux ensembles concernés ; puis passer les
-   correspondances concernées en `certaine` (avec `motif`).
+1. ~~Créer les sommiers à lattes et les ensembles du site~~ : fait le 30/09 (voir ci-dessous).
+   Reste : ensembles 90×190 et 90×200 (fiche Shopify à corriger), canapé Beige, lit DUO.
 2. Relier les lignes de commande non reconnues (alertes `stock-ligne`).
 3. Déployer `shopify-sync` v7 :
    `npx supabase@latest functions deploy shopify-sync --project-ref jmvfjtnmebstkzcfnlgp --no-verify-jwt --use-api`
 4. Comptage (procédure ci-dessus), puis écriture. Cron éventuel plus tard, pas maintenant.
+
+## Fiches créées le 30/09/2026 (références Shopify)
+
+Chaque fiche a été créée depuis une variante Shopify active (id et SKU dans `remarque`), stock 0
+(le stock réel vient du comptage). `dim` porte « (lattes, couleur) » : cela empêche la
+« substitution auto » du navigateur (même catégorie + même dimension) de déduire un sommier
+tapissier, ou l'autre couleur, à la place d'un sommier à lattes.
+
+**Sommiers à lattes contour cuir PU** (correspondance `certaine` : identité variante/SKU)
+
+| Fiche app | Variante Shopify | SKU |
+|---|---|---|
+| pr1790762534967 — 90×190 Noir | 62992955834698 | SOM-LAT-90X190-NOIR |
+| pr1790762534968 — 90×190 Blanc | 62992955867466 | SOM-LAT-90X190-BLANC |
+| pr1790762534969 — 90×200 Blanc | 62992956129610 | SOM-LAT-90X200-BLANC |
+| pr1790762534971 — 120×190 Noir | 62992956621130 | SOM-LAT-120X190-NOIR |
+| pr1790762534972 — 120×190 Blanc | 62992956653898 | SOM-LAT-120X190-BLANC |
+| pr1790762534973 — 140×190 Noir | 62992956916042 | SOM-LAT-140X190-NOIR |
+| pr1790762534974 — 140×190 Blanc | 62992956948810 | SOM-LAT-140X190-BLANC |
+| pr1790762534975 — 140×200 Noir | 62992957768010 | SOM-LAT-140X200-NOIR |
+| pr1790762534976 — 140×200 Blanc | 62992957800778 | SOM-LAT-140X200-BLANC |
+| pr1790762534977 — 160×200 Noir | 62992958128458 | SOM-LAT-160X200-NOIR |
+| pr1790762534978 — 160×200 Blanc | 62992958161226 | SOM-LAT-160X200-BLANC |
+| pr1790762534970 — 180×200 Noir | 62992958751050 | SOM-LAT-180X200-NOIR |
+
+**Ensembles du site** (« Ensemble site … », cat `Ensemble`, à ne pas compter). Ce ne sont pas
+des bundles Shopify natifs (`requiresComponents` = false, aucun composant) : la preuve est la
+fiche produit (blocs « Le matelas inclus » : épaisseur + dimension ; « Le sommier inclus » :
+sommier à lattes, contour cuir PU noir ou blanc, dimension) + l'option « Coloris du sommier ».
+
+| Fiches app (Blanc / Noir) | SKU | Composants |
+|---|---|---|
+| pr1790762534983 / pr1790762534984 | ENS-120X190-20-LAT-B / -N | pr10 + sommier 120×190 B / N |
+| pr1790762534979 / pr1790762534980 | ENS-140X190-20-LAT-B / -N | pr11 + sommier 140×190 B / N |
+| pr1790762534981 / pr1790762534982 | ENS-140X190-15-LAT-B / -N | pr1779102614273 + sommier 140×190 B / N |
+| pr1790762534985 / pr1790762534986 | ENS-140X200-20-LAT-B / -N | pr1779883554429 + sommier 140×200 B / N |
+| pr1790762534987 / pr1790762534988 | ENS-160X200-20-LAT-B / -N | pr12 + sommier 160×200 B / N |
+
+Les ensembles de l'app pr06, pr08 et pr1780615649 (aussi utilisés pour Leboncoin) ne sont
+**pas** modifiés : aucune preuve du sommier réellement vendu sur ce canal.
+
+**En attente** (`incertaine` / `absente`, alerte maintenue) :
+- Ensembles 90×190 (B/N) et 90×200 15 cm / 20 cm (B) : la fiche Shopify se contredit (bloc
+  sommier « Contour : Tissu », méta-description « cuir PU »). Corriger la fiche, puis relier à
+  une fiche « Ensemble site » [matelas + sommier à lattes de la couleur] et passer `certaine`.
+- Canapé Beige : aucun canapé Beige dans l'app (ne pas relier au Marron pr02).
+- Lit superposé DUO et pack DUO : couleur non indiquée sur Shopify.
+
+**Doublons** (rien supprimé) : compter et relier sur pr11 et pr12 (composants de tous les
+ensembles, commandes ouvertes, correspondances) ; prnew1780002607 / prnew1780002609 sont
+inactifs et référencés nulle part. pr31 / pr32 : garder pr31 (1 commande ouverte, 10 au total) ;
+pr32 n'a aucune commande ouverte ni rôle de composant (stock app 2 : à reporter au comptage).
+
+**Alertes** : `gls_alertes` n'a pas d'état « fermée » ; les alertes des variantes devenues
+`certaine` (et les alertes `stock-ligne` qui les citaient) ont été préfixées
+`[RÉSOLUE 30/09/2026 …]`, sans suppression.
 
 ## Revenir en arrière
 
