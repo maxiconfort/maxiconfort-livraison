@@ -1,6 +1,11 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis-relance (v2.1 — 28/09/2026)
+// Edge Function : sms-avis-relance (v2.2 — 02/10/2026)
 // ════════════════════════════════════════════════════════════════════
+// v2.2 (02/10/2026) : meme garde que sms-avis v2.1 — une etape de relance
+//   n'est jamais envoyee 2 fois au meme NUMERO en 60 j (sms_historique,
+//   commandes multiples d'un client comprises), arret apres 3 echecs OVH ;
+//   pas de relance si stpaie != « Payé » ou colis GLS jamais scanne / partiel.
+//
 // v2.1 (28/09/2026) : AUCUNE relance pour une commande qui a (ou a eu) un
 //   litige ou un SAV lié, ou une livraison GLS partielle/retour
 //   (_shared/avis-garde.ts). Après clôture : seule la demande unique de
@@ -36,7 +41,9 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { appelInterne, refus } from '../_shared/controle-appelant.ts';
-import { evaluerAvis, indexerSav, noteExclut } from '../_shared/avis-garde.ts';
+import {
+  ajouterJours, DELAI_ANTI_DOUBLON_JOURS, evaluerAvis, gardeHistorique, indexerSav, noteExclut, type LigneHisto,
+} from '../_shared/avis-garde.ts';
 import { livraisonGlsContestee } from '../_shared/avis-gls.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
@@ -63,6 +70,15 @@ const CORS = {
   'Access-Control-Allow-Headers': 'authorization, content-type, apikey',
   'Content-Type': 'application/json',
 };
+
+// v2.1 (02/10/2026) : journal durable des SMS d'avis (anti-doublon par NUMERO, 60 j)
+async function chargerHistoAvis(aujourdhui: string): Promise<LigneHisto[]> {
+  const { data, error } = await sb.from('sms_historique').select('tel,type_sms,statut,date_sms')
+    .in('type_sms', ['avis', 'avis-relance', 'avis-relance2'])
+    .gte('date_sms', ajouterJours(aujourdhui, -DELAI_ANTI_DOUBLON_JOURS)).limit(5000);
+  if (error) throw new Error('select sms_historique failed: ' + error.message);
+  return (data || []) as LigneHisto[];
+}
 
 function toLocalDateStr(d: Date): string {
   const utc = d.getTime() + d.getTimezoneOffset() * 60000;
@@ -102,6 +118,11 @@ Deno.serve(async (req: Request) => {
     .select('id,statut,instr,date_livraison,updated_at').ilike('id', '%sav%').neq('statut', 'annulé');
   if (errSav) return new Response(JSON.stringify({ error: 'select SAV failed', details: errSav.message }), { status: 500, headers: CORS });
   const savIdx = indexerSav(savs || []);
+  const aujourdhui = new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' });
+  let histo: LigneHisto[];
+  try { histo = await chargerHistoAvis(aujourdhui); } catch (e: any) {
+    return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: CORS });
+  }
 
   let scanned = 0, sent = 0, skipped = 0, failed = 0;
   const details: any[] = [];
@@ -122,7 +143,7 @@ Deno.serve(async (req: Request) => {
     fenetres.push({ type: etape.type, jours: etape.jours, dateMin, dateMax });
 
     const q0 = sb.from('commandes')
-      .select('id,client,tel,statut,transporteur,tracking_transporteur,sms_envoyes,date_livraison,instr,litige_statut,litige_clos_at,gls_livraison_etat,gls_livraison_detail')
+      .select('id,client,tel,statut,stpaie,transporteur,tracking_transporteur,sms_envoyes,date_livraison,instr,litige_statut,litige_clos_at,gls_livraison_etat,gls_livraison_detail')
       ;
     const { data: cmds, error } = testIds
       ? await q0.in('id', testIds)
@@ -171,6 +192,11 @@ Deno.serve(async (req: Request) => {
       if (dejaEnvoyes.some((e: any) => e.type === etape.type)) {
         skipped++; details.push({ ...base, action: 'skip_deja_envoye' }); continue;
       }
+      // v2.2 : source durable sms_historique (meme etape deja envoyee a ce numero < 60 j)
+      const dejaNumero = gardeHistorique(etape.type, tel, histo, aujourdhui);
+      if (dejaNumero) {
+        skipped++; details.push({ ...base, action: 'skip_doublon_numero', motif: dejaNumero, client: c.client }); continue;
+      }
       // v2.1 : client GLS -> relecture des colis chez GLS (faux livre / partiel / retour)
       const contestee = await livraisonGlsContestee(c);
       if (contestee) {
@@ -179,6 +205,7 @@ Deno.serve(async (req: Request) => {
 
       if (dryRun) {
         sent++;
+        histo.push({ tel, type_sms: etape.type, statut: 'envoyé', date_sms: aujourdhui });
         details.push({ ...base, action: 'would_send', client: c.client, to: tel });
         continue;
       }
@@ -190,6 +217,7 @@ Deno.serve(async (req: Request) => {
           body: JSON.stringify({ cmdId: c.id, type: etape.type }),
         });
         const data = await resp.json().catch(() => ({}));
+        if (!data.skipped) histo.push({ tel, type_sms: etape.type, statut: data.sent ? 'envoyé' : 'échec', date_sms: aujourdhui });
         if (data.sent) { sent++; details.push({ ...base, action: 'sent', to: data.to }); }
         else if (data.skipped) { skipped++; details.push({ ...base, action: 'skip_send', reason: data.reason }); }
         else { failed++; details.push({ ...base, action: 'failed', error: data.error }); }
@@ -200,7 +228,7 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(JSON.stringify({
-    ok: true, dryRun, fenetres, scanned, sent, skipped, failed,
+    ok: true, version: 'v2.2', dryRun, fenetres, scanned, sent, skipped, failed,
     duration_ms: Date.now() - t0, details,
   }), { headers: CORS });
 });

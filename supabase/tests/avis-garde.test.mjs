@@ -4,9 +4,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   commandesCitees, indexerSav, evaluerAvis, demandeDueAujourdhui, litigeOuvert, noteExclut,
+  gardeHistorique, motifGls, telCle,
 } from '../functions/_shared/avis-garde.ts';
 
-const cmd = (o) => ({ id: '#2000', statut: 'livré', date_livraison: '2026-09-20', instr: '', litige_statut: null, litige_clos_at: null, gls_livraison_etat: null, ...o });
+const cmd = (o) => ({ id: '#2000', statut: 'livré', stpaie: 'Payé', date_livraison: '2026-09-20', instr: '', litige_statut: null, litige_clos_at: null, gls_livraison_etat: null, ...o });
 
 test('références de commande dans une note de SAV (hors n° site Shopify)', () => {
   assert.deepEqual(commandesCitees('SAV LIVRAISON MANQUANTE (cmd origine #1587 / site #1077, payee)', '#SAV1'), ['#1587']);
@@ -111,4 +112,56 @@ test('« PAS D AVIS » manuel (autre libellé) : exclusion définitive, même ap
     const idx = indexerSav([{ id: '#SAV9', statut: 'livré', instr: 'cmd origine #2000', date_livraison: '2026-09-25' }]);
     assert.match(evaluerAvis(cmd({ instr: note }), idx).bloque, /PAS D AVIS/);
   }
+});
+
+// ── v2.1 (02/10/2026) : anti-doublon durable (sms_historique), paiement, GLS ──
+const H = (type_sms, date_sms, statut = 'envoyé', tel = '06 12 34 56 78') => ({ tel, type_sms, statut, date_sms });
+
+test('clé de numéro : 06…, +33 6…, 0033 6… → même clé', () => {
+  assert.equal(telCle('06 12 34 56 78'), telCle('+33612345678'));
+  assert.equal(telCle('0033 6 12 34 56 78'), '612345678');
+  assert.equal(telCle('123'), '');
+});
+
+test("doublon d'étape : relance déjà partie vers ce numéro → bloquée ; autre étape → autorisée", () => {
+  const histo = [H('avis', '2026-09-24'), H('avis-relance', '2026-09-26')];
+  assert.match(gardeHistorique('avis-relance', '+33612345678', histo, '2026-09-27'), /avis-relance deja envoye a ce numero le 2026-09-26/);
+  assert.equal(gardeHistorique('avis-relance2', '0612345678', histo, '2026-10-02'), null);
+});
+
+test('doublon de numéro < 60 j (autre commande du même client) → 1re demande bloquée ; > 60 j → autorisée', () => {
+  const histo = [H('avis', '2026-09-17')];
+  assert.match(gardeHistorique('avis', '06.12.34.56.78', histo, '2026-09-25'), /deja envoye a ce numero le 2026-09-17/);
+  assert.equal(gardeHistorique('avis', '0612345678', histo, '2026-11-20'), null);
+  assert.equal(gardeHistorique('avis', '0699999999', histo, '2026-09-25'), null); // autre numéro
+});
+
+test('échec OVH : réessai autorisé ; 3 échecs en 7 j → arrêt', () => {
+  assert.equal(gardeHistorique('avis', '0612345678', [H('avis', '2026-09-29', 'échec')], '2026-09-30'), null);
+  const e3 = ['2026-09-29', '2026-09-30', '2026-10-01'].map((d) => H('avis', d, 'échec'));
+  assert.match(gardeHistorique('avis', '0612345678', e3, '2026-10-02'), /3 echecs OVH/);
+});
+
+test('commande non payée → bloquée', () => {
+  assert.match(evaluerAvis(cmd({ stpaie: 'Non payé' }), new Map()).bloque, /paiement non confirme .Non payé/);
+  assert.match(evaluerAvis(cmd({ stpaie: null }), new Map()).bloque, /paiement non confirme/);
+  assert.equal(evaluerAvis(cmd({}), new Map()).bloque, null);
+});
+
+test('colis GLS jamais scanné / non pris en charge / en transit → bloquée', () => {
+  for (const etat of ['non_pris_en_charge', 'transit', 'partiel']) {
+    assert.match(evaluerAvis(cmd({ transporteur: 'GLS', gls_livraison_etat: etat }), new Map()).bloque, /livraison GLS/);
+  }
+  const gls = { transporteur: 'GLS', gls_livraison_etat: null };
+  // 1 colis livré, 1 colis resté « données seules » (jamais scanné) → partiel
+  const partiel = { etat: 'partiel', detail: 'livraison partielle 1/2', colis: [{ etat: 'livre' }, { etat: 'donnees_seules' }] };
+  assert.match(motifGls(partiel, gls), /partiel.*1 colis jamais scanne/);
+  assert.match(motifGls({ etat: 'non_pris_en_charge', detail: 'aucun colis remis a GLS', colis: [{ etat: 'inconnu' }] }, gls), /jamais scanne/);
+  assert.equal(motifGls({ etat: 'livre', detail: 'livre 2/2', colis: [{ etat: 'livre' }, { etat: 'livre' }] }, gls), null);
+  // GLS illisible : bloque sauf si la base dit déjà « livre »
+  assert.match(motifGls({ etat: 'erreur', detail: 'API', colis: [] }, gls), /illisible/);
+  assert.equal(motifGls({ etat: 'erreur', detail: 'API', colis: [] }, { ...gls, gls_livraison_etat: 'livre' }), null);
+  // GLS sans numéro de colis ; transporteur non GLS ignoré
+  assert.match(motifGls(null, gls), /sans numero de colis/);
+  assert.equal(motifGls(null, { transporteur: 'RANOU' }), null);
 });

@@ -6,7 +6,8 @@
 // RÈGLE DURABLE « pas d'avis pendant un litige ou un SAV » :
 //  1. Jamais de demande (ni relance) si :
 //     - note de commande « PAS D'AVIS » / « SANS AVIS » / « NO AVIS » (manuel, définitif) ;
-//     - commande non livrée, ou livraison GLS partielle / retour (gls_livraison_etat) ;
+//     - commande non livrée ou non payée (stpaie ≠ « Payé »), ou livraison GLS
+//       partielle / retour / colis jamais scanné / en transit (gls_livraison_etat) ;
 //     - litige ouvert (litige_statut non vide et pas indemnise/refuse/clos…) ;
 //     - SAV ouvert lié (commande #SAV… non livrée/non annulée dont la note cite
 //       la commande d'origine, ex. « cmd origine #1561 »).
@@ -45,6 +46,10 @@ export function noteExclut(instr: string | null | undefined): boolean {
   const clean = String(instr || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ');
   return /\b(noavis|no avis|sans avis|pas d avis|pas avis|pasdavis)\b/.test(clean);
 }
+
+// États gls_livraison_etat (gls-sync / _shared/gls-analyse.ts) qui interdisent une demande d'avis :
+// un colis jamais scanné, encore en route ou revenu = livraison incomplète.
+export const GLS_ETATS_BLOQUANTS = ['partiel', 'retour', 'non_pris_en_charge', 'transit'];
 
 export function litigeOuvert(statut: string | null | undefined): boolean {
   const s = String(statut || '').trim().toLowerCase();
@@ -126,7 +131,8 @@ export function evaluerAvis(c: any, savIdx: Map<string, SavInfo[]>): EvalAvis {
   if (estSav(c.id)) r.bloque = 'commande SAV';
   else if (noteExclut(c.instr)) r.bloque = 'note PAS D AVIS';
   else if (c.statut !== 'livré') r.bloque = 'non livree (' + (c.statut || '?') + ')';
-  else if (c.gls_livraison_etat === 'partiel' || c.gls_livraison_etat === 'retour') r.bloque = 'livraison GLS ' + c.gls_livraison_etat + (c.gls_livraison_detail ? ' (' + c.gls_livraison_detail + ')' : '');
+  else if (c.stpaie !== 'Payé') r.bloque = 'paiement non confirme (' + (c.stpaie || '?') + ')';
+  else if (GLS_ETATS_BLOQUANTS.includes(c.gls_livraison_etat)) r.bloque = 'livraison GLS ' + c.gls_livraison_etat + (c.gls_livraison_detail ? ' (' + c.gls_livraison_detail + ')' : '');
   else if (litigeOuvert(c.litige_statut)) r.bloque = 'litige ouvert (' + c.litige_statut + ')';
   else if (savOuverts.length) r.bloque = 'SAV ouvert ' + savOuverts.join(',');
   else if (litigeHist && !c.litige_clos_at && !litigeOuvert(c.litige_statut)) {
@@ -159,4 +165,58 @@ export function demandeDueAujourdhui(dateLivraison: string, ev: EvalAvis, aujour
   if (aujourdhui < due) return 'trop_tot';
   if (aujourdhui > ajouterJours(due, 2)) return 'expiree';
   return 'oui';
+}
+
+// ════════════════════════════════════════════════════════════════════
+// v2.1 (02/10/2026) — ANTI-DOUBLON DURABLE (sms_historique) + GLS en direct
+// ════════════════════════════════════════════════════════════════════
+// Constat du 02/10 : sms_envoyes est PAR COMMANDE. Un client avec 2-3
+// commandes recevait une demande par commande (même jour ou à quelques jours),
+// et un numéro mal saisi sur une commande faisait partir le SMS chez un autre
+// client. sms_historique (journal de tous les SMS, sans n° de commande) est la
+// source durable : on y vérifie le NUMÉRO.
+//  - même étape (avis / avis-relance / avis-relance2) déjà « envoyé » à ce
+//    numéro depuis DELAI_ANTI_DOUBLON_JOURS (60 j) → pas d'envoi ;
+//  - MAX_ECHECS échecs OVH de cette étape vers ce numéro en 7 jours → on
+//    arrête de réessayer (numéro invalide) ; un échec isolé est réessayé.
+// ════════════════════════════════════════════════════════════════════
+
+export const DELAI_ANTI_DOUBLON_JOURS = 60;
+export const MAX_ECHECS = 3;
+
+/** Clé de numéro : 9 derniers chiffres (06…, +33 6…, 0033 6… → même clé). */
+export function telCle(tel: string | null | undefined): string {
+  const d = String(tel || '').replace(/[^0-9]/g, '');
+  return d.length >= 9 ? d.slice(-9) : '';
+}
+
+export type LigneHisto = { tel: string; type_sms: string; statut: string; date_sms: string };
+
+/** Motif de blocage d'après sms_historique (null = envoi autorisé). */
+export function gardeHistorique(type: string, tel: string, histo: LigneHisto[], aujourdhui: string): string | null {
+  const cle = telCle(tel);
+  if (!cle) return null;
+  const depuis = ajouterJours(aujourdhui, -DELAI_ANTI_DOUBLON_JOURS);
+  const memes = (histo || []).filter((h) => h && h.type_sms === type && telCle(h.tel) === cle);
+  const envoye = memes.filter((h) => h.statut === 'envoyé' && String(h.date_sms || '') >= depuis)
+    .map((h) => String(h.date_sms)).sort().pop();
+  if (envoye) return `${type} deja envoye a ce numero le ${envoye} (< ${DELAI_ANTI_DOUBLON_JOURS} j)`;
+  const d7 = ajouterJours(aujourdhui, -7);
+  const echecs = memes.filter((h) => h.statut === 'échec' && String(h.date_sms || '') >= d7).length;
+  if (echecs >= MAX_ECHECS) return `${echecs} echecs OVH en 7 j vers ce numero (numero a verifier)`;
+  return null;
+}
+
+/**
+ * Verdict sur la relecture GLS en direct (résultat de analyserCommande, ou null si aucun n° de colis).
+ * Bloque : partiel, retour, non pris en charge, transit, colis jamais scanné, et GLS illisible
+ * sauf si la base confirme déjà « livre » (gls_livraison_etat). Null = autorisé.
+ */
+export function motifGls(a: { etat: string; detail?: string; colis?: { etat: string }[] } | null, c: any): string | null {
+  if (!/gls/i.test(String(c?.transporteur || ''))) return null;
+  if (!a) return c?.gls_livraison_etat === 'livre' ? null : 'GLS sans numero de colis (livraison non verifiable)';
+  if (a.etat === 'livre') return null;
+  if (a.etat === 'erreur') return c?.gls_livraison_etat === 'livre' ? null : `GLS illisible (${a.detail || 'erreur'}), verification impossible`;
+  const jamais = (a.colis || []).filter((x) => x.etat === 'donnees_seules' || x.etat === 'inconnu').length;
+  return `GLS ${a.etat} (${a.detail || ''})` + (jamais ? ` ; ${jamais} colis jamais scanne(s)` : '');
 }

@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis (v2.0 — 28/09/2026)
+// Edge Function : sms-avis (v2.1 — 02/10/2026)
 // ════════════════════════════════════════════════════════════════════
 // Tourne en CRON 1x/jour (~11h Paris) : demande d'avis Google le LENDEMAIN
 // de la livraison.
@@ -19,19 +19,32 @@
 //     apres la cloture (fenetre 3 jours) ; sms-avis-relance ne relance jamais
 //     ces commandes.
 //
+// v2.1 (02/10/2026) : ANTI-DOUBLON DURABLE + PAIEMENT + GLS
+//   - sms_envoyes est par commande : un client a plusieurs commandes recevait
+//     une demande par commande. On verifie aussi sms_historique : aucune
+//     demande « avis » deja envoyee a ce NUMERO depuis 60 j (et arret apres
+//     3 echecs OVH en 7 j). Dans un meme passage, un numero n'est servi qu'une fois.
+//   - pas de demande si stpaie != « Payé », si un colis GLS n'a jamais ete
+//     scanne / livraison partielle / GLS illisible sans « livre » en base.
+//
 // ⏸️ PAUSE PROVINCE/GLS (v1.2, demande Borhen 17/07/2026) — levee le 14/09
 //   (v1.4) pour les livraisons GLS a partir de AVIS_GLS_DEPUIS.
 //
 // ⚠️ Demande d'avis HONNETE, sans condition ni recompense. 1 SMS = 1 credit OVH.
 //
 // Body : { dryRun?: boolean, dateCible?: "YYYY-MM-DD" }
+//   ou   { cmdIds: [...], simulation?: true } (toujours dryRun) : simulation = ignore
+//        la fenetre de date et les dedoublonnages (sms_envoyes, sms_historique)
+//        pour verifier les autres gardes (paiement, litige, GLS en direct).
 // ════════════════════════════════════════════════════════════════════
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { appelInterne, refus } from '../_shared/controle-appelant.ts';
 import { livraisonGlsContestee } from '../_shared/avis-gls.ts';
-import { ajouterJours, demandeDueAujourdhui, estSav, evaluerAvis, indexerSav } from '../_shared/avis-garde.ts';
+import {
+  ajouterJours, DELAI_ANTI_DOUBLON_JOURS, demandeDueAujourdhui, estSav, evaluerAvis, gardeHistorique, indexerSav, type LigneHisto,
+} from '../_shared/avis-garde.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
@@ -50,7 +63,16 @@ const CORS = {
   'Content-Type': 'application/json',
 };
 
-const COLS = 'id,client,tel,statut,transporteur,tracking_transporteur,sms_envoyes,date_livraison,instr,litige_statut,litige_clos_at,gls_livraison_etat,gls_livraison_detail';
+const COLS = 'id,client,tel,statut,stpaie,transporteur,tracking_transporteur,sms_envoyes,date_livraison,instr,litige_statut,litige_clos_at,gls_livraison_etat,gls_livraison_detail';
+
+// v2.1 (02/10/2026) : journal durable des SMS d'avis (anti-doublon par NUMERO, 60 j)
+async function chargerHistoAvis(aujourdhui: string): Promise<LigneHisto[]> {
+  const { data, error } = await sb.from('sms_historique').select('tel,type_sms,statut,date_sms')
+    .in('type_sms', ['avis', 'avis-relance', 'avis-relance2'])
+    .gte('date_sms', ajouterJours(aujourdhui, -DELAI_ANTI_DOUBLON_JOURS)).limit(5000);
+  if (error) throw new Error('select sms_historique failed: ' + error.message);
+  return (data || []) as LigneHisto[];
+}
 
 function jourParis(): string {
   return new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' });
@@ -68,6 +90,7 @@ Deno.serve(async (req: Request) => {
   // Mode test { cmdIds:[...] } : evalue ces commandes quelle que soit leur date (toujours dryRun)
   const testIds: string[] | null = Array.isArray(body.cmdIds) ? body.cmdIds.map(String) : null;
   const dryRun = body.dryRun === true || !!testIds;
+  const simulation = !!testIds && body.simulation === true;
   const aujourdhui = jourParis();
 
   // v1.3 : fenetre de 3 jours (J-3..J-1) ; body.dateCible (jour unique) pour tests/rattrapages.
@@ -80,6 +103,10 @@ Deno.serve(async (req: Request) => {
     .select('id,statut,instr,date_livraison,updated_at').ilike('id', '%sav%').neq('statut', 'annulé');
   if (errSav) return new Response(JSON.stringify({ error: 'select SAV failed', details: errSav.message }), { status: 500, headers: CORS });
   const savIdx = indexerSav(savs || []);
+  let histo: LigneHisto[];
+  try { histo = await chargerHistoAvis(aujourdhui); } catch (e: any) {
+    return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: CORS });
+  }
 
   // 1) livraisons de la fenetre normale
   const { data: cmds, error } = testIds
@@ -126,7 +153,7 @@ Deno.serve(async (req: Request) => {
     if (estGls && String(c.date_livraison || '') < AVIS_GLS_DEPUIS) {
       skipped++; details.push({ ...base, action: 'skip_gls_avant_reprise', client: c.client }); continue;
     }
-    if (ev.historique || testIds) {
+    if (!simulation && (ev.historique || testIds)) {
       const due = demandeDueAujourdhui(String(c.date_livraison || '').substring(0, 10), ev, aujourdhui);
       if (due !== 'oui') {
         skipped++; details.push({ ...base, action: due === 'trop_tot' ? 'skip_attente_reprise_J+2' : (ev.historique ? 'skip_reprise_expiree' : 'skip_hors_fenetre'), cloture: ev.cloture, client: c.client }); continue;
@@ -135,13 +162,17 @@ Deno.serve(async (req: Request) => {
     const tel = (c.tel || '').replace(/[^0-9+]/g, '');
     if (!tel || tel.length < 8) { skipped++; details.push({ ...base, action: 'skip_no_tel' }); continue; }
     const dejaEnvoyes: any[] = Array.isArray(c.sms_envoyes) ? c.sms_envoyes : [];
-    if (dejaEnvoyes.some((e: any) => e.type === 'avis')) { skipped++; details.push({ ...base, action: 'skip_already_sent' }); continue; }
+    if (!simulation && dejaEnvoyes.some((e: any) => e.type === 'avis')) { skipped++; details.push({ ...base, action: 'skip_already_sent' }); continue; }
+    // v2.1 : source durable sms_historique (meme numero < 60 j, autre commande comprise)
+    const dejaNumero = simulation ? null : gardeHistorique('avis', tel, histo, aujourdhui);
+    if (dejaNumero) { skipped++; details.push({ ...base, action: 'skip_doublon_numero', motif: dejaNumero, client: c.client }); continue; }
     // v2.0 : client GLS -> relecture des colis chez GLS (faux livre / partiel / retour)
     const contestee = await livraisonGlsContestee(c);
     if (contestee) { skipped++; details.push({ ...base, action: 'skip_suspendu', motif: contestee, client: c.client }); continue; }
 
     if (dryRun) {
       sent++;
+      histo.push({ tel, type_sms: 'avis', statut: 'envoyé', date_sms: aujourdhui });
       details.push({ ...base, action: 'would_send', client: c.client, to: tel, reprise: ev.historique ? ev.cloture : undefined });
       continue;
     }
@@ -152,6 +183,8 @@ Deno.serve(async (req: Request) => {
         body: JSON.stringify({ cmdId: c.id, type: 'avis' }),
       });
       const data = await resp.json().catch(() => ({}));
+      // v2.1 : memoriser l'essai pour la suite du passage (2e commande du meme client)
+      if (!data.skipped) histo.push({ tel, type_sms: 'avis', statut: data.sent ? 'envoyé' : 'échec', date_sms: aujourdhui });
       if (data.sent) { sent++; details.push({ ...base, action: 'sent', to: data.to }); }
       else if (data.skipped) { skipped++; details.push({ ...base, action: 'skip_send', reason: data.reason }); }
       else { failed++; details.push({ ...base, action: 'failed', error: data.error }); }
@@ -161,7 +194,7 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(JSON.stringify({
-    ok: true, version: 'v2.0', dryRun, dateCible, scanned, sent, skipped, failed,
+    ok: true, version: 'v2.1', dryRun, simulation, dateCible, scanned, sent, skipped, failed,
     duration_ms: Date.now() - t0, details,
   }), { headers: CORS });
 });
