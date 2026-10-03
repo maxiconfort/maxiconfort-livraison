@@ -68,6 +68,13 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - **Tests** : `node outils/test-paiement.js` (125 tests) et `node outils/test-paiement-base.js` (46 tests réels). Les compteurs de l'étape 2 ci-dessus sont ceux de la v7.5.114.
 - Les 6 commandes payées en ligne des tournées en cours ont été corrigées le 03/10/2026 par l'action administrateur journalisée. Le reste de l'historique n'est PAS corrigé (décision de Borhen en attente).
 
+## Paiement, étape 4 : « Payé » en espèces ou carte AVANT la livraison = administrateur + motif (v7.5.116 + migration 029, 03/10/2026)
+- Constat : une commande Leboncoin à livrer le lendemain était notée « Espèces / Payé » avec 0 € encaissé — la fiche laissait choisir « Payé » sans montant ni preuve. Commande corrigée (« Non payé ») par l'action administrateur journalisée.
+- **Règle (décision de Borhen)** : depuis le bureau, une commande NON LIVRÉE ne passe « Payé » ou « Partiel » en Espèces / CB / Mixte que par l'action administrateur `public.modifier_paiement` (motif obligatoire, journal financier).
+- **Base** (migration 029, règle (c) de `_paiement_verrou`, création ET modification) : une écriture ordinaire d'une session non livreur qui le tente voit son paiement non enregistré (création : « Non payé » ; modification : valeurs précédentes), le reste de la fiche est conservé, une ligne `tentative_bloquee` est écrite. Non concernés : sessions livreur, commandes livrées, payées en ligne, modes Virement / Déjà payé / plateformes, fiches à 0 €, remboursements SAV (montant négatif), programmes serveur.
+- **Application** : `paiAvanceInterdite` (pure), `paiAvancePreparer` (appelée par `saveCmd` avant d'écrire : refus pour un non-administrateur ; pour l'administrateur, confirmation + motif, montant si Partiel, ticket si carte), `paiAvanceAppliquer` (après l'enregistrement de la fiche, pose le paiement par l'action administrateur).
+- **Tests** : `node outils/test-paiement.js` (143 tests) et `node outils/test-paiement-base.js` (59 tests réels ; la section 9 crée une session de bureau simulée, utilisée et supprimée dans la même opération de la base).
+
 ## Pièges connus
 - PATCH Supabase via PowerShell : encoder le corps en UTF-8 (`[Text.Encoding]::UTF8.GetBytes`) et URL-encoder `#` en `%23`.
 - Variables PowerShell insensibles à la casse (`$p` = `$P`) : ne pas réutiliser un nom pour deux valeurs (incident du 27/09 : chemin local publié à la place de la clé pendant 2 min).

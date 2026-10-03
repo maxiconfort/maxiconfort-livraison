@@ -125,10 +125,10 @@ const base = (id, plus) => Object.assign({ id, client: 'TEST CORRECTIF PAIEMENT 
   test('procédure administrateur avec motif (et ticket) : acceptée et journalisée', r.ok && r.json[0].r.ok && pai(c) === 'CB / Payé / 1' && c.ticket_cb === 'TK-ADMIN' && lc.action === 'modification_admin' && /ticket retrouvé/.test(lc.motif) && lc.utilisateur === 'admin(test)', lc);
   r = await sql(`select interne.modifier_paiement('${C}', 'CB', 'Payé', 1, '', 'admin(test)', null) as r`);
   test('procédure administrateur sans motif : refusée', r.ok && r.json[0].r.ok === false && r.json[0].r.erreur === 'motif_obligatoire');
-  // d) paiement par carte AVANT livraison, saisi au bureau (client venu payer au dépôt) : hors de cette règle
+  // d) paiement par carte AVANT livraison, écrit par un programme serveur (sans session) : hors de cette règle (le bureau, lui, relève de la section 9)
   await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(C), { statut: 'annulé', paie: 'Espèces', stpaie: 'Non payé', montant_enc: 0, ticket_cb: null });
   await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(C), { paie: 'CB', stpaie: 'Payé', montant_enc: 1 }); c = await lire(C);
-  test('carte saisie au bureau sur une commande non livrée : acceptée (ce n\'est pas un encaissement à la livraison) et journalisée', pai(c) === 'CB / Payé / 1' && (await dernier(C)).action === 'modification', pai(c));
+  test('carte écrite par un programme serveur sur une commande non livrée : acceptée (ce n\'est pas un encaissement à la livraison) et journalisée', pai(c) === 'CB / Payé / 1' && (await dernier(C)).action === 'modification', pai(c));
   await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(C), { paie: 'Espèces', stpaie: 'Non payé', montant_enc: 0 });
   await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(B), { paie: 'Espèces', stpaie: 'Non payé', montant_enc: 0, encaisse_par: null, encaisse_at: null, statut: 'annulé' });
   // e) le verrou « payée en ligne » est inchangé
@@ -136,6 +136,51 @@ const base = (id, plus) => Object.assign({ id, client: 'TEST CORRECTIF PAIEMENT 
   test('commande payée en ligne : même avec un ticket, aucun encaissement livreur possible', fin(a) === 'Site Maxiconfort / Payé / 1' && !a.ticket_cb && !a.encaisse_par, a);
   r = await rest('POST', 'rpc/modifier_paiement', { p_cmd: A, p_mode: 'CB', p_statut: 'Payé', p_montant: 1, p_motif: 'tentative sans session administrateur', p_ticket: 'X' });
   test('action administrateur (nouvelle forme, avec ticket) sans session administrateur : refusée', r.json && r.json.ok === false && r.json.erreur === 'session_admin_requise', r.texte.slice(0, 200));
+
+  console.log('\n9. « PAYÉ » EN ESPÈCES OU CARTE AVANT LA LIVRAISON, DEPUIS LE BUREAU : ADMINISTRATEUR + MOTIF (migration 029)');
+  // Écriture faite avec une SESSION DE BUREAU simulée : la session est créée, utilisée et supprimée dans la même
+  // opération de la base (le jeton est tiré au hasard dans la base, il n'en sort jamais).
+  const bureau = ecriture => sql(`do $$ declare tk text := encode(extensions.gen_random_bytes(32), 'hex'); begin
+    insert into public.sessions_app (jeton_hash, role, expire_at, appareil) values (encode(extensions.digest(tk, 'sha256'), 'hex'), 'admin', now() + interval '2 minutes', 'test-automatique');
+    perform set_config('request.headers', json_build_object('x-app-secret', (select valeur from public.secrets_serveur where cle = 'app_secret_courant'), 'x-session-token', tk)::text, true);
+    ${ecriture};
+    perform set_config('request.headers', '', true);
+    delete from public.sessions_app where appareil = 'test-automatique';
+  end $$`);
+  const maj = (id, champs) => `update public.commandes set ${champs} where id = '${id}'`;
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(C), { statut: 'annulé', paie: 'Espèces', stpaie: 'Non payé', montant_enc: 0, ticket_cb: null, adresse: 'ADRESSE DE TEST 75000 Paris' });
+  r = await bureau(maj(C, "stpaie = 'Payé', montant_enc = 1")); c = await lire(C); lc = await dernier(C);
+  test('la session de bureau simulée fonctionne (l\'écriture est bien vue comme venant du bureau)', r.ok && lc.utilisateur === 'admin', r.ok ? lc.utilisateur : r.texte.slice(0, 200));
+  test('fiche enregistrée « Espèces / Payé » sur une commande non livrée : paiement NON enregistré, reste « Non payé »', pai(c) === 'Espèces / Non payé / 0', pai(c));
+  test('la tentative est notée au journal (aucune validation silencieuse)', lc.action === 'tentative_bloquee' && /avant la livraison/.test(lc.motif) && Number(lc.reste_du) === 1, lc);
+  r = await bureau(maj(C, "paie = 'CB', stpaie = 'Payé', montant_enc = 1, ticket_cb = 'T-1'")); c = await lire(C);
+  test('« CB / Payé » avant livraison depuis le bureau : refusé', r.ok && pai(c) === 'Espèces / Non payé / 0' && !c.ticket_cb, pai(c));
+  r = await bureau(maj(C, "stpaie = 'Partiel', montant_enc = 0.5")); c = await lire(C);
+  test('« Partiel » en espèces avant livraison depuis le bureau : refusé', r.ok && pai(c) === 'Espèces / Non payé / 0', pai(c));
+  r = await bureau(maj(C, "stpaie = 'Payé', montant_enc = 1, adresse = 'ADRESSE DE TEST MODIFIÉE 75000 Paris'")); c = await lire(C);
+  test('le reste de la fiche (adresse) est bien enregistré, seul le paiement est refusé', r.ok && pai(c) === 'Espèces / Non payé / 0' && /MODIFIÉE/.test(c.adresse), c.adresse);
+  r = await bureau(maj(C, "paie = 'Virement', stpaie = 'Payé', montant_enc = 1")); c = await lire(C);
+  test('« Virement / Payé » avant livraison : accepté (règle limitée aux espèces et à la carte)', r.ok && pai(c) === 'Virement / Payé / 1', pai(c));
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(C), { paie: 'Espèces', stpaie: 'Non payé', montant_enc: 0 });
+  r = await bureau(maj(C, "statut = 'livré', stpaie = 'Payé', montant_enc = 1")); c = await lire(C);
+  test('commande LIVRÉE, « Espèces / Payé » : accepté (l\'encaissement à la livraison n\'est pas touché)', r.ok && pai(c) === 'Espèces / Payé / 1', pai(c));
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(C), { statut: 'annulé', paie: 'Espèces', stpaie: 'Non payé', montant_enc: 0 });
+  r = await sql(`select interne.modifier_paiement('${C}', 'Espèces', 'Payé', 1, 'Test : client venu payer au dépôt avant la livraison', 'admin(test)') as r`); c = await lire(C); lc = await dernier(C);
+  test('action administrateur avec motif : acceptée et journalisée', r.ok && r.json[0].r.ok && pai(c) === 'Espèces / Payé / 1' && lc.action === 'modification_admin' && /venu payer au dépôt/.test(lc.motif), lc);
+  const nC9 = (await journal(C)).length;
+  r = await bureau(maj(C, "adresse = 'ADRESSE DE TEST 75000 Paris'")); c = await lire(C);
+  test('ensuite, une simple sauvegarde de la fiche ne défait pas ce paiement et n\'ajoute rien au journal', r.ok && pai(c) === 'Espèces / Payé / 1' && (await journal(C)).length === nC9, pai(c));
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(C), { paie: 'Espèces', stpaie: 'Non payé', montant_enc: 0 });
+  // création depuis le bureau : la ligne est créée puis supprimée dans la même opération ; le journal (en ajout seul) garde la preuve
+  const D = '#TEST-PAIEMENT-AV', S = '#TEST-PAIEMENT-SAV';
+  const creer = (id, origine, prix, paie, stpaie, enc) => `insert into public.commandes (id, client, tel, email, adresse, produit, qte, prix, prix_brut, livreur, statut, date_livraison, transporteur, paie, stpaie, montant_enc, origine, ref_marketplace, instr) values ('${id}', 'TEST CORRECTIF PAIEMENT (ne pas livrer)', '', '', 'ADRESSE DE TEST 75000 Paris', 'TEST', 1, ${prix}, ${prix}, '', 'annulé', '', 'RANOU', '${paie}', '${stpaie}', ${enc}, '${origine}', '', 'Ligne technique, à ignorer.'); delete from public.commandes where id = '${id}'`;
+  const nD = (await journal(D)).length, nS = (await journal(S)).length;
+  r = await bureau(creer(D, 'LeBonCoin', 1, 'Espèces', 'Payé', 1)); let jd = (await journal(D)).slice(nD);
+  test('CRÉATION d\'une commande « Espèces / Payé » depuis le bureau : créée « Non payé », tentative notée', r.ok && jd.length === 2 && jd[0].action === 'tentative_bloquee' && /avant la livraison/.test(jd[0].motif) && jd[1].action === 'creation' && jd[1].nouveau.stpaie === 'Non payé' && Number(jd[1].nouveau.montant_enc || 0) === 0, r.ok ? jd : r.texte.slice(0, 300));
+  r = await bureau(creer(S, 'SAV - Reprise + Remboursement', 0, 'Espèces', 'Payé', -1)); let js = (await journal(S)).slice(nS);
+  test('remboursement SAV (0 €, montant négatif) : non concerné, créé tel quel', r.ok && js.length === 1 && js[0].action === 'creation' && js[0].nouveau.stpaie === 'Payé' && Number(js[0].nouveau.montant_enc) === -1, r.ok ? js : r.texte.slice(0, 300));
+  const reste = await sql("select (select count(*) from public.sessions_app where appareil = 'test-automatique') as sessions, (select count(*) from public.commandes where id in ('#TEST-PAIEMENT-AV', '#TEST-PAIEMENT-SAV')) as lignes");
+  test('aucune session de test ni ligne temporaire ne reste dans la base', reste.ok && Number(reste.json[0].sessions) === 0 && Number(reste.json[0].lignes) === 0, reste.json);
 
   // ── remise au propre
   await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(A), { statut: 'annulé', livreur: '', date_livraison: '', adresse: 'ADRESSE DE TEST 75000 Paris', instr: 'Ligne technique de test du correctif paiement. Peut être supprimée.' });

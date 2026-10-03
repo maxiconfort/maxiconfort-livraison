@@ -287,6 +287,39 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', prix: 180
     test('une modification administrateur montre l\'ancienne valeur, la nouvelle et le motif', /Espèces \/ Payé \/ 199 €/.test(h) && /Site Maxiconfort \/ Payé \/ 199 €/.test(h) && /Correction ancien bug application/.test(h) && /Action administrateur/.test(h));
     test('le ticket CB, le livreur et la tournée apparaissent', /ticket 0042/.test(h) && /RANOU · T-130/.test(h)); }
 
+  // ══════════ 12. v7.5.116 — « Payé » en espèces / carte AVANT la livraison : administrateur + motif ══════════
+  console.log('\n12. « PAYÉ » EN ESPÈCES OU CARTE AVANT LA LIVRAISON : ADMINISTRATEUR + MOTIF');
+  { const { bac } = nouveauBac(); const I = (av, ap) => bac.paiAvanceInterdite(av, ap);
+    const neuve = p => Object.assign({ prix: 359, paie: 'Espèces', stpaie: 'Payé', origine: 'LeBonCoin' }, p);
+    test('création « Espèces / Payé » (le cas de la commande #1871) : repérée', I(null, neuve()) === true);
+    test('création « CB / Payé », « Mixte / Partiel » : repérées', I(null, neuve({ paie: 'CB' })) && I(null, neuve({ paie: 'Mixte', stpaie: 'Partiel' })));
+    test('création « Espèces / Non payé » : normale', I(null, neuve({ stpaie: 'Non payé' })) === false);
+    test('« Virement / Payé », « Déjà payé / Payé », « LeBonCoin / Payé » : non concernés', !I(null, neuve({ paie: 'Virement' })) && !I(null, neuve({ paie: 'Déjà payé' })) && !I(null, neuve({ paie: 'LeBonCoin' })));
+    const att = LBC({ paySource: 'LEBONCOIN', prix: 180, statut: 'en-attente', paie: 'Espèces', stpaie: 'Non payé' });
+    test('modification d\'une commande en attente vers « Payé » : repérée', I(att, { prix: 180, paie: 'Espèces', stpaie: 'Payé' }) === true);
+    test('commande déjà LIVRÉE : non concernée (encaissement à la livraison)', I(Object.assign({}, att, { statut: 'livré' }), { prix: 180, paie: 'Espèces', stpaie: 'Payé' }) === false);
+    test('fiche réenregistrée sans toucher au paiement : non concernée', I(Object.assign({}, att, { stpaie: 'Payé', montantEnc: 180 }), { prix: 180, paie: 'Espèces', stpaie: 'Payé' }) === false);
+    test('commande payée en ligne : non concernée (verrou propre)', I(SITE({ paySource: 'SHOPIFY_ONLINE' }), { prix: 259, paie: 'Espèces', stpaie: 'Payé' }) === false);
+    test('remboursement SAV (0 € ou montant négatif) : non concerné', !I(null, neuve({ prix: 0, montantEnc: -259 })) && !I({ statut: 'en-attente', paie: 'CB', stpaie: 'Payé', montantEnc: -259, prix: 0 }, { prix: 0, paie: 'Espèces', stpaie: 'Payé' })); }
+  { const { bac } = nouveauBac(); bac.role = 'collab'; const ap = { id: '#N1', prix: 359, paie: 'Espèces', stpaie: 'Payé' }; const r = bac.paiAvancePreparer(null, ap);
+    test('collaboratrice : enregistrement refusé avec un message clair, rien n\'est envoyé', r && r.refus === true && /Réservé à l'administrateur/.test((bac._toasts.pop() || [''])[0]) && bac._rpc.length === 0); }
+  { const { bac } = nouveauBac(); bac.role = 'admin'; bac.confirm = () => false; const r = bac.paiAvancePreparer(null, { prix: 359, paie: 'Espèces', stpaie: 'Payé' });
+    test('administrateur qui répond « Annuler » à la question : rien n\'est enregistré', r && r.refus === true);
+    bac.confirm = () => true; bac._reponsesPrompt = ['']; const r2 = bac.paiAvancePreparer(null, { prix: 359, paie: 'Espèces', stpaie: 'Payé' });
+    test('administrateur sans motif : rien n\'est enregistré', r2 && r2.refus === true && /Motif obligatoire/.test((bac._toasts.pop() || [''])[0])); }
+  { const { bac } = nouveauBac(); bac.role = 'admin'; bac.confirm = () => true; bac._reponsesPrompt = ['Client venu payer en espèces au dépôt'];
+    const ap = { id: '#N2', prix: 359, paie: 'Espèces', stpaie: 'Payé' }; const av = bac.paiAvancePreparer(null, ap);
+    test('administrateur avec motif : la fiche est enregistrée « Non payé », le paiement part à part', av && !av.refus && ap.stpaie === 'Non payé' && ap.paie === 'Espèces' && av.statut === 'Payé' && av.montant === 359 && /dépôt/.test(av.motif));
+    const c = { id: '#N2', prix: 359, paie: 'Espèces', stpaie: 'Non payé', montantEnc: 0 }; bac.commandes = [c]; await bac.paiAvanceAppliquer('#N2', av);
+    test('puis le paiement est posé par l\'action administrateur journalisée (motif transmis)', bac._rpc.length === 1 && bac._rpc[0].p_cmd === '#N2' && bac._rpc[0].p_statut === 'Payé' && bac._rpc[0].p_montant === 359 && /dépôt/.test(bac._rpc[0].p_motif) && c.stpaie === 'Payé' && c.montantEnc === 359); }
+  { const { bac } = nouveauBac(); bac.role = 'admin'; bac.confirm = () => true; bac._reponsesPrompt = ['Acompte versé par carte au dépôt', '100', 'TK-ACOMPTE'];
+    const avant = LBC({ paySource: 'LEBONCOIN', prix: 359, statut: 'en-attente', paie: 'Espèces', stpaie: 'Non payé' }); const ap = { id: avant.id, prix: 359, paie: 'CB', stpaie: 'Partiel' }; const av = bac.paiAvancePreparer(avant, ap);
+    test('acompte par carte (Partiel) : montant et ticket demandés, la fiche garde l\'ancien paiement', av && av.montant === 100 && av.ticket === 'TK-ACOMPTE' && av.mode === 'CB' && ap.paie === 'Espèces' && ap.stpaie === 'Non payé');
+    bac.commandes = [avant]; bac._rpcReponse = { ok: false, erreur: 'session_admin_requise' }; await bac.paiAvanceAppliquer(avant.id, av);
+    test('si la base refuse l\'action : la commande reste « Non payé » et le refus est affiché', avant.stpaie === 'Non payé' && /NON enregistré/.test((bac._toasts.pop() || [''])[0])); }
+  { const { bac } = nouveauBac(); bac.role = 'admin'; let demande = 0; bac.confirm = () => { demande++; return true; };
+    test('fiche ordinaire (« Non payé ») : aucune question, aucun changement', bac.paiAvancePreparer(null, { prix: 359, paie: 'Espèces', stpaie: 'Non payé' }) === null && demande === 0); await bac.paiAvanceAppliquer('#X', null); test('et aucun appel à la base', bac._rpc.length === 0); }
+
   console.log(`\nRÉSULTAT : ${ok} tests réussis, ${ko} échec(s)`);
   process.exit(ko ? 1 : 0);
 })().catch(e => { console.error('ERREUR DU BANC DE TEST :', e); process.exit(2); });

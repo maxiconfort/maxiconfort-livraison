@@ -3153,6 +3153,57 @@ function paiBandeau(c, grand) {
     '<div style="font-size:' + (grand ? '16px' : '13px') + ';font-weight:900;letter-spacing:.2px">' + (l.coul === 'green' ? '✓ ' : '⚠️ ') + l.titre + '</div>' +
     '<div style="font-size:' + (grand ? '20px' : '13px') + ';font-weight:900;margin-top:2px">' + l.detail + '</div></div>';
 }
+// v7.5.116 (03/10/2026) — « Payé » ou « Partiel » en ESPÈCES / CB / MIXTE sur une commande PAS ENCORE LIVRÉE.
+// Constat : une commande Leboncoin à livrer le lendemain était notée « Espèces / Payé » avec 0 € encaissé,
+// parce que la fiche laissait choisir « Payé » sans montant ni preuve. Règle (Borhen, 03/10/2026) :
+// réservé à l'administrateur, avec motif, par l'action journalisée de la base (jamais par une simple
+// sauvegarde de fiche). La base applique la même règle (migration 029).
+// Non concernés : commande livrée, payée en ligne, modes Virement / Déjà payé / plateformes, fiche à 0 €, remboursement SAV.
+var PAI_MODES_CAISSE = ['Espèces', 'CB', 'Mixte'];
+function paiAvanceInterdite(avant, apres) {
+  if (!apres) return false;
+  if (PAI_MODES_CAISSE.indexOf(apres.paie) < 0) return false;
+  if (apres.stpaie !== 'Payé' && apres.stpaie !== 'Partiel') return false;
+  if (avant && avant.statut === 'livré') return false;
+  if (avant && paiEstEnLigne(avant)) return false;
+  if (!((parseFloat(apres.prix) || 0) > 0)) return false;
+  if ((parseFloat(avant ? avant.montantEnc : apres.montantEnc) || 0) < 0) return false;   // remboursement SAV
+  if (avant && avant.paie === apres.paie && avant.stpaie === apres.stpaie) return false;   // paiement inchangé par cette fiche
+  return true;
+}
+// Appelée par l'enregistrement de la fiche, AVANT d'écrire. Renvoie :
+//   null            -> rien de particulier : enregistrer normalement ;
+//   { refus: true } -> ne rien enregistrer (le message a été affiché) ;
+//   { mode, statut, montant, motif, ticket } -> la fiche s'enregistre SANS ce paiement (`apres` est remis
+//      à l'état précédent), puis paiAvanceAppliquer le pose par l'action administrateur journalisée.
+function paiAvancePreparer(avant, apres) {
+  if (!paiAvanceInterdite(avant, apres)) return null;
+  if (role !== 'admin') {
+    toast('Réservé à l\'administrateur : une commande non livrée ne peut pas être notée « ' + apres.stpaie + ' » en ' + apres.paie + '. Choisissez « Non payé » — le livreur encaissera à la livraison.', 'err');
+    return { refus: true };
+  }
+  if (!confirm('Vous notez « ' + apres.paie + ' / ' + apres.stpaie + ' » sur une commande PAS ENCORE LIVRÉE (' + paiEur(apres.prix) + ').\n\n• Annuler = revenir à la fiche (choisir « Non payé » : le livreur encaissera à la livraison)\n• OK = le client a vraiment déjà payé (un motif sera demandé et noté dans l\'historique financier)')) return { refus: true };
+  var motif = paiDemanderMotif(); if (!motif) return { refus: true };
+  var montant = parseFloat(apres.prix) || 0;
+  if (apres.stpaie === 'Partiel') {
+    montant = parseFloat(String(prompt('Montant déjà encaissé, en euros :', '') || '').replace(',', '.'));
+    if (!(montant > 0) || montant >= (parseFloat(apres.prix) || 0)) { toast('Montant partiel invalide : rien n\'a été enregistré', 'err'); return { refus: true }; }
+  }
+  var ticket = (apres.paie === 'CB' || apres.paie === 'Mixte') ? String(prompt('Référence du ticket CB (laisser vide seulement si elle est introuvable — le motif en gardera la trace) :', '') || '').trim() : '';
+  var av = { mode: apres.paie, statut: apres.stpaie, montant: montant, motif: motif, ticket: ticket };
+  apres.stpaie = avant ? (avant.stpaie || 'Non payé') : 'Non payé';
+  if (avant && avant.paie) apres.paie = avant.paie;
+  return av;
+}
+async function paiAvanceAppliquer(id, av) {
+  if (!av || av.refus) return;
+  var rep = await paiModifierAdmin(id, av.mode, av.statut, av.montant, av.motif, av.ticket);
+  var c = commandes.find(function(x){ return x.id === id; });
+  if (!rep.ok) { toast('Paiement NON enregistré (' + rep.erreur + ') : la commande ' + id + ' reste « ' + ((c && c.stpaie) || 'Non payé') + ' »', 'err'); return; }
+  if (c) { c.paie = av.mode; c.stpaie = av.statut; c.montantEnc = av.montant; if (av.ticket) c.ticketCb = av.ticket; }
+  try { renderCmds(); renderDash(); } catch(e) {}
+  toast('Paiement avant livraison enregistré (' + av.mode + ' / ' + av.statut + ') — motif noté dans l\'historique financier', 'ok');
+}
 // Enregistrement d'une fiche : `avant` = commande en mémoire, `apres` = données du formulaire.
 // Une modification de fiche ne change JAMAIS le paiement d'une commande payée en ligne, et
 // ne peut ni vider le mode de paiement ni effacer la consigne « paiement à la livraison ».
@@ -7803,6 +7854,9 @@ function saveCmd() {
     var _okDate = confirm('⚠️ La date de LIVRAISON (' + cmdData.date + ') est AVANT la date de COMMANDE (' + cmdData.dateCmd + ').\n\nC\'est souvent une faute de frappe sur l\'annee. Dans ce cas, la commande N\'EST PAS comptee dans le chiffre d\'affaires.\n\n• Annuler = revenir corriger la date\n• OK = enregistrer quand meme (saisie retroactive volontaire)');
     if (!_okDate) return;
   }
+  // v7.5.116 : « Payé » en espèces / carte AVANT la livraison -> administrateur + motif (action journalisée)
+  var _paiAvance = paiAvancePreparer(existingCmd, cmdData);
+  if (_paiAvance && _paiAvance.refus) return;
   if (isEdit) {
     // v7.5.47 : toute edition conserve le montant deja encaisse (sinon l'UPSERT
     // l'ecrase a 0 en base — ex. remboursement SAV ou encaissement livreur perdus)
@@ -7839,7 +7893,7 @@ function saveCmd() {
     lockBtn(_btnSaveCmd, 3000);
     showSync('⏳ Sauvegarde commande...', 'pending');
     closeModal('m-cmd');
-    sbSaveCommande(cmdData).then(function(){ showSync('✅ Commande sauvegardée', 'ok'); }).catch(function(){ showSync('⚠️ Erreur sync commande', 'err'); }); // Sync Supabase — AVANT renderDash
+    sbSaveCommande(cmdData).then(function(){ showSync('✅ Commande sauvegardée', 'ok'); return paiAvanceAppliquer(cmdData.id, _paiAvance); }).catch(function(){ showSync('⚠️ Erreur sync commande', 'err'); }); // Sync Supabase — AVANT renderDash
     // v7.5.90 : la date de livraison a changé (= report) -> réinitialiser les drapeaux SMS
     // de tournée pour que le client reçoive bien veille + départ pour sa NOUVELLE date.
     if (cmdData.date && _ancienneDateLiv && cmdData.date !== _ancienneDateLiv) {
@@ -7857,7 +7911,7 @@ function saveCmd() {
     lockBtn(_btnSaveCmd, 3000);
     showSync('⏳ Sauvegarde commande...', 'pending');
     closeModal('m-cmd');
-    sbSaveCommande(cmdData).then(function(){ showSync('✅ Commande sauvegardée', 'ok'); }).catch(function(){ showSync('⚠️ Erreur sync commande', 'err'); }); // Sync Supabase — AVANT renderDash
+    sbSaveCommande(cmdData).then(function(){ showSync('✅ Commande sauvegardée', 'ok'); return paiAvanceAppliquer(cmdData.id, _paiAvance); }).catch(function(){ showSync('⚠️ Erreur sync commande', 'err'); }); // Sync Supabase — AVANT renderDash
     try { renderCmds(); renderDash(); populateCmdChecklist(); if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres(); } catch(e) { console.warn('render err:', e.message); renderCmds(); populateCmdChecklist(); }
     toast('Commande '+cmdData.id+' créée — '+total.toLocaleString('fr-FR')+' € ✓','ok');
     // v7.5.73 : SMS de confirmation de prise de commande au client (le rassurer/fidéliser :
