@@ -479,6 +479,8 @@ textarea{resize:vertical;min-height:65px}
       </select>
     </div>
     <div id="dash-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px"></div>
+    <!-- v7.5.113 : situation des paiements du mois (administrateur) -->
+    <div id="dash-paiements" style="margin-bottom:18px"></div>
     <div class="g2">
       <div class="card">
         <div class="card-t">Statuts du jour</div>
@@ -614,6 +616,15 @@ textarea{resize:vertical;min-height:65px}
       </select>
       <select id="cmd-filter-produit" onchange="cmdAppliquerFiltres()" style="padding:8px 10px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
         <option value="">📦 Tous produits</option>
+      </select>
+      <!-- v7.5.113 : filtre paiement (commandes du site) -->
+      <select id="cmd-filter-paiement" onchange="cmdAppliquerFiltres()" style="padding:8px 10px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
+        <option value="">💳 Tous paiements</option>
+        <option value="en_ligne">🟢 Payées en ligne</option>
+        <option value="cod">🟠 Paiement à la livraison</option>
+        <option value="cod_ok">🟢 Paiement à la livraison encaissé</option>
+        <option value="cod_ko">🟠 Paiement à la livraison non encaissé</option>
+        <option value="anomalie">🔴 Impayés / anomalies</option>
       </select>
     </div>
     <div class="tw" id="cmd-table-wrap" style="overflow:visible">
@@ -2497,7 +2508,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
         <div class="fg"><label>Étage</label><input id="f-etage" placeholder="2e étage"></div>
         <div class="fg"><label>Ascenseur</label><select id="f-asc"><option>Non</option><option>Oui</option></select></div>
         <div class="fg"><label>Code porte</label><input id="f-code" placeholder="3721B#"></div>
-        <div class="fg"><label>Mode paiement</label><select id="f-paie"><option>Espèces</option><option>CB</option><option>Virement</option><option>TikTok Shop</option><option>Déjà payé</option></select></div>
+        <div class="fg"><label>Mode paiement</label><select id="f-paie"><option>Espèces</option><option>CB</option><option>Virement</option><option>TikTok Shop</option><option>Déjà payé</option><option>Site Maxiconfort</option></select></div>
         <div class="fg"><label>Statut paiement</label><select id="f-stpaie"><option>Non payé</option><option>Payé</option><option>Partiel</option></select></div>
         <div class="fg"><label>Livreur assigné</label><select id="f-livreur"><option value="">— Non assigné —</option></select></div>
         <div class="fg"><label>🚚 Transporteur</label>
@@ -2707,6 +2718,19 @@ Maxiconfort — {TEL_CONTACT}</textarea>
           <button id="sig-paie-oui" onclick="sigTogglePaie(true)" style="flex:1;min-width:86px;padding:10px 6px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">✅ Encaissé</button>
           <button id="sig-paie-deja" onclick="sigDejaPaye()" style="flex:1;min-width:86px;padding:10px 6px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">📦 Déjà payé</button>
           <button id="sig-paie-non" onclick="sigTogglePaie(false)" style="flex:1;min-width:86px;padding:10px 6px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">❌ Non payé</button>
+        </div>
+      </div>
+      <!-- v7.5.113 : commande du site en PAIEMENT À LA LIVRAISON — 3 choix, AUCUN présélectionné -->
+      <div id="sig-cod-wrap" style="display:none">
+        <div id="sig-cod-titre" style="background:#FFE7C2;color:#7A4A00;border:2px solid #E08A00;border-radius:12px;padding:14px;text-align:center;font-weight:900;line-height:1.35"></div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
+          <button id="sig-cod-esp" class="sig-cod-btn" onclick="sigCodChoisir('esp')" style="padding:14px 10px;border-radius:12px;border:2px solid var(--brd);background:var(--bg);font-size:15px;font-weight:800;cursor:pointer;font-family:var(--font);color:var(--text)">💵 ENCAISSÉ EN ESPÈCES</button>
+          <button id="sig-cod-cb" class="sig-cod-btn" onclick="sigCodChoisir('cb')" style="padding:14px 10px;border-radius:12px;border:2px solid var(--brd);background:var(--bg);font-size:15px;font-weight:800;cursor:pointer;font-family:var(--font);color:var(--text)">💳 ENCAISSÉ PAR CB</button>
+          <button id="sig-cod-non" class="sig-cod-btn" onclick="sigCodChoisir('non')" style="padding:14px 10px;border-radius:12px;border:2px solid var(--brd);background:var(--bg);font-size:15px;font-weight:800;cursor:pointer;font-family:var(--font);color:var(--text)">❌ NON ENCAISSÉ</button>
+        </div>
+        <div id="sig-cod-ticket-wrap" style="display:none;margin-top:10px">
+          <label style="font-size:12px;font-weight:700;color:var(--t2);display:block;margin-bottom:4px">N° ou référence du ticket CB (si possible)</label>
+          <input id="sig-cod-ticket" type="text" inputmode="numeric" autocomplete="off" placeholder="Ex : 0042" style="width:100%;padding:11px;border:1.5px solid var(--blue);border-radius:10px;font-size:15px;font-weight:700;font-family:var(--font)">
         </div>
       </div>
       <div id="sig-paie-mode-wrap" style="display:none">
@@ -2994,6 +3018,171 @@ function getMontantCBCmd(c) {
   return 0;
 }
 
+// ════════════════════════════════════════════════════════════════════
+// PAI-DEBUT — v7.5.113 (03/10/2026) : PAYÉ EN LIGNE vs PAIEMENT À LA LIVRAISON
+// Constat (audit du 03/10) : une commande du site payée par carte devenait « Espèces »
+// dès qu'on enregistrait sa fiche (la liste des modes ne contenait pas « Site
+// Maxiconfort » -> champ vide -> remplacé par « Espèces »), et la signature du livreur
+// proposait « Encaissé / Espèces » par défaut. Règles posées par Borhen :
+//  1. une commande payée en ligne garde son paiement pendant toute sa vie : aucune
+//     modification de date, adresse, livreur, tournée, commentaire, produit ou statut
+//     de livraison ne touche au mode, au statut ni au montant payé ;
+//  2. le livreur n'encaisse rien sur une commande payée en ligne ;
+//  3. une commande « Paiement à la livraison » affiche partout le montant à encaisser,
+//     et le livreur déclare Espèces / CB / Non encaissé, sans choix présélectionné.
+// La vérité vient de Shopify à l'import (shopify-sync) : payée -> « Site Maxiconfort » /
+// Payé / montant total ; paiement à la livraison -> Non payé / 0 € + consigne dans les
+// instructions (« PAIEMENT À LA LIVRAISON : X € à encaisser »).
+// Fonctions PURES (aucun accès à la page) : testées par outils/test-paiement.js.
+// ════════════════════════════════════════════════════════════════════
+var PAI_MODE_SITE = 'Site Maxiconfort';
+var PAI_RE_COD = /PAIEMENT\s+[ÀA]\s+LA\s+LIVRAISON\s*:\s*[\d\s.,]+€\s*[àa]\s+encaisser/i;
+var PAI_RE_CONSIGNE = /(?:💵\s*)?PAIEMENT\s+[ÀA]\s+LA\s+LIVRAISON\s*:\s*[\d\s.,]+€\s*[àa]\s+encaisser(?:\s*\([^)]*\))?\.?\s*(?:⚠️\s*HORS\s+[ÎI]LE-DE-FRANCE[^.]*\.\s*)?/i;
+function paiEur(n) { var v = Math.round((parseFloat(n) || 0) * 100) / 100; return v.toLocaleString('fr-FR', { minimumFractionDigits: (v % 1 ? 2 : 0), maximumFractionDigits: 2 }) + ' €'; }
+// Commande importée du site (origine + identifiant Shopify numérique)
+function paiEstSite(c) { return !!c && String(c.origine || '').trim() === PAI_MODE_SITE && /^\d{6,}$/.test(String(c.refMarketplace || '').trim()); }
+function paiEstCOD(c) { return paiEstSite(c) && PAI_RE_COD.test(String(c.instr || '')); }
+// Situation financière d'une commande. type :
+//  'autre'            : pas une commande du site (comportement historique inchangé)
+//  'en_ligne'         : payée en ligne sur le site -> reste à encaisser 0 €
+//  'cod_a_encaisser'  : paiement à la livraison, pas encore livré
+//  'cod_encaisse'     : paiement à la livraison encaissé (mode = Espèces / CB)
+//  'cod_partiel'      : paiement à la livraison encaissé en partie
+//  'cod_non_encaisse' : paiement à la livraison, LIVRÉ, non encaissé
+//  'anomalie'         : commande du site ni payée en ligne ni marquée paiement à la livraison
+function paiSituation(c) {
+  if (!paiEstSite(c)) return { type: 'autre', total: parseFloat(c && c.prix) || 0, paye: 0, du: 0, mode: (c && c.paie) || '' };
+  var total = parseFloat(c.prix) || 0, enc = parseFloat(c.montantEnc) || 0;
+  if (PAI_RE_COD.test(String(c.instr || ''))) {
+    if (c.stpaie === 'Payé') return { type: 'cod_encaisse', total: total, paye: enc || total, du: 0, mode: c.paie || '' };
+    if (c.stpaie === 'Partiel') return { type: 'cod_partiel', total: total, paye: enc, du: Math.max(0, +(total - enc).toFixed(2)), mode: c.paie || '' };
+    if (c.statut === 'livré') return { type: 'cod_non_encaisse', total: total, paye: 0, du: total, mode: '' };
+    return { type: 'cod_a_encaisser', total: total, paye: 0, du: total, mode: '' };
+  }
+  if (c.stpaie === 'Payé') return { type: 'en_ligne', total: total, paye: total, du: 0, mode: PAI_MODE_SITE };
+  return { type: 'anomalie', total: total, paye: enc, du: Math.max(0, +(total - enc).toFixed(2)), mode: c.paie || '' };
+}
+function paiEstEnLigne(c) { return paiSituation(c).type === 'en_ligne'; }
+// Le livreur doit-il encaisser quelque chose sur cette commande ?
+function paiAEncaisser(c) { var t = paiSituation(c).type; return t === 'cod_a_encaisser' || t === 'cod_non_encaisse' || t === 'cod_partiel' || t === 'anomalie'; }
+// Libellé de mode à poser sur un ARRÊT de tournée (jamais « Espèces » pour une commande payée en ligne)
+function paiModeStop(c) { return paiEstEnLigne(c) ? PAI_MODE_SITE : ((c && c.paie) || 'Espèces'); }
+// Textes (identiques côté bureau et côté livreur)
+function paiLibelle(c) {
+  var s = paiSituation(c);
+  if (s.type === 'en_ligne') return { ico: '🟢', coul: 'green', titre: 'DÉJÀ PAYÉ EN LIGNE', detail: 'Reste à encaisser : 0 €', court: 'Payé en ligne' };
+  if (s.type === 'cod_a_encaisser') return { ico: '🟠', coul: 'orange', titre: 'PAIEMENT À LA LIVRAISON', detail: 'À ENCAISSER : ' + paiEur(s.du), court: 'À encaisser ' + paiEur(s.du) };
+  if (s.type === 'cod_encaisse') return { ico: '🟢', coul: 'green', titre: 'ENCAISSÉ À LA LIVRAISON', detail: (s.mode || 'Mode ?') + ' : ' + paiEur(s.paye) + ' · Reste dû : 0 €', court: 'Encaissé ' + (s.mode || '') };
+  if (s.type === 'cod_partiel') return { ico: '🟠', coul: 'orange', titre: 'PAIEMENT À LA LIVRAISON — PARTIEL', detail: 'Encaissé : ' + paiEur(s.paye) + ' · RESTE DÛ : ' + paiEur(s.du), court: 'Reste dû ' + paiEur(s.du) };
+  if (s.type === 'cod_non_encaisse') return { ico: '🔴', coul: 'red', titre: 'LIVRÉ — NON ENCAISSÉ', detail: 'RESTE DÛ : ' + paiEur(s.du), court: 'NON ENCAISSÉ ' + paiEur(s.du) };
+  if (s.type === 'anomalie') return { ico: '🔴', coul: 'red', titre: 'PAIEMENT À VÉRIFIER', detail: 'Commande du site non payée · Reste dû : ' + paiEur(s.du), court: 'À vérifier ' + paiEur(s.du) };
+  return null;
+}
+var PAI_COULEURS = { green: ['#D6F0E0', '#1F5A36', '#2E9E5B'], orange: ['#FFE7C2', '#7A4A00', '#E08A00'], red: ['#FCEBEB', '#791F1F', '#C0392B'] };
+// Pastille (liste des commandes, préparation de tournée) ; '' si la commande n'est pas du site
+function paiBadge(c) {
+  var l = paiLibelle(c); if (!l) return '';
+  var k = PAI_COULEURS[l.coul];
+  return '<span title="' + l.titre + ' — ' + l.detail + '" style="display:inline-block;padding:2px 8px;border-radius:999px;background:' + k[0] + ';color:' + k[1] + ';border:1px solid ' + k[2] + ';font-size:10.5px;font-weight:800;white-space:nowrap">' + l.ico + ' ' + l.court + '</span>';
+}
+// Bandeau (fiche commande, formulaire, récapitulatif de tournée, écran du livreur)
+function paiBandeau(c, grand) {
+  var l = paiLibelle(c); if (!l) return '';
+  var k = PAI_COULEURS[l.coul];
+  return '<div class="pai-bandeau" style="background:' + k[0] + ';color:' + k[1] + ';border:2px solid ' + k[2] + ';border-radius:12px;padding:' + (grand ? '14px' : '9px 12px') + ';margin:8px 0;text-align:center;line-height:1.35">' +
+    '<div style="font-size:' + (grand ? '16px' : '13px') + ';font-weight:900;letter-spacing:.2px">' + (l.coul === 'green' ? '✓ ' : '⚠️ ') + l.titre + '</div>' +
+    '<div style="font-size:' + (grand ? '20px' : '13px') + ';font-weight:900;margin-top:2px">' + l.detail + '</div></div>';
+}
+// Enregistrement d'une fiche : `avant` = commande en mémoire, `apres` = données du formulaire.
+// Une modification de fiche ne change JAMAIS le paiement d'une commande payée en ligne, et
+// ne peut ni vider le mode de paiement ni effacer la consigne « paiement à la livraison ».
+function paiProtegerEdition(avant, apres) {
+  if (!avant || !apres) return apres;
+  if (!apres.paie) apres.paie = avant.paie;                       // liste sans la valeur -> on garde l'existant
+  if (paiEstSite(avant)) { apres.origine = avant.origine; apres.refMarketplace = avant.refMarketplace; }
+  if (paiEstEnLigne(avant)) { apres.paie = avant.paie; apres.stpaie = avant.stpaie; apres.montantEnc = avant.montantEnc; }
+  var m = String(avant.instr || '').match(PAI_RE_CONSIGNE);
+  if (paiEstSite(avant) && m && !PAI_RE_COD.test(String(apres.instr || ''))) apres.instr = (m[0].trim() + ' ' + String(apres.instr || '')).trim();
+  return apres;
+}
+// Verrou final, au moment d'écrire en base : pour une commande payée en ligne déjà
+// existante, les trois champs financiers ne sont PAS envoyés (la base garde ses valeurs),
+// sauf modification financière volontaire de l'administrateur (cmd._finOK).
+function paiVerrouBody(cmd, body) {
+  if (cmd && !cmd._nouveau && !cmd._finOK && paiEstEnLigne(cmd)) { delete body.paie; delete body.stpaie; delete body.montant_enc; }
+  return body;
+}
+// Filtre « Paiement » de la page Commandes
+function paiFiltre(c, val) {
+  if (!val) return true;
+  var t = paiSituation(c).type;
+  if (val === 'en_ligne') return t === 'en_ligne';
+  if (val === 'cod') return t.indexOf('cod_') === 0;
+  if (val === 'cod_ok') return t === 'cod_encaisse';
+  if (val === 'cod_ko') return t === 'cod_a_encaisser' || t === 'cod_non_encaisse' || t === 'cod_partiel';
+  if (val === 'anomalie') {
+    if (c.statut === 'annulé') return false;
+    if (t === 'cod_non_encaisse' || t === 'cod_partiel' || t === 'anomalie') return true;
+    var sav = String(c.origine || '').indexOf('SAV') === 0;
+    return c.statut === 'livré' && c.stpaie !== 'Payé' && (parseFloat(c.prix) || 0) > 0 && !sav;   // livré non réglé, toutes origines
+  }
+  return true;
+}
+// Totaux du tableau de bord pour un mois (AAAA-MM, d'après la date de commande, à défaut de livraison)
+function paiTotaux(liste, mois) {
+  var r = { enLigne: 0, nEnLigne: 0, aEncaisser: 0, nAEncaisser: 0, especes: 0, cb: 0, nonEncaisse: 0, nNonEncaisse: 0 };
+  (liste || []).forEach(function(c) {
+    if (!c || c.statut === 'annulé') return;
+    if (String(c.origine || '').indexOf('SAV') === 0) return;
+    var d = String(c.dateCmd || c.date || '').slice(0, 7); if (mois && d !== mois) return;
+    var s = paiSituation(c), prix = parseFloat(c.prix) || 0;
+    if (s.type === 'en_ligne') { r.enLigne += prix; r.nEnLigne++; return; }      // jamais compté en espèces / CB livreur
+    if (s.type === 'cod_a_encaisser') { r.aEncaisser += s.du; r.nAEncaisser++; return; }
+    if (c.statut === 'livré' && (c.stpaie === 'Payé' || c.stpaie === 'Partiel')) {
+      if (c.paie === 'Espèces') r.especes += parseFloat(c.montantEnc || c.prix) || 0;
+      else if (c.paie === 'CB') r.cb += parseFloat(c.montantEnc || c.prix) || 0;
+      else if (c.paie === 'Mixte') { r.especes += parseFloat(c.paie_especes) || 0; r.cb += parseFloat(c.paie_cb) || 0; }
+    }
+    if (c.statut === 'livré' && c.stpaie !== 'Payé' && prix > 0) { r.nonEncaisse += (s.type === 'autre' ? Math.max(0, prix - (parseFloat(c.montantEnc) || 0)) : s.du); r.nNonEncaisse++; }
+  });
+  return r;
+}
+// Ligne de trace ajoutée aux instructions quand le livreur déclare l'encaissement
+function paiTraceEncaissement(choix, montant, ticket, livreur, quand) {
+  var d = quand || new Date();
+  var h = d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  if (choix === 'non') return '🚨 NON ENCAISSÉ à la livraison : ' + paiEur(montant) + ' restent dus (' + (livreur || 'livreur') + ', ' + h + ').';
+  return '✅ Encaissé à la livraison : ' + (choix === 'cb' ? 'CB' : 'Espèces') + ' ' + paiEur(montant) + (choix === 'cb' && ticket ? ' — ticket n° ' + ticket : '') + ' (' + (livreur || 'livreur') + ', ' + h + ').';
+}
+// PAI-FIN
+
+// v7.5.113 : formulaire de la fiche commande — affiche le VRAI mode de paiement (même
+// s'il n'est pas dans la liste), verrouille le paiement d'une commande payée en ligne et
+// montre le bandeau « déjà payé en ligne » / « paiement à la livraison ».
+function paiFormPreparer(c) {
+  var sel = document.getElementById('f-paie'), st = document.getElementById('f-stpaie');
+  if (!sel || !st) return;
+  Array.prototype.slice.call(sel.querySelectorAll('option[data-pai-tmp]')).forEach(function(o){ o.remove(); });
+  sel.disabled = false; st.disabled = false;
+  var ban = document.getElementById('f-pai-banner');
+  if (!ban) {
+    ban = document.createElement('div'); ban.id = 'f-pai-banner';
+    var rang = sel.parentNode && sel.parentNode.parentNode;
+    if (rang && rang.parentNode) rang.parentNode.insertBefore(ban, rang);
+  }
+  ban.innerHTML = '';
+  if (!c) return;
+  if (c.paie && sel.value !== c.paie) {
+    var o = document.createElement('option'); o.textContent = c.paie; o.value = c.paie; o.setAttribute('data-pai-tmp', '1');
+    sel.appendChild(o); sel.value = c.paie;
+  }
+  ban.innerHTML = paiBandeau(c, false);
+  if (paiEstEnLigne(c)) {
+    sel.disabled = true; st.disabled = true;
+    ban.innerHTML += '<div style="font-size:11px;color:var(--t3);text-align:center;margin:-2px 0 8px">Paiement reçu en ligne : le mode et le statut ne se modifient pas depuis cette fiche.</div>';
+  }
+}
+
 async function sbSaveCommande(cmd) {
   // Toujours tenter Supabase d'abord, queue seulement si fetch échoue
   try {
@@ -3046,6 +3235,9 @@ async function sbSaveCommande(cmd) {
       // Supabase utilise le DEFAULT NOW() de la colonne. Pour les UPDATE,
       // created_at n'est plus touche -> ordre stable.
     };
+    // v7.5.113 : verrou paiement — commande payée en ligne : mode, statut et montant
+    // payé ne sont jamais réécrits par une sauvegarde ordinaire (la base garde ses valeurs).
+    paiVerrouBody(cmd, body);
     // UPSERT — POST avec Prefer: resolution=merge-duplicates
     // Crée si n'existe pas, met à jour si existe → une seule opération fiable
     var resp = await fetch(SUPABASE_URL + '/rest/v1/commandes', {
@@ -3913,9 +4105,13 @@ function startPolling() {
       if (!t.stops) return;
       t.stops.forEach(function(s) {
         var cmd = findCmdForStop(s); // v7.5.70 : repli homonyme sûr (nom unique seulement)
-        if (cmd && (s.prix !== cmd.prix || s.paie !== cmd.paie || s.stpaie !== cmd.stpaie)) {
+        // v7.5.113 : pour une commande payée en ligne, l'arrêt porte « Site Maxiconfort »
+        // (jamais « Espèces ») tant qu'il n'est pas livré ; un arrêt déjà livré garde son
+        // libellé (on ne réécrit pas l'historique de caisse).
+        var _paieArret = cmd ? ((paiEstEnLigne(cmd)) ? (s.statut === 'livré' ? s.paie : PAI_MODE_SITE) : cmd.paie) : s.paie;
+        if (cmd && (s.prix !== cmd.prix || s.paie !== _paieArret || s.stpaie !== cmd.stpaie)) {
           s.prix   = cmd.prix;
-          s.paie   = cmd.paie;
+          s.paie   = _paieArret;
           s.stpaie = cmd.stpaie;
           _syncNeeded = true;
         }
@@ -5044,7 +5240,33 @@ function renderCanauxVente() {
   }).join('') : '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--t3)">Aucune donnée sur cette période</td></tr>';
 }
 
-function renderDash() { try { _renderDashCore(); renderDashGLSRetard(); } catch(e) { console.warn('renderDash:',e.message); } }
+function renderDash() { try { _renderDashCore(); renderDashGLSRetard(); } catch(e) { console.warn('renderDash:',e.message); } try { paiRenderDash(); } catch(e) { console.warn('paiRenderDash:', e.message); } }
+// v7.5.113 : tableau de bord — paiements du mois en cours, payé en ligne et paiement à la
+// livraison séparés. Montants visibles par l'administrateur seulement.
+function paiRenderDash() {
+  var el = document.getElementById('dash-paiements'); if (!el) return;
+  if (role !== 'admin' || !Array.isArray(commandes)) { el.innerHTML = ''; return; }
+  var d = new Date(), mois = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  var r = paiTotaux(commandes, mois);
+  var ligne = function(ico, lib, val, n, coul, filtre) {
+    return '<div ' + (filtre ? 'onclick="paiOuvrirFiltre(\'' + filtre + '\')" style="cursor:pointer;' : 'style="') + 'flex:1;min-width:150px;background:var(--bg);border-radius:10px;padding:10px 12px;border-left:4px solid ' + coul + '">' +
+      '<div style="font-size:10.5px;font-weight:800;color:var(--t3);letter-spacing:.3px">' + ico + ' ' + lib + '</div>' +
+      '<div style="font-size:18px;font-weight:900;color:var(--text);margin-top:2px">' + paiEur(val) + '</div>' +
+      (n != null ? '<div style="font-size:11px;color:var(--t3)">' + n + ' commande' + (n > 1 ? 's' : '') + '</div>' : '') + '</div>';
+  };
+  el.innerHTML = '<div class="card" style="margin:0"><div class="card-t" style="margin-bottom:10px">💳 Paiements — ' + d.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }) + '</div>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
+    ligne('🟢', 'PAYÉ EN LIGNE', r.enLigne, r.nEnLigne, '#2E9E5B', 'en_ligne') +
+    ligne('🟠', 'À ENCAISSER À LA LIVRAISON', r.aEncaisser, r.nAEncaisser, '#E08A00', 'cod_ko') +
+    ligne('💵', 'ENCAISSÉ ESPÈCES PAR LIVREURS', r.especes, null, '#1F5A36', '') +
+    ligne('💳', 'ENCAISSÉ CB PAR LIVREURS', r.cb, null, '#185FA5', '') +
+    ligne('🔴', 'NON ENCAISSÉ', r.nonEncaisse, r.nNonEncaisse, '#C0392B', 'anomalie') +
+    '</div>' + (r.nNonEncaisse ? '<div style="margin-top:10px;background:#FCEBEB;color:#791F1F;border:1.5px solid #C0392B;border-radius:10px;padding:9px 12px;font-size:13px;font-weight:800">🚨 ' + r.nNonEncaisse + ' commande' + (r.nNonEncaisse > 1 ? 's livrées non encaissées' : ' livrée non encaissée') + ' ce mois — cliquer sur « NON ENCAISSÉ » pour les voir.</div>' : '') + '</div>';
+}
+function paiOuvrirFiltre(val) {
+  try { goTo('commandes', document.querySelector('.ni[onclick*="\'commandes\'"]')); } catch(e) {}
+  setTimeout(function(){ var s = document.getElementById('cmd-filter-paiement'); if (s) { s.value = val; cmdPresetActif = 'all'; if (typeof cmdUpdateQuickBtns === 'function') cmdUpdateQuickBtns('all'); cmdAppliquerFiltres(); } }, 250);
+}
 
 // v7.5.8 : Detection des colis GLS expediés mais pas marqués livré (date_livraison passée +3j)
 function getGLSEnRetard() {
@@ -5755,7 +5977,7 @@ function renderCmds(list) {
       <td style="font-size:12px">${c.adresse}</td>
       <td style="font-size:12px">${c.produit}</td>
       <td>${montantCell}</td>
-      <td>${pBdg(c.stpaie)}</td>
+      <td>${paiBadge(c) || pBdg(c.stpaie)}</td>
       <td style="font-size:12px;color:var(--t2)">${c.origine || '—'}</td>
       <td style="font-size:12px;color:var(--t2);white-space:nowrap">${c.dateCmd ? fmtDate(c.dateCmd) : '—'}</td>
       <td style="font-size:12px;color:var(--t2);white-space:nowrap">${c.date ? fmtDate(c.date) : '—'}</td>
@@ -5858,7 +6080,7 @@ function cmdFiltreRapide(preset) {
 function cmdResetFiltres() {
   cmdPresetActif = '';
   cmdUpdateQuickBtns('');
-  ['cmd-search','cmd-filter-statut','cmd-filter-transporteur','cmd-filter-origine','cmd-filter-ville','cmd-filter-produit'].forEach(function(id){
+  ['cmd-search','cmd-filter-statut','cmd-filter-transporteur','cmd-filter-origine','cmd-filter-ville','cmd-filter-produit','cmd-filter-paiement'].forEach(function(id){
     var el = document.getElementById(id); if (el) el.value = '';
   });
   cmdAppliquerFiltres();
@@ -5873,6 +6095,7 @@ function cmdAppliquerFiltres() {
   var origine = document.getElementById('cmd-filter-origine')?.value || '';
   var ville = document.getElementById('cmd-filter-ville')?.value || '';
   var produit = document.getElementById('cmd-filter-produit')?.value || '';
+  var paiement = document.getElementById('cmd-filter-paiement')?.value || ''; // v7.5.113
 
   // Preset date (rapide)
   var todayStr = new Date().toISOString().split('T')[0];
@@ -5905,6 +6128,7 @@ function cmdAppliquerFiltres() {
     if (statut && c.statut !== statut) return false;
     if (transp && cmdGetTransporteur(c) !== transp) return false;
     if (origine && (c.origine || '') !== origine) return false;
+    if (paiement && !paiFiltre(c, paiement)) return false; // v7.5.113
     if (ville) {
       var v = cmdExtraireVille(c.adresse || '');
       if (v !== ville) return false;
@@ -6368,7 +6592,7 @@ async function suiviValiderAjoutTournee() {
           return {
             num: i + 1, cmdId: c.id, client: c.client, tel: c.tel,
             adresse: c.adresse, etage: c.etage || '', asc: c.asc || 'Non', code: c.code || '',
-            produit: c.produit, prix: c.prix, paie: c.paie,
+            produit: c.produit, prix: c.prix, paie: paiModeStop(c),
             instr: c.instr || '', statut: 'en-attente', heure: '',
           };
         }),
@@ -6387,7 +6611,7 @@ async function suiviValiderAjoutTournee() {
         t.stops.push({
           num: startNum + i, cmdId: c.id, client: c.client, tel: c.tel,
           adresse: c.adresse, etage: c.etage || '', asc: c.asc || 'Non', code: c.code || '',
-          produit: c.produit, prix: c.prix, paie: c.paie,
+          produit: c.produit, prix: c.prix, paie: paiModeStop(c),
           instr: c.instr || '', statut: 'en-attente', heure: '',
         });
       });
@@ -7202,6 +7426,7 @@ function openNewCmd() {
   var _fdc = document.getElementById('f-date-cmd'); if (_fdc) _fdc.value = _today_iso;
   ['f-nom','f-tel','f-email','f-adresse','f-etage','f-code','f-instr','f-remise-val','f-remise-motif'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
   document.getElementById('f-paie').value='Espèces';
+  paiFormPreparer(null); // v7.5.113 : nouvelle commande -> listes déverrouillées, pas de bandeau
   document.getElementById('f-stpaie').value='Non payé';
   document.getElementById('f-livreur').value='';
   var origEl=document.getElementById('f-origine'); if(origEl) origEl.value='';
@@ -7261,6 +7486,7 @@ function ouvrirEditionCommande(id) {
   document.getElementById('f-asc').value     = c.asc    || 'Non';
   document.getElementById('f-paie').value    = c.paie   || 'Espèces';
   document.getElementById('f-stpaie').value  = c.stpaie || 'Non payé';
+  paiFormPreparer(c); // v7.5.113 : mode réel affiché + paiement en ligne verrouillé + bandeau
   document.getElementById('f-livreur').value = c.livreur|| '';
   document.getElementById('f-date').value    = c.date   || new Date().toISOString().split('T')[0];
   // Pre-remplir transporteur + tracking
@@ -7418,6 +7644,10 @@ function saveCmd() {
     // v7.5.47 : toute edition conserve le montant deja encaisse (sinon l'UPSERT
     // l'ecrase a 0 en base — ex. remboursement SAV ou encaissement livreur perdus)
     if (existingCmd) cmdData.montantEnc = existingCmd.montantEnc || 0;
+    // v7.5.113 : enregistrer une fiche ne modifie jamais le paiement d'une commande payée
+    // en ligne, ne vide jamais le mode de paiement, ne supprime jamais la consigne
+    // « paiement à la livraison ».
+    paiProtegerEdition(existingCmd, cmdData);
     // v7.5.47 : edition d'un SAV -> produits et montants de la fiche SAV intouchables
     // (le formulaire n'affiche pas le bloc produits, le recalcul donnerait 0 €)
     if (isSavCmd) {
@@ -7457,6 +7687,7 @@ function saveCmd() {
   } else {
     // Nouvelle commande
     cmdData.statut = 'en-attente';
+    cmdData._nouveau = true; // v7.5.113 : création -> le paiement saisi est bien enregistré
     commandes.unshift(cmdData);
     window._editingCmdId = null;
     var _btnSaveCmd = document.querySelector('#m-cmd .btn-p');
@@ -7592,8 +7823,10 @@ function ouvrirCmd(id) {
     '<div style="background:var(--bg);border-radius:var(--r);padding:12px;margin-bottom:14px">'+
       produitsHtml+remiseHtml+portHtml+
       '<div class="prow" style="margin-top:4px"><span class="pk" style="font-weight:700">Total TTC</span><span class="pv" style="font-size:18px;color:var(--green);font-weight:800">'+((c.prix||0)).toLocaleString('fr-FR')+' €</span></div>'+
-      '<div class="prow"><span class="pk">Paiement</span><span class="pv">'+c.paie+'</span></div>'+
+      paiBandeau(c, true)+ // v7.5.113 : payé en ligne / paiement à la livraison, impossible à manquer
+      '<div class="prow"><span class="pk">Paiement</span><span class="pv">'+(paiEstEnLigne(c) ? PAI_MODE_SITE+' (carte en ligne)' : c.paie)+'</span></div>'+
       '<div class="prow"><span class="pk">Statut paie</span><span class="pv">'+pBdg(c.stpaie)+'</span></div>'+
+      (paiEstSite(c)?'<div class="prow"><span class="pk">Reste à encaisser</span><span class="pv" style="font-weight:800">'+paiEur(paiSituation(c).du)+'</span></div>':'')+
       (c.origine?'<div class="prow"><span class="pk">Origine</span><span class="pv">'+origineBadge(c.origine)+'</span></div>':'')+
       (c.refMarketplace?'<div class="prow"><span class="pk">Réf.</span><span class="pv" style="font-size:12px">'+c.refMarketplace+'</span></div>':'')+
     '</div>'+
@@ -8267,6 +8500,7 @@ function populateCmdChecklist() {
           '<div class="trn-cmd-main">' +
             '<div class="trn-cmd-l1">' + c.id + ' · ' + (c.client || '?') + ' ' + datePill(c.date) + '</div>' +
             '<div class="trn-cmd-l2">' + (c.produit || '') + (c.date ? ' · ' + fmtDate(c.date) : '') + '</div>' +
+            (paiBadge(c) ? '<div style="margin-top:3px">' + paiBadge(c) + '</div>' : '') + // v7.5.113
           '</div>' +
           '<span class="trn-cmd-price">' + prix + ' €</span>' +
         '</label>';
@@ -8405,7 +8639,7 @@ function creerTournee() {
     stops:cmdsSelect.map((c,i)=>({
       num:i+1,cmdId:c.id,client:c.client,tel:c.tel,
       adresse:c.adresse,etage:c.etage||'',asc:c.asc||'Non',code:c.code||'',
-      produit:c.produit,prix:c.prix,paie:c.paie,
+      produit:c.produit,prix:c.prix,paie:paiModeStop(c),
       instr:c.instr||'',statut:'en-attente',heure:'',
     })),
     statut:'préparée',
@@ -8554,7 +8788,7 @@ function reconcilierTournees() {
       t.stops.push({
         num: t.stops.length + 1, cmdId: cmd.id, client: cmd.client, tel: cmd.tel,
         adresse: cmd.adresse, etage: cmd.etage || '', asc: cmd.asc || 'Non', code: cmd.code || '',
-        produit: cmd.produit, prix: cmd.prix, paie: cmd.paie, instr: cmd.instr || '',
+        produit: cmd.produit, prix: cmd.prix, paie: paiModeStop(cmd), instr: cmd.instr || '',
         statut: 'en-attente', heure: ''
       });
       dansTournee[cmd.id] = true;
@@ -8976,13 +9210,19 @@ function renderLivreur() {
         (s.instr?'<div style="background:var(--ol);border-radius:10px;padding:10px 12px;margin-top:8px;font-size:13px;color:var(--od);font-weight:600">ℹ️ '+s.instr+'</div>':'')+
 
         // ── Montant + mode paiement ──
+        // v7.5.113 : commande du site -> bandeau impossible à manquer (« déjà payé en ligne,
+        // 0 € à encaisser » ou « paiement à la livraison, montant à encaisser »)
+        (function(){ var _pc = findCmdForStop(s); return _pc ? paiBandeau(_pc, true) : ''; })()+
         '<div class="lv-amount-band">'+
           '<div class="lv-amount-val">'+(function(){
             // Prendre le prix depuis la commande liée si disponible (mise à jour admin)
             var linkedCmd = findCmdForStop(s); // v7.5.70 : repli homonyme sûr
+            if (linkedCmd && paiEstEnLigne(linkedCmd)) return 0; // v7.5.113 : payé en ligne -> rien à encaisser
             return (linkedCmd ? linkedCmd.prix : s.prix) || s.prix;
           })()+' €</div>'+
-          (done
+          // v7.5.113 : commande du site -> pas de menu de mode sur la carte (payée en ligne :
+          // rien à choisir ; paiement à la livraison : le choix se fait à la signature)
+          ((function(){ var _pc = findCmdForStop(s); return !!_pc && paiEstSite(_pc) && (paiEstEnLigne(_pc) || !done); })() ? '' : done
             ? '<span class="bdg b-green" style="font-size:13px">'+s.paie+(s.stpaie==='Payé'?' ✓':' ⚠️')+'</span>'+
               (s.stpaie !== 'Payé'
                 ? '<button class="lv-enc-btn btn btn-sm" style="background:var(--orange);color:#fff;border:none" data-tid="'+t.id+'" data-idx="'+i+'">💵 Encaisser</button>'
@@ -9651,6 +9891,9 @@ async function lvPaieValider() {
   if (!t) return;
   var s = t.stops[stopIdx];
   if (!s) return;
+  // v7.5.113 : commande payée en ligne -> aucun encaissement ni changement de mode par cet écran
+  var _cmdPaiS = findCmdForStop(s);
+  if (_cmdPaiS && paiEstEnLigne(_cmdPaiS)) { toast('Commande déjà payée en ligne : paiement non modifiable ici', 'err'); renderLivreur(); return; }
 
   // Mettre à jour le stop
   s.paie   = newMode;
@@ -9802,6 +10045,9 @@ function lvScrollTop() {
 function chgStopPaie(tid, idx, val) {
   const t = tournees.find(x => x.id === tid);
   if (!t || !t.stops[idx]) return;
+  // v7.5.113 : commande payée en ligne -> le mode de paiement ne se change pas ici
+  var _cmdPai = commandes.find(c => c.id === t.stops[idx].cmdId);
+  if (_cmdPai && paiEstEnLigne(_cmdPai)) { toast('Commande déjà payée en ligne : rien à encaisser', 'info'); renderLivreur(); return; }
   t.stops[idx].paie = val;
   const cmd = commandes.find(c => c.id === t.stops[idx].cmdId);
   if (cmd) {
@@ -9864,6 +10110,10 @@ function setLvSt(tid, idx, st) {
       sigCmdMarketplace = cmdSig ? cmdOrigineMarketplace(cmdSig) : null;
       sigPrepaidMode = null;
       var banner = document.getElementById('sig-prepaye-banner');
+      // v7.5.113 : commande du SITE -> l'application connaît le paiement venu de Shopify.
+      //  - payée en ligne : aucune question, 0 € à encaisser ;
+      //  - paiement à la livraison : montant affiché + 3 choix sans présélection.
+      if (paiSigPreparer(cmdSig, banner)) return;
       if (banner) {
         if (sigCmdMarketplace) {
           banner.style.display = 'block';
@@ -9967,6 +10217,55 @@ var sigCmdMarketplace = null;
 // Origines marketplace. ⚠️ v7.5.67 : ces commandes ne sont PAS toujours prépayées
 // (LeBonCoin IDF peut être payé à la livraison — confirmé Borhen). Sert UNIQUEMENT à
 // afficher un rappel à la signature ; le livreur décide (Encaissé / Déjà payé / Non payé).
+// v7.5.113 : signature d'une commande du site.
+var sigCodActif = false;   // true = paiement à la livraison : le livreur DOIT déclarer l'encaissement
+var sigCodChoix = null;    // 'esp' | 'cb' | 'non' — jamais présélectionné
+var sigCodMontant = 0;     // montant exact à encaisser
+function sigCodChoisir(ch) {
+  sigCodChoix = ch;
+  var coul = { esp: ['#D6F0E0', '#2E9E5B', '#1F5A36'], cb: ['#DCEBFA', '#185FA5', '#0F3D6B'], non: ['#FCEBEB', '#C0392B', '#791F1F'] };
+  ['esp', 'cb', 'non'].forEach(function(k) {
+    var b = document.getElementById('sig-cod-' + k); if (!b) return;
+    if (k === ch) { b.style.background = coul[k][0]; b.style.borderColor = coul[k][1]; b.style.color = coul[k][2]; }
+    else { b.style.background = 'var(--bg)'; b.style.borderColor = 'var(--brd)'; b.style.color = 'var(--text)'; }
+  });
+  var tw = document.getElementById('sig-cod-ticket-wrap'); if (tw) tw.style.display = (ch === 'cb') ? 'block' : 'none';
+}
+// Prépare la zone paiement de la signature pour une commande du site.
+// Renvoie true si elle a pris la main (payée en ligne, ou à encaisser), false sinon
+// (autres origines : fonctionnement habituel inchangé).
+function paiSigPreparer(cmdSig, banner) {
+  var codWrap = document.getElementById('sig-cod-wrap'), q = document.getElementById('sig-paie-question'), modeWrap = document.getElementById('sig-paie-mode-wrap');
+  sigCodActif = false; sigCodChoix = null; sigCodMontant = 0;
+  if (codWrap) codWrap.style.display = 'none';
+  var tk = document.getElementById('sig-cod-ticket'); if (tk) tk.value = '';
+  if (!cmdSig || !paiEstSite(cmdSig)) return false;
+  var sit = paiSituation(cmdSig);
+  if (sit.type === 'en_ligne') {
+    if (banner) {
+      banner.style.display = 'block';
+      banner.style.background = '#D6F0E0'; banner.style.color = '#1F5A36'; banner.style.borderColor = '#2E9E5B';
+      banner.innerHTML = '<div style="text-align:center;font-size:16px;font-weight:900">✓ DÉJÀ PAYÉ EN LIGNE</div><div style="text-align:center;font-size:20px;font-weight:900;margin-top:2px">0 € À ENCAISSER</div>';
+    }
+    if (q) q.style.display = 'none';
+    if (modeWrap) modeWrap.style.display = 'none';
+    sigPaieEncaisse = false;
+    sigPrepaidMode = PAI_MODE_SITE;   // enregistré « Site Maxiconfort / Payé », rien en caisse
+    return true;
+  }
+  if (paiAEncaisser(cmdSig)) {
+    if (banner) banner.style.display = 'none';
+    if (q) q.style.display = 'none';
+    if (modeWrap) modeWrap.style.display = 'none';
+    sigCodActif = true; sigCodMontant = sit.du; sigPaieEncaisse = false; sigPrepaidMode = null;
+    var ti = document.getElementById('sig-cod-titre');
+    if (ti) ti.innerHTML = '<div style="font-size:16px">⚠️ PAIEMENT À LA LIVRAISON</div><div style="font-size:21px;margin-top:2px">MONTANT À ENCAISSER : ' + paiEur(sit.du) + '</div>';
+    if (codWrap) codWrap.style.display = 'block';
+    sigCodChoisir(null);            // aucun choix présélectionné
+    return true;
+  }
+  return false;                     // paiement à la livraison déjà encaissé : écran habituel
+}
 var MARKETPLACES_ORIGINES =['LeBonCoin','Amazon','Cdiscount','Fnac Darty','Rakuten','Rue du Commerce','Ubaldi','ManoMano','Conforama','But','La Redoute','Maison du Monde','Boulanger','Leroy Merlin','eBay','Wish','AliExpress','Vinted','Facebook Marketplace','TikTok Shop','Instagram Shop'];
 function cmdOrigineMarketplace(cmd) {
   if (!cmd) return null;
@@ -9994,6 +10293,13 @@ function validerSig(){
   const nom=document.getElementById('sig-nom').value.trim();
   if(!nom){toast('Entrez le nom du signataire','err');return;}
   if(!sigStopId) return;
+  // v7.5.113 : paiement à la livraison -> la déclaration d'encaissement est obligatoire
+  if (sigCodActif) {
+    if (!sigCodChoix) { toast('Paiement à la livraison : indiquez ESPÈCES, CB ou NON ENCAISSÉ', 'err'); return; }
+    sigPrepaidMode = null;
+    if (sigCodChoix === 'non') { sigPaieEncaisse = false; }
+    else { sigPaieEncaisse = true; sigPaieMode = (sigCodChoix === 'cb') ? 'CB' : 'Espèces'; }
+  }
   const {tid,idx}=sigStopId;
   const t=tournees.find(x=>x.id===tid);
   if(!t) return;
@@ -10066,6 +10372,17 @@ function validerSig(){
       delete cmd.paie_especes;
       delete cmd.paie_cb;
     }
+    // v7.5.113 : paiement à la livraison -> trace de la déclaration du livreur (montant,
+    // mode, n° de ticket CB, livreur, date et heure) dans la fiche et sur l'arrêt.
+    if (sigCodActif) {
+      var _tkCod = String((document.getElementById('sig-cod-ticket') || {}).value || '').trim();
+      var _livCod = t.livreur || livNom || '';
+      cmd.instr = (String(cmd.instr || '') + ' ' + paiTraceEncaissement(sigCodChoix, sigCodMontant, _tkCod, _livCod)).trim();
+      s.enc = { choix: sigCodChoix, montant: sigCodMontant, ticket: _tkCod || null, par: _livCod, at: new Date().toISOString() };
+      if (sigCodChoix === 'non' && typeof notifAjout === 'function') {
+        try { notifAjout('err', 'commande', '🚨 NON ENCAISSÉ — ' + cmd.id, paiEur(sigCodMontant) + ' restent dus (paiement à la livraison).', 'Voir', 'commandes'); } catch(e) {}
+      }
+    }
     stkDeduireStock(cmd.id);
     sbSaveCommande(cmd); // ✅ Sync commande Supabase → Realtime admin
   }
@@ -10100,6 +10417,9 @@ function validerSig(){
   sigPaieMode = 'Espèces';
   sigPrepaidMode = null;
   sigCmdMarketplace = null;
+  // v7.5.113 : reset paiement à la livraison
+  sigCodActif = false; sigCodChoix = null; sigCodMontant = 0;
+  var _cw = document.getElementById('sig-cod-wrap'); if (_cw) _cw.style.display = 'none';
   // restaurer l'UI normale (cacher le rappel, ré-afficher la question, dé-surligner les boutons)
   var pb=document.getElementById('sig-prepaye-banner'); if(pb) pb.style.display='none';
   var pq=document.getElementById('sig-paie-question'); if(pq) pq.style.display='';
@@ -11001,6 +11321,8 @@ function finRendrGraph() {
 function chgPaieMode(id, val) {
   const c = commandes.find(x => x.id === id);
   if (!c) return;
+  // v7.5.113 : pas de changement de mode en un clic sur une commande payée en ligne
+  if (paiEstEnLigne(c)) { toast('Commande payée en ligne : mode non modifiable ici (utiliser « Modifier un encaissement »)', 'err'); finRender(); return; }
   c.paie = val;
   toast('Mode règlement mis à jour : ' + val, 'ok');
   finRender();
@@ -11009,6 +11331,8 @@ function chgPaieMode(id, val) {
 function chgPaieStatut(id, val) {
   const c = commandes.find(x => x.id === id);
   if (!c) return;
+  // v7.5.113 : pas de changement de statut en un clic sur une commande payée en ligne
+  if (paiEstEnLigne(c)) { toast('Commande payée en ligne : statut non modifiable ici (utiliser « Modifier un encaissement »)', 'err'); finRender(); return; }
   c.stpaie = val;
   toast('Statut paiement : ' + val, 'ok');
   finRender(); renderDash();
@@ -11077,6 +11401,11 @@ function sauvegarderPaie() {
   const id = document.getElementById('mp-cmd').value;
   const c  = commandes.find(x => x.id === id);
   if (!c) { toast('Sélectionnez une commande', 'err'); return; }
+  // v7.5.113 : modification financière VOLONTAIRE d'une commande payée en ligne -> confirmation
+  // explicite, puis autorisation ponctuelle d'écrire le paiement (sinon le verrou le bloque).
+  var _etaitEnLigne = paiEstEnLigne(c);
+  if (_etaitEnLigne && !confirm('Cette commande a été PAYÉE EN LIGNE sur le site (' + paiEur(c.prix) + ').\n\nModifier quand même son paiement ?\n\n• Annuler = ne rien changer\n• OK = enregistrer la modification')) return;
+  if (_etaitEnLigne) { c._finOK = true; setTimeout(function(){ delete c._finOK; }, 4000); }
   c.paie   = document.getElementById('mp-mode').value;
   c.stpaie = document.getElementById('mp-statut').value;
   var rawMontant = parseFloat(document.getElementById('mp-montant-enc').value);
@@ -17773,6 +18102,7 @@ function afficherTournee(id) {
         '</div>' +
         (s.etage ? '<div class="iline">🏢 <span>' + s.etage + (s.asc==='Oui'?' · Asc. ✓':'') + (s.code?' · Code : <strong>'+s.code+'</strong>':'') + '</span></div>' : '') +
         (s.instr ? '<div class="iline" style="color:var(--od);font-weight:600">ℹ️ ' + s.instr + '</div>' : '') +
+        (function(){ var _pc = findCmdForStop(s); return _pc ? paiBandeau(_pc, false) : ''; })() + // v7.5.113 : récapitulatif de tournée
         '<div class="arow"><div style="font-size:13px;color:var(--t2)">' + s.produit + '</div>' + (role === 'admin' ? '<div style="font-size:16px;font-weight:800;color:var(--green)">' + s.prix + ' € <span style="font-size:11px;color:var(--t3);font-weight:400">' + s.paie + '</span></div>' : '') + '</div>' +
       '</div>' +
     '</div>';
@@ -17980,7 +18310,7 @@ function sauvegarderModif() {
       num: t.stops.length + 1,
       cmdId: c.id, client: c.client, tel: c.tel,
       adresse: c.adresse, etage: c.etage||'', asc: c.asc||'Non', code: c.code||'',
-      produit: c.produit, prix: c.prix, paie: c.paie,
+      produit: c.produit, prix: c.prix, paie: paiModeStop(c),
       instr: c.instr||'', statut: 'en-attente', heure: '',
     });
     c.livreur = newLiv;

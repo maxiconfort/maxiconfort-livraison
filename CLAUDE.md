@@ -41,6 +41,14 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - Le libellé « PAS D AVIS - litige/SAV ouvert (JJ/MM/AAAA). » est une **suspension provisoire** : il bloque tant qu'aucune clôture n'est prouvée, puis il est ignoré (le texte de la note n'est pas modifié). Tout autre « PAS D AVIS » reste une exclusion définitive (mécontentement non résolu).
 - Vérifier une liste : `sms-avis` / `sms-avis-relance` avec `{"cmdIds":["#NNNN",...]}` (toujours en test, rien n'est envoyé).
 
+## Paiement : payé en ligne / paiement à la livraison (v7.5.113, 03/10/2026)
+- Anomalie corrigée : une commande du site payée par carte devenait « Espèces » dès qu'on enregistrait sa fiche (la liste des modes n'avait pas « Site Maxiconfort » → champ vide → remplacé par « Espèces »), et la signature du livreur proposait « Encaissé / Espèces » par défaut.
+- Code : bloc `PAI-DEBUT … PAI-FIN` de `maxiconfort-v7.html` (fonctions pures `paiSituation`, `paiProtegerEdition`, `paiVerrouBody`, `paiFiltre`, `paiTotaux`…). Une commande du site = origine « Site Maxiconfort » + identifiant Shopify numérique. Paiement à la livraison = consigne « PAIEMENT À LA LIVRAISON : X € à encaisser » posée par `shopify-sync` dans les instructions (non supprimable depuis la fiche).
+- Règles : (1) commande payée en ligne → mode, statut et montant payé ne sont **jamais** renvoyés à la base par une sauvegarde ordinaire (`paiVerrouBody` dans `sbSaveCommande`) ; seule la fenêtre « Modifier un encaissement » de l'admin, avec confirmation, peut les changer. (2) Écran livreur : payée en ligne → « DÉJÀ PAYÉ EN LIGNE — 0 € À ENCAISSER », aucun choix ; paiement à la livraison → montant affiché + Espèces / CB (n° de ticket) / Non encaissé, **sans présélection**, signature refusée sans réponse ; trace dans les instructions et sur l'arrêt (`stop.enc`). (3) Autres origines (Leboncoin, TikTok, téléphone) : fonctionnement inchangé.
+- Affichage : pastille dans la liste et la préparation de tournée, bandeau dans la fiche, le formulaire, le récapitulatif de tournée et la carte livreur ; filtre « Paiement » sur la page Commandes ; bloc « Paiements » du tableau de bord (admin).
+- Tests : `node outils/test-paiement.js` (70 tests, exécute le vrai code de la page dans un bac à sable, sans connexion). **À relancer après toute modification touchant au paiement, à la fiche commande ou à la signature.**
+- Non fait (étapes suivantes) : verrou côté base (déclencheur), journal des modifications financières, correction des commandes déjà mal étiquetées, remontée de l'encaissement vers Shopify.
+
 ## Pièges connus
 - PATCH Supabase via PowerShell : encoder le corps en UTF-8 (`[Text.Encoding]::UTF8.GetBytes`) et URL-encoder `#` en `%23`.
 - Variables PowerShell insensibles à la casse (`$p` = `$P`) : ne pas réutiliser un nom pour deux valeurs (incident du 27/09 : chemin local publié à la place de la clé pendant 2 min).
