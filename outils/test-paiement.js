@@ -40,8 +40,14 @@ function nouveauBac() {
   vm.runInContext(extraireFonction('async function sbSaveCommande(cmd)'), bac);
   vm.runInContext('var sigStopId=null, sigPaieEncaisse=false, sigPaieMode="Espèces", sigPrepaidMode=null, sigCmdMarketplace=null, sigCtx=null, scv=null;', bac);
   vm.runInContext('var sigCodActif=false, sigCodChoix=null, sigCodMontant=0;', bac);
-  for (const f of ['function _sigPaieBtns(actif)', 'function sigTogglePaie(encaisse)', 'function sigDejaPaye()', 'function sigSelectMode(mode)', 'function sigCodChoisir(ch)', 'function paiSigPreparer(cmdSig, banner)', 'function validerSig()', 'function chgStopPaie(tid, idx, val)', 'function chgPaieMode(id, val)', 'function chgPaieStatut(id, val)'])
+  for (const f of ['function _sigPaieBtns(actif)', 'function sigTogglePaie(encaisse)', 'function sigDejaPaye()', 'function sigSelectMode(mode)', 'function sigCodChoisir(ch)', 'function paiSigPreparer(cmdSig, banner)', 'function validerSig()', 'function chgStopPaie(tid, idx, val)',
+    // v7.5.114
+    'async function paiModifierAdmin(id, mode, statut, montant, motif)', 'function paiDemanderMotif()', 'async function chgPaieMode(id, val)', 'async function chgPaieStatut(id, val)', 'async function sauvegarderPaie()',
+    'function getMontantEspecesCmd(c)', 'function getMontantCBCmd(c)', 'function paiRemiseTexte(r)', 'function paiCalculRemise(attendu, saisie)', 'function paiJournalLigne(j)'])
     vm.runInContext(extraireFonction(f), bac);
+  bac.prompt = () => bac._reponsesPrompt.shift(); bac._reponsesPrompt = []; bac.closeModal = () => {}; bac.findStopForCmd = () => null; bac.sigMixteRecap = () => {};
+  bac._rpc = []; bac._rpcReponse = { ok: true };
+  const fetchBase = bac.fetch; bac.fetch = async (url, opt) => { if (/rpc\/modifier_paiement/.test(url)) { bac._rpc.push(JSON.parse(opt.body)); return { ok: true, json: async () => bac._rpcReponse }; } return fetchBase(url, opt); };
   return { bac, els, envois, sauvegardesTournee };
 }
 
@@ -136,7 +142,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', prix: 180
     test('paiement à la livraison : signature REFUSÉE tant que le livreur n\'a rien déclaré', stop.statut !== 'livré' && envois.length === 0 && /ESPÈCES, CB ou NON ENCAISSÉ/.test((bac._toasts[0] || [''])[0])); }
   { // 4d. encaissé par CB avec ticket
     const cmd = COD(); const { bac, els, envois, stop, sauvegardesTournee } = preparer(cmd); bac.sigCodChoisir('cb');
-    test('choix CB : le champ « n° de ticket » apparaît', els['sig-cod-ticket-wrap'].style.display === 'block'); els['sig-cod-ticket'].value = '0042'; bac.validerSig(); const b = envois[0].body;
+    test('choix CB : le champ « n° de ticket » apparaît', els['sig-cod-ticket-wrap'].style.display === 'block'); bac.document.getElementById('sig-cod-ticket').value = '0042'; bac.validerSig(); const b = envois[0].body;
     test('encaissé CB : commande « CB / Payé / 269 € », reste dû 0 €', b.paie === 'CB' && b.stpaie === 'Payé' && b.montant_enc === 269 && bac.paiSituation(cmd).type === 'cod_encaisse' && bac.paiSituation(cmd).du === 0);
     test('encaissé CB : trace avec montant, ticket, livreur, date et heure', /Encaissé à la livraison : CB 269 € — ticket n° 0042 \(RANOU, \d{2}\/\d{2}\/\d{4} \d{2}:\d{2}\)/.test(b.instr), b.instr);
     test('encaissé CB : arrêt « CB / Payé », détail de l\'encaissement conservé sur l\'arrêt', stop.paie === 'CB' && stop.stpaie === 'Payé' && stop.enc && stop.enc.choix === 'cb' && stop.enc.montant === 269 && stop.enc.ticket === '0042' && stop.enc.par === 'RANOU' && !!stop.enc.at);
@@ -169,6 +175,82 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', prix: 180
     test('tableau de bord — ENCAISSÉ ESPÈCES PAR LIVREURS : 180 € (la payée en ligne étiquetée « Espèces » n\'y est PAS)', r.especes === 180);
     test('tableau de bord — ENCAISSÉ CB PAR LIVREURS : 269 €', r.cb === 269);
     test('tableau de bord — NON ENCAISSÉ : 449 € (269 + 180), 2 commandes', r.nonEncaisse === 449 && r.nNonEncaisse === 2); }
+
+  // ══════════ 6. v7.5.114 — origine du paiement venue de la base ══════════
+  console.log('\n6. ORIGINE DU PAIEMENT (donnée de la base, plus de déduction par un commentaire)');
+  { const { bac } = nouveauBac(); const S = c => bac.paiSituation(c);
+    test('payment_source = SHOPIFY_ONLINE → payée en ligne, même si un commentaire parle de « paiement à la livraison »', S(SITE({ paySource: 'SHOPIFY_ONLINE', instr: 'Le client demandait un PAIEMENT À LA LIVRAISON : 259 € à encaisser, finalement payé en ligne.' })).type === 'en_ligne');
+    test('payment_source = DELIVERY → à encaisser, même si la consigne a disparu des instructions', S(SITE({ paySource: 'DELIVERY', stpaie: 'Non payé', montantEnc: 0, instr: 'Sonner deux fois.' })).type === 'cod_a_encaisser' && S(SITE({ paySource: 'DELIVERY', stpaie: 'Non payé', montantEnc: 0, instr: '' })).du === 259);
+    test('payment_source = DELIVERY encaissé → « encaissé à la livraison »', S(SITE({ paySource: 'DELIVERY', paie: 'CB', stpaie: 'Payé', statut: 'livré', instr: '' })).type === 'cod_encaisse');
+    test('payment_source = LEBONCOIN / TIKTOK / MANUAL → comportement habituel', ['LEBONCOIN', 'TIKTOK', 'MANUAL'].every(s => S(LBC({ paySource: s })).type === 'autre'));
+    test('SHOPIFY_ONLINE mais statut « Non payé » (incohérence) → jamais « 0 € à encaisser » : à vérifier', S(SITE({ paySource: 'SHOPIFY_ONLINE', stpaie: 'Non payé', montantEnc: 0 })).type === 'anomalie' && bac.paiAEncaisser(SITE({ paySource: 'SHOPIFY_ONLINE', stpaie: 'Non payé', montantEnc: 0 })));
+    const p = bac.paiProtegerEdition(SITE({ paySource: 'SHOPIFY_ONLINE', payTransactions: '123', ticketCb: '' }), SITE({ paie: '' }));
+    test('la fiche conserve l\'origine du paiement et les transactions', p.paySource === 'SHOPIFY_ONLINE' && p.payTransactions === '123'); }
+  { const { bac, envois } = nouveauBac(); await bac.sbSaveCommande(SITE({ paySource: 'SHOPIFY_ONLINE' }));
+    test('l\'application n\'envoie jamais l\'origine du paiement à la base (elle ne peut pas la modifier)', !('payment_source' in envois[0].body) && !('payment_transactions' in envois[0].body)); }
+
+  // ══════════ 7. v7.5.114 — ticket CB obligatoire ══════════
+  console.log('\n7. TICKET CB OBLIGATOIRE');
+  { const cmd = COD({ paySource: 'DELIVERY' }); const { bac, els, envois, stop } = preparer(cmd); bac.sigCodChoisir('cb'); bac.document.getElementById('sig-cod-ticket').value = ''; bac.validerSig();
+    test('paiement à la livraison, CB sans ticket : signature refusée, rien n\'est enregistré', stop.statut !== 'livré' && envois.length === 0 && /ticket/.test((bac._toasts.pop() || [''])[0]));
+    bac.document.getElementById('sig-cod-ticket').value = 'T-7781'; bac.validerSig(); const b = envois[0].body;
+    test('avec ticket : enregistré, colonnes ticket / livreur / date et heure envoyées à la base', b.paie === 'CB' && b.stpaie === 'Payé' && b.ticket_cb === 'T-7781' && b.encaisse_par === 'RANOU' && !!b.encaisse_at, b);
+    test('rapprochement possible : commande → livreur → montant → ticket → tournée', stop.cmdId === cmd.id && stop.enc.par === 'RANOU' && stop.enc.montant === 269 && stop.enc.ticket === 'T-7781' && bac.tournees[0].id === 'T-TEST'); }
+  { const cmd = COD({ paySource: 'DELIVERY' }); const { bac, envois } = preparer(cmd); bac.sigCodChoisir('esp'); bac.validerSig(); const b = envois[0].body;
+    test('espèces : aucun ticket demandé, livreur et heure enregistrés', b.paie === 'Espèces' && b.ticket_cb === null && b.encaisse_par === 'RANOU' && !!b.encaisse_at); }
+  { const cmd = COD({ paySource: 'DELIVERY' }); const { bac, envois } = preparer(cmd); bac.sigCodChoisir('non'); bac.validerSig(); const b = envois[0].body;
+    test('non encaissé : aucune colonne d\'encaissement envoyée, reste « Non payé »', b.stpaie === 'Non payé' && !('ticket_cb' in b) && !('encaisse_par' in b)); }
+  { const cmd = LBC({ paySource: 'LEBONCOIN' }); const { bac, els, envois, stop, pris } = preparer(cmd); bac.sigTogglePaie(true); bac.sigSelectMode('CB');
+    test('autre origine, carte choisie : le champ ticket apparaît', pris === false && els['sig-ticket-wrap'].style.display === 'block'); bac.document.getElementById('sig-ticket').value = ''; bac.validerSig();
+    test('autre origine, CB sans ticket : signature refusée', stop.statut !== 'livré' && envois.length === 0); bac.document.getElementById('sig-ticket').value = '0099'; bac.validerSig();
+    test('autre origine, CB avec ticket : enregistré avec le ticket', envois[0].body.paie === 'CB' && envois[0].body.ticket_cb === '0099' && stop.enc.ticket === '0099'); }
+  { const cmd = LBC({ paySource: 'LEBONCOIN' }); const { bac, envois, stop } = preparer(cmd); bac.sigTogglePaie(true); bac.sigSelectMode('Espèces'); bac.validerSig();
+    test('autre origine, espèces : aucun ticket demandé', stop.statut === 'livré' && envois[0].body.paie === 'Espèces' && envois[0].body.ticket_cb === null); }
+  { const cmd = SITE({ paySource: 'SHOPIFY_ONLINE' }); const { bac, envois } = preparer(cmd); bac.validerSig();
+    test('payée en ligne : aucun encaissement ni ticket envoyé à la base', envois[0].body.statut === 'livré' && !('ticket_cb' in envois[0].body) && !('encaisse_par' in envois[0].body) && !('paie' in envois[0].body)); }
+
+  // ══════════ 8. v7.5.114 — modification administrateur : motif et journal obligatoires ══════════
+  console.log('\n8. MODIFICATION FINANCIÈRE PAR L\'ADMINISTRATEUR');
+  const modal = (bac, els, mode, statut, montant, livreur) => { els['mp-cmd'] = { value: bac.commandes[0].id }; els['mp-mode'] = { value: mode }; els['mp-statut'] = { value: statut }; els['mp-montant-enc'] = { value: String(montant) }; els['mp-livreur'] = { value: livreur || '' }; };
+  { const { bac, els, envois } = nouveauBac(); const c = LBC({ paySource: 'LEBONCOIN', prix: 180 }); bac.commandes = [c]; bac.role = 'admin'; modal(bac, els, 'CB', 'Payé', 180); bac._reponsesPrompt = [''];
+    await bac.sauvegarderPaie();
+    test('sans motif : rien n\'est modifié, aucun appel à la base', c.paie === 'Espèces' && c.stpaie === 'Non payé' && bac._rpc.length === 0 && envois.length === 0);
+    bac._reponsesPrompt = ['Client venu payer au dépôt par carte']; await bac.sauvegarderPaie();
+    test('avec motif : passe par l\'action administrateur de la base, motif transmis', bac._rpc.length === 1 && bac._rpc[0].p_cmd === c.id && bac._rpc[0].p_mode === 'CB' && bac._rpc[0].p_statut === 'Payé' && bac._rpc[0].p_montant === 180 && /dépôt/.test(bac._rpc[0].p_motif) && c.paie === 'CB' && c.stpaie === 'Payé');
+    test('aucune écriture directe du paiement par l\'application (uniquement l\'action journalisée)', envois.length === 0); }
+  { const { bac, els } = nouveauBac(); const c = LBC({ paySource: 'LEBONCOIN', prix: 180 }); bac.commandes = [c]; modal(bac, els, 'CB', 'Payé', 180); bac._reponsesPrompt = ['Motif valable ici']; bac._rpcReponse = { ok: false, erreur: 'session_admin_requise' };
+    await bac.sauvegarderPaie();
+    test('refus de la base (pas administrateur) : rien ne change dans l\'application', c.paie === 'Espèces' && c.stpaie === 'Non payé' && /refusée/.test((bac._toasts.pop() || [''])[0])); }
+  { const { bac, els } = nouveauBac(); const c = SITE({ paySource: 'SHOPIFY_ONLINE' }); bac.commandes = [c]; modal(bac, els, 'Virement', 'Payé', 259); bac.confirm = () => false; bac._reponsesPrompt = ['motif'];
+    await bac.sauvegarderPaie();
+    test('commande payée en ligne : confirmation demandée ; refusée → rien ne change', c.paie === 'Site Maxiconfort' && bac._rpc.length === 0);
+    bac.confirm = () => true; bac._reponsesPrompt = ['Remboursement carte puis virement du client']; await bac.sauvegarderPaie();
+    test('commande payée en ligne : confirmée + motif → action administrateur journalisée', bac._rpc.length === 1 && c.paie === 'Virement'); }
+  { const { bac } = nouveauBac(); const c = LBC({ paySource: 'LEBONCOIN', prix: 180 }); bac.commandes = [c]; bac._reponsesPrompt = [''];
+    await bac.chgPaieStatut(c.id, 'Payé'); test('changement de statut en un clic, sans motif : refusé', c.stpaie === 'Non payé' && bac._rpc.length === 0);
+    bac._reponsesPrompt = ['Encaissement espèces oublié à la signature']; await bac.chgPaieStatut(c.id, 'Payé');
+    test('changement de statut en un clic, avec motif : journalisé, montant = prix', bac._rpc.length === 1 && bac._rpc[0].p_montant === 180 && c.stpaie === 'Payé' && c.montantEnc === 180);
+    bac._reponsesPrompt = ['Erreur de saisie du mode']; await bac.chgPaieMode(c.id, 'CB'); test('changement de mode en un clic, avec motif : journalisé', bac._rpc.length === 2 && bac._rpc[1].p_mode === 'CB' && c.paie === 'CB'); }
+  { const { bac } = nouveauBac(); const l = bac.paiJournalLigne({ action: 'tentative_bloquee', cree_at: '2026-10-03T19:57:08Z', ancien: { paie: 'Site Maxiconfort', stpaie: 'Payé', montant_enc: 259 }, nouveau: { paie: 'Espèces', stpaie: 'Payé', montant_enc: 259 }, utilisateur: 'collab', origine_action: 'application', reste_du: 0, motif: 'Commande payée en ligne' });
+    test('historique financier lisible : ancienne valeur → valeur refusée, auteur, origine, motif', /TENTATIVE REFUSÉE/.test(l) && /Site Maxiconfort \/ Payé \/ 259 € → Espèces/.test(l) && /par collab/.test(l) && /motif/.test(l)); }
+
+  // ══════════ 9. v7.5.114 — caisse du livreur ══════════
+  console.log('\n9. CAISSE DU LIVREUR');
+  { const { bac } = nouveauBac(); const E = c => bac.getMontantEspecesCmd(c), CB = c => bac.getMontantCBCmd(c);
+    test('payée en ligne étiquetée « Espèces », livraison du 03/10 ou après : 0 € d\'espèces attendues', E(SITE({ paySource: 'SHOPIFY_ONLINE', paie: 'Espèces', date: '2026-10-04', statut: 'livré' })) === 0 && E(SITE({ paySource: 'SHOPIFY_ONLINE', paie: 'Espèces', date: '2026-10-03' })) === 0);
+    test('tournées antérieures : calcul d\'origine conservé (aucune réécriture de l\'historique de caisse)', E(SITE({ paySource: 'SHOPIFY_ONLINE', paie: 'Espèces', date: '2026-10-01', statut: 'livré' })) === 259);
+    test('paiement à la livraison encaissé en espèces : compté dans les espèces attendues', E(COD({ paySource: 'DELIVERY', paie: 'Espèces', stpaie: 'Payé', montantEnc: 269, date: '2026-10-05', statut: 'livré' })) === 269);
+    test('paiement à la livraison encaissé par CB : compté dans « CB encaissé livreur », pas dans les espèces', CB(COD({ paySource: 'DELIVERY', paie: 'CB', stpaie: 'Payé', montantEnc: 269, date: '2026-10-05' })) === 269 && E(COD({ paySource: 'DELIVERY', paie: 'CB', stpaie: 'Payé', montantEnc: 269, date: '2026-10-05' })) === 0);
+    test('paiement à la livraison non encaissé : 0 € en caisse', E(COD({ paySource: 'DELIVERY', date: '2026-10-05', statut: 'livré' })) === 0 && CB(COD({ paySource: 'DELIVERY', date: '2026-10-05', statut: 'livré' })) === 0);
+    test('Leboncoin en espèces : inchangé', E(LBC({ paySource: 'LEBONCOIN', stpaie: 'Payé', montantEnc: 180, date: '2026-10-05' })) === 180);
+    const tournee = [COD({ paySource: 'DELIVERY', paie: 'Espèces', stpaie: 'Payé', montantEnc: 269, date: '2026-10-05' }), COD({ id: '#c2', paySource: 'DELIVERY', paie: 'CB', stpaie: 'Payé', montantEnc: 189, prix: 189, date: '2026-10-05' }), SITE({ paySource: 'SHOPIFY_ONLINE', paie: 'Espèces', date: '2026-10-05' }), LBC({ paySource: 'LEBONCOIN', stpaie: 'Payé', montantEnc: 180, date: '2026-10-05' })];
+    test('tournée complète : espèces attendues 449 € (269 + 180), CB encaissé livreur 189 €', tournee.reduce((s, c) => s + E(c), 0) === 449 && tournee.reduce((s, c) => s + CB(c), 0) === 189);
+    const a = bac.paiCalculRemise(449, '449'), b2 = bac.paiCalculRemise(449, '400,50'), c2 = bac.paiCalculRemise(449, '460'), d = bac.paiCalculRemise(449, 'abc');
+    test('remise exacte : écart 0 €', a.attendu === 449 && a.remis === 449 && a.ecart === 0);
+    test('remise inférieure : écart −48,50 € signalé', b2.remis === 400.5 && b2.ecart === -48.5); test('remise supérieure : écart +11 € signalé', c2.ecart === 11); test('saisie invalide : remise refusée', d === null);
+    const t1 = bac.paiRemiseTexte({ aRemettre: 449, remiseInfo: { attendu: 449, remis: 400.5, ecart: -48.5, cb: 189, commentaire: 'Un client a payé par virement' } });
+    test('affichage : ESPÈCES ATTENDUES / RÉELLEMENT REMISES / ÉCART en rouge / CB ENCAISSÉ LIVREUR', /ESPÈCES ATTENDUES : 449 €/.test(t1) && /RÉELLEMENT REMISES : 400,50 €/.test(t1) && /ÉCART : -48,50 € ⚠️/.test(t1) && /var\(--red\)/.test(t1) && /CB ENCAISSÉ LIVREUR : 189 €/.test(t1), t1);
+    test('remises validées avant cette version : affichage d\'origine conservé', bac.paiRemiseTexte({ aRemettre: 300, remiseInfo: { validee: true } }) === '300 € remis'); }
 
   console.log(`\nRÉSULTAT : ${ok} tests réussis, ${ko} échec(s)`);
   process.exit(ko ? 1 : 0);
