@@ -2762,6 +2762,40 @@ const SUPABASE_URL = 'https://jmvfjtnmebstkzcfnlgp.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_cRPSD97LDH0beIID1Wecxw_xY7cEAeX';
 const APP_SECRET = 'mc_Sp9GO_aM9QBSGX9-rRFHlv4NMERtZWpG3krCD-GV';
 
+// ── Session de l'appareil (v7.5.112, 03/10/2026) ───────────────────────
+// RANOU n'arrivait plus a rester connecte sur son telephone : le PIN etait
+// accepte par le serveur (14 connexions reussies d'affilee) puis l'app le
+// renvoyait aussitot a l'ecran du code. Cause : la session n'existait QUE
+// dans localStorage et sa validite dependait de l'HORLOGE DU TELEPHONE
+// (Date.parse(expire) > Date.now()). Donc deconnexion immediate si :
+//   - localStorage est bloque/plein/efface (certains WebView Android),
+//   - l'horloge du telephone avance (date manuelle fausse),
+//   - Date.parse echoue sur l'heure serveur (5-6 decimales de seconde).
+// Reponse : (1) copie en MEMOIRE (marche meme sans localStorage),
+// (2) duree de validite LOCALE de 12 h mesuree a la connexion, qui ne depend
+// plus de l'horloge absolue. Aucun risque : le serveur verifie de son cote la
+// vraie expiration du jeton (RLS) — l'app n'a pas a en etre juge.
+var MX_SESSION_CLE = 'mx_session_app';
+var MX_SESSION_MEM = null;
+var MX_DUREE_SESSION_MS = 12 * 3600 * 1000;
+function mxSessionBrute() {
+  if (MX_SESSION_MEM) return MX_SESSION_MEM;
+  try { return JSON.parse(localStorage.getItem(MX_SESSION_CLE) || 'null'); } catch (e) { return null; }
+}
+// Valide tant qu'il reste du temps sur AU MOINS une des deux mesures.
+function mxSessionValide(s) {
+  if (!s || !s.jeton) return false;
+  if (typeof s.fin_locale === 'number' && isFinite(s.fin_locale) && Date.now() < s.fin_locale) return true;
+  var ms = Date.parse(s.expire);
+  if (!isFinite(ms)) { // heure serveur illisible pour ce navigateur -> on fait confiance au serveur
+    ms = Date.parse(String(s.expire || '').replace(/(\.\d{3})\d+/, '$1'));
+    if (!isFinite(ms)) return true;
+  }
+  return ms > Date.now();
+}
+function mxSessionObjet() { var s = mxSessionBrute(); return mxSessionValide(s) ? s : null; }
+function mxSessionJeton() { var s = mxSessionObjet(); return s ? s.jeton : ''; }
+
 // Intercepteur fetch : injecte x-app-secret sur les appels REST Supabase
 // v7.3.6 : EXCLURE les Edge Functions (/functions/v1/...) car elles ne listent
 // pas x-app-secret dans Access-Control-Allow-Headers -> preflight CORS bloque
@@ -2774,7 +2808,7 @@ const APP_SECRET = 'mc_Sp9GO_aM9QBSGX9-rRFHlv4NMERtZWpG3krCD-GV';
     if (isSupabaseRest) {
       // v7.5.111 : jeton de session serveur (obtenu par le PIN) exige par la RLS de toutes les tables
       var _tok = null;
-      try { var _s = JSON.parse(localStorage.getItem('mx_session_app') || 'null'); if (_s && _s.jeton && Date.parse(_s.expire) > Date.now()) _tok = _s.jeton; } catch(e) {}
+      try { _tok = mxSessionJeton() || null; } catch(e) {}
       var extra = { 'x-app-secret': APP_SECRET };
       if (_tok) extra['x-session-token'] = _tok;
       else if (url.indexOf('/rpc/') === -1) { try { if (typeof role !== 'undefined' && role && typeof sessionExpireeRetourPin === 'function') sessionExpireeRetourPin(); } catch(e) {} }
@@ -4407,14 +4441,18 @@ let sigCtx = null, sigDraw = false, sigStopId = null;
 // pas le PIN) qui permet de rentrer HORS LIGNE sur le meme appareil et le meme role.
 try { ['pin_admin','pin_collab','pin_livreur'].forEach(function(k){ localStorage.removeItem(k); }); } catch(e) {}
 try { var _pc0 = JSON.parse(localStorage.getItem('mx_params_cache') || 'null'); if (_pc0 && _pc0.pins) { delete _pc0.pins; localStorage.setItem('mx_params_cache', JSON.stringify(_pc0)); } } catch(e) {}
-var SESSION_CLE = 'mx_session_app';
-function sessionLire() {
-  try { var s = JSON.parse(localStorage.getItem(SESSION_CLE) || 'null'); if (s && s.jeton && s.expire && Date.parse(s.expire) > Date.now()) return s; } catch(e) {}
-  return null;
+var SESSION_CLE = MX_SESSION_CLE;
+function sessionLire() { return mxSessionObjet(); }
+// v7.5.112 : on pose une fin de validite LOCALE (12 h a partir de maintenant) pour ne plus
+// dependre de l'horloge du telephone, et on garde une copie en memoire pour les appareils
+// ou localStorage est bloque (sinon : deconnexion a la premiere requete, cas RANOU 03/10).
+function sessionEcrire(s) {
+  s = Object.assign({}, s, { fin_locale: Date.now() + MX_DUREE_SESSION_MS });
+  MX_SESSION_MEM = s;
+  try { localStorage.setItem(SESSION_CLE, JSON.stringify(s)); } catch(e) {}
 }
-function sessionEcrire(s) { try { localStorage.setItem(SESSION_CLE, JSON.stringify(s)); } catch(e) {} }
-function sessionEffacer() { try { localStorage.removeItem(SESSION_CLE); } catch(e) {} }
-function jetonSession() { var s = sessionLire(); return s ? s.jeton : ''; }
+function sessionEffacer() { MX_SESSION_MEM = null; try { localStorage.removeItem(SESSION_CLE); } catch(e) {} }
+function jetonSession() { return mxSessionJeton(); }
 // v7.5.111 : la session protege l'acces aux DONNEES (RLS). Expiree ou revoquee -> retour a l'ecran PIN.
 var _sessionAlerte = false;
 function sessionExpireeRetourPin(msg) {
