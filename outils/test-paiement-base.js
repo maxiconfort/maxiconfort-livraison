@@ -140,8 +140,8 @@ const base = (id, plus) => Object.assign({ id, client: 'TEST CORRECTIF PAIEMENT 
   console.log('\n9. « PAYÉ » EN ESPÈCES OU CARTE AVANT LA LIVRAISON, DEPUIS LE BUREAU : ADMINISTRATEUR + MOTIF (migration 029)');
   // Écriture faite avec une SESSION DE BUREAU simulée : la session est créée, utilisée et supprimée dans la même
   // opération de la base (le jeton est tiré au hasard dans la base, il n'en sort jamais).
-  const bureau = ecriture => sql(`do $$ declare tk text := encode(extensions.gen_random_bytes(32), 'hex'); begin
-    insert into public.sessions_app (jeton_hash, role, expire_at, appareil) values (encode(extensions.digest(tk, 'sha256'), 'hex'), 'admin', now() + interval '2 minutes', 'test-automatique');
+  const bureau = (ecriture, roleS = 'admin') => sql(`do $$ declare tk text := encode(extensions.gen_random_bytes(32), 'hex'); begin
+    insert into public.sessions_app (jeton_hash, role, expire_at, appareil) values (encode(extensions.digest(tk, 'sha256'), 'hex'), '${roleS}', now() + interval '2 minutes', 'test-automatique');
     perform set_config('request.headers', json_build_object('x-app-secret', (select valeur from public.secrets_serveur where cle = 'app_secret_courant'), 'x-session-token', tk)::text, true);
     ${ecriture};
     perform set_config('request.headers', '', true);
@@ -179,6 +179,16 @@ const base = (id, plus) => Object.assign({ id, client: 'TEST CORRECTIF PAIEMENT 
   test('CRÉATION d\'une commande « Espèces / Payé » depuis le bureau : créée « Non payé », tentative notée', r.ok && jd.length === 2 && jd[0].action === 'tentative_bloquee' && /avant la livraison/.test(jd[0].motif) && jd[1].action === 'creation' && jd[1].nouveau.stpaie === 'Non payé' && Number(jd[1].nouveau.montant_enc || 0) === 0, r.ok ? jd : r.texte.slice(0, 300));
   r = await bureau(creer(S, 'SAV - Reprise + Remboursement', 0, 'Espèces', 'Payé', -1)); let js = (await journal(S)).slice(nS);
   test('remboursement SAV (0 €, montant négatif) : non concerné, créé tel quel', r.ok && js.length === 1 && js[0].action === 'creation' && js[0].nouveau.stpaie === 'Payé' && Number(js[0].nouveau.montant_enc) === -1, r.ok ? js : r.texte.slice(0, 300));
+  // accès COLLABORATRICE (rôle « collab ») : même règle, et pas d'accès à l'action administrateur
+  r = await bureau(maj(C, "stpaie = 'Payé', montant_enc = 1"), 'collab'); c = await lire(C); lc = await dernier(C);
+  test('accès collaboratrice : « Espèces / Payé » avant livraison refusé, tentative notée à son nom d\'accès', r.ok && pai(c) === 'Espèces / Non payé / 0' && lc.action === 'tentative_bloquee' && lc.utilisateur === 'collab', r.ok ? lc : r.texte.slice(0, 300));
+  r = await bureau(maj(C, "adresse = 'ADRESSE DE TEST 75000 Paris', instr = 'Ligne technique, à ignorer.'"), 'collab'); c = await lire(C);
+  test('accès collaboratrice : une fiche « Non payé » s\'enregistre normalement', r.ok && pai(c) === 'Espèces / Non payé / 0', r.ok ? pai(c) : r.texte.slice(0, 300));
+  const nCc = (await journal(C)).length;
+  r = await bureau(`perform public.modifier_paiement('${C}', 'Espèces', 'Payé', 1, 'Tentative de la collaboratrice par la procédure administrateur', null)`, 'collab'); c = await lire(C);
+  test('accès collaboratrice : la procédure administrateur lui est fermée (rien ne change, rien au journal)', r.ok && pai(c) === 'Espèces / Non payé / 0' && (await journal(C)).length === nCc, r.ok ? pai(c) : r.texte.slice(0, 300));
+  r = await bureau(creer('#TEST-PAIEMENT-AV', 'LeBonCoin', 1, 'Espèces', 'Payé', 1), 'collab'); let jc = (await journal('#TEST-PAIEMENT-AV')).slice(-2);
+  test('accès collaboratrice : CRÉATION « Espèces / Payé » → créée « Non payé », tentative notée', r.ok && jc.length === 2 && jc[0].action === 'tentative_bloquee' && jc[0].utilisateur === 'collab' && jc[1].action === 'creation' && jc[1].nouveau.stpaie === 'Non payé', r.ok ? jc : r.texte.slice(0, 300));
   const reste = await sql("select (select count(*) from public.sessions_app where appareil = 'test-automatique') as sessions, (select count(*) from public.commandes where id in ('#TEST-PAIEMENT-AV', '#TEST-PAIEMENT-SAV')) as lignes");
   test('aucune session de test ni ligne temporaire ne reste dans la base', reste.ok && Number(reste.json[0].sessions) === 0 && Number(reste.json[0].lignes) === 0, reste.json);
 
