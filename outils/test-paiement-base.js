@@ -97,6 +97,46 @@ const base = (id, plus) => Object.assign({ id, client: 'TEST CORRECTIF PAIEMENT 
   test('et noté dans le journal', (await journal(C)).length === nC0 + 1);
   await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(C), { paie: 'Espèces', stpaie: 'Non payé', montant_enc: 0 });
 
+  console.log('\n8. ENCAISSEMENT PAR CARTE À LA LIVRAISON : PREUVE OBLIGATOIRE CÔTÉ BASE (migration 028)');
+  const pai = x => [x.paie, x.stpaie, Number(x.montant_enc || 0)].join(' / ');
+  const dernier = async id => { const x = await journal(id); return x[x.length - 1]; };
+  // a) ancienne version de l'application : enregistrement complet « livré / CB / Payé » sans aucune référence
+  await rest('POST', 'commandes', base(B, { statut: 'livré', paie: 'CB', stpaie: 'Payé', montant_enc: 1, origine: 'Site Maxiconfort', ref_marketplace: '999999999902', instr: 'Commande site #TEST-LIV. 💵 PAIEMENT À LA LIVRAISON : 1 € à encaisser (espèces ou CB). Ligne technique, à ignorer.' }), 'resolution=merge-duplicates,return=minimal'); b = await lire(B); lb = await dernier(B);
+  test('ancienne version (CB sans référence) : le paiement N\'EST PAS enregistré, la commande reste « Non payé »', pai(b) === 'Espèces / Non payé / 0', pai(b));
+  test('la livraison, elle, est bien enregistrée (aucune livraison perdue)', b.statut === 'livré', b.statut);
+  test('la tentative est notée au journal avec ce qui manque (aucune validation silencieuse)', lb.action === 'tentative_bloquee' && /référence du ticket/.test(lb.motif) && /livreur/.test(lb.motif) && /date et heure/.test(lb.motif) && Number(lb.reste_du) === 1, lb);
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(B), { statut: 'livré', paie: 'CB', stpaie: 'Payé', montant_enc: 1, ticket_cb: 'T-1' }); b = await lire(B); lb = await dernier(B);
+  test('ticket présent mais livreur et heure absents : refusé', pai(b) === 'Espèces / Non payé / 0' && !b.ticket_cb && lb.action === 'tentative_bloquee' && /livreur/.test(lb.motif) && !/référence du ticket/.test(lb.motif), lb.motif);
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(B), { paie: 'CB', stpaie: 'Payé', montant_enc: 0, ticket_cb: 'T-1', encaisse_par: 'RANOU', encaisse_at: new Date().toISOString() }); b = await lire(B); lb = await dernier(B);
+  test('montant absent : refusé', pai(b) === 'Espèces / Non payé / 0' && /montant/.test(lb.motif), lb.motif);
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(B), { paie: 'Mixte', stpaie: 'Payé', montant_enc: 1, encaisse_par: 'RANOU', encaisse_at: new Date().toISOString() }); b = await lire(B);
+  test('« Espèces + CB » sans référence de ticket : refusé aussi', pai(b) === 'Espèces / Non payé / 0', pai(b));
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(B), { paie: 'CB', stpaie: 'Payé', montant_enc: 1, ticket_cb: 'T-7781', encaisse_par: 'RANOU', encaisse_at: new Date().toISOString(), encaisse_tournee: 'T-TEST' }); b = await lire(B); lb = await dernier(B);
+  test('avec ticket, montant, livreur, date et heure : accepté', pai(b) === 'CB / Payé / 1' && b.ticket_cb === 'T-7781' && b.encaisse_par === 'RANOU' && !!b.encaisse_at, b);
+  test('journal : commande → livreur → montant → ticket → tournée', lb.action === 'modification' && lb.nouveau.ticket_cb === 'T-7781' && lb.nouveau.encaisse_par === 'RANOU' && lb.nouveau.encaisse_tournee === 'T-TEST' && Number(lb.montant) === 1 && Number(lb.reste_du) === 0, lb);
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(B), { paie: 'Espèces', stpaie: 'Non payé', montant_enc: 0, ticket_cb: null, encaisse_par: null, encaisse_at: null, encaisse_tournee: null, statut: 'livré' });
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(B), { paie: 'Espèces', stpaie: 'Payé', montant_enc: 1, encaisse_par: 'RANOU', encaisse_at: new Date().toISOString() }); b = await lire(B);
+  test('encaissement en ESPÈCES : aucun ticket exigé', pai(b) === 'Espèces / Payé / 1', pai(b));
+  // b) autre origine (Leboncoin) : même règle dès qu'une carte est encaissée à la livraison
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(C), { statut: 'livré', paie: 'CB', stpaie: 'Payé', montant_enc: 1 }); c = await lire(C); let lc = await dernier(C);
+  test('commande Leboncoin livrée, CB sans référence : refusé, reste « Non payé »', pai(c) === 'Espèces / Non payé / 0' && c.statut === 'livré' && lc.action === 'tentative_bloquee', pai(c));
+  // c) procédure administrateur exceptionnelle : motif obligatoire, journalisée
+  r = await sql(`select interne.modifier_paiement('${C}', 'CB', 'Payé', 1, 'Test : ticket retrouvé après coup par le gérant', 'admin(test)', 'TK-ADMIN') as r`); c = await lire(C); lc = await dernier(C);
+  test('procédure administrateur avec motif (et ticket) : acceptée et journalisée', r.ok && r.json[0].r.ok && pai(c) === 'CB / Payé / 1' && c.ticket_cb === 'TK-ADMIN' && lc.action === 'modification_admin' && /ticket retrouvé/.test(lc.motif) && lc.utilisateur === 'admin(test)', lc);
+  r = await sql(`select interne.modifier_paiement('${C}', 'CB', 'Payé', 1, '', 'admin(test)', null) as r`);
+  test('procédure administrateur sans motif : refusée', r.ok && r.json[0].r.ok === false && r.json[0].r.erreur === 'motif_obligatoire');
+  // d) paiement par carte AVANT livraison, saisi au bureau (client venu payer au dépôt) : hors de cette règle
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(C), { statut: 'annulé', paie: 'Espèces', stpaie: 'Non payé', montant_enc: 0, ticket_cb: null });
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(C), { paie: 'CB', stpaie: 'Payé', montant_enc: 1 }); c = await lire(C);
+  test('carte saisie au bureau sur une commande non livrée : acceptée (ce n\'est pas un encaissement à la livraison) et journalisée', pai(c) === 'CB / Payé / 1' && (await dernier(C)).action === 'modification', pai(c));
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(C), { paie: 'Espèces', stpaie: 'Non payé', montant_enc: 0 });
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(B), { paie: 'Espèces', stpaie: 'Non payé', montant_enc: 0, encaisse_par: null, encaisse_at: null, statut: 'annulé' });
+  // e) le verrou « payée en ligne » est inchangé
+  await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(A), { paie: 'CB', stpaie: 'Payé', montant_enc: 1, ticket_cb: 'T-9', encaisse_par: 'RANOU', encaisse_at: new Date().toISOString(), statut: 'livré' }); a = await lire(A);
+  test('commande payée en ligne : même avec un ticket, aucun encaissement livreur possible', fin(a) === 'Site Maxiconfort / Payé / 1' && !a.ticket_cb && !a.encaisse_par, a);
+  r = await rest('POST', 'rpc/modifier_paiement', { p_cmd: A, p_mode: 'CB', p_statut: 'Payé', p_montant: 1, p_motif: 'tentative sans session administrateur', p_ticket: 'X' });
+  test('action administrateur (nouvelle forme, avec ticket) sans session administrateur : refusée', r.json && r.json.ok === false && r.json.erreur === 'session_admin_requise', r.texte.slice(0, 200));
+
   // ── remise au propre
   await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(A), { statut: 'annulé', livreur: '', date_livraison: '', adresse: 'ADRESSE DE TEST 75000 Paris', instr: 'Ligne technique de test du correctif paiement. Peut être supprimée.' });
   for (const id of [B, C]) await rest('PATCH', 'commandes?id=eq.' + encodeURIComponent(id), { statut: 'annulé' });

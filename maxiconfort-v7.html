@@ -1106,6 +1106,7 @@ textarea{resize:vertical;min-height:65px}
       <button class="fin-sub-btn" data-sub="traiter" onclick="showFinSub('traiter')" style="padding:9px 18px;border-radius:20px;border:1.5px solid var(--blue);background:var(--blue);color:#fff;font-size:13px;font-weight:800;cursor:pointer;font-family:var(--font)">💵 À traiter</button>
       <button class="fin-sub-btn" data-sub="analyse" onclick="showFinSub('analyse')" style="padding:9px 18px;border-radius:20px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);font-size:13px;font-weight:800;cursor:pointer;font-family:var(--font)">📊 Analyse</button>
       <button class="fin-sub-btn" data-sub="journal" onclick="showFinSub('journal')" style="padding:9px 18px;border-radius:20px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);font-size:13px;font-weight:800;cursor:pointer;font-family:var(--font)">📜 Journal</button>
+      <button class="fin-sub-btn" data-sub="historique" onclick="showFinSub('historique')" style="padding:9px 18px;border-radius:20px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);font-size:13px;font-weight:800;cursor:pointer;font-family:var(--font)">🧾 Historique financier</button>
     </div>
 
     <div id="fin-sub-traiter">
@@ -1224,6 +1225,42 @@ textarea{resize:vertical;min-height:65px}
     </div>
     <div class="tw" id="fin-journal"></div>
     </div><!-- /fin-sub-journal -->
+
+    <!-- v7.5.115 : HISTORIQUE FINANCIER — journal tenu par la base (ajout seul), lecture administrateur -->
+    <div id="fin-sub-historique" style="display:none">
+      <div class="sh">
+        <div class="st">Historique financier</div>
+        <div style="display:flex;gap:6px"><button class="btn btn-sm" onclick="histFinReset()">✕ Effacer</button><button class="btn btn-sm btn-p" onclick="histFinCharger()">🔎 Rechercher</button></div>
+      </div>
+      <div style="font-size:12px;color:var(--t3);margin-bottom:10px">Chaque création, modification ou tentative refusée sur le paiement d'une commande, depuis le 03/10/2026. Ce journal ne peut être ni modifié ni supprimé.</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-bottom:12px">
+        <input id="hf-cmd" placeholder="N° commande (ex : 1855)" style="padding:8px 10px;border:1px solid var(--brd);border-radius:var(--r);font-size:13px;font-family:var(--font);background:var(--card);color:var(--text);width:100%" onkeydown="if(event.key==='Enter')histFinCharger()">
+        <input id="hf-du" type="date" title="Du" style="padding:8px 10px;border:1px solid var(--brd);border-radius:var(--r);font-size:13px;font-family:var(--font);background:var(--card);color:var(--text);width:100%">
+        <input id="hf-au" type="date" title="Au" style="padding:8px 10px;border:1px solid var(--brd);border-radius:var(--r);font-size:13px;font-family:var(--font);background:var(--card);color:var(--text);width:100%">
+        <input id="hf-livreur" placeholder="Livreur" style="padding:8px 10px;border:1px solid var(--brd);border-radius:var(--r);font-size:13px;font-family:var(--font);background:var(--card);color:var(--text);width:100%" onkeydown="if(event.key==='Enter')histFinCharger()">
+        <input id="hf-tournee" placeholder="Tournée (ex : T-119)" style="padding:8px 10px;border:1px solid var(--brd);border-radius:var(--r);font-size:13px;font-family:var(--font);background:var(--card);color:var(--text);width:100%" onkeydown="if(event.key==='Enter')histFinCharger()">
+        <select id="hf-origine" style="padding:8px 10px;border:1px solid var(--brd);border-radius:var(--r);font-size:13px;font-family:var(--font);background:var(--card);color:var(--text);width:100%">
+          <option value="">Toutes les origines</option>
+          <option value="SHOPIFY_ONLINE">Site — payé en ligne</option>
+          <option value="DELIVERY">Site — paiement à la livraison</option>
+          <option value="LEBONCOIN">Leboncoin</option>
+          <option value="TIKTOK">TikTok</option>
+          <option value="MANUAL">Saisie manuelle</option>
+        </select>
+        <select id="hf-mode" style="padding:8px 10px;border:1px solid var(--brd);border-radius:var(--r);font-size:13px;font-family:var(--font);background:var(--card);color:var(--text);width:100%">
+          <option value="">Tous les types de paiement</option>
+          <option>Espèces</option><option>CB</option><option>Mixte</option><option>Virement</option><option>Site Maxiconfort</option><option>Déjà payé</option><option>LeBonCoin</option><option>TikTok Shop</option>
+        </select>
+        <input id="hf-user" placeholder="Utilisateur (admin, collab, livreur…)" style="padding:8px 10px;border:1px solid var(--brd);border-radius:var(--r);font-size:13px;font-family:var(--font);background:var(--card);color:var(--text);width:100%" onkeydown="if(event.key==='Enter')histFinCharger()">
+        <select id="hf-resultat" style="padding:8px 10px;border:1px solid var(--brd);border-radius:var(--r);font-size:13px;font-family:var(--font);background:var(--card);color:var(--text);width:100%">
+          <option value="">Acceptées et refusées</option>
+          <option value="ok">Acceptées seulement</option>
+          <option value="ko">Refusées seulement</option>
+        </select>
+      </div>
+      <div id="hf-count" style="font-size:12px;color:var(--t3);margin-bottom:8px"></div>
+      <div class="tw" id="hf-liste" style="overflow-x:auto"></div>
+    </div><!-- /fin-sub-historique -->
   </div>
 
   <!-- MODAL MODIFIER PAIEMENT -->
@@ -3123,7 +3160,7 @@ function paiProtegerEdition(avant, apres) {
   if (!avant || !apres) return apres;
   if (!apres.paie) apres.paie = avant.paie;                       // liste sans la valeur -> on garde l'existant
   if (paiEstSite(avant)) { apres.origine = avant.origine; apres.refMarketplace = avant.refMarketplace; }
-  ['paySource', 'payTransactions', 'ticketCb', 'encaissePar', 'encaisseAt'].forEach(function(k){ if (avant[k] !== undefined) apres[k] = avant[k]; });
+  ['paySource', 'payTransactions', 'ticketCb', 'encaissePar', 'encaisseAt', 'encaisseTournee'].forEach(function(k){ if (avant[k] !== undefined) apres[k] = avant[k]; });
   if (paiEstEnLigne(avant)) { apres.paie = avant.paie; apres.stpaie = avant.stpaie; apres.montantEnc = avant.montantEnc; }
   var m = String(avant.instr || '').match(PAI_RE_CONSIGNE);
   if (paiEstSite(avant) && m && !PAI_RE_COD.test(String(apres.instr || ''))) apres.instr = (m[0].trim() + ' ' + String(apres.instr || '')).trim();
@@ -3135,7 +3172,7 @@ function paiProtegerEdition(avant, apres) {
 function paiVerrouBody(cmd, body) {
   if (cmd && !cmd._nouveau && !cmd._finOK && paiEstEnLigne(cmd)) { delete body.paie; delete body.stpaie; delete body.montant_enc; }
   // v7.5.114 : déclaration d'encaissement du livreur (ticket CB, livreur, date et heure), envoyée quand elle vient d'être faite
-  if (cmd && cmd._enc && !paiEstEnLigne(cmd)) { body.ticket_cb = cmd.ticketCb || null; body.encaisse_par = cmd.encaissePar || null; body.encaisse_at = cmd.encaisseAt || null; }
+  if (cmd && cmd._enc && !paiEstEnLigne(cmd)) { body.ticket_cb = cmd.ticketCb || null; body.encaisse_par = cmd.encaissePar || null; body.encaisse_at = cmd.encaisseAt || null; body.encaisse_tournee = cmd.encaisseTournee || null; }
   return body;
 }
 // Filtre « Paiement » de la page Commandes
@@ -3181,6 +3218,85 @@ function paiTraceEncaissement(choix, montant, ticket, livreur, quand) {
   return '✅ Encaissé à la livraison : ' + (choix === 'cb' ? 'CB' : 'Espèces') + ' ' + paiEur(montant) + (choix === 'cb' && ticket ? ' — ticket n° ' + ticket : '') + ' (' + (livreur || 'livreur') + ', ' + h + ').';
 }
 // PAI-FIN
+
+// v7.5.115 : ÉCRAN « HISTORIQUE FINANCIER » (page Encaissements). Recherche par numéro de
+// commande, dates, livreur, tournée, origine, type de paiement, utilisateur ; affiche ancienne et
+// nouvelle valeur, montant, reste dû, origine de l'action, utilisateur, date et heure, motif,
+// tentative acceptée ou refusée. Les filtres « commande / dates / utilisateur / résultat » sont
+// appliqués par la base, les autres par histFinFiltrer (fonction pure, testée).
+function histFinInfos(j, cmds, tours) {
+  var n = j.nouveau || {}, a = j.ancien || {};
+  var c = (cmds || []).find(function(x){ return x.id === j.cmd_id; }) || {};
+  var tournee = n.encaisse_tournee || c.encaisseTournee || '';
+  if (!tournee) { (tours || []).some(function(t){ if ((t.stops || []).some(function(s){ return s.cmdId === j.cmd_id; })) { tournee = t.id; return true; } return false; }); }
+  return { livreur: n.encaisse_par || n.livreur || c.encaissePar || c.livreur || '', tournee: tournee, origine: n.payment_source || a.payment_source || c.paySource || '', modes: [a.paie, n.paie].filter(Boolean) };
+}
+function histFinFiltrer(rows, f, cmds, tours) {
+  var min = function(s){ return String(s || '').toLowerCase().trim(); };
+  return (rows || []).filter(function(j) {
+    var i = histFinInfos(j, cmds, tours);
+    if (f.cmd && min(j.cmd_id).replace('#', '').indexOf(min(f.cmd).replace('#', '')) < 0) return false;
+    if (f.du && String(j.cree_at).slice(0, 10) < f.du) return false;
+    if (f.au && String(j.cree_at).slice(0, 10) > f.au) return false;
+    if (f.livreur && min(i.livreur).indexOf(min(f.livreur)) < 0) return false;
+    if (f.tournee && min(i.tournee) !== min(f.tournee) && min(i.tournee).indexOf(min(f.tournee)) < 0) return false;
+    if (f.origine && i.origine !== f.origine) return false;
+    if (f.mode && i.modes.indexOf(f.mode) < 0) return false;
+    if (f.user && min(j.utilisateur).indexOf(min(f.user)) < 0) return false;
+    if (f.resultat === 'ok' && j.action === 'tentative_bloquee') return false;
+    if (f.resultat === 'ko' && j.action !== 'tentative_bloquee') return false;
+    return true;
+  });
+}
+function histFinValeur(o) { return o ? [o.paie || '—', o.stpaie || '—', paiEur(o.montant_enc || 0)].join(' / ') + (o.ticket_cb ? '<br><span style="font-size:11px;color:var(--t3)">ticket ' + String(o.ticket_cb).replace(/</g, '&lt;') + '</span>' : '') : '—'; }
+function histFinTable(rows, cmds, tours) {
+  var lib = { creation: 'Création', modification: 'Modification', modification_admin: 'Modification administrateur', tentative_bloquee: 'Tentative' };
+  var orig = { application: 'Application', serveur: 'Serveur', action_admin: 'Action administrateur' };
+  return '<table><thead><tr><th>Date et heure</th><th>Commande</th><th>Action</th><th>Résultat</th><th>Ancienne valeur</th><th>Nouvelle valeur</th><th>Montant</th><th>Reste dû</th><th>Origine de l\'action</th><th>Utilisateur</th><th>Livreur · tournée</th><th>Motif</th></tr></thead><tbody>' +
+    rows.map(function(j) {
+      var d = new Date(j.cree_at), refuse = j.action === 'tentative_bloquee', i = histFinInfos(j, cmds, tours);
+      return '<tr' + (refuse ? ' style="background:rgba(192,57,43,.07)"' : '') + '>' +
+        '<td style="font-size:12px;white-space:nowrap">' + d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '</td>' +
+        '<td style="white-space:nowrap"><a href="javascript:void(0)" onclick="ouvrirCmd(\'' + j.cmd_id + '\')" style="font-weight:700">' + j.cmd_id + '</a><div style="font-size:10px;color:var(--t3)">' + (i.origine || '') + '</div></td>' +
+        '<td style="font-size:12px">' + (lib[j.action] || j.action) + '</td>' +
+        '<td>' + (refuse ? '<span class="bdg b-red">REFUSÉE</span>' : '<span class="bdg b-green">Acceptée</span>') + '</td>' +
+        '<td style="font-size:12px">' + histFinValeur(j.ancien) + '</td>' +
+        '<td style="font-size:12px">' + histFinValeur(j.nouveau) + (refuse ? '<br><span style="font-size:11px;color:var(--red)">non enregistrée</span>' : '') + '</td>' +
+        '<td style="font-size:12px;white-space:nowrap">' + paiEur(j.montant || 0) + '</td>' +
+        '<td style="font-size:12px;white-space:nowrap;' + ((parseFloat(j.reste_du) || 0) > 0 ? 'color:var(--red);font-weight:800' : '') + '">' + paiEur(j.reste_du || 0) + '</td>' +
+        '<td style="font-size:12px">' + (orig[j.origine_action] || j.origine_action || '—') + '</td>' +
+        '<td style="font-size:12px">' + String(j.utilisateur || '—').replace(/</g, '&lt;') + '</td>' +
+        '<td style="font-size:12px">' + (i.livreur || '—') + (i.tournee ? ' · ' + i.tournee : '') + '</td>' +
+        '<td style="font-size:12px;max-width:260px">' + (j.motif ? String(j.motif).replace(/</g, '&lt;') : '—') + '</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+function histFinLireFiltres() {
+  var v = function(id){ var e = document.getElementById(id); return e ? String(e.value || '').trim() : ''; };
+  return { cmd: v('hf-cmd'), du: v('hf-du'), au: v('hf-au'), livreur: v('hf-livreur'), tournee: v('hf-tournee'), origine: v('hf-origine'), mode: v('hf-mode'), user: v('hf-user'), resultat: v('hf-resultat') };
+}
+function histFinReset() { ['hf-cmd','hf-du','hf-au','hf-livreur','hf-tournee','hf-origine','hf-mode','hf-user','hf-resultat'].forEach(function(id){ var e = document.getElementById(id); if (e) e.value = ''; }); histFinCharger(); }
+async function histFinCharger() {
+  var liste = document.getElementById('hf-liste'), cpt = document.getElementById('hf-count'); if (!liste) return;
+  if (role !== 'admin') { liste.innerHTML = '<div style="padding:20px;text-align:center;color:var(--t3)">Réservé à l\'administrateur</div>'; return; }
+  var f = histFinLireFiltres();
+  var q = 'journal_financier?select=*&order=id.desc&limit=1000';
+  if (f.cmd) q += '&cmd_id=ilike.' + encodeURIComponent('*' + f.cmd.replace('#', '') + '*');
+  if (f.du) q += '&cree_at=gte.' + encodeURIComponent(f.du + 'T00:00:00');
+  if (f.au) q += '&cree_at=lte.' + encodeURIComponent(f.au + 'T23:59:59');
+  if (f.user) q += '&utilisateur=ilike.' + encodeURIComponent('*' + f.user + '*');
+  if (f.resultat === 'ko') q += '&action=eq.tentative_bloquee';
+  if (f.resultat === 'ok') q += '&action=neq.tentative_bloquee';
+  liste.innerHTML = '<div style="padding:16px;text-align:center;color:var(--t3)">Chargement…</div>';
+  try {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/' + q, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
+    var rows = r.ok ? await r.json() : null;
+    if (!Array.isArray(rows)) { liste.innerHTML = '<div style="padding:16px;text-align:center;color:var(--red)">Historique indisponible</div>'; return; }
+    var fl = histFinFiltrer(rows, { livreur: f.livreur, tournee: f.tournee, origine: f.origine, mode: f.mode }, commandes, tournees);
+    var refus = fl.filter(function(j){ return j.action === 'tentative_bloquee'; }).length;
+    if (cpt) cpt.textContent = fl.length + ' ligne' + (fl.length > 1 ? 's' : '') + ' · ' + refus + ' tentative' + (refus > 1 ? 's refusées' : ' refusée') + (rows.length >= 1000 ? ' · affichage limité aux 1 000 plus récentes : préciser la recherche' : '');
+    liste.innerHTML = fl.length ? histFinTable(fl, commandes, tournees) : '<div style="padding:20px;text-align:center;color:var(--t3)">Aucune ligne pour cette recherche</div>';
+  } catch(e) { liste.innerHTML = '<div style="padding:16px;text-align:center;color:var(--red)">Historique indisponible (pas de connexion)</div>'; }
+}
 
 // v7.5.114 : historique financier d'une commande (journal de la base, lecture administrateur)
 function paiJournalLigne(j) {
@@ -3824,7 +3940,7 @@ function calculerProgressionChargement(t) {
 
 // Colonnes chargées pour les commandes — EXCLUT gls_pdf_base64 (PDF étiquette 50-400 Ko/cmd,
 // stocké par gls-create-shipment, récupéré uniquement à la demande via l'action getLabel)
-var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_etiquette_imprimee_at,gls_creation_statut,gls_creation_at,gls_creation_erreur,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at,frais_port,stock_deduit,payment_source,payment_transactions,ticket_cb,encaisse_par,encaisse_at';
+var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_etiquette_imprimee_at,gls_creation_statut,gls_creation_at,gls_creation_erreur,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at,frais_port,stock_deduit,payment_source,payment_transactions,ticket_cb,encaisse_par,encaisse_at,encaisse_tournee';
 
 async function sbLoadAll() {
   // Afficher cache immédiatement (UX rapide) pendant chargement Supabase
@@ -3893,7 +4009,7 @@ async function sbLoadAll() {
           date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r.gls_etiquette_imprimee_at||'', glsCreationStatut:r.gls_creation_statut||'', glsCreationAt:r.gls_creation_at||'', glsCreationErreur:r.gls_creation_erreur||'',
           litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
           glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
-          origine:r.origine||'', refMarketplace:r.ref_marketplace||'', paySource:r.payment_source||'', payTransactions:r.payment_transactions||'', ticketCb:r.ticket_cb||'', encaissePar:r.encaisse_par||'', encaisseAt:r.encaisse_at||'',
+          origine:r.origine||'', refMarketplace:r.ref_marketplace||'', paySource:r.payment_source||'', payTransactions:r.payment_transactions||'', ticketCb:r.ticket_cb||'', encaissePar:r.encaisse_par||'', encaisseAt:r.encaisse_at||'', encaisseTournee:r.encaisse_tournee||'',
           confirmationPresence:r.confirmation_presence||'', confirmationAt:r.confirmation_at||'',
         };
       });
@@ -4017,7 +4133,7 @@ async function sbChargerPlusCommandes() {
           date:r2.date_livraison||'', dateCmd:r2.date_commande||'', createdAt:r2.created_at||'', instr:r2.instr||'', tracking_token:r2.tracking_token||'', transporteur:r2.transporteur||'RANOU', trackingTransporteur:r2.tracking_transporteur||'', glsDateEtiquette:r2.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r2.gls_etiquette_imprimee_at||'', glsCreationStatut:r2.gls_creation_statut||'', glsCreationAt:r2.gls_creation_at||'', glsCreationErreur:r2.gls_creation_erreur||'',
           litigeType:r2.litige_type||'', litigeNumReclamation:r2.litige_num_reclamation||'', litigeDateOuverture:r2.litige_date_ouverture||'', litigeStatut:r2.litige_statut||'', litigeDescription:r2.litige_description||'',
           glsBloque:!!r2.gls_bloque, glsDernierScan:r2.gls_dernier_scan||'',
-          origine:r2.origine||'', refMarketplace:r2.ref_marketplace||'', paySource:r2.payment_source||'', payTransactions:r2.payment_transactions||'', ticketCb:r2.ticket_cb||'', encaissePar:r2.encaisse_par||'', encaisseAt:r2.encaisse_at||'',
+          origine:r2.origine||'', refMarketplace:r2.ref_marketplace||'', paySource:r2.payment_source||'', payTransactions:r2.payment_transactions||'', ticketCb:r2.ticket_cb||'', encaissePar:r2.encaisse_par||'', encaisseAt:r2.encaisse_at||'', encaisseTournee:r2.encaisse_tournee||'',
           modePaie:r2.mode_paie||'Espèces',
           confirmationPresence:r2.confirmation_presence||'', confirmationAt:r2.confirmation_at||'',
         };
@@ -4087,7 +4203,7 @@ function startPolling() {
               date:r.date_livraison||'', dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr||'', tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r.gls_etiquette_imprimee_at||'', glsCreationStatut:r.gls_creation_statut||'', glsCreationAt:r.gls_creation_at||'', glsCreationErreur:r.gls_creation_erreur||'',
               litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
               glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
-              origine:r.origine||'', refMarketplace:r.ref_marketplace||'', paySource:r.payment_source||'', payTransactions:r.payment_transactions||'', ticketCb:r.ticket_cb||'', encaissePar:r.encaisse_par||'', encaisseAt:r.encaisse_at||'',
+              origine:r.origine||'', refMarketplace:r.ref_marketplace||'', paySource:r.payment_source||'', payTransactions:r.payment_transactions||'', ticketCb:r.ticket_cb||'', encaissePar:r.encaisse_par||'', encaisseAt:r.encaisse_at||'', encaisseTournee:r.encaisse_tournee||'',
               modePaie:r.mode_paie||'Espèces',
               confirmationPresence:r.confirmation_presence||'', confirmationAt:r.confirmation_at||'',
             };
@@ -4199,7 +4315,7 @@ function sbStartRealtime() {
         litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'',
         glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
         confirmationPresence:r.confirmation_presence||'', confirmationAt:r.confirmation_at||'',
-        refMarketplace:r.ref_marketplace, paySource:r.payment_source||'', payTransactions:r.payment_transactions||'', ticketCb:r.ticket_cb||'', encaissePar:r.encaisse_par||'', encaisseAt:r.encaisse_at||'',
+        refMarketplace:r.ref_marketplace, paySource:r.payment_source||'', payTransactions:r.payment_transactions||'', ticketCb:r.ticket_cb||'', encaissePar:r.encaisse_par||'', encaisseAt:r.encaisse_at||'', encaisseTournee:r.encaisse_tournee||'',
       };
       if (idx > -1) commandes[idx] = mapped;
       else commandes.unshift(mapped);
@@ -9938,7 +10054,7 @@ async function lvPaieValider() {
   }
   // v7.5.114 : encaissement par carte -> référence du ticket obligatoire
   var _tkSheet = '';
-  if (newStatut !== 'Non payé' && (newMode === 'CB' || (newMode === 'Mixte' && paieCb > 0))) {
+  if (newStatut !== 'Non payé' && (newMode === 'CB' || newMode === 'Mixte')) {
     _tkSheet = String(prompt('Référence du ticket CB (obligatoire) :', '') || '').trim();
     if (!_tkSheet) { toast('CB : référence du ticket obligatoire — rien n\'a été enregistré', 'err'); return; }
   }
@@ -9971,7 +10087,7 @@ async function lvPaieValider() {
     cmd.paie   = newMode;
     cmd.stpaie = newStatut;
     // v7.5.114 : colonnes dédiées de l'encaissement (ticket CB, livreur, date et heure)
-    if (newStatut !== 'Non payé') { cmd.ticketCb = _tkSheet; cmd.encaissePar = t.livreur || livNom || ''; cmd.encaisseAt = new Date().toISOString(); cmd._enc = true; }
+    if (newStatut !== 'Non payé') { cmd.ticketCb = _tkSheet; cmd.encaissePar = t.livreur || livNom || ''; cmd.encaisseAt = new Date().toISOString(); cmd.encaisseTournee = t.id || ''; cmd._enc = true; }
     if (newMode === 'Mixte') {
       cmd.montantEnc = paieEsp + paieCb;
       // En memoire (non envoye a la DB - retrouve via tournee)
@@ -10366,7 +10482,7 @@ function validerSig(){
   // v7.5.114 : hors paiement à la livraison aussi, une carte encaissée exige la référence du ticket
   var _tkStd = String((document.getElementById('sig-ticket') || {}).value || '').trim();
   if (!sigCodActif && sigPaieEncaisse && !sigPrepaidMode && !_tkStd
-      && (sigPaieMode === 'CB' || (sigPaieMode === 'Mixte' && (parseFloat((document.getElementById('sig-paie-cb') || {}).value) || 0) > 0))) {
+      && (sigPaieMode === 'CB' || sigPaieMode === 'Mixte')) {
     toast('CB : saisir la référence du ticket (obligatoire)', 'err'); return;
   }
   const {tid,idx}=sigStopId;
@@ -10446,15 +10562,15 @@ function validerSig(){
     var _livCod = t.livreur || livNom || '';
     if (!sigCodActif && sigPaieEncaisse && !sigPrepaidMode) {
       // v7.5.114 : encaissement ordinaire (Leboncoin, téléphone…) -> colonnes dédiées
-      var _avecCb = sigPaieMode === 'CB' || (sigPaieMode === 'Mixte' && sigPaieCb > 0);
-      cmd.ticketCb = _avecCb ? _tkStd : ''; cmd.encaissePar = _livCod; cmd.encaisseAt = new Date().toISOString(); cmd._enc = true;
+      var _avecCb = sigPaieMode === 'CB' || sigPaieMode === 'Mixte';
+      cmd.ticketCb = _avecCb ? _tkStd : ''; cmd.encaissePar = _livCod; cmd.encaisseAt = new Date().toISOString(); cmd.encaisseTournee = t.id || ''; cmd._enc = true;
       s.enc = { choix: sigPaieMode, montant: (sigPaieMode === 'Mixte' ? sigPaieEsp + sigPaieCb : (parseFloat(cmd.prix) || 0)), ticket: _avecCb ? _tkStd : null, par: _livCod, at: cmd.encaisseAt };
     }
     if (sigCodActif) {
       var _tkCod = String((document.getElementById('sig-cod-ticket') || {}).value || '').trim();
       cmd.instr = (String(cmd.instr || '') + ' ' + paiTraceEncaissement(sigCodChoix, sigCodMontant, _tkCod, _livCod)).trim();
       s.enc = { choix: sigCodChoix, montant: sigCodMontant, ticket: _tkCod || null, par: _livCod, at: new Date().toISOString() };
-      if (sigCodChoix !== 'non') { cmd.ticketCb = sigCodChoix === 'cb' ? _tkCod : ''; cmd.encaissePar = _livCod; cmd.encaisseAt = s.enc.at; cmd._enc = true; }
+      if (sigCodChoix !== 'non') { cmd.ticketCb = sigCodChoix === 'cb' ? _tkCod : ''; cmd.encaissePar = _livCod; cmd.encaisseAt = s.enc.at; cmd.encaisseTournee = t.id || ''; cmd._enc = true; }
       if (sigCodChoix === 'non' && typeof notifAjout === 'function') {
         try { notifAjout('err', 'commande', '🚨 NON ENCAISSÉ — ' + cmd.id, paiEur(sigCodMontant) + ' restent dus (paiement à la livraison).', 'Voir', 'commandes'); } catch(e) {}
       }
@@ -11354,10 +11470,11 @@ async function annulerRemiseCaisse(key) {
 // Affichage seul : les 3 conteneurs restent dans le DOM et finRender() remplit leurs IDs
 // normalement (un bloc en display:none est quand même rendu) -> AUCUN calcul touché.
 function showFinSub(key) {
-  ['traiter','analyse','journal'].forEach(function(k){
+  ['traiter','analyse','journal','historique'].forEach(function(k){
     var el = document.getElementById('fin-sub-' + k);
     if (el) el.style.display = (k === key) ? 'block' : 'none';
   });
+  if (key === 'historique') { try { histFinCharger(); } catch(e) {} } // v7.5.115
   document.querySelectorAll('.fin-sub-btn').forEach(function(b){
     var act = (b.dataset.sub === key);
     b.style.background  = act ? 'var(--blue)' : 'var(--card)';
@@ -11434,11 +11551,11 @@ function finRendrGraph() {
 // ── Modifier paiement (inline depuis journal) ──
 // v7.5.114 : toute modification financière faite depuis le bureau passe par l'action
 // administrateur de la base (public.modifier_paiement) : motif obligatoire, journal financier.
-async function paiModifierAdmin(id, mode, statut, montant, motif) {
+async function paiModifierAdmin(id, mode, statut, montant, motif, ticket) {
   try {
     var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/modifier_paiement', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
-      body: JSON.stringify({ p_cmd: id, p_mode: mode, p_statut: statut, p_montant: montant, p_motif: motif })
+      body: JSON.stringify({ p_cmd: id, p_mode: mode, p_statut: statut, p_montant: montant, p_motif: motif, p_ticket: ticket || null })
     });
     var j = null; try { j = await r.json(); } catch(e) {}
     if (!r.ok || !j || !j.ok) return { ok: false, erreur: (j && (j.erreur || j.message)) || ('HTTP ' + r.status) };
@@ -11556,9 +11673,11 @@ async function sauvegarderPaie() {
     // obligatoire, journal financier. Une commande payée en ligne demande en plus une confirmation.
     if (paiEstEnLigne(c) && !confirm('Cette commande a été PAYÉE EN LIGNE sur le site (' + paiEur(c.prix) + ').\n\nModifier quand même son paiement ?\n\n• Annuler = ne rien changer\n• OK = continuer (un motif sera demandé)')) return;
     var motif = paiDemanderMotif(); if (!motif) return;
-    var rep = await paiModifierAdmin(id, nMode, nStatut, rawMontant, motif);
+    // v7.5.115 : carte déclarée depuis le bureau -> la référence du ticket est demandée (procédure exceptionnelle : motif obligatoire, ticket recommandé)
+    var ticketAdm = (nStatut !== 'Non payé' && (nMode === 'CB' || nMode === 'Mixte')) ? String(prompt('Référence du ticket CB (laisser vide seulement si elle est introuvable — le motif en gardera la trace) :', c.ticketCb || '') || '').trim() : '';
+    var rep = await paiModifierAdmin(id, nMode, nStatut, rawMontant, motif, ticketAdm);
     if (!rep.ok) { toast('Modification refusée : ' + rep.erreur, 'err'); return; }
-    c.paie = nMode; c.stpaie = nStatut; c.montantEnc = rawMontant;
+    c.paie = nMode; c.stpaie = nStatut; c.montantEnc = rawMontant; if (ticketAdm) c.ticketCb = ticketAdm;
   }
   if (nLivreur !== c.livreur) { c.livreur = nLivreur; sbSaveCommande(c); }
   closeModal('m-modif-paie');
