@@ -76,6 +76,15 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - **Tests** : `node outils/test-paiement.js` (143 tests) et `node outils/test-paiement-base.js` (63 tests réels ; la section 9 crée une session de bureau simulée — administrateur puis collaboratrice — utilisée et supprimée dans la même opération de la base).
 - **Accès** : trois accès par code (dmin, collab, livreur). La collaboratrice saisit les commandes prises par téléphone avec l'accès collab : la règle s'applique à elle (application : refus avec message ; base : paiement non enregistré, tentative notée « collab » ; la procédure administrateur lui est fermée).
 
+## Motif d'annulation obligatoire (v7.5.117 + migration 030, 07/10/2026)
+- Décision de Borhen : comprendre et réduire les annulations (environ 14 % des commandes Leboncoin sur 30 jours).
+- **Application** : bloc `ANN-DEBUT … ANN-FIN` de `maxiconfort-v7.html` (`ANN_MOTIFS`, fonctions pures `annMotifErreur` et `annCorps`, fenêtre `annDemanderMotif`). Passer une commande « annulé » — fiche du bureau (`chgStatut`) ou carte du livreur (`setLvSt`) — ouvre la fenêtre : motif obligatoire, commentaire obligatoire pour « Autre », choix « Motif inconnu / non communiqué par le client » pour ne pas faire inventer un motif. Sans confirmation, rien n'est modifié ni envoyé. Le motif s'affiche dans la fiche d'une commande annulée.
+- **Base** (migration 030) : colonnes `commandes.annulation_motif / annulation_commentaire / annulation_par / annulation_at` posées par le déclencheur `annulation_trace` au passage à « annulé » (jamais modifiables ensuite ; vidées si la commande est remise en cours) ; table `journal_annulations` en ajout seul, lecture administrateur (numéro, date et heure, canal, produit, montant, zone, motif, commentaire, personne). La base ne refuse JAMAIS une annulation : sans motif (ancienne version en cache, programme serveur) elle note « Non renseigné ». Les annulations d'avant le 07/10/2026 ne sont pas modifiées (colonnes vides).
+- Le paiement n'est pas concerné : déclencheurs `paiement_verrou` / `paiement_journal` inchangés.
+- **Tests** : `node outils/test-annulation.js` (24 tests, sans connexion) et `node outils/test-annulation-base.js` (25 tests RÉELS sur la ligne fictive `#TEST-ANNULATION`, laissée « annulé » ; les lignes `#TEST…` sont à exclure des bilans). À relancer avec `test-paiement.js` et `test-paiement-base.js` après toute modification du statut, de la fiche commande ou de la carte du livreur.
+- **Retour arrière** : étiquette git `v7.5.116-avant-motif-annulation` ; côté base, supprimer les deux déclencheurs `annulation_trace` et `annulation_journal` (colonnes et journal peuvent rester). Toujours augmenter `CACHE_VERSION`.
+- Bilans (dépôt privé du site) : `ads/bilan_canaux.js` lit ces colonnes pour le taux d'annulation par motif.
+
 ## Pièges connus
 - PATCH Supabase via PowerShell : encoder le corps en UTF-8 (`[Text.Encoding]::UTF8.GetBytes`) et URL-encoder `#` en `%23`.
 - Variables PowerShell insensibles à la casse (`$p` = `$P`) : ne pas réutiliser un nom pour deux valeurs (incident du 27/09 : chemin local publié à la place de la clé pendant 2 min).
