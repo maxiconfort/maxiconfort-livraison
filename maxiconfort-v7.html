@@ -3435,6 +3435,34 @@ function annDemanderMotif(cmd, suite) {
 }
 // ANN-FIN
 
+// AO-DEBUT — v7.5.118 (09/10/2026) : ANCIENNE OFFRE — NE PLUS UTILISER.
+// Un produit marqué « ancienne offre » dans la base (colonne produits.ancienne_offre, posée côté serveur par un administrateur)
+// reste dans le catalogue en mémoire : l'historique, la fiche des commandes déjà prises et la déduction du stock continuent
+// de fonctionner. Mais il n'est plus proposé pour une NOUVELLE commande. Une commande déjà enregistrée garde son produit et son
+// prix d'origine quand on l'ouvre et qu'on la réenregistre. L'application n'envoie jamais ce marqueur à la base : aucun
+// appareil, même avec un ancien catalogue en mémoire, ne peut donc remettre l'offre en vente.
+var AO_LIBELLE = 'ANCIENNE OFFRE — NE PLUS UTILISER';
+function aoEst(p) { return !!(p && p.ancienneOffre === true); }
+function aoDepuisBase(r) { return !!(r && r.ancienne_offre === true); }
+function aoSelectionnables(liste) { return (liste || []).filter(function(p) { return !aoEst(p); }); }
+function aoCommande(cmd, liste) {
+  if (!cmd) return false;
+  var anciens = (liste || []).filter(aoEst);
+  if (!anciens.length) return false;
+  var lignes = (cmd.lignes && cmd.lignes.length) ? cmd.lignes : [{ produitId: null, produit: cmd.produit }];
+  return lignes.some(function(l) { return anciens.some(function(p) { return (l.produitId && l.produitId === p.id) || (!l.produitId && !!l.produit && l.produit === p.nom); }); });
+}
+// Valeurs à enregistrer pour une ligne du formulaire de commande. Une ligne figée (ancienne offre d'une commande déjà prise,
+// ou produit sorti du catalogue) garde le nom et le prix enregistrés sur la commande ; sinon on prend le catalogue.
+function aoLigne(prod, opt) {
+  var d = (opt && opt.dataset) || {};
+  if (prod && d.ancienne !== '1') return { produitId: prod.id, produitNom: prod.nom, prixUnit: prod.prix };
+  if (!opt) return null;
+  return { produitId: opt.value, produitNom: d.customNom || String(opt.textContent || '').split(' — ')[0], prixUnit: d.prixUnit ? (parseFloat(d.prixUnit) || 0) : 0 };
+}
+function aoBadge() { return '<span style="display:inline-block;margin-top:3px;padding:2px 7px;border-radius:4px;background:#b91c1c;color:#fff;font-size:10px;font-weight:800;letter-spacing:.3px">' + AO_LIBELLE + '</span>'; }
+// AO-FIN
+
 async function sbSaveCommande(cmd) {
   // Toujours tenter Supabase d'abord, queue seulement si fetch échoue
   try {
@@ -7543,7 +7571,8 @@ async function marketplaceReset() {
 
 function buildProduitOptions() {
   const cats = {};
-  produits.forEach(p => { if (!cats[p.cat]) cats[p.cat]=[]; cats[p.cat].push(p); });
+  // v7.5.118 : une ancienne offre n'est plus proposée
+  aoSelectionnables(produits).forEach(p => { if (!cats[p.cat]) cats[p.cat]=[]; cats[p.cat].push(p); });
   const icons = {'Canapé':'🛋','Ensemble':'🛏','Matelas':'🧸','Lit coffre':'🗄','Lit':'🏠','Lit superposé':'🪜','Sommier':'🛏'};
   return Object.entries(cats).map(([cat,ps]) =>
     '<optgroup label="'+(icons[cat]||'📦')+' '+cat+'">'+
@@ -7604,7 +7633,9 @@ function recalcTotal() {
     if (!selProd || !selProd.value) { if(stEl) stEl.textContent='—'; return; }
     const prod  = produits.find(p => p.id === selProd.value);
     // v7.4.0 : fallback sur prixUnit stocke dans le dataset si le produit n'est plus en catalogue
-    let prixUnit = prod ? prod.prix : null;
+    // v7.5.118 : une ligne figée (ancienne offre d'une commande déjà prise) garde le prix enregistré sur la commande
+    const optAo = selProd.selectedOptions && selProd.selectedOptions[0];
+    let prixUnit = (prod && !(optAo && optAo.dataset && optAo.dataset.ancienne === '1')) ? prod.prix : null;
     if (prixUnit == null) {
       const opt = selProd.selectedOptions && selProd.selectedOptions[0];
       if (opt && opt.dataset && opt.dataset.prixUnit) {
@@ -7650,16 +7681,10 @@ function getLignesData() {
     if (!selProd?.value) return;
     const prod  = produits.find(p => p.id === selProd.value);
     // v7.4.0 : si le produit n'est plus en catalogue, reconstruire les valeurs depuis dataset
-    let produitId, produitNom, prixUnit;
-    if (prod) {
-      produitId = prod.id; produitNom = prod.nom; prixUnit = prod.prix;
-    } else {
-      const opt = selProd.selectedOptions && selProd.selectedOptions[0];
-      if (!opt) return;
-      produitId = opt.value;
-      produitNom = (opt.dataset && opt.dataset.customNom) || opt.textContent.split(' — ')[0];
-      prixUnit = opt.dataset && opt.dataset.prixUnit ? parseFloat(opt.dataset.prixUnit) || 0 : 0;
-    }
+    // v7.5.118 : calcul confié à aoLigne (ligne figée = nom et prix de la commande d'origine)
+    const _ao = aoLigne(prod, selProd.selectedOptions && selProd.selectedOptions[0]);
+    if (!_ao) return;
+    const produitId = _ao.produitId, produitNom = _ao.produitNom, prixUnit = _ao.prixUnit;
     const qte   = parseInt(inpQte?.value)||1;
     const remV  = parseFloat(inpRem?.value)||0;
     const remT  = selRT?.value||'pct';
@@ -7779,13 +7804,17 @@ function ouvrirEditionCommande(id) {
         var ln = normNom(l.produit);
         var prod = produits.find(function(p){ return p.nom === l.produit; })
                 || produits.find(function(p){ return normNom(p.nom) === ln; });
-        if (prod) sel.value = prod.id;
+        // v7.5.118 : ancienne offre -> ligne figée (même produit, même prix que sur la commande), jamais proposée ailleurs
+        if (!prod && l.produitId) prod = produits.find(function(p){ return p.id === l.produitId && aoEst(p); });
+        var ligneAo = !!(prod && aoEst(prod));
+        if (prod && !ligneAo) sel.value = prod.id;
         else {
           // Produit non trouvé dans catalogue — afficher quand même le nom
           var opt = document.createElement('option');
-          opt.value = '_custom_' + l.produit;
-          opt.textContent = l.produit + ' — ' + l.prixUnit + ' €';
+          opt.value = ligneAo ? prod.id : '_custom_' + l.produit;
+          opt.textContent = l.produit + ' — ' + l.prixUnit + ' €' + (ligneAo ? ' · ANCIENNE OFFRE, NE PLUS UTILISER' : '');
           opt.selected = true;
+          if (ligneAo) opt.dataset.ancienne = '1';
           // v7.4.0 : stocker le prixUnit dans le dataset pour recalcTotal et getLignesData
           opt.dataset.prixUnit = l.prixUnit || 0;
           opt.dataset.customNom = l.produit;
@@ -7804,7 +7833,7 @@ function ouvrirEditionCommande(id) {
     ajouterLigne();
     var sel2 = document.querySelector('#lignes-produits > div:last-child .ligne-produit');
     if (sel2) {
-      var prod2 = produits.find(function(p){ return c.produit && c.produit.includes(p.nom.split(' ')[0]); });
+      var prod2 = aoSelectionnables(produits).find(function(p){ return c.produit && c.produit.includes(p.nom.split(' ')[0]); });
       if (prod2) sel2.value = prod2.id;
     }
     var prixEl = document.querySelector('#lignes-produits > div:last-child .ligne-prix');
@@ -8035,6 +8064,9 @@ function ouvrirCmd(id) {
   } else {
     produitsHtml = '<div class="prow"><span class="pk">Produit</span><span class="pv">'+c.produit+'</span></div>';
   }
+
+  // v7.5.118 : commande prise sur une ancienne offre -> mention visible (la commande elle-même n'est pas modifiée)
+  if (aoCommande(c, produits)) produitsHtml += '<div style="margin-top:6px">' + aoBadge() + '</div>';
 
   let remiseHtml = c.remiseGlobale>0 ?
     '<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--brd);font-size:12px">'+
@@ -12618,6 +12650,7 @@ function stkRender() {
     return `<tr style="background:${statutClass};transition:background .2s">
       <td>
         <div class="td-m">${p.nom}</div>
+        ${aoEst(p)?`<div>${aoBadge()}</div>`:''}
         ${estEnsemble?`<div class="td-s" style="color:var(--violet);font-weight:600">📦 Ensemble · dispo composants : <b>${dispoCompo}</b></div><div class="td-s" style="font-size:10px">${composantsLabel}</div>`:''}
         ${p.remarque?`<div class="td-s">💡 ${p.remarque}</div>`:''}
         ${p.empl?`<div class="td-s">📍 ${p.empl}</div>`:''}
@@ -14401,11 +14434,15 @@ async function sbLoadProduits() {
           stock:parseInt(r.stock)||0, seuil:parseInt(r.seuil)||2,
           empl:r.empl||'', remarque:r.remarque||'',
           composants: (r.composants && Array.isArray(r.composants)) ? r.composants : null,
-          actif: r.actif !== false
+          actif: r.actif !== false,
+          ancienneOffre: aoDepuisBase(r)
         };
         if (existing > -1) produits[existing] = mapped;
         else produits.push(mapped);
       });
+      // v7.5.118 : la copie du catalogue gardée sur l'appareil suit la base (marqueur « ancienne offre », prix à jour),
+      // pour qu'un démarrage hors ligne ne repropose pas une ancienne offre.
+      try { localStorage.setItem('mx_produits_custom', JSON.stringify(produits.filter(function(p){ return p.id && p.id.indexOf('pr') === 0; }))); } catch(e) {}
       stkRender();
       buildProduitOptions();
     }
@@ -14460,7 +14497,8 @@ function sbStartRealtimeProduits() {
           stock:parseInt(r.stock)||0, seuil:parseInt(r.seuil)||2,
           empl:r.empl||'', remarque:r.remarque||'',
           composants: (r.composants && Array.isArray(r.composants)) ? r.composants : null,
-          actif: r.actif !== false
+          actif: r.actif !== false,
+          ancienneOffre: aoDepuisBase(r)
         };
         var idx = produits.findIndex(function(p){ return p.id === r.id; });
         if (idx > -1) produits[idx] = mapped;
