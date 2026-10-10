@@ -2841,6 +2841,33 @@ const APP_SECRET = 'mc_Sp9GO_aM9QBSGX9-rRFHlv4NMERtZWpG3krCD-GV';
 // (2) duree de validite LOCALE de 12 h mesuree a la connexion, qui ne depend
 // plus de l'horloge absolue. Aucun risque : le serveur verifie de son cote la
 // vraie expiration du jeton (RLS) — l'app n'a pas a en etre juge.
+// ── STO-DEBUT — Mémoire de l'appareil (v7.5.119, 10/10/2026) ───────────
+// Même appareil, même cause que la déconnexion du 03/10 : sur le téléphone du
+// livreur, localStorage peut refuser d'écrire (WebView Android, données du site
+// effacées, stockage plein). Le livreur cochait alors tout son chargement puis
+// restait bloqué sur l'écran « CHARGEMENT OBLIGATOIRE » : le déverrouillage
+// n'était écrit QUE dans localStorage, donc jamais relu -> l'écran revenait.
+// mxLire/mxEcrire gardent toujours une copie en mémoire vive : la tournée se
+// déroule normalement même si l'appareil n'enregistre rien (jusqu'à fermeture).
+var MX_MEM = {};
+var MX_LS_OK = (function(){
+  try { localStorage.setItem('mx_test_ls', '1'); var v = localStorage.getItem('mx_test_ls'); localStorage.removeItem('mx_test_ls'); return v === '1'; }
+  catch (e) { return false; }
+})();
+function mxLire(cle) {
+  if (MX_LS_OK) { try { var v = localStorage.getItem(cle); if (v !== null) return v; } catch (e) {} }
+  return Object.prototype.hasOwnProperty.call(MX_MEM, cle) ? MX_MEM[cle] : null;
+}
+function mxEcrire(cle, valeur) {
+  MX_MEM[cle] = valeur;
+  if (MX_LS_OK) { try { localStorage.setItem(cle, valeur); } catch (e) { MX_LS_OK = false; } }
+}
+function mxSupprimer(cle) {
+  delete MX_MEM[cle];
+  if (MX_LS_OK) { try { localStorage.removeItem(cle); } catch (e) {} }
+}
+// STO-FIN
+
 var MX_SESSION_CLE = 'mx_session_app';
 var MX_SESSION_MEM = null;
 var MX_DUREE_SESSION_MS = 12 * 3600 * 1000;
@@ -3609,7 +3636,7 @@ var caissesRemises = {};
 // Structure : chargements[cmdId][ligneIdx] = {charge: bool, charge_par: 'RANOU', charge_at: ISO}
 var chargements = {};
 try {
-  var _chSaved = localStorage.getItem('mx_chargements');
+  var _chSaved = mxLire('mx_chargements'); // v7.5.119
   if (_chSaved) chargements = JSON.parse(_chSaved);
 } catch(e) { chargements = {}; }
 
@@ -3961,7 +3988,7 @@ async function toggleChargement(cmdId, ligneIdx, charge) {
     if (Object.keys(chargements[cmdId]).length === 0) delete chargements[cmdId];
   }
   // Sauvegarde locale immédiate
-  try { localStorage.setItem('mx_chargements', JSON.stringify(chargements)); } catch(e) {}
+  try { mxEcrire('mx_chargements', JSON.stringify(chargements)); } catch(e) {} // v7.5.119 : mémoire + localStorage
 
   // ── v7.1.7 : TRANSFERT STOCK DÉPÔT ↔ CAMION ──
   try {
@@ -3980,7 +4007,7 @@ async function toggleChargement(cmdId, ligneIdx, charge) {
         var newId = await ajouterStockCamion(livreurCible, produitLib, qte, cmdId, t ? t.id : null, parUser);
         if (chargements[cmdId] && chargements[cmdId][ligneIdx]) {
           chargements[cmdId][ligneIdx].stockCamionId = newId;
-          try { localStorage.setItem('mx_chargements', JSON.stringify(chargements)); } catch(e) {}
+          try { mxEcrire('mx_chargements', JSON.stringify(chargements)); } catch(e) {} // v7.5.119 : mémoire + localStorage
         }
         // Déduire du stock dépôt (utiliser fonction existante si dispo)
         if (typeof stkAjusterProduit === 'function' && produitLib) {
@@ -9754,7 +9781,7 @@ function afficherDetailChargement() {
 function sasEstDeverrouille(tid) {
   try {
     var key = 'mx_sas_deverrouille_' + tid;
-    var val = localStorage.getItem(key);
+    var val = mxLire(key); // v7.5.119 : copie mémoire si l'appareil n'enregistre pas
     if (!val) return false;
     var data = JSON.parse(val);
     // Vérifier que c'est bien aujourd'hui
@@ -9767,7 +9794,7 @@ function sasEstDeverrouille(tid) {
 function sasMarquerDeverrouille(tid, mode) {
   try {
     var key = 'mx_sas_deverrouille_' + tid;
-    localStorage.setItem(key, JSON.stringify({
+    mxEcrire(key, JSON.stringify({ // v7.5.119 : mémoire + localStorage
       date: new Date().toISOString().slice(0,10),
       mode: mode || 'normal', // 'normal' ou 'admin-bypass'
       timestamp: new Date().toISOString()
@@ -9856,11 +9883,17 @@ function sasGenererListe(t) {
   listeEl.innerHTML = html;
   // Attacher événements
   document.querySelectorAll('.sas-check-input').forEach(function(input) {
-    input.addEventListener('change', async function() {
+    input.addEventListener('change', function() {
       var cmdId = input.dataset.cmdid;
       var idx = parseInt(input.dataset.idx);
-      await toggleChargement(cmdId, idx, input.checked);
-      // Refresh complet du SAS
+      // v7.5.119 : on n'ATTEND PLUS l'enregistrement (stock camion + base) avant de
+      // rafraîchir. Avant, une requête qui traînait au dépôt (4G faible, pas de délai
+      // maximum) figeait la case cochée : le compteur ne bougeait plus et le bouton
+      // « Démarrer la tournée » restait verrouillé. L'enregistrement continue en fond.
+      var p = null;
+      try { p = toggleChargement(cmdId, idx, input.checked); } catch (e) { console.warn('[chargement]', e); }
+      if (p && typeof p.catch === 'function') p.catch(function(e){ console.warn('[chargement]', e); });
+      // Refresh complet du SAS (immédiat : chargements[] est déjà à jour en mémoire)
       var t = tournees.find(function(x){ return x.id === currentLvTourneeId; });
       if (t) {
         sasGenererListe(t);
