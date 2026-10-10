@@ -9939,23 +9939,55 @@ function sasValiderEtDemarrer(tid) {
 }
 
 // Déblocage admin urgence (PIN admin)
-async function sasDeblocageAdmin() {
-  var pin = prompt('🔓 DÉBLOCAGE ADMIN\n\nCette action permettra au livreur de partir SANS avoir tout coché.\nL\'action sera tracée.\n\nSaisir le PIN admin :');
-  if (!pin) return;
-  // v7.5.110 : PIN admin verifie cote serveur (plus aucun PIN dans le navigateur)
-  var _v = null;
-  try { _v = await rpcPin('connexion_pin', { p_role: 'admin', p_pin: String(pin).trim(), p_livreur: null }); }
-  catch(e) { alert('❌ Pas de connexion : le PIN admin ne peut pas être vérifié hors ligne'); return; }
-  if (!_v || !_v.ok) {
-    alert(_v && _v.erreur === 'trop_d_essais' ? '❌ Trop d\'essais — patientez 15 minutes' : '❌ PIN incorrect');
-    return;
-  }
-  if (!confirm('⚠️ Confirmer le déblocage admin ?\n\nLe livreur va partir sans avoir validé tout le chargement. À utiliser UNIQUEMENT en cas d\'urgence.')) return;
-  sasMarquerDeverrouille(currentLvTourneeId, 'admin-bypass');
-  console.log('[SAS] Déblocage admin bypass pour tournée ' + currentLvTourneeId + ' à ' + new Date().toISOString());
-  sasCacher();
-  toast('🔓 Tournée déverrouillée par admin', 'info');
-  if (typeof renderLivreur === 'function') renderLivreur();
+// v7.5.119 (10/10/2026) : fenêtre INTERNE à l'application. Avant, on passait par
+// prompt()/confirm()/alert() du navigateur : bloqués sans aucun message dans
+// certaines applications Android (WebView, PWA installée) -> le bouton « ne faisait
+// rien ». Plus aucune fenêtre du navigateur ici, et le résultat s'affiche sur place.
+function sasDeblocageAdmin() {
+  if (document.getElementById('sas-deblocage-modal')) return; // déjà ouvert
+  var fond = document.createElement('div');
+  fond.id = 'sas-deblocage-modal';
+  fond.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;display:flex;align-items:center;justify-content:center;padding:18px';
+  var boite = document.createElement('div');
+  boite.style.cssText = 'background:var(--card);border-radius:16px;padding:20px;max-width:360px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,.4)';
+  boite.innerHTML =
+    '<div style="font-size:18px;font-weight:900;margin-bottom:8px">🔓 Déblocage admin</div>' +
+    '<div style="font-size:13px;color:var(--t3);line-height:1.5;margin-bottom:14px">Le livreur pourra partir <strong>sans avoir tout coché</strong>. À utiliser uniquement en cas d\'urgence. L\'action est tracée.</div>' +
+    '<input id="sas-deblocage-pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="Code admin" autocomplete="off" ' +
+      'style="width:100%;padding:14px;font-size:20px;text-align:center;letter-spacing:8px;border:2px solid var(--brd2);border-radius:12px;background:var(--bg);color:var(--text);font-family:var(--font);box-sizing:border-box">' +
+    '<div id="sas-deblocage-msg" style="min-height:20px;margin-top:10px;font-size:13px;font-weight:700;text-align:center;color:var(--red)"></div>' +
+    '<div style="display:flex;gap:10px;margin-top:8px">' +
+      '<button id="sas-deblocage-annuler" style="flex:1;padding:14px;border-radius:12px;border:2px solid var(--brd2);background:transparent;color:var(--text);font-weight:800;font-size:15px;font-family:var(--font);cursor:pointer">Annuler</button>' +
+      '<button id="sas-deblocage-ok" style="flex:1;padding:14px;border-radius:12px;border:none;background:var(--orange);color:#fff;font-weight:800;font-size:15px;font-family:var(--font);cursor:pointer">Débloquer</button>' +
+    '</div>';
+  fond.appendChild(boite);
+  document.body.appendChild(fond);
+  var champ = document.getElementById('sas-deblocage-pin');
+  var msg = document.getElementById('sas-deblocage-msg');
+  var btnOk = document.getElementById('sas-deblocage-ok');
+  try { champ.focus(); } catch (e) {}
+  function fermer() { try { fond.remove(); } catch (e) { if (fond.parentNode) fond.parentNode.removeChild(fond); } }
+  document.getElementById('sas-deblocage-annuler').onclick = fermer;
+  btnOk.onclick = async function () {
+    var pin = String(champ.value || '').trim();
+    if (!pin) { msg.textContent = 'Saisissez le code admin'; return; }
+    btnOk.disabled = true; btnOk.textContent = 'Vérification…'; msg.textContent = '';
+    var v = null;
+    try { v = await rpcPin('connexion_pin', { p_role: 'admin', p_pin: pin, p_livreur: null }); }
+    catch (e) { msg.textContent = 'Pas de connexion : code non vérifiable'; btnOk.disabled = false; btnOk.textContent = 'Débloquer'; return; }
+    if (!v || !v.ok) {
+      msg.textContent = (v && v.erreur === 'trop_d_essais') ? 'Trop d\'essais — patientez 15 minutes' : 'Code incorrect';
+      champ.value = ''; btnOk.disabled = false; btnOk.textContent = 'Débloquer';
+      return;
+    }
+    sasMarquerDeverrouille(currentLvTourneeId, 'admin-bypass'); // v7.5.119 : mémoire + localStorage
+    console.log('[SAS] Déblocage admin pour tournée ' + currentLvTourneeId + ' à ' + new Date().toISOString());
+    fermer();
+    sasCacher();
+    toast('🔓 Tournée déverrouillée par admin', 'info');
+    if (typeof renderLivreur === 'function') renderLivreur();
+  };
+  champ.addEventListener('keydown', function (e) { if (e.key === 'Enter') btnOk.onclick(); });
 }
 
 // ── v7.1 : ANNULER UNE LIVRAISON (admin uniquement) ──

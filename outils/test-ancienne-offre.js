@@ -103,7 +103,10 @@ let ok = 0, ko = 0; const test = (nom, cond, det) => { if (cond) { ok++; console
   test('fiche d\'une commande : mention ajoutée sans modifier la commande', garde("if (aoCommande(c, produits)) produitsHtml +="));
   test('stock : mention ajoutée sous le nom du produit', garde('${aoEst(p)?`<div>${aoBadge()}</div>`:\'\'}'));
   test('le chargement du catalogue lit le marqueur à deux endroits (chargement et temps réel)', html.split('ancienneOffre: aoDepuisBase(r)').length - 1 === 2);
-  test('la version du cache de l\'application est bien 7.5.118', fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8').includes("'maxiconfort-v7-5-118'"));
+  // 10/10/2026 : le numéro n'est plus écrit en dur (il monte à chaque mise en ligne) ;
+  // on vérifie qu'il est au moins 7.5.118, la version qui a introduit « ancienne offre ».
+  const versionCache = (fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8').match(/maxiconfort-v(\d+)-(\d+)-(\d+)/) || []).slice(1).map(Number);
+  test('la version du cache de l\'application est au moins 7.5.118', versionCache.length === 3 && (versionCache[0] > 7 || (versionCache[0] === 7 && (versionCache[1] > 5 || (versionCache[1] === 5 && versionCache[2] >= 118)))), versionCache.join('.'));
 
   console.log(`\nRÉSULTAT : ${ok} tests réussis, ${ko} échec(s)`); process.exitCode = ko ? 1 : 0;
 })().catch(e => { console.error('ERREUR :', e.stack || e.message); process.exit(1); });
