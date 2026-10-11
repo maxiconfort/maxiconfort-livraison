@@ -8,6 +8,9 @@
 //   ⚠️ un versement reste « en traitement » plus de RETARD_JOURS jours
 //      (rappel au plus toutes les 48 h tant que ce n'est pas payé)
 //   ❌ un versement échoue ou est retourné
+//   (12/10) ⚠️ une commande livrée dont la date de règlement estimée (livraison + 31 j) est dépassée de 2 j
+//   (12/10) 🚚 une commande payée non remise à GLS à moins de 36 h de la limite TikTok, ❌ si dépassée
+//   Cron : 07:30 UTC (jobid 22) + 15:30 UTC (migration 032) pour les limites de remise.
 //
 // État mémorisé dans `parametres` (clé tiktok_finance_etat, JSON) :
 //   { versements: { [id]: { statut, montant, cree, paye } }, alertes: { [id]: iso } }
@@ -117,6 +120,50 @@ Deno.serve(async (req: Request) => {
       }
       versements[id] = { statut, montant, cree: ligne.cree, paye: ligne.paye };
     }
+
+    // 12/10/2026 — (2) versements attendus par commande : TikTok annonce une date estimée (livraison + 31 j).
+    // Si la date est dépassée de plus de 2 jours et que la commande n'est toujours pas réglée → alerte (rappel 48 h).
+    try {
+      const un = await signedRequest('/finance/202507/orders/unsettled', token, { shop_cipher: cipher, page_size: '50', sort_field: 'order_create_time', sort_order: 'DESC' });
+      if (un.code === 0) {
+        (rapport as any).en_attente = { commandes: un.data?.total_count, net: un.data?.sum_est_settlement_amount };
+        for (const t of un.data?.transactions || []) {
+          const est = /^\d+$/.test(String(t.estimated_settlement)) ? Number(t.estimated_settlement) : 0;
+          if (!est) continue;
+          const retardJ = Math.floor((Date.now() / 1000 - est) / 86400);
+          if (retardJ >= 2) {
+            const k = 'cmd:' + t.order_id, der = Date.parse(alertes[k] || '') || 0;
+            if (Date.now() - der > RAPPEL_HEURES * 3600 * 1000) {
+              rapport.messages.push(`⚠️ <b>Versement TikTok attendu non reçu</b> : commande ${t.order_id}, ${fmtEur(t.est_settlement_amount)} nets, règlement estimé le ${fmtDate(est)} (${retardJ} j de retard), toujours « non réglée ». Vérifier Finance → En attente, puis ticket Finance › Retard de règlement si rien sous 48 h.`);
+              if (!dryRun) alertes[k] = now;
+            }
+          }
+        }
+      } else (rapport as any).en_attente = { erreur: String(un.message || '').slice(0, 120) };
+    } catch (e: any) { (rapport as any).en_attente = { erreur: String(e.message || e).slice(0, 120) }; }
+
+    // (3) commandes payées pas encore remises à GLS : limite de remise au transporteur (rts_sla_time) et de collecte.
+    // Alerte à moins de 36 h de la limite, puis chaque jour tant que le colis n'est pas collecté (leçon #1721 : annulation TikTok = client remboursé).
+    try {
+      const o = await signedRequest('/order/202309/orders/search', token, { shop_cipher: cipher, page_size: '50', sort_field: 'create_time', sort_order: 'DESC' }, 'POST', { create_time_ge: Math.floor(Date.now() / 1000) - 30 * 86400 });
+      if (o.code === 0) {
+        const ouvertes = (o.data?.orders || []).filter((x: any) => x.paid_time && ['AWAITING_SHIPMENT', 'AWAITING_COLLECTION', 'ON_HOLD'].includes(String(x.status)) && !x.collection_time);
+        (rapport as any).a_remettre = ouvertes.map((x: any) => ({ id: x.id, statut: x.status, limite_remise: x.rts_sla_time ? fmtDate(x.rts_sla_time) : null, limite_collecte: x.collection_due_time ? fmtDate(x.collection_due_time) : null }));
+        for (const x of ouvertes) {
+          const lim = Number(x.rts_sla_time || x.collection_due_time || 0); if (!lim) continue;
+          const resteH = Math.round((lim - Date.now() / 1000) / 3600);
+          if (resteH > 36) continue;
+          const k = 'remise:' + x.id, der = Date.parse(alertes[k] || '') || 0;
+          if (Date.now() - der > 20 * 3600 * 1000) {
+            const prod = (x.line_items || []).map((l: any) => l.seller_sku || l.product_name).join(' + ');
+            rapport.messages.push(resteH > 0
+              ? `🚚 <b>Colis TikTok à remettre à GLS</b> : commande ${x.id} (${prod}, ${fmtEur(x.payment?.total_amount)}) — limite de remise ${fmtDate(lim)} 23:59, reste ${resteH} h, aucun scan GLS. Au-delà : annulation TikTok et client remboursé.`
+              : `❌ <b>Limite de remise GLS DÉPASSÉE</b> : commande TikTok ${x.id} (${prod}) devait être remise le ${fmtDate(lim)}, toujours pas collectée. Remettre le colis aujourd'hui et surveiller l'annulation automatique (limite de collecte ${x.collection_due_time ? fmtDate(x.collection_due_time) : '?'}).`);
+            if (!dryRun) alertes[k] = now;
+          }
+        }
+      }
+    } catch (e: any) { (rapport as any).a_remettre = { erreur: String(e.message || e).slice(0, 120) }; }
 
     if (!dryRun) {
       for (const m of rapport.messages) await telegram(m);
