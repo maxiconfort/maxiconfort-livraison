@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   commandesCitees, indexerSav, evaluerAvis, demandeDueAujourdhui, litigeOuvert, noteExclut,
-  gardeHistorique, motifGls, telCle, envoiAutomatiqueAutorise,
+  gardeHistorique, motifGls, telCle, envoiAutomatiqueAutorise, goSavAutorise,
 } from '../functions/_shared/avis-garde.ts';
 
 const cmd = (o) => ({ id: '#2000', statut: 'livré', stpaie: 'Payé', date_livraison: '2026-09-20', instr: '', litige_statut: null, litige_clos_at: null, gls_livraison_etat: null, ...o });
@@ -173,4 +173,16 @@ test('règle du 13/10/2026 : demande automatique pour le transporteur RANOU seul
   assert.equal(envoiAutomatiqueAutorise(''), false);
   assert.equal(envoiAutomatiqueAutorise(null), false);
   assert.equal(envoiAutomatiqueAutorise('Autre transporteur'), false);
+});
+
+test('GO du dirigeant malgré SAV ou litige ouvert : GLS manuel seulement, autres refus intacts', () => {
+  assert.equal(goSavAutorise('SAV ouvert #SAV1', 'GLS', true), true);
+  assert.equal(goSavAutorise('litige ouvert (en cours)', 'GLS', true), true);
+  assert.equal(goSavAutorise('SAV ouvert #SAV1', 'GLS', false), false);          // pas de GO explicite
+  assert.equal(goSavAutorise('SAV ouvert #SAV1', 'RANOU', true), false);         // RANOU inchangé
+  assert.equal(goSavAutorise('note PAS D AVIS', 'GLS', true), false);
+  assert.equal(goSavAutorise('non livree (en-attente)', 'GLS', true), false);
+  assert.equal(goSavAutorise('paiement non confirme (Impayé)', 'GLS', true), false);
+  assert.equal(goSavAutorise('livraison GLS partiel', 'GLS', true), false);
+  assert.equal(goSavAutorise(null, 'GLS', true), false);
 });

@@ -59,6 +59,19 @@ export function envoiAutomatiqueAutorise(transporteur: string | null | undefined
   return /ranou/i.test(String(transporteur || ''));
 }
 
+// GO DU DIRIGEANT MALGRÉ UN SAV OU UN LITIGE OUVERT — décision Borhen du 13/10/2026.
+// Uniquement pour un envoi GLS MANUEL (corps { valides }) et seulement pour les fiches qu'il a
+// nommées lui-même (corps { goSav: [...] }). Seuls « SAV ouvert » et « litige ouvert » peuvent
+// être levés ; ils restent affichés comme avertissement dans la liste. Tous les autres motifs
+// restent des refus absolus : note PAS D AVIS, numéro invalide, commande non livrée ou annulée,
+// livraison GLS incomplète, doublon, paiement non confirmé, trop d'échecs d'envoi.
+// Jamais pour RANOU : l'automatique garde exactement son fonctionnement.
+export function goSavAutorise(bloque: string | null | undefined, transporteur: string | null | undefined, goDirigeant: boolean): boolean {
+  if (!goDirigeant || !bloque) return false;
+  if (envoiAutomatiqueAutorise(transporteur)) return false;
+  return /^(SAV ouvert|litige ouvert)/.test(String(bloque));
+}
+
 export function litigeOuvert(statut: string | null | undefined): boolean {
   const s = String(statut || '').trim().toLowerCase();
   return s !== '' && !LITIGE_FERMES.includes(s);

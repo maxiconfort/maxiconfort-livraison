@@ -35,6 +35,9 @@
 //     livraison ; toutes les autres gardes restent actives (note PAS D AVIS,
 //     litige, SAV, paiement, doublon par numero, relecture GLS en direct).
 //   - sms-avis-relance ne relance jamais une commande hors RANOU.
+//   - corps { valides: [...], goSav: ["#1234"] } (PRÉPARÉ le 13/10/2026) : pour les fiches
+//     nommées dans goSav, un SAV ouvert ou un litige ouvert ne refuse plus l'envoi
+//     (GLS manuel uniquement, GO explicite du dirigeant ; voir goSavAutorise).
 //
 // ⏸️ PAUSE PROVINCE/GLS (v1.2, demande Borhen 17/07/2026) — levee le 14/09
 //   (v1.4) pour les livraisons GLS a partir de AVIS_GLS_DEPUIS ; remplacee le
@@ -54,7 +57,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { appelInterne, refus } from '../_shared/controle-appelant.ts';
 import { livraisonGlsContestee } from '../_shared/avis-gls.ts';
 import {
-  ajouterJours, DELAI_ANTI_DOUBLON_JOURS, demandeDueAujourdhui, envoiAutomatiqueAutorise, estSav, evaluerAvis, gardeHistorique, indexerSav, type LigneHisto,
+  ajouterJours, DELAI_ANTI_DOUBLON_JOURS, demandeDueAujourdhui, envoiAutomatiqueAutorise, estSav, evaluerAvis, gardeHistorique, goSavAutorise, indexerSav, type LigneHisto,
 } from '../_shared/avis-garde.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
@@ -101,6 +104,8 @@ Deno.serve(async (req: Request) => {
   const testIds: string[] | null = Array.isArray(body.cmdIds) ? body.cmdIds.map(String) : null;
   // v2.2 : commandes validees par Borhen (hors RANOU) -> envoi reel, sans fenetre de date
   const valides: string[] | null = !testIds && Array.isArray(body.valides) && body.valides.length ? body.valides.map(String) : null;
+  // fiches pour lesquelles le dirigeant a dit GO malgré un SAV ou un litige ouvert (GLS manuel uniquement)
+  const goSav = new Set<string>(valides && Array.isArray(body.goSav) ? body.goSav.map(String) : []);
   const dryRun = body.dryRun === true || !!testIds;
   const simulation = !!testIds && body.simulation === true;
   const aujourdhui = jourParis();
@@ -161,7 +166,8 @@ Deno.serve(async (req: Request) => {
     if (!auto && !valides && !testIds) { skipped++; details.push({ ...base, action: 'skip_sur_validation', transporteur: c.transporteur, client: c.client }); continue; }
     // v2.0 : litige / SAV / note / livraison partielle
     const ev = evaluerAvis(c, savIdx);
-    if (ev.bloque) {
+    const leve = !!valides && goSavAutorise(ev.bloque, c.transporteur, goSav.has(String(c.id)));
+    if (ev.bloque && !leve) {
       skipped++; details.push({ ...base, action: ev.bloque.startsWith('note') ? 'skip_exclu_note' : 'skip_suspendu', motif: ev.bloque, client: c.client }); continue;
     }
     if (estGls && String(c.date_livraison || '') < AVIS_GLS_DEPUIS) {
@@ -187,7 +193,7 @@ Deno.serve(async (req: Request) => {
     if (dryRun) {
       sent++;
       histo.push({ tel, type_sms: 'avis', statut: 'envoyé', date_sms: aujourdhui });
-      details.push({ ...base, action: 'would_send', client: c.client, to: tel, reprise: ev.historique ? ev.cloture : undefined, surValidation: auto ? undefined : true });
+      details.push({ ...base, action: 'would_send', client: c.client, to: tel, reprise: ev.historique ? ev.cloture : undefined, surValidation: auto ? undefined : true, goSav: leve ? ev.bloque : undefined });
       continue;
     }
     try {
@@ -199,7 +205,7 @@ Deno.serve(async (req: Request) => {
       const data = await resp.json().catch(() => ({}));
       // v2.1 : memoriser l'essai pour la suite du passage (2e commande du meme client)
       if (!data.skipped) histo.push({ tel, type_sms: 'avis', statut: data.sent ? 'envoyé' : 'échec', date_sms: aujourdhui });
-      if (data.sent) { sent++; details.push({ ...base, action: 'sent', to: data.to }); }
+      if (data.sent) { sent++; details.push({ ...base, action: 'sent', to: data.to, goSav: leve ? ev.bloque : undefined }); }
       else if (data.skipped) { skipped++; details.push({ ...base, action: 'skip_send', reason: data.reason }); }
       else { failed++; details.push({ ...base, action: 'failed', error: data.error }); }
     } catch (e: any) {
@@ -208,7 +214,7 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(JSON.stringify({
-    ok: true, version: 'v2.2', dryRun, simulation, valides: valides ? valides.length : undefined, dateCible, scanned, sent, skipped, failed,
+    ok: true, version: 'v2.3', dryRun, simulation, valides: valides ? valides.length : undefined, dateCible, scanned, sent, skipped, failed,
     duration_ms: Date.now() - t0, details,
   }), { headers: CORS });
 });
