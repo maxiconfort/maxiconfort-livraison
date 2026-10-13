@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis (v2.4 — 13/10/2026)
+// Edge Function : sms-avis (v2.5 — 13/10/2026)
 // ════════════════════════════════════════════════════════════════════
 // Tourne en CRON 1x/jour (~11h Paris) : demande d'avis Google le LENDEMAIN
 // de la livraison.
@@ -42,6 +42,11 @@
 //     ni automatique, ni sur liste validee (GLS). Journal : avis_relances_bloquees.
 //   - la NOTE de l'avis n'est jamais lue : 1 etoile et 5 etoiles = meme arret.
 //
+// v2.5 (13/10/2026 au soir, decision Borhen) : VERROU DU CONTROLE GOOGLE
+//   - sans controle Google reussi du jour meme (table avis_google_controles), aucune demande
+//     d'avis ne part : ni automatique, ni manuelle sur liste. Alerte Telegram (une fois par
+//     jour, partagee avec sms-avis-relance). Reprise au passage suivant.
+//
 // ⏸️ PAUSE PROVINCE/GLS (v1.2, demande Borhen 17/07/2026) — levee le 14/09
 //   (v1.4) pour les livraisons GLS a partir de AVIS_GLS_DEPUIS ; remplacee le
 //   13/10/2026 par la regle « sur validation » ci-dessus.
@@ -60,7 +65,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { appelInterne, refus } from '../_shared/controle-appelant.ts';
 import { livraisonGlsContestee } from '../_shared/avis-gls.ts';
 import {
-  type AvisRecu, avisGoogleDejaRecu, ajouterJours, DELAI_ANTI_DOUBLON_JOURS, demandeDueAujourdhui, envoiAutomatiqueAutorise, estSav, evaluerAvis, gardeHistorique, indexerSav, type LigneHisto,
+  type AvisRecu, avisGoogleDejaRecu, relancesAutorisees, ajouterJours, DELAI_ANTI_DOUBLON_JOURS, demandeDueAujourdhui, envoiAutomatiqueAutorise, estSav, evaluerAvis, gardeHistorique, indexerSav, type LigneHisto,
 } from '../_shared/avis-garde.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
@@ -97,6 +102,18 @@ async function journaliserAvisRecu(c: any, typeSms: string, r: AvisRecu) {
     cmd_id: c.id, type_sms: typeSms, client: c.client, commande_site: site, nom_google: r.nom_google, note: r.note,
     date_avis: r.date_avis, type_match: r.type_match, raison: 'RELANCE ANNULEE - AVIS GOOGLE DEJA RECU',
   }, { onConflict: 'cmd_id,type_sms', ignoreDuplicates: true });
+}
+
+async function envoyerTelegram(texte: string): Promise<boolean> {
+  const token = Deno.env.get('TELEGRAM_TOKEN') || '', chat = Deno.env.get('TELEGRAM_CHAT_ID') || '';
+  if (!token || !chat) return false;
+  try {
+    const r = await fetch('https://api.telegram.org/bot' + token + '/sendMessage', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text: texte.slice(0, 4000), disable_web_page_preview: true }),
+    });
+    return r.ok;
+  } catch { return false; }
 }
 
 function jourParis(): string {
@@ -139,6 +156,26 @@ Deno.serve(async (req: Request) => {
   const { data: recusData, error: errRecus } = await sb.from('avis_google_recus').select('cmd_id,tel_cle,nom_google,note,date_avis,type_match').limit(5000);
   if (errRecus) return new Response(JSON.stringify({ error: 'select avis_google_recus failed', details: errRecus.message }), { status: 500, headers: CORS });
   const recus = (recusData || []) as AvisRecu[];
+
+  // v2.5 : VERROU — sans controle Google reussi du jour meme, AUCUNE demande d'avis ne part
+  // (decision Borhen du 13/10/2026 au soir : un client peut avoir laisse un avis spontanement
+  // avant notre premiere demande). Vaut pour le passage automatique ET pour l'envoi manuel sur
+  // liste validee. Le mode de verification { cmdIds } reste utilisable (rien n'y est envoye).
+  // Ce verrou ne concerne que les sollicitations d'avis : aucun autre SMS n'en depend.
+  const { data: ctl } = await sb.from('avis_google_controles').select('jour,statut,detail,alerte_at').eq('jour', aujourdhui).maybeSingle();
+  const controleGoogle = relancesAutorisees(ctl, aujourdhui) ? 'ok' : (ctl?.statut && ctl.statut !== 'ok' ? ctl.statut : 'non_fait');
+  if (controleGoogle !== 'ok' && !testIds) {
+    let alerteControle = ctl?.alerte_at ? 'alerte deja envoyee aujourd hui' : 'alerte a envoyer';
+    if (!dryRun && !ctl?.alerte_at) {
+      const ok = await envoyerTelegram('ALERTE AVIS GOOGLE — le controle des avis Google du jour n a pas reussi (' + (ctl?.detail || 'aucun passage') + '). Les demandes d avis sont RETENUES : aucune demande envoyee. Elles reprendront au prochain passage apres un controle reussi.');
+      await sb.from('avis_google_controles').upsert({ jour: aujourdhui, statut: controleGoogle, detail: ctl?.detail || 'aucun passage du controle avant les demandes', alerte_at: new Date().toISOString() }, { onConflict: 'jour' });
+      alerteControle = ok ? 'alerte Telegram envoyee' : 'ALERTE NON ENVOYEE (Telegram indisponible)';
+    }
+    return new Response(JSON.stringify({
+      ok: true, version: 'v2.5', dryRun, simulation, valides: valides ? valides.length : undefined, controleGoogle, alerteControle,
+      demandesRetenues: true, scanned: 0, sent: 0, skipped: 0, failed: 0, duration_ms: Date.now() - t0, details: [],
+    }), { headers: CORS });
+  }
 
   // 1) livraisons de la fenetre normale
   const { data: cmds, error } = (testIds || valides)
@@ -235,7 +272,7 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(JSON.stringify({
-    ok: true, version: 'v2.4', dryRun, simulation, valides: valides ? valides.length : undefined, dateCible, scanned, sent, skipped, failed,
+    ok: true, version: 'v2.5', dryRun, simulation, valides: valides ? valides.length : undefined, controleGoogle, demandesRetenues: false, dateCible, scanned, sent, skipped, failed,
     duration_ms: Date.now() - t0, details,
   }), { headers: CORS });
 });

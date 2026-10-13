@@ -257,3 +257,19 @@ test('test de 7 jours : relance 2 suspendue du 14 au 20/10/2026, demande et rela
   assert.equal(etapeSuspendue('avis-relance2', '2026-10-15', []), null, 'liste vide = rien de suspendu');
   assert.equal(SUSPENSIONS_ETAPES.length, 1);
 });
+
+test('verrou complet : la même règle vaut pour la première demande, la relance 1 et la relance 2', () => {
+  const ok = { jour: '2026-10-14', statut: 'ok' }, echec = { jour: '2026-10-14', statut: 'echec' };
+  // A et B : contrôle réussi → sollicitations autorisées ; C et D : contrôle échoué ou absent → tout est retenu
+  assert.equal(relancesAutorisees(ok, '2026-10-14'), true);
+  assert.equal(relancesAutorisees(echec, '2026-10-14'), false);
+  assert.equal(relancesAutorisees(null, '2026-10-14'), false);
+  // E : contrôle rétabli plus tard dans la journée → le passage suivant repart
+  assert.equal(relancesAutorisees({ ...echec, statut: 'ok' }, '2026-10-14'), true);
+  // F : client déjà marqué « avis reçu » → bloqué même avec un contrôle réussi (quelle que soit la note)
+  const marque = [{ cmd_id: '#3000', tel_cle: '611223344', nom_google: 'X', note: 1, type_match: 'certain' }];
+  assert.ok(relancesAutorisees(ok, '2026-10-14') && avisGoogleDejaRecu({ id: '#3000', tel: '0611223344' }, marque));
+  // G : GLS reste manuel (jamais automatique), et un avis déjà reçu bloque aussi l'envoi manuel
+  assert.equal(envoiAutomatiqueAutorise('GLS'), false);
+  assert.ok(avisGoogleDejaRecu({ id: '#3100', tel: '0655443322' }, [{ cmd_id: '#3100', tel_cle: '655443322', nom_google: 'Y', note: 5, type_match: 'valide' }]));
+});
