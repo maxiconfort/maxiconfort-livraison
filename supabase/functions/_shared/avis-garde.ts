@@ -51,6 +51,14 @@ export function noteExclut(instr: string | null | undefined): boolean {
 // un colis jamais scanné, encore en route ou revenu = livraison incomplète.
 export const GLS_ETATS_BLOQUANTS = ['partiel', 'retour', 'non_pris_en_charge', 'transit'];
 
+// RÈGLE DU 13/10/2026 (décision Borhen) : la demande d'avis AUTOMATIQUE ne part que pour les
+// livraisons faites par notre équipe (transporteur RANOU). Pour tout autre transporteur (GLS…),
+// rien ne part tout seul : une liste est soumise à Borhen, et seules les commandes qu'il valide
+// reçoivent UNE demande (sms-avis, corps { valides: [...] }), jamais de relance.
+export function envoiAutomatiqueAutorise(transporteur: string | null | undefined): boolean {
+  return /ranou/i.test(String(transporteur || ''));
+}
+
 export function litigeOuvert(statut: string | null | undefined): boolean {
   const s = String(statut || '').trim().toLowerCase();
   return s !== '' && !LITIGE_FERMES.includes(s);

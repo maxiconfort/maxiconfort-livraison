@@ -34,6 +34,11 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - **alerte-gls-sans-scan** : colis dont l'étiquette a ≥ 24 h sans aucun événement autre que `DATA_RECEIVED` → 1 SMS/jour à Borhen (8 colis max) + copie complète sur Telegram, 1 alerte max par colis et par jour (`gls_alertes`), cache des colis pris en charge (`gls_colis`). Crons `alerte-gls-sans-scan-semaine` (18h Paris lun-ven) et `-samedi` (10h Paris), corps `{"creneau":true}`. Ignorer un colis : note « SANS SCAN OK 00Lxxxxx » (ou « SANS SCAN OK » seul = toute la commande). Test : `{"dryRun":true}`.
 - Migration : `supabase/migrations/021_gls_preuves_livraison_avis_litiges.sql`.
 
+## Demandes d'avis : automatique pour RANOU seulement (décision Borhen du 13/10/2026)
+- `sms-avis` v2.2 et `sms-avis-relance` v2.3 : l'envoi automatique et les relances ne concernent que les commandes livrées par notre équipe (colonne `transporteur` = RANOU ; fonction `envoiAutomatiqueAutorise` de `_shared/avis-garde.ts`). GLS et tout autre transporteur : `skip_sur_validation`, rien ne part tout seul et aucune relance.
+- GLS : une liste est soumise à Borhen, qui dit à qui envoyer. Envoi des fiches validées : `sms-avis` avec `{"valides":["#NNNN",...]}` (une seule demande, toutes les autres gardes restent actives ; `"dryRun":true` pour un essai à blanc). Le script qui prépare la liste est dans le dépôt privé du site (`avis/liste_avis_gls.js`).
+- Ne pas rétablir l'envoi automatique vers les clients GLS sans décision de Borhen.
+
 ## Demandes d'avis : suspension pendant un litige ou un SAV (règle du 28/09/2026)
 - Code : `supabase/functions/_shared/avis-garde.ts` (+ `avis-gls.ts`), utilisé par `sms-avis` v2.0 et `sms-avis-relance` v2.1.
 - **Aucune demande ni relance** si : note « PAS D AVIS » (manuel = définitif), commande non livrée, livraison GLS partielle/retour (colonne ou relecture GLS en direct juste avant l'envoi), litige ouvert (`litige_statut` non vide et pas `indemnise`/`refuse`), SAV ouvert lié (commande `#SAV…` non livrée/non annulée dont la note cite « cmd origine #NNNN »).

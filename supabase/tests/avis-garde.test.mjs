@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   commandesCitees, indexerSav, evaluerAvis, demandeDueAujourdhui, litigeOuvert, noteExclut,
-  gardeHistorique, motifGls, telCle,
+  gardeHistorique, motifGls, telCle, envoiAutomatiqueAutorise,
 } from '../functions/_shared/avis-garde.ts';
 
 const cmd = (o) => ({ id: '#2000', statut: 'livré', stpaie: 'Payé', date_livraison: '2026-09-20', instr: '', litige_statut: null, litige_clos_at: null, gls_livraison_etat: null, ...o });
@@ -164,4 +164,13 @@ test('colis GLS jamais scanné / non pris en charge / en transit → bloquée', 
   // GLS sans numéro de colis ; transporteur non GLS ignoré
   assert.match(motifGls(null, gls), /sans numero de colis/);
   assert.equal(motifGls(null, { transporteur: 'RANOU' }), null);
+});
+
+test('règle du 13/10/2026 : demande automatique pour le transporteur RANOU seulement', () => {
+  assert.equal(envoiAutomatiqueAutorise('RANOU'), true);
+  assert.equal(envoiAutomatiqueAutorise('Ranou '), true);
+  assert.equal(envoiAutomatiqueAutorise('GLS'), false);
+  assert.equal(envoiAutomatiqueAutorise(''), false);
+  assert.equal(envoiAutomatiqueAutorise(null), false);
+  assert.equal(envoiAutomatiqueAutorise('Autre transporteur'), false);
 });

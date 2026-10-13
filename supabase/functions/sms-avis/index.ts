@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis (v2.1 — 02/10/2026)
+// Edge Function : sms-avis (v2.2 — 13/10/2026)
 // ════════════════════════════════════════════════════════════════════
 // Tourne en CRON 1x/jour (~11h Paris) : demande d'avis Google le LENDEMAIN
 // de la livraison.
@@ -27,12 +27,23 @@
 //   - pas de demande si stpaie != « Payé », si un colis GLS n'a jamais ete
 //     scanne / livraison partielle / GLS illisible sans « livre » en base.
 //
+// v2.2 (13/10/2026, decision Borhen) : AUTOMATIQUE = TRANSPORTEUR RANOU SEULEMENT
+//   - le passage quotidien n'envoie plus qu'aux commandes livrees par notre equipe
+//     (transporteur RANOU) ; GLS et tout autre transporteur : skip_sur_validation.
+//   - corps { valides: ["#1234", ...] } : envoi REEL d'UNE demande aux commandes
+//     validees par Borhen (liste soumise a la main), quelle que soit la date de
+//     livraison ; toutes les autres gardes restent actives (note PAS D AVIS,
+//     litige, SAV, paiement, doublon par numero, relecture GLS en direct).
+//   - sms-avis-relance ne relance jamais une commande hors RANOU.
+//
 // ⏸️ PAUSE PROVINCE/GLS (v1.2, demande Borhen 17/07/2026) — levee le 14/09
-//   (v1.4) pour les livraisons GLS a partir de AVIS_GLS_DEPUIS.
+//   (v1.4) pour les livraisons GLS a partir de AVIS_GLS_DEPUIS ; remplacee le
+//   13/10/2026 par la regle « sur validation » ci-dessus.
 //
 // ⚠️ Demande d'avis HONNETE, sans condition ni recompense. 1 SMS = 1 credit OVH.
 //
 // Body : { dryRun?: boolean, dateCible?: "YYYY-MM-DD" }
+//   ou   { valides: [...], dryRun?: true } : commandes validees par Borhen (voir v2.2)
 //   ou   { cmdIds: [...], simulation?: true } (toujours dryRun) : simulation = ignore
 //        la fenetre de date et les dedoublonnages (sms_envoyes, sms_historique)
 //        pour verifier les autres gardes (paiement, litige, GLS en direct).
@@ -43,13 +54,12 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { appelInterne, refus } from '../_shared/controle-appelant.ts';
 import { livraisonGlsContestee } from '../_shared/avis-gls.ts';
 import {
-  ajouterJours, DELAI_ANTI_DOUBLON_JOURS, demandeDueAujourdhui, estSav, evaluerAvis, gardeHistorique, indexerSav, type LigneHisto,
+  ajouterJours, DELAI_ANTI_DOUBLON_JOURS, demandeDueAujourdhui, envoiAutomatiqueAutorise, estSav, evaluerAvis, gardeHistorique, indexerSav, type LigneHisto,
 } from '../_shared/avis-garde.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 
-const PAUSE_AVIS_GLS = false;
 const AVIS_GLS_DEPUIS = '2026-09-14';
 
 const sb = createClient(SB_URL, SB_SR_KEY, {
@@ -89,6 +99,8 @@ Deno.serve(async (req: Request) => {
 
   // Mode test { cmdIds:[...] } : evalue ces commandes quelle que soit leur date (toujours dryRun)
   const testIds: string[] | null = Array.isArray(body.cmdIds) ? body.cmdIds.map(String) : null;
+  // v2.2 : commandes validees par Borhen (hors RANOU) -> envoi reel, sans fenetre de date
+  const valides: string[] | null = !testIds && Array.isArray(body.valides) && body.valides.length ? body.valides.map(String) : null;
   const dryRun = body.dryRun === true || !!testIds;
   const simulation = !!testIds && body.simulation === true;
   const aujourdhui = jourParis();
@@ -109,8 +121,8 @@ Deno.serve(async (req: Request) => {
   }
 
   // 1) livraisons de la fenetre normale
-  const { data: cmds, error } = testIds
-    ? await sb.from('commandes').select(COLS).in('id', testIds)
+  const { data: cmds, error } = (testIds || valides)
+    ? await sb.from('commandes').select(COLS).in('id', (testIds || valides) as string[])
     : await sb.from('commandes').select(COLS)
       .gte('date_livraison', dateMin)
       .lte('date_livraison', dateMax)
@@ -123,7 +135,7 @@ Deno.serve(async (req: Request) => {
   // 2) reprises : litige clos ou SAV lie livre dans les 6 derniers jours
   const candidats = new Map<string, any>();
   for (const c of cmds || []) candidats.set(c.id, { ...c, _source: 'livraison' });
-  if (!body.dateCible && !testIds) {
+  if (!body.dateCible && !testIds && !valides) {
     const depuis = ajouterJours(aujourdhui, -6);
     const idsReprise = new Set<string>();
     for (const [cible, l] of savIdx) if (l.some((s) => !s.ouvert && s.cloture && s.cloture >= depuis)) idsReprise.add(cible);
@@ -144,7 +156,9 @@ Deno.serve(async (req: Request) => {
     const base = { id: c.id, source: c._source };
     if (estSav(c.id)) { skipped++; details.push({ ...base, action: 'skip_sav' }); continue; }
     const estGls = /gls/i.test(String(c.transporteur || ''));
-    if (PAUSE_AVIS_GLS && estGls) { skipped++; details.push({ ...base, action: 'skip_pause_gls', client: c.client }); continue; }
+    // v2.2 : hors RANOU, rien d'automatique (le mode test { cmdIds } evalue quand meme les autres gardes)
+    const auto = envoiAutomatiqueAutorise(c.transporteur);
+    if (!auto && !valides && !testIds) { skipped++; details.push({ ...base, action: 'skip_sur_validation', transporteur: c.transporteur, client: c.client }); continue; }
     // v2.0 : litige / SAV / note / livraison partielle
     const ev = evaluerAvis(c, savIdx);
     if (ev.bloque) {
@@ -153,7 +167,7 @@ Deno.serve(async (req: Request) => {
     if (estGls && String(c.date_livraison || '') < AVIS_GLS_DEPUIS) {
       skipped++; details.push({ ...base, action: 'skip_gls_avant_reprise', client: c.client }); continue;
     }
-    if (!simulation && (ev.historique || testIds)) {
+    if (!simulation && !valides && (ev.historique || testIds)) {
       const due = demandeDueAujourdhui(String(c.date_livraison || '').substring(0, 10), ev, aujourdhui);
       if (due !== 'oui') {
         skipped++; details.push({ ...base, action: due === 'trop_tot' ? 'skip_attente_reprise_J+2' : (ev.historique ? 'skip_reprise_expiree' : 'skip_hors_fenetre'), cloture: ev.cloture, client: c.client }); continue;
@@ -173,7 +187,7 @@ Deno.serve(async (req: Request) => {
     if (dryRun) {
       sent++;
       histo.push({ tel, type_sms: 'avis', statut: 'envoyé', date_sms: aujourdhui });
-      details.push({ ...base, action: 'would_send', client: c.client, to: tel, reprise: ev.historique ? ev.cloture : undefined });
+      details.push({ ...base, action: 'would_send', client: c.client, to: tel, reprise: ev.historique ? ev.cloture : undefined, surValidation: auto ? undefined : true });
       continue;
     }
     try {
@@ -194,7 +208,7 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(JSON.stringify({
-    ok: true, version: 'v2.1', dryRun, simulation, dateCible, scanned, sent, skipped, failed,
+    ok: true, version: 'v2.2', dryRun, simulation, valides: valides ? valides.length : undefined, dateCible, scanned, sent, skipped, failed,
     duration_ms: Date.now() - t0, details,
   }), { headers: CORS });
 });

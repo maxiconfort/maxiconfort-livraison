@@ -1,5 +1,10 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis-relance (v2.2 — 02/10/2026)
+// Edge Function : sms-avis-relance (v2.3 — 13/10/2026)
+// ════════════════════════════════════════════════════════════════════
+// v2.3 (13/10/2026, decision Borhen) : relances UNIQUEMENT pour les livraisons
+//   de notre equipe (transporteur RANOU). GLS et tout autre transporteur : la
+//   demande d'avis part sur validation de Borhen (sms-avis { valides }), une
+//   seule fois, et n'est JAMAIS relancee.
 // ════════════════════════════════════════════════════════════════════
 // v2.2 (02/10/2026) : meme garde que sms-avis v2.1 — une etape de relance
 //   n'est jamais envoyee 2 fois au meme NUMERO en 60 j (sms_historique,
@@ -42,16 +47,15 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { appelInterne, refus } from '../_shared/controle-appelant.ts';
 import {
-  ajouterJours, DELAI_ANTI_DOUBLON_JOURS, evaluerAvis, gardeHistorique, indexerSav, noteExclut, type LigneHisto,
+  ajouterJours, DELAI_ANTI_DOUBLON_JOURS, envoiAutomatiqueAutorise, evaluerAvis, gardeHistorique, indexerSav, noteExclut, type LigneHisto,
 } from '../_shared/avis-garde.ts';
 import { livraisonGlsContestee } from '../_shared/avis-gls.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 
-// Meme regle que sms-avis : province reactivee le 14/09/2026 pour les
-// livraisons GLS a partir de AVIS_GLS_DEPUIS (pas de rattrapage).
-const PAUSE_AVIS_GLS = false;
+// Historique : province reactivee le 14/09/2026 pour les livraisons GLS a partir
+// de AVIS_GLS_DEPUIS ; depuis le 13/10/2026, plus aucune relance hors RANOU.
 const AVIS_GLS_DEPUIS = '2026-09-14';
 
 // Etapes de relance : delai (jours apres la livraison) + type SMS.
@@ -161,8 +165,8 @@ Deno.serve(async (req: Request) => {
         skipped++; details.push({ ...base, action: 'skip_sav' }); continue;
       }
       const estGls = /gls/i.test(String(c.transporteur || ''));
-      if (PAUSE_AVIS_GLS && estGls) {
-        skipped++; details.push({ ...base, action: 'skip_pause_gls' }); continue;
+      if (!envoiAutomatiqueAutorise(c.transporteur)) {
+        skipped++; details.push({ ...base, action: 'skip_hors_ranou_sans_relance', transporteur: c.transporteur }); continue;
       }
       if (noteExclut(c.instr)) {
         skipped++; details.push({ ...base, action: 'skip_exclu_note', client: c.client }); continue;
@@ -228,7 +232,7 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(JSON.stringify({
-    ok: true, version: 'v2.2', dryRun, fenetres, scanned, sent, skipped, failed,
+    ok: true, version: 'v2.3', dryRun, fenetres, scanned, sent, skipped, failed,
     duration_ms: Date.now() - t0, details,
   }), { headers: CORS });
 });
