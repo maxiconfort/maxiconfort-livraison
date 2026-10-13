@@ -1,5 +1,11 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis-relance (v2.5 — 13/10/2026)
+// Edge Function : sms-avis-relance (v2.6 — 13/10/2026)
+// ════════════════════════════════════════════════════════════════════
+// v2.6 (13/10/2026 au soir, decisions Borhen) :
+//   - VERROU : sans controle Google reussi du jour (avis_google_controles), aucune relance
+//     ne part pour ce passage ; alerte Telegram ; reprise au passage suivant.
+//   - Etapes suspendues temporairement (SUSPENSIONS_ETAPES dans _shared/avis-garde.ts) :
+//     relance 2 suspendue du 14/10 au 20/10/2026 (test de 7 jours). Rien n'est supprime.
 // ════════════════════════════════════════════════════════════════════
 // v2.5 (13/10/2026, decision Borhen) : CONTROLE GOOGLE DU MATIN AVANT LES RELANCES
 //   Le releve des avis Google de 7 h 30 ecrit une ligne « ok » du jour dans
@@ -59,7 +65,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { appelInterne, refus } from '../_shared/controle-appelant.ts';
 import {
-  type AvisRecu, avisGoogleDejaRecu, ajouterJours, DELAI_ANTI_DOUBLON_JOURS, envoiAutomatiqueAutorise, evaluerAvis, gardeHistorique, indexerSav, noteExclut, type LigneHisto,
+  type AvisRecu, avisGoogleDejaRecu, etapeSuspendue, relancesAutorisees, ajouterJours, DELAI_ANTI_DOUBLON_JOURS, envoiAutomatiqueAutorise, evaluerAvis, gardeHistorique, indexerSav, noteExclut, type LigneHisto,
 } from '../_shared/avis-garde.ts';
 import { livraisonGlsContestee } from '../_shared/avis-gls.ts';
 
@@ -168,15 +174,23 @@ Deno.serve(async (req: Request) => {
 
   // v2.5 : le controle Google du matin a-t-il ete fait aujourd'hui ? (passage automatique seulement)
   const { data: ctl } = await sb.from('avis_google_controles').select('jour,statut,fait_at,detail,alerte_at').eq('jour', aujourdhui).maybeSingle();
-  const controleGoogle = ctl?.statut === 'ok' ? 'ok' : (ctl?.statut || 'non_fait');
+  const controleGoogle = relancesAutorisees(ctl, aujourdhui) ? 'ok' : (ctl?.statut && ctl.statut !== 'ok' ? ctl.statut : 'non_fait');
   let alerteControle: string | null = null;
+  // v2.6 : VERROU — sans controle Google reussi du jour, AUCUNE relance ne part pour ce passage
+  // (decision Borhen du 13/10/2026 au soir). Alerte Telegram une fois par jour. Les commandes
+  // concernees sont reprises au passage suivant (fenetre de 2 jours). Ce verrou ne touche que
+  // les relances d'avis : aucune autre fonction de l'application n'en depend.
   if (controleGoogle !== 'ok' && !testIds) {
     alerteControle = ctl?.alerte_at ? 'alerte deja envoyee aujourd hui' : 'alerte a envoyer';
     if (!dryRun && !ctl?.alerte_at) {
-      const ok = await envoyerTelegram('ALERTE AVIS GOOGLE — le controle des avis Google de 7 h 30 n a pas ete fait ce matin (' + (ctl?.detail || 'aucun passage') + '). Les relances d avis partent maintenant SANS ce controle : un client qui a laisse un avis depuis hier peut recevoir une relance.');
+      const ok = await envoyerTelegram('ALERTE AVIS GOOGLE — le controle des avis Google de 7 h 30 n a pas ete fait ce matin (' + (ctl?.detail || 'aucun passage') + '). Les relances d avis du jour sont RETENUES : aucune relance envoyee. Elles reprendront au prochain passage apres un controle reussi.');
       await sb.from('avis_google_controles').upsert({ jour: aujourdhui, statut: controleGoogle, detail: ctl?.detail || 'aucun passage du controle avant les relances', alerte_at: new Date().toISOString() }, { onConflict: 'jour' });
       alerteControle = ok ? 'alerte Telegram envoyee' : 'ALERTE NON ENVOYEE (Telegram indisponible)';
     }
+    return new Response(JSON.stringify({
+      ok: true, version: 'v2.6', dryRun, controleGoogle, alerteControle, relancesRetenues: true,
+      scanned: 0, sent: 0, skipped: 0, failed: 0, duration_ms: Date.now() - t0, details: [],
+    }), { headers: CORS });
   }
 
   let scanned = 0, sent = 0, skipped = 0, failed = 0;
@@ -184,6 +198,9 @@ Deno.serve(async (req: Request) => {
   const fenetres: any[] = [];
 
   for (const etape of etapes) {
+    // v2.6 : etape suspendue temporairement (ex. test sans relance 2) — voir SUSPENSIONS_ETAPES
+    const suspendue = etapeSuspendue(etape.type, aujourdhui);
+    if (suspendue) { fenetres.push({ type: etape.type, jours: etape.jours, suspendue }); continue; }
     // Fenetre de 2 jours autour de J-jours (rattrape les commandes passees en
     // "livré" apres l'heure du cron).
     let dateMin: string, dateMax: string;
@@ -290,7 +307,7 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(JSON.stringify({
-    ok: true, version: 'v2.5', dryRun, controleGoogle, alerteControle, fenetres, scanned, sent, skipped, failed,
+    ok: true, version: 'v2.6', dryRun, controleGoogle, alerteControle, relancesRetenues: false, fenetres, scanned, sent, skipped, failed,
     duration_ms: Date.now() - t0, details,
   }), { headers: CORS });
 });

@@ -236,3 +236,24 @@ test('rapprochement certain : accents, majuscules, ordre des mots, nom tronqué 
   }
   assert.equal(rapprocherAvis({ nom: 'Jennifer Coulon', date: '2026-08-01' }, clients).niveau, 'aucun', 'avis antérieur à la livraison');
 });
+
+// ── Verrou du contrôle Google et suspension temporaire de la relance 2 (décisions du 13/10/2026 au soir) ──
+import { relancesAutorisees, etapeSuspendue, SUSPENSIONS_ETAPES } from '../functions/_shared/avis-garde.ts';
+
+test('verrou : les relances ne sont autorisées que si le contrôle Google du jour même a réussi', () => {
+  assert.equal(relancesAutorisees({ jour: '2026-10-14', statut: 'ok' }, '2026-10-14'), true);
+  assert.equal(relancesAutorisees({ jour: '2026-10-14', statut: 'echec' }, '2026-10-14'), false, 'contrôle en échec');
+  assert.equal(relancesAutorisees({ jour: '2026-10-14', statut: 'non_fait' }, '2026-10-14'), false, 'contrôle non fait');
+  assert.equal(relancesAutorisees(null, '2026-10-14'), false, 'aucun passage');
+  assert.equal(relancesAutorisees(undefined, '2026-10-14'), false);
+  assert.equal(relancesAutorisees({ jour: '2026-10-13', statut: 'ok' }, '2026-10-14'), false, 'le contrôle de la veille ne vaut pas pour aujourd hui');
+});
+
+test('test de 7 jours : relance 2 suspendue du 14 au 20/10/2026, demande et relance 1 inchangées, reprise automatique le 21', () => {
+  assert.equal(etapeSuspendue('avis-relance2', '2026-10-13'), null, 'la veille du test');
+  for (const j of ['2026-10-14', '2026-10-17', '2026-10-20']) assert.ok(etapeSuspendue('avis-relance2', j), j);
+  assert.equal(etapeSuspendue('avis-relance2', '2026-10-21'), null, 'après le test');
+  for (const j of ['2026-10-14', '2026-10-20']) { assert.equal(etapeSuspendue('avis-relance', j), null); assert.equal(etapeSuspendue('avis', j), null); }
+  assert.equal(etapeSuspendue('avis-relance2', '2026-10-15', []), null, 'liste vide = rien de suspendu');
+  assert.equal(SUSPENSIONS_ETAPES.length, 1);
+});

@@ -76,6 +76,27 @@ export function avisGoogleDejaRecu(c: { id?: string | null; tel?: string | null 
   return null;
 }
 
+// VERROU DU CONTRÔLE GOOGLE — décision Borhen du 13/10/2026 au soir.
+// Les relances automatiques ne partent que si le relevé des avis Google du JOUR MÊME a réussi
+// (ligne « ok » dans avis_google_controles). Contrôle absent, en échec, ou de la veille :
+// relances retenues pour ce passage (alerte Telegram), reprises au passage suivant.
+export function relancesAutorisees(ctl: { jour?: string | null; statut?: string | null } | null | undefined, aujourdhui: string): boolean {
+  return !!ctl && String(ctl.jour || '').substring(0, 10) === aujourdhui && ctl.statut === 'ok';
+}
+
+// ÉTAPES SUSPENDUES TEMPORAIREMENT (rien n'est supprimé : retirer la ligne ou laisser passer la date « au »
+// rétablit l'étape). Dates en heure de Paris, bornes incluses.
+//  - 14/10 → 20/10/2026 : test de 7 jours SANS relance 2 (décision Borhen du 13/10/2026). Constat : sur 30 jours,
+//    128 clients relancés une 2e fois, 2 avis datés après cette relance, tous deux à 1 étoile, aucun avis positif.
+export const SUSPENSIONS_ETAPES: { type: string; du: string; au: string; motif: string }[] = [
+  { type: 'avis-relance2', du: '2026-10-14', au: '2026-10-20', motif: 'test de 7 jours sans relance 2 (decision Borhen du 13/10/2026)' },
+];
+
+export function etapeSuspendue(type: string, aujourdhui: string, suspensions = SUSPENSIONS_ETAPES): string | null {
+  const s = (suspensions || []).find((x) => x.type === type && aujourdhui >= x.du && aujourdhui <= x.au);
+  return s ? s.motif : null;
+}
+
 export function litigeOuvert(statut: string | null | undefined): boolean {
   const s = String(statut || '').trim().toLowerCase();
   return s !== '' && !LITIGE_FERMES.includes(s);
