@@ -84,7 +84,7 @@ async function charger() {
   if (!token) { erreur('Lien de facture invalide'); return; }
   try {
     var resp = await fetch(SUPABASE_URL + '/rest/v1/commandes?tracking_token=eq.' + encodeURIComponent(token) +
-      '&select=id,client,adresse,tel,produit,lignes,qte,prix,paie,stpaie,date_commande', {
+      '&select=id,client,adresse,tel,produit,lignes,qte,prix,paie,stpaie,date_commande,commande_site', {
       headers: { 'apikey': SUPABASE_ANON, 'Authorization': 'Bearer ' + SUPABASE_ANON, 'x-tracking-token': token }
     });
     if (!resp.ok) { erreur('Facture introuvable ou lien expiré'); return; }
@@ -106,6 +106,12 @@ function afficher(cmd) {
     var st = parseFloat(l.sousTotal!=null ? l.sousTotal : (parseFloat(l.prixUnit||0)*(l.qte||1))) || 0;
     return '<tr><td>'+esc(l.nom||l.produit||'—')+'</td><td style="text-align:center">'+(l.qte||1)+'</td><td style="text-align:right">'+fmt(st)+'</td></tr>';
   }).join('');
+  // 13/10/2026 : la remise est affichee (lignes au prix catalogue - remise = total paye) et la
+  // reference est le numero de commande du site connu du client (#1174), pas seulement la fiche interne.
+  var somme = lignes.reduce(function(t, l){ return t + (parseFloat(l.sousTotal!=null ? l.sousTotal : (parseFloat(l.prixUnit||0)*(l.qte||1))) || 0); }, 0);
+  var remise = Math.round((somme - ttc) * 100) / 100;
+  if (remise > 0.004) lignesHtml += '<tr><td>Remise</td><td></td><td style="text-align:right">− '+fmt(remise)+'</td></tr>';
+  var refCmd = cmd.commande_site ? ('#' + esc(cmd.commande_site) + ' (dossier ' + esc(cmd.id) + ')') : esc(cmd.id);
   var acquit = cmd.stpaie === 'Payé';
   document.title = 'Facture ' + numFact + ' — Maxiconfort';
   document.getElementById('toolbar').style.display = 'flex';
@@ -117,7 +123,7 @@ function afficher(cmd) {
         '<div class="client"><strong>Facturé à</strong><br>'+esc(cmd.client)+'<br>'+esc(cmd.adresse||'')+(cmd.tel?'<br>'+esc(cmd.tel):'')+'</div>' +
       '</div>' +
       '<h1>Facture n° '+numFact+'</h1>' +
-      '<div class="meta">Date : '+dateFr+' — Référence commande : '+esc(cmd.id)+'</div>' +
+      '<div class="meta">Date : '+dateFr+' — Référence commande : '+refCmd+'</div>' +
       '<table><thead><tr><th>Désignation</th><th style="width:60px;text-align:center">Qté</th><th style="width:130px;text-align:right">Montant TTC</th></tr></thead><tbody>'+lignesHtml+'</tbody></table>' +
       '<table class="tot"><tbody>' +
         '<tr><td class="label">Total HT</td><td>'+fmt(ht)+'</td></tr>' +
