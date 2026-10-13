@@ -1,5 +1,11 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis-relance (v2.4 — 13/10/2026)
+// Edge Function : sms-avis-relance (v2.5 — 13/10/2026)
+// ════════════════════════════════════════════════════════════════════
+// v2.5 (13/10/2026, decision Borhen) : CONTROLE GOOGLE DU MATIN AVANT LES RELANCES
+//   Le releve des avis Google de 7 h 30 ecrit une ligne « ok » du jour dans
+//   avis_google_controles. Si cette ligne manque au moment du passage automatique,
+//   les relances ne partent pas en silence : une alerte Telegram est envoyee a Borhen
+//   (une seule fois par jour), puis les relances suivent la regle habituelle.
 // ════════════════════════════════════════════════════════════════════
 // v2.4 (13/10/2026, decision Borhen) : AVIS GOOGLE DEJA RECU -> PLUS DE RELANCE
 //   Avant CHAQUE relance (1 et 2) : si un avis Google est rapproche avec certitude de
@@ -99,6 +105,18 @@ async function journaliserAvisRecu(c: any, typeSms: string, r: AvisRecu) {
   }, { onConflict: 'cmd_id,type_sms', ignoreDuplicates: true });
 }
 
+async function envoyerTelegram(texte: string): Promise<boolean> {
+  const token = Deno.env.get('TELEGRAM_TOKEN') || '', chat = Deno.env.get('TELEGRAM_CHAT_ID') || '';
+  if (!token || !chat) return false;
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text: texte.slice(0, 4000), disable_web_page_preview: true }),
+    });
+    return r.ok;
+  } catch { return false; }
+}
+
 function toLocalDateStr(d: Date): string {
   const utc = d.getTime() + d.getTimezoneOffset() * 60000;
   const paris = new Date(utc + 3600000);
@@ -147,6 +165,19 @@ Deno.serve(async (req: Request) => {
   const { data: recusData, error: errRecus } = await sb.from('avis_google_recus').select('cmd_id,tel_cle,nom_google,note,date_avis,type_match').limit(5000);
   if (errRecus) return new Response(JSON.stringify({ error: 'select avis_google_recus failed', details: errRecus.message }), { status: 500, headers: CORS });
   const recus = (recusData || []) as AvisRecu[];
+
+  // v2.5 : le controle Google du matin a-t-il ete fait aujourd'hui ? (passage automatique seulement)
+  const { data: ctl } = await sb.from('avis_google_controles').select('jour,statut,fait_at,detail,alerte_at').eq('jour', aujourdhui).maybeSingle();
+  const controleGoogle = ctl?.statut === 'ok' ? 'ok' : (ctl?.statut || 'non_fait');
+  let alerteControle: string | null = null;
+  if (controleGoogle !== 'ok' && !testIds) {
+    alerteControle = ctl?.alerte_at ? 'alerte deja envoyee aujourd hui' : 'alerte a envoyer';
+    if (!dryRun && !ctl?.alerte_at) {
+      const ok = await envoyerTelegram('ALERTE AVIS GOOGLE — le controle des avis Google de 7 h 30 n a pas ete fait ce matin (' + (ctl?.detail || 'aucun passage') + '). Les relances d avis partent maintenant SANS ce controle : un client qui a laisse un avis depuis hier peut recevoir une relance.');
+      await sb.from('avis_google_controles').upsert({ jour: aujourdhui, statut: controleGoogle, detail: ctl?.detail || 'aucun passage du controle avant les relances', alerte_at: new Date().toISOString() }, { onConflict: 'jour' });
+      alerteControle = ok ? 'alerte Telegram envoyee' : 'ALERTE NON ENVOYEE (Telegram indisponible)';
+    }
+  }
 
   let scanned = 0, sent = 0, skipped = 0, failed = 0;
   const details: any[] = [];
@@ -259,7 +290,7 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(JSON.stringify({
-    ok: true, version: 'v2.4', dryRun, fenetres, scanned, sent, skipped, failed,
+    ok: true, version: 'v2.5', dryRun, controleGoogle, alerteControle, fenetres, scanned, sent, skipped, failed,
     duration_ms: Date.now() - t0, details,
   }), { headers: CORS });
 });
