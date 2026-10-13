@@ -39,6 +39,12 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - GLS : une liste est soumise à Borhen, qui dit à qui envoyer. Envoi des fiches validées : `sms-avis` avec `{"valides":["#NNNN",...]}` (une seule demande, toutes les autres gardes restent actives ; `"dryRun":true` pour un essai à blanc). Le script qui prépare la liste est dans le dépôt privé du site (`avis/liste_avis_gls.js`).
 - Ne pas rétablir l'envoi automatique vers les clients GLS sans décision de Borhen.
 
+## Demandes d'avis : arrêt dès qu'un avis Google est reçu (décision Borhen du 13/10/2026)
+- `sms-avis` v2.4 et `sms-avis-relance` v2.4 lisent la table `avis_google_recus` avant chaque envoi : si la fiche ou le numéro du client y figure (type `certain` ou `valide`), rien ne part (`skip_avis_google_deja_recu`) et l'annulation est journalisée dans `avis_relances_bloquees` (migration 034). Vaut pour l'automatique RANOU, les relances et l'envoi manuel GLS.
+- **La note n'est jamais lue** (`avisGoogleDejaRecu` dans `_shared/avis-garde.ts`) : 1 étoile et 5 étoiles arrêtent les relances de la même manière. Ne jamais introduire de tri par note.
+- Rapprochement avis ↔ client : `_shared/avis-rapprochement.ts` (module pur, testé). Seul le niveau CERTAIN (nom complet concordant, un seul client possible, dates cohérentes) est marqué automatiquement ; PROBABLE et AMBIGU (pseudo, prénom seul, homonymes, conjoint) attendent la validation de Borhen. Le script qui lit les avis et alimente la table est dans le dépôt privé du site (`avis/rapprocher_avis_google.js`).
+- Limite connue : les notifications groupées de Google ne donnent pas le nom des auteurs ; il faut le relevé de la page des avis (pas d'accès à l'API Google Business Profile à ce jour).
+
 ## Demandes d'avis : suspension pendant un litige ou un SAV (règle du 28/09/2026)
 - Code : `supabase/functions/_shared/avis-garde.ts` (+ `avis-gls.ts`), utilisé par `sms-avis` v2.0 et `sms-avis-relance` v2.1.
 - **Aucune demande ni relance** si : note « PAS D AVIS » (manuel = définitif), commande non livrée, livraison GLS partielle/retour (colonne ou relecture GLS en direct juste avant l'envoi), litige ouvert (`litige_statut` non vide et pas `indemnise`/`refuse`), SAV ouvert lié (commande `#SAV…` non livrée/non annulée dont la note cite « cmd origine #NNNN »).

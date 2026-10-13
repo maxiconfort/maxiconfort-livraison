@@ -174,3 +174,65 @@ test('règle du 13/10/2026 : demande automatique pour le transporteur RANOU seul
   assert.equal(envoiAutomatiqueAutorise(null), false);
   assert.equal(envoiAutomatiqueAutorise('Autre transporteur'), false);
 });
+
+// ── Avis Google déjà reçu : arrêt des relances, quelle que soit la note (décision du 13/10/2026) ──
+import { avisGoogleDejaRecu } from '../functions/_shared/avis-garde.ts';
+import { rapprocherAvis, motsDuNom } from '../functions/_shared/avis-rapprochement.ts';
+
+const ranou = { id: '#3000', tel: '06 11 22 33 44', client: 'Claire Martin', livree: '2026-10-01', sms: [{ type: 'avis', date: '2026-10-02' }] };
+const recu = (o) => ({ cmd_id: '#3000', tel_cle: '611223344', nom_google: 'Claire Martin', note: 5, date_avis: '2026-10-03', type_match: 'certain', ...o });
+
+test('A. Ranou, demande envoyée, avis 5 étoiles reçu : plus aucune relance', () => {
+  assert.ok(avisGoogleDejaRecu(ranou, [recu({ note: 5 })]));
+});
+
+test('B. Ranou, demande + relance 1, avis 1 étoile reçu : pas de relance 2 — même décision que pour 5 étoiles', () => {
+  const un = avisGoogleDejaRecu(ranou, [recu({ note: 1 })]), cinq = avisGoogleDejaRecu(ranou, [recu({ note: 5 })]);
+  assert.ok(un); assert.ok(cinq);
+  for (const note of [1, 2, 3, 4, 5, null]) assert.ok(avisGoogleDejaRecu(ranou, [recu({ note })]), 'note ' + note);
+});
+
+test('C. Ranou sans avis : fonctionnement actuel conservé', () => {
+  assert.equal(avisGoogleDejaRecu(ranou, []), null);
+  assert.equal(avisGoogleDejaRecu(ranou, [recu({ cmd_id: '#9999', tel_cle: '699999999' })]), null);
+});
+
+test('D. Pseudo Google ambigu : pas de rapprochement certain, donc aucun blocage automatique', () => {
+  const clients = [{ id: '#1', client: 'Luc Pluvinage des Marguerites', tel: '0600000001', livree: '2026-09-15' }, { id: '#2', client: 'Jean-Luc Bernard', tel: '0600000002', livree: '2026-09-20' }];
+  assert.notEqual(rapprocherAvis({ nom: 'Luc', date: '2026-09-25' }, clients).niveau, 'certain');
+  assert.equal(rapprocherAvis({ nom: 'Sab Pesh', date: '2026-10-06' }, clients).niveau, 'aucun');
+  // un rapprochement non certain n'existe pas dans la table ; même s'il y figurait, il ne bloquerait pas
+  assert.equal(avisGoogleDejaRecu(ranou, [recu({ type_match: 'probable' })]), null);
+  assert.equal(avisGoogleDejaRecu(ranou, [recu({ type_match: 'ambigu' })]), null);
+});
+
+test('E. Client GLS déjà auteur d\'un avis : bloqué aussi pour un envoi manuel (même fiche ou même numéro)', () => {
+  const gls = { id: '#3100', tel: '+33 6 55 44 33 22' };
+  assert.ok(avisGoogleDejaRecu(gls, [recu({ cmd_id: '#3100', tel_cle: '655443322' })]));
+  assert.ok(avisGoogleDejaRecu({ id: '#3200', tel: '0655443322' }, [recu({ cmd_id: '#3100', tel_cle: '655443322' })]), 'autre fiche, même numéro');
+});
+
+test('F. Deux clients portent le même nom : ambigu, jamais certain', () => {
+  const clients = [{ id: '#10', client: 'Sophie Girard', tel: '0600000010', livree: '2026-10-01' }, { id: '#11', client: 'Mme Girard Sophie', tel: '0600000011', livree: '2026-10-02' }];
+  const r = rapprocherAvis({ nom: 'Sophie Girard', date: '2026-10-05' }, clients);
+  assert.equal(r.niveau, 'ambigu'); assert.equal(r.candidats.length, 2);
+  // une seule personne avec deux fiches (même numéro) reste un rapprochement certain
+  assert.equal(rapprocherAvis({ nom: 'Sophie Girard', date: '2026-10-05' }, [clients[0], { ...clients[0], id: '#12' }]).niveau, 'certain');
+});
+
+test('G. Avis du conjoint : aucun rapprochement par le nom ; seul un rapprochement validé bloque', () => {
+  const clients = [{ id: '#20', client: 'Alexandra Dumas', tel: '0600000020', livree: '2026-10-07' }];
+  assert.equal(rapprocherAvis({ nom: 'Eddy Perrin', date: '2026-10-10' }, clients).niveau, 'aucun');
+  assert.ok(avisGoogleDejaRecu({ id: '#20', tel: '0600000020' }, [{ cmd_id: '#20', tel_cle: '600000020', nom_google: 'Eddy Perrin', note: 1, type_match: 'valide' }]));
+});
+
+test('rapprochement certain : accents, majuscules, ordre des mots, nom tronqué ; dates incohérentes écartées', () => {
+  const c = (id, client, livree) => ({ id, client, tel: '06000' + id.replace('#', '').padStart(5, '0'), livree, sms: [] });
+  const clients = [c('#30', 'Sylvie Jacobée Biriouk', '2026-10-08'), c('#31', 'Dhiaeddine Ben cheikh', '2026-09-19'), c('#32', 'Zineb hedhil', '2026-10-02'), c('#33', 'Mr Aberkane Billal', '2026-09-26'), c('#34', 'Jennifer Coulon', '2026-09-30')];
+  assert.deepEqual(motsDuNom('Mme Sylvie JACOBÉE-Biriouk'), ['sylvie', 'jacobee', 'biriouk']);
+  for (const [nom, date, id] of [['Sylvie Jacobee', '2026-10-12', '#30'], ['Ben Cheikh Dhia Eddine', '2026-10-08', '#31'], ['Zineb Hedhili', '2026-10-06', '#32'], ['Billal ABERKANE', '2026-10-06', '#33'], ['coulon Jennifer', '2026-10-02', '#34']]) {
+    const r = rapprocherAvis({ nom, date }, clients);
+    assert.equal(r.niveau, 'certain', nom); assert.equal(r.candidats[0].id, id, nom);
+  }
+  assert.equal(rapprocherAvis({ nom: 'Jennifer Coulon', date: '2026-08-01' }, clients).niveau, 'aucun', 'avis antérieur à la livraison');
+});

@@ -59,6 +59,23 @@ export function envoiAutomatiqueAutorise(transporteur: string | null | undefined
   return /ranou/i.test(String(transporteur || ''));
 }
 
+// AVIS GOOGLE DÉJÀ REÇU — décision Borhen du 13/10/2026.
+// Dès qu'un avis Google est rapproché avec certitude d'un client (table avis_google_recus,
+// type_match « certain » = nom complet concordant, ou « valide » = validé par le dirigeant),
+// plus aucune demande ni relance ne part pour cette fiche ni pour ce numéro de téléphone.
+// La NOTE est conservée pour l'audit mais n'est JAMAIS lue ici : un avis 1★ et un avis 5★
+// arrêtent les relances exactement de la même manière (aucun tri des avis).
+export type AvisRecu = { cmd_id: string; tel_cle?: string | null; nom_google?: string | null; note?: number | null; date_avis?: string | null; type_match?: string | null };
+
+export function avisGoogleDejaRecu(c: { id?: string | null; tel?: string | null }, recus: AvisRecu[]): AvisRecu | null {
+  const id = String(c?.id || '').toUpperCase(), cle = telCle(c?.tel);
+  for (const r of recus || []) {
+    if (r.type_match !== 'certain' && r.type_match !== 'valide') continue;   // probable / ambigu : jamais de blocage automatique
+    if (String(r.cmd_id || '').toUpperCase() === id || (!!cle && r.tel_cle === cle)) return r;
+  }
+  return null;
+}
+
 export function litigeOuvert(statut: string | null | undefined): boolean {
   const s = String(statut || '').trim().toLowerCase();
   return s !== '' && !LITIGE_FERMES.includes(s);

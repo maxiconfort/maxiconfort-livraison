@@ -1,5 +1,11 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : sms-avis-relance (v2.3 — 13/10/2026)
+// Edge Function : sms-avis-relance (v2.4 — 13/10/2026)
+// ════════════════════════════════════════════════════════════════════
+// v2.4 (13/10/2026, decision Borhen) : AVIS GOOGLE DEJA RECU -> PLUS DE RELANCE
+//   Avant CHAQUE relance (1 et 2) : si un avis Google est rapproche avec certitude de
+//   la fiche ou du numero du client (table avis_google_recus, type « certain » ou
+//   « valide »), la relance n'est pas envoyee et l'annulation est journalisee dans
+//   avis_relances_bloquees. La NOTE n'est jamais lue : 1 etoile et 5 etoiles = meme arret.
 // ════════════════════════════════════════════════════════════════════
 // v2.3 (13/10/2026, decision Borhen) : relances UNIQUEMENT pour les livraisons
 //   de notre equipe (transporteur RANOU). GLS et tout autre transporteur : la
@@ -47,7 +53,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { appelInterne, refus } from '../_shared/controle-appelant.ts';
 import {
-  ajouterJours, DELAI_ANTI_DOUBLON_JOURS, envoiAutomatiqueAutorise, evaluerAvis, gardeHistorique, indexerSav, noteExclut, type LigneHisto,
+  type AvisRecu, avisGoogleDejaRecu, ajouterJours, DELAI_ANTI_DOUBLON_JOURS, envoiAutomatiqueAutorise, evaluerAvis, gardeHistorique, indexerSav, noteExclut, type LigneHisto,
 } from '../_shared/avis-garde.ts';
 import { livraisonGlsContestee } from '../_shared/avis-gls.ts';
 
@@ -82,6 +88,15 @@ async function chargerHistoAvis(aujourdhui: string): Promise<LigneHisto[]> {
     .gte('date_sms', ajouterJours(aujourdhui, -DELAI_ANTI_DOUBLON_JOURS)).limit(5000);
   if (error) throw new Error('select sms_historique failed: ' + error.message);
   return (data || []) as LigneHisto[];
+}
+
+// v2.4 : journal d'audit des SMS d'avis non envoyes parce que le client a deja laisse son avis Google
+async function journaliserAvisRecu(c: any, typeSms: string, r: AvisRecu) {
+  const site = (String(c.instr || '').match(/site #([0-9]+)/) || [])[1] || null;
+  await sb.from('avis_relances_bloquees').upsert({
+    cmd_id: c.id, type_sms: typeSms, client: c.client, commande_site: site, nom_google: r.nom_google, note: r.note,
+    date_avis: r.date_avis, type_match: r.type_match, raison: 'RELANCE ANNULEE - AVIS GOOGLE DEJA RECU',
+  }, { onConflict: 'cmd_id,type_sms', ignoreDuplicates: true });
 }
 
 function toLocalDateStr(d: Date): string {
@@ -127,6 +142,11 @@ Deno.serve(async (req: Request) => {
   try { histo = await chargerHistoAvis(aujourdhui); } catch (e: any) {
     return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: CORS });
   }
+
+  // v2.4 : avis Google deja rapproches d'un client (certains ou valides par le dirigeant)
+  const { data: recusData, error: errRecus } = await sb.from('avis_google_recus').select('cmd_id,tel_cle,nom_google,note,date_avis,type_match').limit(5000);
+  if (errRecus) return new Response(JSON.stringify({ error: 'select avis_google_recus failed', details: errRecus.message }), { status: 500, headers: CORS });
+  const recus = (recusData || []) as AvisRecu[];
 
   let scanned = 0, sent = 0, skipped = 0, failed = 0;
   const details: any[] = [];
@@ -196,6 +216,13 @@ Deno.serve(async (req: Request) => {
       if (dejaEnvoyes.some((e: any) => e.type === etape.type)) {
         skipped++; details.push({ ...base, action: 'skip_deja_envoye' }); continue;
       }
+      // v2.4 : le client a deja laisse son avis Google -> relance annulee, quelle que soit la note
+      const dejaAvis = avisGoogleDejaRecu(c, recus);
+      if (dejaAvis) {
+        skipped++; details.push({ ...base, action: 'skip_avis_google_deja_recu', nomGoogle: dejaAvis.nom_google, dateAvis: dejaAvis.date_avis, typeMatch: dejaAvis.type_match, client: c.client });
+        if (!dryRun) await journaliserAvisRecu(c, etape.type, dejaAvis);
+        continue;
+      }
       // v2.2 : source durable sms_historique (meme etape deja envoyee a ce numero < 60 j)
       const dejaNumero = gardeHistorique(etape.type, tel, histo, aujourdhui);
       if (dejaNumero) {
@@ -232,7 +259,7 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(JSON.stringify({
-    ok: true, version: 'v2.3', dryRun, fenetres, scanned, sent, skipped, failed,
+    ok: true, version: 'v2.4', dryRun, fenetres, scanned, sent, skipped, failed,
     duration_ms: Date.now() - t0, details,
   }), { headers: CORS });
 });
