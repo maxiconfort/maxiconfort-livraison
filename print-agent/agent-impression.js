@@ -78,16 +78,54 @@ const ENTETES = {
   Authorization: `Bearer ${CLE}`,
   'Content-Type': 'application/json',
 };
+// 16/10/2026 : enquête sur les « tours interrompus » (1 à 6 par jour début octobre,
+// 22 à 45 par jour ensuite, avec des trous de 16 à 33 min sans impression).
+// Ce n'est NI la veille du PC (désactivée sur secteur), NI le Wi-Fi (Windows
+// n'enregistre quasi aucune déconnexion, et la liaison mesurée est à 0 % de perte) :
+// Node réutilise ses connexions réseau. Quand le serveur a fermé une connexion restée
+// inactive, la requête suivante part sur une ligne morte -> ECONNRESET / UND_ERR_SOCKET,
+// ou attente jusqu'au délai maximum. Un simple nouvel essai repart sur une connexion neuve.
+const DELAI_REQUETE_MS = 20000; // 45 s était trop long : un appel mort bloquait le tour
+const ESSAIS_RESEAU = 3;
+const STATS_RESEAU = { reprises: 0, echecs: 0 };
+function estErreurReseau(e) {
+  if (!e) return false;
+  if (e.name === 'TimeoutError' || e.name === 'AbortError') return true;
+  const codes = [e.code, e.cause && e.cause.code, e.cause && e.cause.name].filter(Boolean).map(String);
+  if (codes.some((c) => ['ECONNRESET', 'UND_ERR_SOCKET', 'ECONNABORTED', 'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'EPIPE'].includes(c))) return true;
+  return /fetch failed|terminated|socket hang up/i.test(e.message || '');
+}
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 async function rest(chemin, options = {}) {
-  // 20/09/2026 : sans délai maximal, un appel peut rester suspendu indéfiniment
-  // (Wi-Fi qui se rendort) et l'agent ne redemande plus rien = étiquettes jamais imprimées.
-  const rep = await fetch(`${SUPABASE_URL}/rest/v1/${chemin}`, {
-    ...options,
-    signal: AbortSignal.timeout(45000),
-    headers: { ...ENTETES, ...(options.headers || {}) },
-  });
-  if (!rep.ok) throw new Error(`Supabase ${rep.status} ${rep.statusText} — ${chemin.slice(0, 120)} — ${(await rep.text()).slice(0, 200)}`);
-  return rep;
+  let derniere = null;
+  for (let essai = 1; essai <= ESSAIS_RESEAU; essai++) {
+    // 16/10/2026 : minuteur explicite (et annulé) au lieu de AbortSignal.timeout, qui
+    // laissait un compteur en suspens -> Node s'arrêtait en erreur interne à la sortie
+    // (assertion libuv) quand l'agent se terminait pendant une requête.
+    const ctrl = new AbortController();
+    const minuteur = setTimeout(() => ctrl.abort(Object.assign(new Error('délai de ' + (DELAI_REQUETE_MS / 1000) + ' s dépassé'), { name: 'TimeoutError' })), DELAI_REQUETE_MS);
+    try {
+      const rep = await fetch(`${SUPABASE_URL}/rest/v1/${chemin}`, {
+        ...options,
+        signal: ctrl.signal,
+        headers: { ...ENTETES, ...(options.headers || {}) },
+      }).finally(() => clearTimeout(minuteur));
+      if (!rep.ok) throw new Error(`Supabase ${rep.status} ${rep.statusText} — ${chemin.slice(0, 120)} — ${(await rep.text()).slice(0, 200)}`);
+      if (essai > 1) STATS_RESEAU.reprises++; // réussi grâce au nouvel essai
+      return rep;
+    } catch (e) {
+      clearTimeout(minuteur);
+      derniere = e;
+      // on ne réessaie que les incidents réseau, et jamais un POST (risque de doublon) ;
+      // l'agent n'envoie que des GET et un PATCH d'horodatage, rejouable sans risque.
+      const methode = String(options.method || 'GET').toUpperCase();
+      if (!estErreurReseau(e) || methode === 'POST' || essai === ESSAIS_RESEAU) break;
+      await pause(1500 * essai);
+    }
+  }
+  STATS_RESEAU.echecs++;
+  throw derniere;
 }
 // Les id de commande contiennent '#' → obligatoire de l'encoder (%23)
 const filtreId = (id) => `id=eq.${encodeURIComponent(id)}`;
@@ -206,6 +244,14 @@ async function tour() {
     const cause = e?.cause?.code || e?.cause?.message || '';
     log(`⚠️ tour interrompu : ${e.message}${cause ? ' (' + cause + ')' : ''}`);
   } finally {
+    // 16/10/2026 : bilan réseau d'un jour sur l'autre, écrit une seule fois par jour
+    // (avant, chaque incident faisait une ligne : jusqu'à 45 par jour dans le journal).
+    const jour = new Date().toISOString().slice(0, 10);
+    if (etat.reseau && etat.reseau.jour && etat.reseau.jour !== jour) {
+      log(`📶 bilan réseau du ${etat.reseau.jour} : ${etat.reseau.reprises || 0} incident(s) rattrapé(s) au 2e essai, ${etat.reseau.echecs || 0} tour(s) perdu(s)`);
+      STATS_RESEAU.reprises = 0; STATS_RESEAU.echecs = 0;
+    }
+    etat.reseau = { jour, reprises: STATS_RESEAU.reprises, echecs: STATS_RESEAU.echecs };
     ecrireEtat(etat);
     enCours = false;
   }
@@ -213,7 +259,10 @@ async function tour() {
 
 log(`Agent d'impression GLS démarré — imprimante "${IMPRIMANTE}", moteur ${moteurImpression()?.nom || 'AUCUN'}, étiquettes depuis le ${DATE_MISE_EN_SERVICE}, toutes les ${INTERVALLE_MS / 1000} s`);
 if (process.argv.includes('--une-fois')) {
-  tour().then(() => process.exit(0));
+  // 16/10/2026 : on ne force plus la sortie (process.exit coupait pendant la fermeture des
+  // connexions -> « Assertion failed … uv_handle » de Node, déjà présent avant). On pose le
+  // code de sortie et on laisse Node se terminer proprement quelques secondes plus tard.
+  tour().then(() => { process.exitCode = 0; });
 } else {
   tour();
   setInterval(tour, INTERVALLE_MS);
