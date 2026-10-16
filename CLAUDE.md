@@ -107,6 +107,12 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - Même migration : prix catalogue des packs lit coffre 140/190/15 (blanc et noir) passé à 349 € — nouvelles commandes seulement, chaque commande garde son propre prix (`prix`, `lignes`).
 - **Tests** : `node outils/test-ancienne-offre.js` (37 tests, sans connexion) et `node outils/test-ancienne-offre-base.js` (26 tests RÉELS ; n'écrit que dans une fiche produit fictive créée puis supprimée, aucune commande touchée). À relancer avec les tests de paiement et d'annulation après toute modification du formulaire de commande ou du catalogue.
 
+## Vue livreur : voir les tournées suivantes (v7.5.120, 16/10/2026)
+- Demande de Borhen : le livreur doit pouvoir regarder sa **tournée suivante** ; s'il n'y a rien le lendemain, aller directement à la prochaine journée qui existe.
+- **Application** : bloc `NAVLV-DEBUT … NAVLV-FIN` (`lvListeNav`, `lvLibelleNav`, `lvRendreNav`, `lvNaviguerTournee` ; variables `LV_NAV`, `LV_APERCU_ID`, `LV_APERCU_ACTIF`) + barre `lv-nav-tournees` (flèches ◀ ▶) au-dessus de l'en-tête de la vue livreur. La liste ne contient **que des tournées existantes** (la sienne du jour ou en retard + celles à venir, hors terminées), triées par date : les journées vides sont donc sautées d'office. Barre masquée s'il n'y a qu'une journée, et pour l'admin / la collaboratrice (qui gardent leur sélecteur).
+- **Garde-fous** : en aperçu d'une autre journée, l'**écran plein écran « CHARGEMENT OBLIGATOIRE » ne s'affiche pas** (sinon regarder la tournée suivante bloquerait l'écran) ; mention « 👁️ APERÇU » dans la barre et dans l'en-tête ; au rechargement, retour automatique à la tournée du jour (l'aperçu n'est pas mémorisé). Le choix automatique de la tournée (v7.5.83 : celle du jour, sinon la prochaine) est inchangé.
+- **Tests** : `node outils/test-vue-livreur.js` (21 tests, sans connexion). À relancer avec les autres bancs après toute modification de la vue livreur.
+
 ## Pièges connus
 - PATCH Supabase via PowerShell : encoder le corps en UTF-8 (`[Text.Encoding]::UTF8.GetBytes`) et URL-encoder `#` en `%23`.
 - Variables PowerShell insensibles à la casse (`$p` = `$P`) : ne pas réutiliser un nom pour deux valeurs (incident du 27/09 : chemin local publié à la place de la clé pendant 2 min).
