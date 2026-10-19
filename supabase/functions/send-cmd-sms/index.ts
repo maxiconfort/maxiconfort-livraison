@@ -71,10 +71,13 @@ const TPL = {
   // commande, avant toute remise au livreur ou a GLS (fausse expedition). On confirme
   // l'enregistrement et la date prevue, rien de plus ; l'expedition reelle a ses propres SMS
   // (depart pour le livreur, expedition pour GLS).
+  // Aucune date dans ce SMS : a la creation, date_livraison n'est qu'une date saisie, pas une
+  // date confirmee par le client (elle peut changer le jour meme). La date confirmee part avec
+  // le SMS veille (lien « Serez-vous la ? »).
   confirmation: (p: any) =>
-    p.dateFr
-      ? `Bonjour ${p.prenom}, votre commande est bien enregistree. Livraison prevue le ${p.dateFr}, nous vous previendrons avant le passage. Merci de votre confiance.`
-      : `Bonjour ${p.prenom}, votre commande est bien enregistree. Nous vous communiquerons la date de livraison des que possible. Merci de votre confiance.`,
+    p.transporteur === 'GLS'
+      ? `Bonjour ${p.prenom}, votre commande est bien enregistree. Nous vous enverrons votre numero de suivi GLS par SMS. Merci de votre confiance.`
+      : `Bonjour ${p.prenom}, votre commande est bien enregistree. Nous vous informerons de la date de livraison et du passage de notre livreur. Merci.`,
   // 23/06/2026 : SMS post-livraison -> demande d'avis Google honnete, SANS
   // condition ni recompense. ~149 car = 1 segment = 1 credit OVH.
   // 02/09/2026 (v2) : reecrit apres constat d'un taux de retour de ~4% sur 204
@@ -185,6 +188,7 @@ Deno.serve(async (req: Request) => {
   const contenu = TPL[type as keyof typeof TPL]({
     prenom, lienSuivi, lienConfirm, tracking, nbColis, id: cmd.id, heureArrivee,
     dateFr, produit, creneauDeb, creneauFin, lienAvis: LIEN_AVIS,
+    transporteur: cmd.transporteur || 'RANOU',
   });
 
   // Envoi OVH (transactionnel — pas de clause STOP)
