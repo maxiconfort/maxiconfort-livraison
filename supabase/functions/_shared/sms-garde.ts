@@ -27,10 +27,17 @@ export function expeditionAutorisee(body: any, cmd: any): { ok: boolean; raison?
 
 // Décision de gls-sync : faut-il demander le SMS d'expédition pour cette commande ?
 //   colis = analyses gls-analyse (priseEnCharge vrai dès le 1er scan GLS réel).
-export function doitEnvoyerExpedition(cmd: any, colis: Array<{ priseEnCharge: boolean }>): boolean {
+//   Jamais pour un colis en RETOUR à l'expéditeur, et seulement si la prise en charge date de moins de
+//   FENETRE_EXPEDITION_H heures (pas de SMS « expédiée » envoyé des jours après, ni de rafale au déploiement).
+export const FENETRE_EXPEDITION_H = 72;
+export function doitEnvoyerExpedition(cmd: any, colis: Array<{ priseEnCharge: boolean; priseEnChargeAt?: string | null }>,
+  opts: { etat?: string; maintenantMs?: number } = {}): boolean {
   if (!cmd || cmd.statut === 'annulé' || cmd.statut === 'livré') return false;
+  if (opts.etat === 'retour') return false;
   if (dejaEnvoye(cmd.sms_envoyes, 'expedition')) return false;
-  return Array.isArray(colis) && colis.some((c) => c && c.priseEnCharge);
+  const maintenant = opts.maintenantMs ?? Date.now();
+  return Array.isArray(colis) && colis.some((c) => c && c.priseEnCharge && c.priseEnChargeAt
+    && maintenant - new Date(c.priseEnChargeAt).getTime() <= FENETRE_EXPEDITION_H * 3600 * 1000);
 }
 
 // Rattrapage (cron sms-confirmation) : commande créée depuis plus de DELAI_RATTRAPAGE_MIN minutes,

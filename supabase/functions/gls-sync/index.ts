@@ -465,7 +465,7 @@ Deno.serve(async (req: Request) => {
     // 19/10/2026 : SMS « expediee par GLS » au PREMIER scan réel de prise en charge (plus à la création de l'étiquette).
     // Une seule fois (sms_envoyes + dédup de send-cmd-sms) ; jamais pour une commande annulée ou déjà livrée.
     let expedition: any = null;
-    if (doitEnvoyerExpedition(cmd, analyse.colis)) {
+    if (doitEnvoyerExpedition(cmd, analyse.colis, { etat: analyse.etat })) {
       if (dryRun) expedition = 'would_send';
       else {
         try {
