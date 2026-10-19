@@ -207,7 +207,7 @@ test('D. Pseudo Google ambigu : pas de rapprochement certain, donc aucun blocage
 });
 
 test('E. Client GLS déjà auteur d\'un avis : bloqué aussi pour un envoi manuel (même fiche ou même numéro)', () => {
-  const gls = { id: '#3100', tel: '+33 6 55 44 33 22' };
+  const gls = { id: '#3100', tel: '+33 6 99 00 00 04' };
   assert.ok(avisGoogleDejaRecu(gls, [recu({ cmd_id: '#3100', tel_cle: '699000004' })]));
   assert.ok(avisGoogleDejaRecu({ id: '#3200', tel: '0699000004' }, [recu({ cmd_id: '#3100', tel_cle: '699000004' })]), 'autre fiche, même numéro');
 });
