@@ -84,7 +84,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', prix: 180
   { const { bac } = nouveauBac(); const avant = SITE();
     // le formulaire renvoie un mode VIDE (la liste n'avait pas « Site Maxiconfort ») : c'était le bug
     const formulaire = (plus) => Object.assign({}, avant, { paie: '', stpaie: 'Payé', montantEnc: 259 }, plus);
-    for (const [nom, plus] of [['date', { date: '2026-10-09' }], ['livreur', { livreur: 'RANOU' }], ['adresse', { adresse: '99 avenue Modifiée 93100 Montreuil' }], ['commentaire', { instr: 'Commande site #9999. Appeler avant de passer.' }], ['produit', { produit: 'Ensemble 160x200', prix: 279, prixBrut: 279 }]]) {
+    for (const [nom, plus] of [['date', { date: '2026-10-09' }], ['livreur', { livreur: 'RANOU' }], ['adresse', { adresse: '1 rue Exemple 75001 Paris' }], ['commentaire', { instr: 'Commande site #9999. Appeler avant de passer.' }], ['produit', { produit: 'Ensemble 160x200', prix: 279, prixBrut: 279 }]]) {
       const apres = bac.paiProtegerEdition(avant, formulaire(plus));
       test(`modification ${nom} : mode « Site Maxiconfort », statut « Payé », montant payé 259 €`, apres.paie === 'Site Maxiconfort' && apres.stpaie === 'Payé' && apres.montantEnc === 259, JSON.stringify([apres.paie, apres.stpaie, apres.montantEnc])); }
     const force = bac.paiProtegerEdition(avant, formulaire({ paie: 'Espèces', stpaie: 'Non payé', montantEnc: 0 }));

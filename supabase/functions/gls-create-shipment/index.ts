@@ -92,7 +92,7 @@ const SHIPPER_ADDRESS = {
   StreetNumber: '10',
 };
 
-// ── Parse une adresse francaise type "11 rue Jacques Prevert 92240 Malakoff"
+// ── Parse une adresse francaise type "1 rue Exemple 75001 Paris"
 // Retourne {streetNumber, street, zipCode, city}
 function parseAdresseFR(adresse: string): { streetNumber: string; street: string; zipCode: string; city: string } {
   const def = { streetNumber: '', street: adresse, zipCode: '', city: '' };
