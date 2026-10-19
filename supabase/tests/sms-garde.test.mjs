@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   texteConfirmation, dejaEnvoye, expeditionAutorisee, doitEnvoyerExpedition,
-  confirmationRattrapageEligible, PREUVE_PRISE_EN_CHARGE,
+  confirmationRattrapageEligible, PREUVE_PRISE_EN_CHARGE, FENETRE_EXPEDITION_H,
 } from '../functions/_shared/sms-garde.ts';
 
 const GSM = /^[A-Za-z0-9 @£$¥èéùìòÇØøÅå_!"#%&'()*+,\-./:;<=>?¡ÄÖÑÜ§¿äöñüà\n]*$/;
@@ -39,16 +39,17 @@ test('expedition : acceptée avec la preuve, sauf commande annulée ou livrée',
   assert.equal(expeditionAutorisee(b, { statut: 'livré' }).ok, false);
 });
 
+const NOW = Date.parse('2026-10-19T12:00:00Z'); const il = (h) => new Date(NOW - h * 3600000).toISOString();
 test('gls-sync : étiquette créée, colis non remis → pas de SMS', () => {
   assert.equal(doitEnvoyerExpedition({ statut: 'en-attente', sms_envoyes: [] }, [{ priseEnCharge: false }, { priseEnCharge: false }]), false);
 });
 
 test('gls-sync : premier scan (même sur 1 colis sur 2), ou scan tardif → SMS', () => {
-  assert.equal(doitEnvoyerExpedition({ statut: 'en-attente', sms_envoyes: [{ type: 'confirmation' }] }, [{ priseEnCharge: false }, { priseEnCharge: true }]), true);
+  assert.equal(doitEnvoyerExpedition({ statut: 'en-attente', sms_envoyes: [{ type: 'confirmation' }] }, [{ priseEnCharge: false }, { priseEnCharge: true, priseEnChargeAt: il(2) }], { maintenantMs: NOW }), true);
 });
 
 test('gls-sync : doublon d\'événement / passage suivant → pas de 2e SMS', () => {
-  assert.equal(doitEnvoyerExpedition({ statut: 'en-attente', sms_envoyes: [{ type: 'expedition' }] }, [{ priseEnCharge: true }]), false);
+  assert.equal(doitEnvoyerExpedition({ statut: 'en-attente', sms_envoyes: [{ type: 'expedition' }] }, [{ priseEnCharge: true, priseEnChargeAt: il(1) }], { maintenantMs: NOW }), false);
 });
 
 test('gls-sync : commande annulée ou déjà livrée → pas de SMS ; colis bloqué sans scan → pas de SMS', () => {
@@ -71,4 +72,15 @@ test('rattrapage confirmation : SAV, GLS suivie, déjà confirmée, < 3 min excl
 test('dejaEnvoye : robuste aux valeurs vides', () => {
   assert.equal(dejaEnvoye(null, 'x'), false);
   assert.equal(dejaEnvoye([null, { type: 'x' }], 'x'), true);
+});
+
+test('gls-sync : colis en RETOUR → jamais de SMS « expédiée »', () => {
+  assert.equal(doitEnvoyerExpedition({ statut: 'en-attente', sms_envoyes: [] }, [{ priseEnCharge: true, priseEnChargeAt: il(1) }], { etat: 'retour', maintenantMs: NOW }), false);
+});
+
+test('gls-sync : prise en charge de plus de ' + FENETRE_EXPEDITION_H + ' h → pas de SMS tardif ; 71 h → SMS', () => {
+  const cmd = { statut: 'en-attente', sms_envoyes: [] };
+  assert.equal(doitEnvoyerExpedition(cmd, [{ priseEnCharge: true, priseEnChargeAt: il(80) }], { maintenantMs: NOW }), false);
+  assert.equal(doitEnvoyerExpedition(cmd, [{ priseEnCharge: true, priseEnChargeAt: il(71) }], { maintenantMs: NOW }), true);
+  assert.equal(doitEnvoyerExpedition(cmd, [{ priseEnCharge: true, priseEnChargeAt: null }], { maintenantMs: NOW }), false);
 });
