@@ -50,6 +50,7 @@ import {
   analyserColis, analyserCommande, colisErreur, numerosColis, historiqueDe,
   type AnalyseColis, type AnalyseCommande,
 } from '../_shared/gls-analyse.ts';
+import { doitEnvoyerExpedition, PREUVE_PRISE_EN_CHARGE } from '../_shared/sms-garde.ts';
 
 const GLS_API_KEY       = Deno.env.get('GLS_API_KEY') || '';
 const GLS_CLIENT_SECRET = Deno.env.get('GLS_CLIENT_SECRET') || '';
@@ -398,7 +399,7 @@ Deno.serve(async (req: Request) => {
   // ── Synchro normale : commandes GLS non livrées / non annulées ────
   const { data: cmds, error: errCmds } = await sb
     .from('commandes')
-    .select('id, client, tracking_transporteur, statut, gls_bloque, date_livraison, gls_livraison_etat, gls_livraison_detail')
+    .select('id, client, tracking_transporteur, statut, gls_bloque, date_livraison, gls_livraison_etat, gls_livraison_detail, sms_envoyes')
     .eq('transporteur', 'GLS')
     .not('tracking_transporteur', 'is', null)
     .not('statut', 'in', '(livré,annulé)');
@@ -461,6 +462,22 @@ Deno.serve(async (req: Request) => {
     let alerteLivraison = false;
     if (analyse.etat === 'partiel') summary.cmds_partiel++;
     if (analyse.etat === 'retour') summary.cmds_retour++;
+    // 19/10/2026 : SMS « expediee par GLS » au PREMIER scan réel de prise en charge (plus à la création de l'étiquette).
+    // Une seule fois (sms_envoyes + dédup de send-cmd-sms) ; jamais pour une commande annulée ou déjà livrée.
+    let expedition: any = null;
+    if (doitEnvoyerExpedition(cmd, analyse.colis)) {
+      if (dryRun) expedition = 'would_send';
+      else {
+        try {
+          const r = await fetch(`${SB_URL}/functions/v1/send-cmd-sms`, {
+            method: 'POST', headers: { 'Authorization': `Bearer ${SB_SR_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cmdId: cmd.id, type: 'expedition', preuve: PREUVE_PRISE_EN_CHARGE }),
+          });
+          expedition = await r.json().catch(() => ({ http: r.status }));
+        } catch (e: any) { expedition = { error: e?.message || String(e) }; }
+      }
+      summary.sms_expedition = (summary.sms_expedition || 0) + 1;
+    }
     if (!dryRun) {
       try {
         await sb.from('commandes').update({
@@ -494,7 +511,7 @@ Deno.serve(async (req: Request) => {
     if (analyse.etat === 'erreur') summary.cmds_erreur++;
     summary.details.push({
       ...base, livreCount: analyse.nbLivres, errorCount: analyse.nbErreurs,
-      bloque, etaitBloque, alerteSms, alerteLivraison, nouveauProbleme,
+      bloque, etaitBloque, alerteSms, alerteLivraison, nouveauProbleme, expedition,
       dernier_scan: dernierScanNonLivre ? new Date(dernierScanNonLivre).toISOString() : null,
       status: `${analyse.etat} (${analyse.nbLivres}/${analyse.nbColis} livré${analyse.nbLivres > 1 ? 's' : ''}${analyse.nbErreurs > 0 ? ', ' + analyse.nbErreurs + ' err' : ''})`,
     });

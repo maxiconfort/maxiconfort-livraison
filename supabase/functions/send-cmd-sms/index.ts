@@ -26,7 +26,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { envoyerSMSOVH } from '../_shared/ovh-sms.ts';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
-import { texteConfirmation } from '../_shared/sms-garde.ts';
+import { texteConfirmation, expeditionAutorisee } from '../_shared/sms-garde.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
@@ -152,6 +152,15 @@ Deno.serve(async (req: Request) => {
       { headers: { 'Content-Type': 'application/json' } });
   }
 
+  // 19/10/2026 : « expediee par GLS » seulement après preuve de prise en charge (envoyée par gls-sync).
+  // Les appels à la création de l'étiquette ou à la saisie d'un numéro de suivi sont ignorés ici.
+  if (type === 'expedition') {
+    const g = expeditionAutorisee(body, cmd);
+    if (!g.ok) {
+      return new Response(JSON.stringify({ skipped: true, reason: g.raison, type }),
+        { headers: { 'Content-Type': 'application/json' } });
+    }
+  }
 
   // Vérifier tel client présent
   if (!cmd.tel || cmd.tel.length < 8) {
