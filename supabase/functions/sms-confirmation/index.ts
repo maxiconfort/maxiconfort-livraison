@@ -22,6 +22,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
+import { confirmationRattrapageEligible } from '../_shared/sms-garde.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
@@ -48,17 +49,13 @@ Deno.serve(async (req: Request) => {
   }
 
   const resultats: any[] = [];
+  const maintenant = Date.now();
   for (const c of (cmds || [])) {
     const id = String(c.id || '');
-    // SAV exclus
-    if (id.indexOf('#SAV') === 0) { resultats.push({ id, skip: 'sav' }); continue; }
-    // GLS avec tracking déjà saisi → l'expédition gère (évite doublon)
-    if ((c.transporteur || 'RANOU') === 'GLS' && c.tracking_transporteur) {
-      resultats.push({ id, skip: 'gls_tracking' }); continue;
-    }
-    // déjà confirmé ? (dédup locale rapide — send-cmd-sms revérifie aussi)
-    const dejaConf = Array.isArray(c.sms_envoyes) && c.sms_envoyes.some((e: any) => e && e.type === 'confirmation');
-    if (dejaConf) { resultats.push({ id, skip: 'deja_confirme' }); continue; }
+    // 19/10/2026 : règles communes (_shared/sms-garde.ts) — SAV, GLS déjà suivie, déjà confirmée,
+    // et commande de moins de 3 min (l'application envoie elle-même à +1,5 s : pas de double envoi simultané).
+    const elig = confirmationRattrapageEligible(c, maintenant);
+    if (!elig.ok) { resultats.push({ id, skip: elig.raison }); continue; }
 
     if (dryRun) { resultats.push({ id, client: c.client, would_send: true }); continue; }
 
