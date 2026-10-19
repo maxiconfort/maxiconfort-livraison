@@ -26,6 +26,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { envoyerSMSOVH } from '../_shared/ovh-sms.ts';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
+import { texteConfirmation } from '../_shared/sms-garde.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
@@ -74,10 +75,7 @@ const TPL = {
   // Aucune date dans ce SMS : a la creation, date_livraison n'est qu'une date saisie, pas une
   // date confirmee par le client (elle peut changer le jour meme). La date confirmee part avec
   // le SMS veille (lien « Serez-vous la ? »).
-  confirmation: (p: any) =>
-    p.transporteur === 'GLS'
-      ? `Bonjour ${p.prenom}, votre commande est bien enregistree. Nous vous enverrons votre numero de suivi GLS par SMS. Merci de votre confiance.`
-      : `Bonjour ${p.prenom}, votre commande est bien enregistree. Nous vous informerons de la date de livraison et du passage de notre livreur. Merci.`,
+  confirmation: (p: any) => texteConfirmation(p.prenom, p.transporteur),
   // 23/06/2026 : SMS post-livraison -> demande d'avis Google honnete, SANS
   // condition ni recompense. ~149 car = 1 segment = 1 credit OVH.
   // 02/09/2026 (v2) : reecrit apres constat d'un taux de retour de ~4% sur 204
@@ -153,6 +151,7 @@ Deno.serve(async (req: Request) => {
     return new Response(JSON.stringify({ skipped: true, reason: 'deja envoye', type }),
       { headers: { 'Content-Type': 'application/json' } });
   }
+
 
   // Vérifier tel client présent
   if (!cmd.tel || cmd.tel.length < 8) {
