@@ -308,14 +308,14 @@ function buildShipmentPayload(cmd: any, testMode: boolean): any {
   }
   // v5.5 : Note2 = tel client (pour qu'il apparaisse imprime sur l'etiquette)
   // GLS imprime Note1 et Note2 dans la zone Contact du label PDF
-  // On formate le tel proprement (06 79 90 57 03 plutot que 0033...)
+  // On formate le tel proprement (0699000002 plutot que 0033...)
   function formatTelDisplay(t: string): string {
     if (!t) return '';
     const clean = t.replace(/[^0-9]/g, '');
     let local = clean;
     if (clean.startsWith('0033')) local = '0' + clean.substring(4);
     else if (clean.startsWith('33') && clean.length === 11) local = '0' + clean.substring(2);
-    // 0679905703 -> 06 79 90 57 03
+    // 0699000002 -> 0699000002
     return local.replace(/(\d{2})(?=\d)/g, '$1 ').trim();
   }
   const telDisplay = formatTelDisplay(cmd.tel || '');

@@ -21,7 +21,7 @@
 // - ANTHROPIC_API_KEY
 // - SUPABASE_SERVICE_ROLE_KEY (auto)
 // - SUPABASE_URL (auto)
-// - ALLOWED_WHATSAPP_FROM (ex: whatsapp:+33751563113)
+// - ALLOWED_WHATSAPP_FROM (ex: whatsapp:0699000001)
 // ════════════════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -267,16 +267,16 @@ Obligatoires : Client, Tel, Adresse, au moins 1 Produit avec prix
 Optionnels : Origine (TikTok / LBC / Amazon / Site...), Paiement, Date, Notes
 
 📦 1 produit :
-Client : Maurice Francoise
-Tel : 0761026756
-Adresse : 9 rue Chatillon 51290 Giffaumont
+Client : Jean Exemple
+Tel : 0600000001
+Adresse : 1 rue de l'Exemple 75001 Paris
 Produit : Ensemble 140x190x20 207€
 Origine : TikTok Shop
 
 📦📦 Plusieurs produits :
-Client : Ruben Mendes
-Tel : 0768051784
-Adresse : 12 av parc 91900 Solers
+Client : Marie Exemple
+Tel : 0600000002
+Adresse : 2 avenue de l'Exemple 69001 Lyon
 Produits :
 - 2 x Ensemble 160x200 Lit NICO Blanc 329€
 - 1 x Lit Coffre Noir 160x200 379€

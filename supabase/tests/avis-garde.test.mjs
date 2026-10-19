@@ -179,8 +179,8 @@ test('règle du 13/10/2026 : demande automatique pour le transporteur RANOU seul
 import { avisGoogleDejaRecu } from '../functions/_shared/avis-garde.ts';
 import { rapprocherAvis, motsDuNom } from '../functions/_shared/avis-rapprochement.ts';
 
-const ranou = { id: '#3000', tel: '06 11 22 33 44', client: 'Claire Martin', livree: '2026-10-01', sms: [{ type: 'avis', date: '2026-10-02' }] };
-const recu = (o) => ({ cmd_id: '#3000', tel_cle: '611223344', nom_google: 'Claire Martin', note: 5, date_avis: '2026-10-03', type_match: 'certain', ...o });
+const ranou = { id: '#3000', tel: '06 99 00 00 03', client: 'Claire Martin', livree: '2026-10-01', sms: [{ type: 'avis', date: '2026-10-02' }] };
+const recu = (o) => ({ cmd_id: '#3000', tel_cle: '699000003', nom_google: 'Claire Martin', note: 5, date_avis: '2026-10-03', type_match: 'certain', ...o });
 
 test('A. Ranou, demande envoyée, avis 5 étoiles reçu : plus aucune relance', () => {
   assert.ok(avisGoogleDejaRecu(ranou, [recu({ note: 5 })]));
@@ -208,8 +208,8 @@ test('D. Pseudo Google ambigu : pas de rapprochement certain, donc aucun blocage
 
 test('E. Client GLS déjà auteur d\'un avis : bloqué aussi pour un envoi manuel (même fiche ou même numéro)', () => {
   const gls = { id: '#3100', tel: '+33 6 55 44 33 22' };
-  assert.ok(avisGoogleDejaRecu(gls, [recu({ cmd_id: '#3100', tel_cle: '655443322' })]));
-  assert.ok(avisGoogleDejaRecu({ id: '#3200', tel: '0655443322' }, [recu({ cmd_id: '#3100', tel_cle: '655443322' })]), 'autre fiche, même numéro');
+  assert.ok(avisGoogleDejaRecu(gls, [recu({ cmd_id: '#3100', tel_cle: '699000004' })]));
+  assert.ok(avisGoogleDejaRecu({ id: '#3200', tel: '0699000004' }, [recu({ cmd_id: '#3100', tel_cle: '699000004' })]), 'autre fiche, même numéro');
 });
 
 test('F. Deux clients portent le même nom : ambigu, jamais certain', () => {
@@ -267,9 +267,9 @@ test('verrou complet : la même règle vaut pour la première demande, la relanc
   // E : contrôle rétabli plus tard dans la journée → le passage suivant repart
   assert.equal(relancesAutorisees({ ...echec, statut: 'ok' }, '2026-10-14'), true);
   // F : client déjà marqué « avis reçu » → bloqué même avec un contrôle réussi (quelle que soit la note)
-  const marque = [{ cmd_id: '#3000', tel_cle: '611223344', nom_google: 'X', note: 1, type_match: 'certain' }];
-  assert.ok(relancesAutorisees(ok, '2026-10-14') && avisGoogleDejaRecu({ id: '#3000', tel: '0611223344' }, marque));
+  const marque = [{ cmd_id: '#3000', tel_cle: '699000003', nom_google: 'X', note: 1, type_match: 'certain' }];
+  assert.ok(relancesAutorisees(ok, '2026-10-14') && avisGoogleDejaRecu({ id: '#3000', tel: '0699000003' }, marque));
   // G : GLS reste manuel (jamais automatique), et un avis déjà reçu bloque aussi l'envoi manuel
   assert.equal(envoiAutomatiqueAutorise('GLS'), false);
-  assert.ok(avisGoogleDejaRecu({ id: '#3100', tel: '0655443322' }, [{ cmd_id: '#3100', tel_cle: '655443322', nom_google: 'Y', note: 5, type_match: 'valide' }]));
+  assert.ok(avisGoogleDejaRecu({ id: '#3100', tel: '0699000004' }, [{ cmd_id: '#3100', tel_cle: '699000004', nom_google: 'Y', note: 5, type_match: 'valide' }]));
 });
