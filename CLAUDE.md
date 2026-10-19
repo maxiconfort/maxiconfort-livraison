@@ -119,3 +119,12 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - Agent d'impression (`print-agent/`) : voir le journal détaillé ; il lit `PRINT_AGENT_SUPABASE_KEY` dans `.env`.
 
 Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site Shopify, l'outil LBC et TikTok ont leurs propres dossiers.
+
+## SMS : confirmation sans date, « expédiée » seulement à la prise en charge GLS (19/10/2026)
+- Constat : le SMS `confirmation` (prise de commande) annonçait « votre commande a bien été expédiée, en cours d'acheminement » dès la création ; le SMS `expedition` GLS partait à la création de l'étiquette ou à la saisie d'un suivi, avant toute remise à GLS (fausses expéditions).
+- Règles pures dans `supabase/functions/_shared/sms-garde.ts` (tests : `node --test supabase/tests/*.test.mjs`, 60 tests) :
+  - `confirmation` : jamais de date (la date saisie n'est pas confirmée ; la date confirmée part avec le SMS `veille`) ; texte GLS (« numéro de suivi GLS par SMS ») / livreur (« date de livraison et passage de notre livreur ») ; ≤ 160 car.
+  - Rattrapage `sms-confirmation` : ignore les commandes de moins de 3 min (l'application envoie elle-même à +1,5 s) → pas de double envoi simultané ; SAV, GLS déjà suivie, déjà confirmée exclues.
+  - `expedition` : `send-cmd-sms` le refuse sans `preuve: 'prise_en_charge_gls'` (réponse `skipped`, raison `attente_prise_en_charge_gls`) — couvre la création d'étiquette, la saisie de suivi et les appels de l'application sans les modifier. Seule `gls-sync` (cron horaire) l'envoie, au 1er événement GLS autre que DATA_RECEIVED, une seule fois, jamais pour un colis en retour, une commande annulée/livrée, ni pour une prise en charge de plus de 72 h.
+- Déployé le 19/10/2026 : `send-cmd-sms` v39, `sms-confirmation` v13, `gls-sync` v41 (avant : v38 / v12 / v39). Retour arrière : redéployer ces 3 fonctions depuis le commit `fc4e4a3` (ATTENTION : cela réactive les textes trompeurs — ne le faire qu'en cas de panne d'envoi).
+- Non traité : l'e-mail Shopify « expédiée » (`notify_customer: true`) part toujours à la création de l'étiquette des commandes du site.
