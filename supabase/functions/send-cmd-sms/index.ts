@@ -67,10 +67,14 @@ const TPL = {
   // v7.5.73 : SMS de confirmation envoye a la PRISE de commande (rassurer / fideliser
   // le client pour qu'il n'aille pas voir ailleurs). Avec date -> annonce la date de
   // livraison ; sans date -> message generique. <=160 car = 1 credit OVH.
+  // 19/10/2026 : le texte annoncait « expediee / en cours d'acheminement » des la PRISE de
+  // commande, avant toute remise au livreur ou a GLS (fausse expedition). On confirme
+  // l'enregistrement et la date prevue, rien de plus ; l'expedition reelle a ses propres SMS
+  // (depart pour le livreur, expedition pour GLS).
   confirmation: (p: any) =>
     p.dateFr
-      ? `Bonjour ${p.prenom}, votre commande a bien ete expediee. Elle est en cours d'acheminement et sera livree le ${p.dateFr}. Merci de votre confiance. Maxiconfort.`
-      : `Bonjour ${p.prenom}, votre commande a bien ete expediee et est en cours d'acheminement. Nous vous communiquerons la date de livraison. Merci. Maxiconfort.`,
+      ? `Bonjour ${p.prenom}, votre commande est bien enregistree. Livraison prevue le ${p.dateFr}, nous vous previendrons avant le passage. Merci de votre confiance.`
+      : `Bonjour ${p.prenom}, votre commande est bien enregistree. Nous vous communiquerons la date de livraison des que possible. Merci de votre confiance.`,
   // 23/06/2026 : SMS post-livraison -> demande d'avis Google honnete, SANS
   // condition ni recompense. ~149 car = 1 segment = 1 credit OVH.
   // 02/09/2026 (v2) : reecrit apres constat d'un taux de retour de ~4% sur 204
