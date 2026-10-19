@@ -24,7 +24,7 @@
 // - ALLOWED_WHATSAPP_FROM (ex: whatsapp:0699000001)
 // ════════════════════════════════════════════════════════════════════
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.117.2';
 
 const ANTHROPIC_KEY = Deno.env.get('ANTHROPIC_API_KEY') || '';
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
