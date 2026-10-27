@@ -119,3 +119,12 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - Agent d'impression (`print-agent/`) : voir le journal détaillé ; il lit `PRINT_AGENT_SUPABASE_KEY` dans `.env`.
 
 Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site Shopify, l'outil LBC et TikTok ont leurs propres dossiers.
+
+## Porte d'entrée JARVIS : `jarvis-action` (27/10/2026)
+- Demande de Borhen : depuis JARVIS (MAXI BRAIN, mini-PC), créer une étiquette ou un retour GLS, mettre une commande en planning, créer un SAV, mettre à jour un litige — sans ouvrir l'appli.
+- **Toujours en 2 temps** : `confirme:false` = aperçu (contrôles + aperçu GLS `dryRun`, rien n'est écrit) ; `confirme:true` = exécution après le « Confirmer » de Borhen dans JARVIS.
+- **Liste fermée** (`_shared/jarvis-action-logique.ts`, module pur) : `gls_etiquette` (via `gls-create-shipment` : anti-doublon et règles colis inchangés), `gls_retour` (`pickReturn`), `planifier` (date de livraison seulement), `sav` (échange / reprise / oubli : 0 €, « Déjà payé » ; **jamais de remboursement** depuis JARVIS), `litige` (type, statut, n° de réclamation 13 chiffres, description). Rien d'autre : pas de suppression, de paiement, de prix ni de SMS.
+- **Appelant** : en-tête `x-jarvis-secret` = secret `JARVIS_ACTION_SECRET` (Edge Function Secrets ; même valeur dans le `.env` de maxiconfort-brain du mini-PC). Le changer suffit à couper JARVIS.
+- **Réponses** sans nom, téléphone, e-mail ni adresse complète (code postal et ville seulement), sans PDF. Les déclencheurs de la base (paiement, annulation) s'appliquent normalement.
+- **Tests** : `node --test supabase/tests/*.test.mjs` (dont `jarvis-action.test.mjs`).
+- **Mise en service** (Borhen) : `npx supabase secrets set JARVIS_ACTION_SECRET=… --project-ref jmvfjtnmebstkzcfnlgp` puis `npx supabase functions deploy jarvis-action --project-ref jmvfjtnmebstkzcfnlgp --no-verify-jwt --use-api`.
