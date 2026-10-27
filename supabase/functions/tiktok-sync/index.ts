@@ -208,7 +208,7 @@ async function dejaImportee(tiktokId: string): Promise<string | null> {
 
 // 27/10/2026 : même correctif que shopify-sync v6.6 — la table dépasse 1 000 lignes et l'API n'en renvoie que 1 000 par réponse :
 // lecture paginée de TOUS les numéros + insertion simple avec nouvel essai au numéro suivant (plus jamais d'écrasement).
-// PAS ENCORE DÉPLOYÉ au 27/10 (déploiement refusé par le garde-fou, GO explicite de Borhen nécessaire).
+// DÉPLOYÉ le 27/10/2026 (GO TIKTOK de Borhen).
 async function maxNumeroCommande(): Promise<number> {
   let maxN = 0;
   for (let debut = 0; ; debut += 1000) {
