@@ -2,7 +2,7 @@
 // Lancer : node --test supabase/tests/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, egal, jourParis } from '../functions/_shared/jarvis-action-logique.ts';
+import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -52,4 +52,14 @@ test('litige : seulement les champs fournis ; un n° de réclamation ouvre la r�
   assert.equal(p.litige_num_reclamation, '1234567890123'); assert.equal(p.litige_statut, 'reclamation_ouverte'); assert.ok(!('litige_type' in p));
   assert.equal(champsLitige({ action: 'litige', litige_statut: 'dossier_envoye', litige_num: '1234567890123' }, T).litige_statut, 'dossier_envoye');
   assert.equal(egal('abc', 'abc'), true); assert.equal(egal('abc', 'abd'), false); assert.equal(egal('', ''), false);
+});
+
+test('aperçu litige (réserve Codex #5) : description existante, absente, vide, et tronquée à 500 caractères', () => {
+  assert.deepEqual(avantLitige({ litige_type: 'perte', litige_statut: 'a_declarer', litige_num_reclamation: '1234567890123', litige_description: 'Colis 2/3 non livré' }),
+    { type: 'perte', statut: 'a_declarer', num: '1234567890123', description: 'Colis 2/3 non livré' });
+  assert.deepEqual(avantLitige({}), { type: null, statut: null, num: null, description: null });
+  assert.equal(avantLitige({ litige_description: '   ' }).description, null);
+  const longue = 'x'.repeat(499) + 'YZ' + 'w'.repeat(100);
+  const d = avantLitige({ litige_description: longue }).description;
+  assert.equal(d.length, 500); assert.ok(d.endsWith('xY'), 'coupée exactement à 500 caractères');
 });

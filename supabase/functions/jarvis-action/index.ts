@@ -19,7 +19,7 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { apercuCommande, champsLitige, construireSav, controlerCommande, controlerDemande, egal, type Demande } from '../_shared/jarvis-action-logique.ts';
+import { apercuCommande, avantLitige, champsLitige, construireSav, controlerCommande, controlerDemande, egal, type Demande } from '../_shared/jarvis-action-logique.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
 const SECRET_JARVIS = Deno.env.get('JARVIS_ACTION_SECRET') || '';
@@ -90,7 +90,7 @@ Deno.serve(async (req: Request) => {
     if (d.action === 'litige') {
       const p = champsLitige(d);
       // Avant / après complet, description comprise (réserve Codex sur la PR JARVIS #214, 27/10) : Borhen voit ce qu'il remplace.
-      const avant = { type: (c as any).litige_type || null, statut: (c as any).litige_statut || null, num: (c as any).litige_num_reclamation || null, description: (c as any).litige_description ? String((c as any).litige_description).slice(0, 500) : null };
+      const avant = avantLitige(c as any);
       if (!confirme) return rep(200, { ...base, litige: { avant, apres: p } });
       const { error } = await sb.from('commandes').update(p).eq('id', d.cmdId);
       if (error) return rep(502, { ok: false, erreur: 'écriture refusée par la base' });

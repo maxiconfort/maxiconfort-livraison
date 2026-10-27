@@ -102,6 +102,13 @@ export function champsLitige(d: Demande, maintenant = Date.now()): Record<string
   return p;
 }
 
+/** État actuel du dossier litige montré dans l'aperçu (avant → après), description comprise, bornée à 500 caractères. */
+export function avantLitige(c: Record<string, unknown>) {
+  const v = (x: unknown) => (x === null || x === undefined || String(x).trim() === '' ? null : String(x));
+  const d = v(c.litige_description);
+  return { type: v(c.litige_type), statut: v(c.litige_statut), num: v(c.litige_num_reclamation), description: d === null ? null : d.slice(0, 500) };
+}
+
 /** Comparaison à temps constant (secret de la porte JARVIS). */
 export function egal(a: string, b: string): boolean {
   if (!a || !b || a.length !== b.length) return false;
