@@ -206,14 +206,21 @@ async function dejaImportee(tiktokId: string): Promise<string | null> {
   return data && data.length ? String((data[0] as any).id) : null;
 }
 
+// 27/10/2026 : même correctif que shopify-sync v6.6 — la table dépasse 1 000 lignes et l'API n'en renvoie que 1 000 par réponse :
+// lecture paginée de TOUS les numéros + insertion simple avec nouvel essai au numéro suivant (plus jamais d'écrasement).
+// PAS ENCORE DÉPLOYÉ au 27/10 (déploiement refusé par le garde-fou, GO explicite de Borhen nécessaire).
 async function maxNumeroCommande(): Promise<number> {
-  const { data } = await sb.from('commandes').select('id');
   let maxN = 0;
-  for (const r of (data || [])) {
-    const idStr = String((r as any)?.id || '');
-    if (/SAV/i.test(idStr)) continue;
-    const n = parseInt(idStr.replace(/[^0-9]/g, '')) || 0;
-    if (n > maxN) maxN = n;
+  for (let debut = 0; ; debut += 1000) {
+    const { data, error } = await sb.from('commandes').select('id').range(debut, debut + 999);
+    if (error) throw new Error('lecture des numéros de commande : ' + error.message);
+    for (const r of (data || [])) {
+      const idStr = String((r as any)?.id || '');
+      if (/SAV/i.test(idStr)) continue;
+      const n = parseInt(idStr.replace(/[^0-9]/g, '')) || 0;
+      if (n > maxN) maxN = n;
+    }
+    if (!data || data.length < 1000) break;
   }
   return maxN;
 }
@@ -255,9 +262,13 @@ Deno.serve(async (req: Request) => {
       try {
         const existante = await dejaImportee(String(o.id));
         if (existante && !(dryRun && body?.mapOnly)) { result.skipped++; result.details.push({ tiktok: o.id, deja: existante }); continue; }
-        const cmd = mapTiktokToCmd(o, '#' + prochainNum);
+        let cmd = mapTiktokToCmd(o, '#' + prochainNum);
         if (dryRun) { result.details.push(cmd); result.imported++; prochainNum++; continue; }
-        const { error } = await sb.from('commandes').upsert(cmd, { onConflict: 'id' });
+        let { error } = await sb.from('commandes').insert(cmd);
+        for (let essai = 0; error && (error as any).code === '23505' && essai < 10; essai++) {
+          prochainNum++; cmd = mapTiktokToCmd(o, '#' + prochainNum);
+          ({ error } = await sb.from('commandes').insert(cmd));
+        }
         if (error) { result.errors++; result.errorDetails.push(`${o.id}: ${error.message}`); }
         else { result.imported++; result.details.push({ tiktok: o.id, app: cmd.id, client: cmd.client, prix: cmd.prix }); prochainNum++; }
       } catch (e: any) {

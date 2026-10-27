@@ -237,14 +237,22 @@ async function commandesShopify(url: string): Promise<any[]> {
 // Désormais l'import prend le prochain numéro libre de l'app (comme une saisie manuelle).
 // Les #SAV... (parseInt -> NaN) sont ignorés. ref_marketplace=ID Shopify reste la clé de
 // déduplication (donc pas de ré-import en double malgré le changement d'id).
+// v6.6 (27/10/2026, DÉPLOYÉE sur la base v6.5) : la table a dépassé 1 000 lignes et l'API n'en renvoie que
+// 1 000 par réponse -> le max était calculé sur une partie seulement, un numéro déjà pris a été redonné (#2063)
+// et l'upsert a ÉCRASÉ la commande #1228 (1 452 €) par #1229. Correctif : lecture paginée de TOUS les numéros +
+// insertion simple (plus d'upsert) avec nouvel essai au numéro suivant : un import ne peut plus écraser une commande.
 async function maxNumeroCommande(): Promise<number> {
-  const { data } = await sb.from('commandes').select('id');
   let maxN = 0;
-  for (const r of (data || [])) {
-    const idStr = String((r as any)?.id || '');
-    if (/SAV/i.test(idStr)) continue;
-    const n = parseInt(idStr.replace(/[^0-9]/g, '')) || 0;
-    if (n > maxN) maxN = n;
+  for (let debut = 0; ; debut += 1000) {
+    const { data, error } = await sb.from('commandes').select('id').range(debut, debut + 999);
+    if (error) throw new Error('lecture des numéros de commande : ' + error.message);
+    for (const r of (data || [])) {
+      const idStr = String((r as any)?.id || '');
+      if (/SAV/i.test(idStr)) continue;
+      const n = parseInt(idStr.replace(/[^0-9]/g, '')) || 0;
+      if (n > maxN) maxN = n;
+    }
+    if (!data || data.length < 1000) break;
   }
   return maxN;
 }
@@ -381,7 +389,12 @@ Deno.serve(async (req: Request) => {
           result.imported++;
           continue;
         }
-        const { error } = await sb.from('commandes').upsert(cmd, { onConflict: 'id' });
+        // v6.6 : insertion simple ; numéro déjà pris (code 23505) -> numéro suivant, jamais d'écrasement
+        let { error } = await sb.from('commandes').insert(cmd);
+        for (let essai = 0; error && (error as any).code === '23505' && essai < 10; essai++) {
+          cmd.id = '#' + (prochainNum++);
+          ({ error } = await sb.from('commandes').insert(cmd));
+        }
         if (error) {
           result.errors++;
           result.errorDetails.push(`${o.name}: ${error.message}`);
