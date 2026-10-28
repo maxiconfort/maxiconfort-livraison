@@ -8,7 +8,10 @@
 --  2. l'aperçu fige une EMPREINTE de chaque ligne visée (annonce ou produit) ; à la confirmation, la moindre différence
 --     (heure, ville, statut, lien, validation, boost…) → rien n'est écrit ;
 --  3. contrôles + écriture dans UNE transaction, lignes verrouillées (FOR UPDATE) : tout le lot ou rien ;
---  4. journal en ajout seul : jeton, action, cibles, avant / après, résultat (jamais de secret).
+--  4. journal en ajout seul : jeton, action, cibles, avant / après, résultat (jamais de secret) ;
+--  5. (2e passage) l'aperçu renvoie les LIGNES qu'il a empreintées, lues dans la MÊME instruction (même instantané) : ce que
+--     Borhen voit est exactement ce qui est figé ; la confirmation reçoit les cibles demandées (p_ids) et les refuse si elles
+--     diffèrent de celles du jeton ; elle renvoie les cibles réellement traitées (relecture par l'Edge Function).
 -- Exécutable seulement par la clé serveur (service_role) : ni le navigateur, ni l'outil LBC, ni une session de l'appli.
 -- Les types des colonnes de lbc_annonces / lbc_produits ne sont pas supposés (texte ou date) : comparaisons en ::text,
 -- écritures par conversions qui valent pour les deux.
@@ -62,27 +65,32 @@ $$;
 -- ── APERÇU : enregistre les cibles et leurs empreintes, renvoie le jeton (aucune écriture métier) ──
 create or replace function public.lbc_action_enregistrer_apercu(p_action text, p_demande jsonb, p_ids text[]) returns jsonb
 language plpgsql security definer set search_path = public, interne as $$
-declare v_cibles jsonb; v_jeton uuid;
+declare v_cibles jsonb; v_lignes jsonb; v_jeton uuid;
 begin
   if p_action not in ('boost', 'fin_boost', 'poids_zone', 'bloquer', 'debloquer', 'decaler') then raise exception 'action non autorisée'; end if;
   if coalesce(array_length(p_ids, 1), 0) = 0 or array_length(p_ids, 1) > 100 then raise exception '1 à 100 cibles'; end if;
   if p_action in ('boost', 'fin_boost', 'poids_zone') then
-    select jsonb_agg(jsonb_build_object('id', p.id::text, 'empreinte', interne.lbc_empreinte_produit(p)) order by p.id::text) into v_cibles
-      from public.lbc_produits p where p.id::text = any(p_ids);
+    select jsonb_agg(jsonb_build_object('id', p.id::text, 'empreinte', interne.lbc_empreinte_produit(p)) order by p.id::text),
+           jsonb_agg(jsonb_build_object('id', p.id::text, 'nom', p.nom, 'dim', p.dim, 'actif', p.actif, 'boost_pct', p.boost_pct, 'boost_until', p.boost_until,
+             'poids_idf', p.poids_idf, 'poids_prov', p.poids_prov) order by p.id::text)
+      into v_cibles, v_lignes from public.lbc_produits p where p.id::text = any(p_ids);
   else
-    select jsonb_agg(jsonb_build_object('id', a.id::text, 'empreinte', interne.lbc_empreinte_annonce(a)) order by a.id::text) into v_cibles
-      from public.lbc_annonces a where a.id::text = any(p_ids);
+    select jsonb_agg(jsonb_build_object('id', a.id::text, 'empreinte', interne.lbc_empreinte_annonce(a)) order by a.id::text),
+           jsonb_agg(jsonb_build_object('id', a.id::text, 'date_pub', a.date_pub, 'heure', a.heure, 'ville', a.ville, 'dept', a.dept, 'collab_id', a.collab_id,
+             'produit', a.produit, 'dim', a.dim, 'validation', a.validation, 'statut', a.statut, 'lien', a.lien) order by a.id::text)
+      into v_cibles, v_lignes from public.lbc_annonces a where a.id::text = any(p_ids);
   end if;
   if coalesce(jsonb_array_length(v_cibles), 0) <> array_length(p_ids, 1) then raise exception 'cible introuvable'; end if;
   delete from public.lbc_action_apercus where cree_le < now() - interval '1 day';
   insert into public.lbc_action_apercus (action, demande, cibles) values (p_action, p_demande, v_cibles) returning jeton into v_jeton;
-  return jsonb_build_object('jeton', v_jeton);
+  return jsonb_build_object('jeton', v_jeton, 'lignes', v_lignes);   -- lignes = celles empreintes (même instantané)
 end $$;
 
 -- ── CONFIRMATION : tout ou rien ──
 -- Renvoie { ok, code?, motif?, problemes?, modifiees } ; ne lève pas d'exception pour un refus métier (rien n'est écrit,
 -- le refus est journalisé). Toute erreur inattendue annule la transaction entière.
-create or replace function public.lbc_action_appliquer(p_jeton uuid, p_action text, p_demande jsonb) returns jsonb
+drop function if exists public.lbc_action_appliquer(uuid, text, jsonb);
+create or replace function public.lbc_action_appliquer(p_jeton uuid, p_action text, p_demande jsonb, p_ids text[]) returns jsonb
 language plpgsql security definer set search_path = public, interne as $$
 declare
   v_ap public.lbc_action_apercus; v_ids text[]; v_avant jsonb; v_apres jsonb; v_n int; v_problemes jsonb := '[]'::jsonb;
@@ -97,8 +105,14 @@ begin
     insert into public.lbc_actions_journal (jeton, action, resultat, motif) values (p_jeton, p_action, 'REFUS', 'paramètres différents de l’aperçu');
     return jsonb_build_object('ok', false, 'code', 'APERCU', 'motif', 'les paramètres ne sont pas ceux de l’aperçu : rien n’a été modifié');
   end if;
-  update public.lbc_action_apercus set utilise_le = now() where jeton = p_jeton;   -- usage unique (annulé avec le reste si erreur)
   select array_agg(c->>'id' order by c->>'id') into v_ids from jsonb_array_elements(v_ap.cibles) c;
+  -- Les cibles demandées doivent être EXACTEMENT celles du jeton (ni substitution, ni ajout, ni retrait).
+  if p_ids is null or (select array_agg(x order by x) from unnest(p_ids) x) is distinct from v_ids then
+    update public.lbc_action_apercus set utilise_le = now() where jeton = p_jeton;   -- jeton brûlé : une tentative de substitution ne se rejoue pas
+    insert into public.lbc_actions_journal (jeton, action, resultat, motif) values (p_jeton, p_action, 'REFUS', 'cibles différentes de l’aperçu');
+    return jsonb_build_object('ok', false, 'code', 'APERCU', 'motif', 'les cibles ne sont pas celles de l’aperçu : rien n’a été modifié');
+  end if;
+  update public.lbc_action_apercus set utilise_le = now() where jeton = p_jeton;   -- usage unique (annulé avec le reste si erreur)
 
   if p_action in ('boost', 'fin_boost', 'poids_zone') then
     -- Produit : verrou, empreinte identique, actif
@@ -158,10 +172,10 @@ begin
     select jsonb_agg(jsonb_build_object('id', a.id::text, 'date_pub', a.date_pub::text, 'statut', a.statut::text, 'validation', a.validation::text)) into v_apres from public.lbc_annonces a where a.id::text = any(v_ids);
   end if;
   insert into public.lbc_actions_journal (jeton, action, resultat, cibles, avant, apres) values (p_jeton, p_action, 'OK', to_jsonb(v_ids), v_avant, v_apres);
-  return jsonb_build_object('ok', true, 'modifiees', v_n);
+  return jsonb_build_object('ok', true, 'modifiees', v_n, 'cibles', to_jsonb(v_ids), 'apres', v_apres);
 end $$;
 
 revoke all on function public.lbc_action_enregistrer_apercu(text, jsonb, text[]) from public, anon, authenticated;
-revoke all on function public.lbc_action_appliquer(uuid, text, jsonb) from public, anon, authenticated;
+revoke all on function public.lbc_action_appliquer(uuid, text, jsonb, text[]) from public, anon, authenticated;
 grant execute on function public.lbc_action_enregistrer_apercu(text, jsonb, text[]) to service_role;
-grant execute on function public.lbc_action_appliquer(uuid, text, jsonb) to service_role;
+grant execute on function public.lbc_action_appliquer(uuid, text, jsonb, text[]) to service_role;

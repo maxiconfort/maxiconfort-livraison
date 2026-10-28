@@ -151,7 +151,12 @@ Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site S
   - l'aperçu est enregistré par la base (`lbc_action_apercus` : paramètres exacts, cibles, **empreinte** de chaque ligne) et renvoie un **jeton** à usage unique valable 10 min ;
   - la confirmation passe par `public.lbc_action_appliquer(jeton, action, paramètres)`, qui ne fait **qu'une transaction** : lignes verrouillées, mêmes paramètres, empreinte identique (heure, ville, statut, lien, validation…), toujours à venir et non publiée. Au moindre écart, **rien n'est écrit** (409) ;
   - journal en ajout seul `lbc_actions_journal` (jeton, action, cibles, avant/après, résultat) ;
-  - exécution réservée à la clé serveur.
+  - exécution réservée à la clé serveur ;
+  - (2e passage Codex) l'aperçu affiche les lignes **renvoyées par la base** avec leurs empreintes, lues dans la même instruction ; si une ligne ne passe plus le filtre ou les protections entre les deux lectures → 409 ;
+  - la confirmation transmet les cibles (`p_ids`), refusées si elles diffèrent du jeton (jeton brûlé) ;
+  - la relecture porte sur les cibles renvoyées par la transaction et elle est **vérifiée**. Toute incertitude (réseau, réponse illisible, relecture impossible ou différente) = **502 INDÉTERMINÉ** ; seule une erreur SQL certaine = 500 « rien n'a été modifié ».
+
+  Logique de la fonction : `_shared/lbc-action-traitement.ts` (testée sous Node avec une base simulée : `lbc-action-traitement.test.mjs`).
 
   La validation humaine se fait dans JARVIS (« Appliquer » + « Confirmer ») ; le jeton prouve que la confirmation porte exactement sur l'aperçu montré.
 - Le boost et la pression s'appliquent aux jours **générés ensuite** dans l'outil LBC ; le planning déjà généré ne change pas.

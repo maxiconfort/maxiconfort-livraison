@@ -21,8 +21,10 @@ async function essai(typeDate) {
   await db.query(`insert into lbc_produits values ('P1','Matelas','140x190',true,null,null,null,null,null)`);
   const q = async (s, p) => (await db.query(s, p)).rows[0];
   const res = {};
-  const ap = async (action, demande, ids) => (await q(`select public.lbc_action_enregistrer_apercu($1,$2::jsonb,$3::text[]) r`, [action, JSON.stringify(demande), ids])).r.jeton;
-  const app = async (jeton, action, demande) => (await q(`select public.lbc_action_appliquer($1::uuid,$2,$3::jsonb) r`, [jeton, action, JSON.stringify(demande)])).r;
+  const CIBLES = new Map(); // jeton → cibles de l'aperçu (ce que l'Edge Function renvoie à la confirmation)
+  const apLignes = async (action, demande, ids) => (await q(`select public.lbc_action_enregistrer_apercu($1,$2::jsonb,$3::text[]) r`, [action, JSON.stringify(demande), ids])).r;
+  const ap = async (action, demande, ids) => { const x = await apLignes(action, demande, ids); CIBLES.set(x.jeton, ids); return x.jeton; };
+  const app = async (jeton, action, demande, ids = CIBLES.get(jeton)) => (await q(`select public.lbc_action_appliquer($1::uuid,$2,$3::jsonb,$4::text[]) r`, [jeton, action, JSON.stringify(demande), ids])).r;
   const D = { filtre: { date: plus(1) } };
   // 1. cas normal : tout le lot
   let j = await ap('bloquer', D, ['a1', 'a2']); res.normal = await app(j, 'bloquer', D);
@@ -52,21 +54,34 @@ async function essai(typeDate) {
   // 7. expiré
   j = await ap('fin_boost', {}, ['P1']); await db.query(`update lbc_action_apercus set cree_le = now() - interval '11 minutes' where jeton=$1`, [j]);
   res.expire = (await app(j, 'fin_boost', {})).motif;
+  // 9. (2e passage) l'aperçu renvoie les lignes empreintes ; cibles substituées / ajoutées / retirées à la confirmation : refus, rien écrit
+  const x = await apLignes('bloquer', D, ['a3', 'a1']); res.lignes = x.lignes.map((l) => l.id + ':' + l.ville + ':' + String(l.lien ?? '')).join(' ');
+  CIBLES.set(x.jeton, ['a3', 'a1']);
+  const st0 = (await db.query(`select string_agg(id || statut, ',' order by id) s from lbc_annonces`)).rows[0].s;
+  res.substitue = (await app(x.jeton, 'bloquer', D, ['a2', 'a1'])).code;
+  res.brule = (await app(x.jeton, 'bloquer', D)).motif; // jeton brûlé par la tentative
+  j = await ap('bloquer', D, ['a1']); res.ajout = (await app(j, 'bloquer', D, ['a1', 'a2'])).code;
+  j = await ap('bloquer', D, ['a1', 'a2']); res.retrait = (await app(j, 'bloquer', D, ['a1'])).code;
+  res.rienEcrit2 = st0 === (await db.query(`select string_agg(id || statut, ',' order by id) s from lbc_annonces`)).rows[0].s;
+  j = await ap('bloquer', D, ['a1', 'a2']); const ok2 = await app(j, 'bloquer', D, ['a2', 'a1']); res.ordreLibre = ok2.ok; res.ciblesRenvoyees = ok2.cibles;
   // 8. journal : ajout seul ; anon n'exécute pas
   res.journal = (await q(`select count(*) n, sum((resultat='OK')::int) ok from lbc_actions_journal`));
   try { await db.query(`delete from lbc_actions_journal`); res.suppr = 'POSSIBLE'; } catch (e) { res.suppr = 'refusée'; }
-  res.droitsAnon = (await q(`select has_function_privilege('anon','public.lbc_action_appliquer(uuid,text,jsonb)','execute') a, has_function_privilege('service_role','public.lbc_action_appliquer(uuid,text,jsonb)','execute') s`));
+  res.droitsAnon = (await q(`select has_function_privilege('anon','public.lbc_action_appliquer(uuid,text,jsonb,text[])','execute') a, has_function_privilege('service_role','public.lbc_action_appliquer(uuid,text,jsonb,text[])','execute') s`));
   return res;
 }
 
 for (const t of ['date', 'text']) test('migration 036 sur Postgres réel — colonnes ' + t, { skip: !PGlite && 'PGlite absent' }, async () => {
   const r = await essai(t);
-  assert.deepEqual(r.normal, { ok: true, modifiees: 2 }); assert.equal(r.apres, 'a1:Bloqué a2:Bloqué a3:À publier');
+  assert.equal(r.normal.ok, true); assert.equal(r.normal.modifiees, 2); assert.deepEqual(r.normal.cibles, ['a1', 'a2']); assert.equal(r.apres, 'a1:Bloqué a2:Bloqué a3:À publier');
   assert.equal(r.reutilise, 'aperçu déjà utilisé'); assert.equal(r.altere, 'APERCU');
   assert.equal(r.change.code, 'CHANGE'); assert.equal(r.rienEcrit, true, 'tout le lot ou rien');
   assert.equal(r.publiee, 'CHANGE', 'lien ajouté après l’aperçu : refus');
   assert.equal(r.debloque, 2); assert.equal(r.decale, 1); assert.equal(r.dateA2, true);
   assert.equal(r.boost, true); assert.equal(r.boostVal.b, '50'); assert.equal(r.produitChange, 'CHANGE');
   assert.match(r.expire, /expiré/); assert.equal(r.suppr, 'refusée'); assert.deepEqual(r.droitsAnon, { a: false, s: true });
-  assert.equal(Number(r.journal.n), 8); assert.equal(Number(r.journal.ok), 4);
+  assert.equal(r.lignes, 'a1:Créteil: a3:Lyon:https://www.leboncoin.fr/ad/1', 'lignes empreintes renvoyées, triées');
+  assert.equal(r.substitue, 'APERCU'); assert.equal(r.brule, 'aperçu déjà utilisé'); assert.equal(r.ajout, 'APERCU'); assert.equal(r.retrait, 'APERCU');
+  assert.equal(r.rienEcrit2, true); assert.equal(r.ordreLibre, true); assert.deepEqual(r.ciblesRenvoyees, ['a1', 'a2']);
+  assert.equal(Number(r.journal.n), 12); assert.equal(Number(r.journal.ok), 5);
 });
