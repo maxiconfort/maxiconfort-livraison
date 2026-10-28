@@ -2,9 +2,10 @@
 // Lancer : node --test supabase/tests/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { controlerDemande, dansFiltre, refusAnnonce, patchAnnonce, patchProduit, trouverProduits, verifierProduit, verifierAnnonces, vueAnnonce, zoneAnnonce, egal, MAX_ANNONCES } from '../functions/_shared/lbc-action-logique.ts';
+import { parametres, jetonValide, controlerDemande, dansFiltre, refusAnnonce, patchAnnonce, patchProduit, trouverProduits, verifierProduit, verifierAnnonces, vueAnnonce, zoneAnnonce, egal, MAX_ANNONCES } from '../functions/_shared/lbc-action-logique.ts';
 
-const T = Date.parse('2026-10-28T10:00:00Z'); // 28/10 à Paris
+const T = Date.parse('2026-10-28T10:00:00Z');
+const J = '0f8fad5b-d9cb-469f-a165-70867728950e'; // 28/10 à Paris
 const ann = (o) => ({ id: 'a1', date_pub: '2026-10-30', heure: '10:15', ville: 'Créteil', dept: 'IDF', collab_id: null, produit: 'Lit coffre blanc', dim: '160x200', validation: 'OFF', statut: 'À publier', lien: '', ...o });
 
 test('liste fermée : suppression, prix, publication refusés', () => {
@@ -17,7 +18,8 @@ test('produits : forme du boost et de la pression, confirmation exige un identif
   assert.match(controlerDemande({ action: 'boost', produit: 'matelas 140', pct: 300, jours: 3 }, T), /\+25, \+50 ou \+100/);
   assert.match(controlerDemande({ action: 'boost', produit: 'matelas 140', pct: 50, jours: 30 }, T), /1, 3 ou 7 jours/);
   assert.match(controlerDemande({ action: 'boost', produit: 'matelas 140', pct: 50, jours: 3, confirme: true }, T), /refais l’aperçu/);
-  assert.equal(controlerDemande({ action: 'boost', produitId: 'P-12', pct: 50, jours: 3, confirme: true }, T), null);
+  assert.match(controlerDemande({ action: 'boost', produitId: 'P-12', pct: 50, jours: 3, confirme: true }, T), /jeton/);
+  assert.equal(controlerDemande({ action: 'boost', produitId: 'P-12', pct: 50, jours: 3, confirme: true, jeton: J }, T), null);
   assert.match(controlerDemande({ action: 'boost', produitId: "x'; drop", pct: 50, jours: 3 }, T), /invalide/);
   assert.match(controlerDemande({ action: 'poids_zone', produit: 'lit', zone: 'nord', poids: 50 }, T), /zone idf ou prov/);
   assert.match(controlerDemande({ action: 'poids_zone', produit: 'lit', zone: 'idf', poids: 120 }, T), /0 à 100/);
@@ -34,10 +36,11 @@ test('annonces : jour passé, trop lointain, nouvelle date, liste confirmée', (
   assert.match(controlerDemande({ action: 'decaler', filtre: { date: '2026-10-30' }, nouvelleDate: '2026-10-30' }, T), /même/);
   assert.match(controlerDemande({ action: 'decaler', filtre: { date: '2026-10-30' }, nouvelleDate: '2026-10-20' }, T), /passé/);
   assert.equal(controlerDemande({ action: 'decaler', filtre: { date: '2026-10-30' }, nouvelleDate: '2026-10-31' }, T), null);
-  assert.match(controlerDemande({ action: 'bloquer', filtre: { date: '2026-10-30' }, confirme: true }, T), /refais l’aperçu/);
-  assert.match(controlerDemande({ action: 'bloquer', filtre: { date: '2026-10-30' }, confirme: true, ids: Array.from({ length: MAX_ANNONCES + 1 }, (_, i) => 'a' + i) }, T), /100 annonces au plus/);
-  assert.match(controlerDemande({ action: 'bloquer', filtre: { date: '2026-10-30' }, confirme: true, ids: ['a1', 'a1'] }, T), /double/);
-  assert.equal(controlerDemande({ action: 'bloquer', filtre: { date: '2026-10-30' }, confirme: true, ids: ['a1', 'a2'] }, T), null);
+  assert.match(controlerDemande({ action: 'bloquer', filtre: { date: '2026-10-30' }, confirme: true, ids: ['a1'] }, T), /jeton/);
+  assert.match(controlerDemande({ action: 'bloquer', filtre: { date: '2026-10-30' }, confirme: true, jeton: J }, T), /refais l’aperçu/);
+  assert.match(controlerDemande({ action: 'bloquer', filtre: { date: '2026-10-30' }, confirme: true, ids: Array.from({ length: MAX_ANNONCES + 1 }, (_, i) => 'a' + i), jeton: J }, T), /100 annonces au plus/);
+  assert.match(controlerDemande({ action: 'bloquer', filtre: { date: '2026-10-30' }, confirme: true, ids: ['a1', 'a1'], jeton: J }, T), /double/);
+  assert.equal(controlerDemande({ action: 'bloquer', filtre: { date: '2026-10-30' }, confirme: true, ids: ['a1', 'a2'], jeton: J }, T), null);
 });
 
 test('filtre : jour, zone, produit (dimensions écrites de plusieurs façons)', () => {
@@ -90,4 +93,12 @@ test('produits : recherche par mots, inactifs exclus ; vue sans champ superflu ;
   assert.deepEqual(trouverProduits(P, 'lit coffre'), []);
   assert.deepEqual(Object.keys(vueAnnonce(ann({ texte: 'description', photo: 'x.jpg', commentaire: 'note' }))).sort(), ['date_pub', 'dim', 'heure', 'id', 'produit', 'statut', 'ville', 'zone']);
   assert.equal(egal('abc', 'abc'), true); assert.equal(egal('abc', 'abd'), false); assert.equal(egal('', ''), false);
+});
+
+test('paramètres figés avec l’aperçu : seulement ce qui change l’écriture ; jeton au format UUID', () => {
+  assert.deepEqual(parametres({ action: 'boost', produit: 'matelas', produitId: 'P1', pct: '50', jours: 3, confirme: true, jeton: J }), { pct: 50, jours: 3 });
+  assert.deepEqual(parametres({ action: 'decaler', filtre: { date: '2026-10-30', produit: 'lit', zone: 'pb' }, nouvelleDate: '2026-10-31', ids: ['a'] }), { filtre: { date: '2026-10-30', produit: 'lit', zone: 'pb' }, nouvelleDate: '2026-10-31' });
+  assert.deepEqual(parametres({ action: 'bloquer', filtre: { date: '2026-10-30' } }), { filtre: { date: '2026-10-30' } });
+  assert.deepEqual(parametres({ action: 'fin_boost', produit: 'x' }), {});
+  assert.equal(jetonValide(J), true); assert.equal(jetonValide('abc'), false); assert.equal(jetonValide("'; drop"), false);
 });

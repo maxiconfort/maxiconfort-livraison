@@ -147,8 +147,14 @@ Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site S
   - `bloquer`, `debloquer` et `decaler` : annonces d'un jour donné (aujourd'hui à J+30), filtrées par produit et par zone, **jamais** passées ni déjà publiées (validées ou avec un lien), 100 au plus.
 
   Rien d'autre : pas de suppression, de prix, de titre, de catalogue ni de publication.
-- **À la confirmation**, chaque annonce de la liste de l'aperçu est recontrôlée. Si une seule a changé, rien n'est écrit (409). L'écriture garde aussi les conditions côté base : même jour, non validée, statut attendu.
+- **Aperçu enregistré, confirmation atomique** (migration `036_lbc_action.sql`, réserves Codex de la PR #6) :
+  - l'aperçu est enregistré par la base (`lbc_action_apercus` : paramètres exacts, cibles, **empreinte** de chaque ligne) et renvoie un **jeton** à usage unique valable 10 min ;
+  - la confirmation passe par `public.lbc_action_appliquer(jeton, action, paramètres)`, qui ne fait **qu'une transaction** : lignes verrouillées, mêmes paramètres, empreinte identique (heure, ville, statut, lien, validation…), toujours à venir et non publiée. Au moindre écart, **rien n'est écrit** (409) ;
+  - journal en ajout seul `lbc_actions_journal` (jeton, action, cibles, avant/après, résultat) ;
+  - exécution réservée à la clé serveur.
+
+  La validation humaine se fait dans JARVIS (« Appliquer » + « Confirmer ») ; le jeton prouve que la confirmation porte exactement sur l'aperçu montré.
 - Le boost et la pression s'appliquent aux jours **générés ensuite** dans l'outil LBC ; le planning déjà généré ne change pas.
 - **Appelant** : en-tête `x-lbc-secret`, qui doit contenir le secret `LBC_ACTION_SECRET` (dédié). Le changer suffit à couper JARVIS.
-- **Tests** : `node --test supabase/tests/*.test.mjs` (dont `lbc-action.test.mjs`).
-- **Mise en service** (Borhen) : `npx supabase secrets set LBC_ACTION_SECRET=… --project-ref jmvfjtnmebstkzcfnlgp`, puis `npx supabase functions deploy lbc-action --project-ref jmvfjtnmebstkzcfnlgp --no-verify-jwt --use-api`.
+- **Tests** : `node --test supabase/tests/*.test.mjs` (dont `lbc-action.test.mjs`) ; test **Postgres réel** de la migration : `npm i --no-save @electric-sql/pglite@0.2.17` puis `node --test supabase/tests/lbc-action-sql.test.mjs`.
+- **Mise en service** (Borhen) : appliquer la migration 036, puis `npx supabase secrets set LBC_ACTION_SECRET=… --project-ref jmvfjtnmebstkzcfnlgp`, puis `npx supabase functions deploy lbc-action --project-ref jmvfjtnmebstkzcfnlgp --no-verify-jwt --use-api`.

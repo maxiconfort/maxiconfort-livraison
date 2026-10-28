@@ -15,7 +15,7 @@ export type ZoneFiltre = 'idf' | 'pa' | 'pb' | 'prov';
 export type FiltreLbc = { date?: string; produit?: string; zone?: ZoneFiltre };
 export type DemandeLbc = {
   action: string; produit?: string; produitId?: string; pct?: number; jours?: number; zone?: string; poids?: number;
-  filtre?: FiltreLbc; ids?: string[]; nouvelleDate?: string; confirme?: boolean;
+  filtre?: FiltreLbc; ids?: string[]; nouvelleDate?: string; confirme?: boolean; jeton?: string;
 };
 export type ProduitLbc = { id: string; nom?: string | null; dim?: string | null; actif?: boolean | null; boost_pct?: number | null; boost_until?: string | null; poids_idf?: number | null; poids_prov?: number | null };
 export type AnnonceLbc = { id: string; date_pub?: string | null; heure?: string | null; ville?: string | null; dept?: string | null; collab_id?: string | null; produit?: string | null; dim?: string | null; validation?: string | null; statut?: string | null; lien?: string | null };
@@ -45,6 +45,23 @@ function correspond(texte: string, cible: string): boolean {
   return mots(texte).every((m) => c.some((t) => (/^\d+$/.test(m) ? t === m || t.split('x').includes(m) : t === m || (m.length >= 3 && t.startsWith(m)) || (m.includes('x') && t === m))));
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const jetonValide = (j: unknown) => typeof j === 'string' && UUID.test(j);
+
+/** Paramètres EXACTS enregistrés avec l'aperçu et comparés à la confirmation (migration 036) : tout ce qui change l'écriture,
+ *  rien d'autre (les cibles sont figées à part, avec leur empreinte). Fonction pure, ordre des clés indifférent (jsonb). */
+export function parametres(d: DemandeLbc): Record<string, unknown> {
+  const o: Record<string, unknown> = {};
+  if (d.action === 'boost') { o.pct = Number(d.pct); o.jours = Number(d.jours); }
+  if (d.action === 'poids_zone') { o.zone = d.zone; o.poids = d.poids; }
+  if (ACTIONS_ANNONCE.includes(d.action)) {
+    const f: Record<string, unknown> = { date: d.filtre?.date };
+    if (d.filtre?.produit) f.produit = d.filtre.produit; if (d.filtre?.zone) f.zone = d.filtre.zone;
+    o.filtre = f; if (d.action === 'decaler') o.nouvelleDate = d.nouvelleDate;
+  }
+  return o;
+}
+
 /** Contrôle de forme (aucune lecture). Renvoie le motif du refus, ou null. */
 export function controlerDemande(d: DemandeLbc, maintenant: number): string | null {
   if (!d || typeof d !== 'object') return 'demande illisible';
@@ -53,6 +70,7 @@ export function controlerDemande(d: DemandeLbc, maintenant: number): string | nu
   const auj = jourParis(maintenant), max = plus(auj, 30);
   if (ACTIONS_PRODUIT.includes(a)) {
     if (d.confirme === true && !(typeof d.produitId === 'string' && ID.test(d.produitId))) return 'confirmation sans produit précis : refais l’aperçu';
+    if (d.confirme === true && !jetonValide(d.jeton)) return 'confirmation sans jeton d’aperçu : refais l’aperçu';
     if (d.produitId !== undefined && !(typeof d.produitId === 'string' && ID.test(d.produitId))) return 'identifiant de produit invalide';
     if (d.produitId === undefined && (typeof d.produit !== 'string' || norm(d.produit).length < 2 || d.produit.length > 80)) return 'précise le produit (2 à 80 caractères)';
     if (a === 'boost' && (![25, 50, 100].includes(Number(d.pct)) || ![1, 3, 7].includes(Number(d.jours)))) return 'boost : +25, +50 ou +100 %, pendant 1, 3 ou 7 jours';
@@ -72,6 +90,7 @@ export function controlerDemande(d: DemandeLbc, maintenant: number): string | nu
     if (d.nouvelleDate === f.date) return 'le nouveau jour est le même que l’ancien';
   }
   if (d.confirme === true) {
+    if (!jetonValide(d.jeton)) return 'confirmation sans jeton d’aperçu : refais l’aperçu';
     if (!Array.isArray(d.ids) || !d.ids.length) return 'confirmation sans liste d’annonces : refais l’aperçu';
     if (d.ids.length > MAX_ANNONCES) return `${MAX_ANNONCES} annonces au plus par action`;
     if (d.ids.some((x) => typeof x !== 'string' || !ID.test(x))) return 'identifiant d’annonce invalide';
