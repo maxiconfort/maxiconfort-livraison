@@ -107,3 +107,20 @@ test('réserves Codex #6 (3e passage) : échéance du boost figée à l’aperç
   assert.equal(verifierProduit({ id: 'x', boost_pct: null, boost_until: '' }, { boost_pct: null, boost_until: null }), true, 'fin de boost : vide = null');
   assert.equal(normaliserChamp('boost_pct', '50'), 50); assert.equal(normaliserChamp('boost_until', '2026-10-31T00:00:00+00'), '2026-10-31');
 });
+
+test('réserves Codex #6 (4e passage) : recherche sans mot exploitable refusée ; panne de lecture ≠ absence de résultat', async () => {
+  const { controlerDemande, trouverProduits, dansFiltre } = await import('../functions/_shared/lbc-action-logique.ts');
+  // 1. « !! » ne sélectionne JAMAIS tout
+  assert.match(controlerDemande({ action: 'bloquer', filtre: { date: '2026-10-30', produit: '!!' } }, T), /aucun mot exploitable|sans mot exploitable/);
+  assert.match(controlerDemande({ action: 'boost', produit: '!! ??', pct: 50, jours: 3 }, T), /aucun mot exploitable/);
+  assert.equal(controlerDemande({ action: 'bloquer', filtre: { date: '2026-10-30', produit: 'lit coffre' } }, T), null);
+  assert.equal(controlerDemande({ action: 'bloquer', filtre: { date: '2026-10-30' } }, T), null, 'sans produit : tout le jour, voulu');
+  assert.deepEqual(trouverProduits([{ id: '1', nom: 'Matelas' }, { id: '2', nom: 'Lit' }], '!!'), []);
+  assert.equal(dansFiltre(ann({}), { date: '2026-10-30', produit: '!!' }), false);
+  // 2. Pannes de lecture à l'aperçu : 502 explicite, jamais « ok, aucune annonce »
+  const panne = { message: 'timeout', code: '' };
+  const enPanne = (table) => { const b = base({ annonces: [ann({})], produits: [{ id: 'P1', nom: 'Matelas', actif: true }], rpc: () => ({ data: { jeton: J, lignes: [] }, error: null }) }); const from0 = b.sb.from; b.sb.from = (t) => { const q = from0(t); if (t === table) q.erreur = panne; return q; }; return b.sb; };
+  let r = await traiter(BLOQUER, enPanne('lbc_annonces'), T); assert.equal(r.code, 502); assert.equal(r.corps.code, 'LECTURE'); assert.notEqual(r.corps.ok, true);
+  r = await traiter({ action: 'boost', produit: 'matelas', pct: 50, jours: 3 }, enPanne('lbc_produits'), T); assert.equal(r.code, 502); assert.match(r.corps.erreur, /illisible/);
+  r = await traiter({ action: 'boost', produitId: 'P1', pct: 50, jours: 3 }, enPanne('lbc_produits'), T); assert.equal(r.code, 502); assert.doesNotMatch(r.corps.erreur, /introuvable/);
+});

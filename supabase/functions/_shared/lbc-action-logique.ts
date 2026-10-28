@@ -39,10 +39,11 @@ export const norm = (s: unknown) => String(s ?? '').toLowerCase().normalize('NFD
 /** Mots de recherche (« lit coffre 160 » → [lit, coffre, 160]) ; « 160x200 » et « 160 x 200 » sont équivalents. */
 const mots = (s: unknown) => norm(s).replace(/(\d)\s*[x×*]\s*(\d)/g, '$1x$2').split(/[^a-z0-9x]+/).filter((m) => m.length >= 2 || /\d/.test(m));
 function correspond(texte: string, cible: string): boolean {
+  const m0 = mots(texte); if (!m0.length) return false; // recherche sans mot exploitable (« !! ») : rien ne correspond (réserve Codex #6)
   const c = mots(cible);
   // Un nombre (« 160 ») doit être une dimension entière (« 160 », « 160x200 », « 140x160 ») : jamais « 1600 ».
   // Un mot doit être un mot de la cible ou son début (« coff » → « coffre »).
-  return mots(texte).every((m) => c.some((t) => (/^\d+$/.test(m) ? t === m || t.split('x').includes(m) : t === m || (m.length >= 3 && t.startsWith(m)) || (m.includes('x') && t === m))));
+  return m0.every((m) => c.some((t) => (/^\d+$/.test(m) ? t === m || t.split('x').includes(m) : t === m || (m.length >= 3 && t.startsWith(m)) || (m.includes('x') && t === m))));
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -73,6 +74,7 @@ export function controlerDemande(d: DemandeLbc, maintenant: number): string | nu
     if (d.confirme === true && !jetonValide(d.jeton)) return 'confirmation sans jeton d’aperçu : refais l’aperçu';
     if (d.produitId !== undefined && !(typeof d.produitId === 'string' && ID.test(d.produitId))) return 'identifiant de produit invalide';
     if (d.produitId === undefined && (typeof d.produit !== 'string' || norm(d.produit).length < 2 || d.produit.length > 80)) return 'précise le produit (2 à 80 caractères)';
+    if (d.produitId === undefined && !mots(d.produit).length) return 'précise le produit : aucun mot exploitable (lettres ou dimensions)';
     if (a === 'boost' && (![25, 50, 100].includes(Number(d.pct)) || ![1, 3, 7].includes(Number(d.jours)))) return 'boost : +25, +50 ou +100 %, pendant 1, 3 ou 7 jours';
     if (a === 'poids_zone' && (!['idf', 'prov'].includes(String(d.zone)) || !Number.isInteger(d.poids) || (d.poids as number) < 0 || (d.poids as number) > 100)) return 'pression : zone idf ou prov, poids de 0 à 100';
     return null;
@@ -82,6 +84,8 @@ export function controlerDemande(d: DemandeLbc, maintenant: number): string | nu
   if (f.date < auj) return 'jour passé : le planning passé ne se modifie pas';
   if (f.date > max) return 'jour trop lointain (30 jours au plus)';
   if (f.produit !== undefined && (typeof f.produit !== 'string' || f.produit.length > 80)) return 'produit du filtre invalide';
+  // Une recherche NON VIDE sans aucun mot exploitable (« !! ») ne doit jamais devenir « tous les produits » (réserve Codex #6).
+  if (typeof f.produit === 'string' && f.produit.trim() && !mots(f.produit).length) return 'produit du filtre sans mot exploitable : précise-le ou retire-le';
   if (f.zone !== undefined && !['idf', 'pa', 'pb', 'prov'].includes(String(f.zone))) return 'zone du filtre invalide (idf, pa, pb, prov)';
   if (a === 'decaler') {
     if (!dateValide(d.nouvelleDate)) return 'précise le nouveau jour (AAAA-MM-JJ)';

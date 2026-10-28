@@ -65,11 +65,13 @@ async function apercu(d: DemandeLbc, sb: any, maintenant: number): Promise<Repon
   if (ACTIONS_PRODUIT.includes(d.action)) {
     let p: ProduitLbc | null = null;
     if (d.produitId) {
-      const { data } = await sb.from('lbc_produits').select(COL_PROD).eq('id', d.produitId).maybeSingle();
+      const { data, error } = await sb.from('lbc_produits').select(COL_PROD).eq('id', d.produitId).maybeSingle();
+      if (error) return r(502, { ok: false, code: 'LECTURE', erreur: 'catalogue Leboncoin illisible pour l’instant : réessaie' }); // panne ≠ « introuvable »
       p = (data as ProduitLbc) || null;
       if (!p || p.actif === false) return r(422, { ok: false, erreur: 'produit introuvable ou inactif' });
     } else {
-      const { data } = await sb.from('lbc_produits').select(COL_PROD).limit(1000);
+      const { data, error } = await sb.from('lbc_produits').select(COL_PROD).limit(1000);
+      if (error || !Array.isArray(data)) return r(502, { ok: false, code: 'LECTURE', erreur: 'catalogue Leboncoin illisible pour l’instant : réessaie' }); // panne ≠ « aucun produit »
       const l = trouverProduits((data || []) as ProduitLbc[], String(d.produit));
       if (!l.length) return r(422, { ok: false, erreur: 'aucun produit du catalogue Leboncoin ne correspond' });
       if (l.length > 1) return r(200, { ok: true, action: d.action, confirme: false, ambigu: true, candidats: l.slice(0, 12).map(vueProduit) });
@@ -87,7 +89,8 @@ async function apercu(d: DemandeLbc, sb: any, maintenant: number): Promise<Repon
     return r(200, { ok: true, action: d.action, confirme: false, produit: vueProduit(fige), apres, jeton: e.jeton });
   }
   const f = d.filtre!;
-  const { data } = await sb.from('lbc_annonces').select(COL_ANN).eq('date_pub', f.date).limit(2000);
+  const { data, error } = await sb.from('lbc_annonces').select(COL_ANN).eq('date_pub', f.date).limit(2000);
+  if (error || !Array.isArray(data)) return r(502, { ok: false, code: 'LECTURE', erreur: 'planning Leboncoin illisible pour l’instant : réessaie' }); // panne ≠ « aucune annonce »
   const dans = ((data || []) as AnnonceLbc[]).filter((a) => dansFiltre(a, f));
   const ok: AnnonceLbc[] = [], ecartees: Record<string, number> = {};
   for (const a of dans) { const m = refusAnnonce(a, d.action, maintenant); if (m) ecartees[m] = (ecartees[m] || 0) + 1; else ok.push(a); }

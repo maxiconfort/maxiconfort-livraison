@@ -155,7 +155,8 @@ Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site S
   - (2e passage Codex) l'aperçu affiche les lignes **renvoyées par la base** avec leurs empreintes, lues dans la même instruction ; si une ligne ne passe plus le filtre ou les protections entre les deux lectures → 409 ;
   - la confirmation transmet les cibles (`p_ids`), refusées si elles diffèrent du jeton (jeton brûlé) ;
   - la relecture porte sur les cibles renvoyées par la transaction et elle est **vérifiée**. Toute incertitude (réseau, réponse illisible, relecture impossible ou différente) = **502 INDÉTERMINÉ** ; seule une erreur SQL certaine = 500 « rien n'a été modifié » ;
-  - (3e passage Codex) empreintes calculées sur un tableau JSON (positions et NULL conservés : plus de collision `concat_ws`) ; échéance d'un boost **figée** dans le jeton à l'aperçu (champ `jusqu`, de demain à J+7) et écrite telle quelle, même après minuit ; relecture tolérante aux nombres stockés en texte (`normaliserChamp`).
+  - (3e passage Codex) empreintes calculées sur un tableau JSON (positions et NULL conservés : plus de collision `concat_ws`) ; échéance d'un boost **figée** dans le jeton à l'aperçu (champ `jusqu`, de demain à J+7) et écrite telle quelle, même après minuit ; relecture tolérante aux nombres stockés en texte (`normaliserChamp`) ;
+  - (4e passage Codex) une recherche de produit sans aucun mot exploitable (« !! ») est refusée et ne sélectionne jamais tout ; une panne de lecture à l'aperçu donne 502 « illisible » (`LECTURE`), jamais « aucune annonce » ni « produit introuvable ».
 
   Logique de la fonction : `_shared/lbc-action-traitement.ts` (testée sous Node avec une base simulée : `lbc-action-traitement.test.mjs`).
 
