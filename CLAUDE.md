@@ -156,7 +156,8 @@ Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site S
   - la confirmation transmet les cibles (`p_ids`), refusées si elles diffèrent du jeton (jeton brûlé) ;
   - la relecture porte sur les cibles renvoyées par la transaction et elle est **vérifiée**. Toute incertitude (réseau, réponse illisible, relecture impossible ou différente) = **502 INDÉTERMINÉ** ; seule une erreur SQL certaine = 500 « rien n'a été modifié » ;
   - (3e passage Codex) empreintes calculées sur un tableau JSON (positions et NULL conservés : plus de collision `concat_ws`) ; échéance d'un boost **figée** dans le jeton à l'aperçu (champ `jusqu`, de demain à J+7) et écrite telle quelle, même après minuit ; relecture tolérante aux nombres stockés en texte (`normaliserChamp`) ;
-  - (4e passage Codex) une recherche de produit sans aucun mot exploitable (« !! ») est refusée et ne sélectionne jamais tout ; une panne de lecture à l'aperçu donne 502 « illisible » (`LECTURE`), jamais « aucune annonce » ni « produit introuvable ».
+  - (4e passage Codex) une recherche de produit sans aucun mot exploitable (« !! ») est refusée et ne sélectionne jamais tout ; une panne de lecture à l'aperçu donne 502 « illisible » (`LECTURE`), jamais « aucune annonce » ni « produit introuvable » ;
+  - (5e passage Codex) seules les erreurs SQL qui prouvent une annulation (classes 22, 23, 25, 42, 53, 54, 55, P0 ; 40001, 40P01, 57014) donnent 500 « rien n'a été modifié » ; 08xxx, 40003, 57P0x, XX et tout code inconnu donnent 502 INDÉTERMINÉ ; la recherche de produit par nom lit le catalogue **en entier**, page par page (20 pages au plus, sinon refus).
 
   Logique de la fonction : `_shared/lbc-action-traitement.ts` (testée sous Node avec une base simulée : `lbc-action-traitement.test.mjs`).
 

@@ -18,7 +18,15 @@ export type Reponse = { code: number; corps: Record<string, unknown> };
 const r = (code: number, corps: Record<string, unknown>): Reponse => ({ code, corps });
 const INDETERMINE = (detail: string) => r(502, { ok: false, code: 'INDETERMINE', erreur: 'résultat non vérifié : l’ordre a peut-être été appliqué. Regarde le planning dans l’outil LBC avant de recommencer. (' + detail + ')' });
 /** Erreur renvoyée par Postgres (transaction annulée, certain) ou incertitude de transport ? */
-export const erreurSqlCertaine = (e: any) => !!e && typeof e.code === 'string' && /^[0-9A-Z]{5}$/.test(e.code);
+// Réserve Codex #6 (5e passage) : seules les erreurs qui prouvent une ANNULATION de la transaction sont « certaines ».
+// 08xxx (connexion perdue, dont 08007 : résolution de transaction inconnue), 40003 (achèvement inconnu), 57P0x (arrêt du
+// serveur), XX (erreur interne) et tout code inconnu = INCERTAIN → 502 INDÉTERMINÉ.
+const CLASSES_ANNULATION = ['22', '23', '25', '42', '53', '54', '55', 'P0'];
+const CODES_ANNULATION = ['40001', '40P01', '57014'];
+export const erreurSqlCertaine = (e: any) => {
+  if (!e || typeof e.code !== 'string' || !/^[0-9A-Z]{5}$/.test(e.code)) return false;
+  return CODES_ANNULATION.includes(e.code) || CLASSES_ANNULATION.includes(e.code.slice(0, 2));
+};
 
 async function enregistrer(sb: any, d: DemandeLbc, ids: string[], fige: Record<string, unknown> = {}): Promise<{ jeton: string; lignes: any[] } | null> {
   const { data, error } = await sb.rpc('lbc_action_enregistrer_apercu', { p_action: d.action, p_demande: { ...parametres(d), ...fige }, p_ids: ids });
@@ -70,9 +78,16 @@ async function apercu(d: DemandeLbc, sb: any, maintenant: number): Promise<Repon
       p = (data as ProduitLbc) || null;
       if (!p || p.actif === false) return r(422, { ok: false, erreur: 'produit introuvable ou inactif' });
     } else {
-      const { data, error } = await sb.from('lbc_produits').select(COL_PROD).limit(1000);
-      if (error || !Array.isArray(data)) return r(502, { ok: false, code: 'LECTURE', erreur: 'catalogue Leboncoin illisible pour l’instant : réessaie' }); // panne ≠ « aucun produit »
-      const l = trouverProduits((data || []) as ProduitLbc[], String(d.produit));
+      // Catalogue lu EN ENTIER, page par page (la base renvoie 1 000 lignes au plus par requête) : un produit au-delà ne
+      // peut plus être ignoré, ni rendre « unique » un produit qui ne l'est pas (réserve Codex #6). Plus de 20 pages : refus.
+      const tous: ProduitLbc[] = [];
+      for (let page = 0; ; page++) {
+        if (page >= 20) return r(422, { ok: false, code: 'CATALOGUE', erreur: 'catalogue trop grand pour une recherche par nom : précise le produit par son identifiant' });
+        const { data, error } = await sb.from('lbc_produits').select(COL_PROD).order('id', { ascending: true }).range(page * 1000, page * 1000 + 999);
+        if (error || !Array.isArray(data)) return r(502, { ok: false, code: 'LECTURE', erreur: 'catalogue Leboncoin illisible pour l’instant : réessaie' }); // panne ≠ « aucun produit »
+        tous.push(...(data as ProduitLbc[])); if (data.length < 1000) break;
+      }
+      const l = trouverProduits(tous, String(d.produit));
       if (!l.length) return r(422, { ok: false, erreur: 'aucun produit du catalogue Leboncoin ne correspond' });
       if (l.length > 1) return r(200, { ok: true, action: d.action, confirme: false, ambigu: true, candidats: l.slice(0, 12).map(vueProduit) });
       p = l[0];

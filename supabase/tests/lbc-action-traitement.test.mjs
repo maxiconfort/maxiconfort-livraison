@@ -15,8 +15,8 @@ function base({ annonces = [], produits = [], rpc }) {
   const from = (table) => {
     const q = { table, filtres: [] };
     const b = {
-      select() { return b; }, eq(k, v) { q.filtres.push((x) => String(x[k]) === String(v)); return b; }, in(k, l) { q.filtres.push((x) => l.includes(x[k])); q.in = l; return b; }, limit() { return b; },
-      run() { vus.lectures.push(q); if (b.erreur) return { data: null, error: b.erreur }; const t = table === 'lbc_annonces' ? annonces : produits; return { data: t.filter((x) => q.filtres.every((f) => f(x))).map((x) => ({ ...x })), error: null }; },
+      select() { return b; }, order() { return b; }, range(de, a) { q.range = [de, a]; return b; }, eq(k, v) { q.filtres.push((x) => String(x[k]) === String(v)); return b; }, in(k, l) { q.filtres.push((x) => l.includes(x[k])); q.in = l; return b; }, limit() { return b; },
+      run() { vus.lectures.push(q); if (b.erreur) return { data: null, error: b.erreur }; const t = table === 'lbc_annonces' ? annonces : produits; let l = t.filter((x) => q.filtres.every((f) => f(x))).map((x) => ({ ...x })); if (q.range) l = l.slice(q.range[0], q.range[1] + 1); else l = l.slice(0, base.maxLignes || 1e9); return { data: l, error: null }; },
       maybeSingle() { const r = b.run(); return Promise.resolve({ data: r.data ? r.data[0] || null : null, error: r.error }); },
       then(ok, ko) { return Promise.resolve(b.run()).then(ok, ko); },
     };
@@ -123,4 +123,22 @@ test('réserves Codex #6 (4e passage) : recherche sans mot exploitable refusée 
   let r = await traiter(BLOQUER, enPanne('lbc_annonces'), T); assert.equal(r.code, 502); assert.equal(r.corps.code, 'LECTURE'); assert.notEqual(r.corps.ok, true);
   r = await traiter({ action: 'boost', produit: 'matelas', pct: 50, jours: 3 }, enPanne('lbc_produits'), T); assert.equal(r.code, 502); assert.match(r.corps.erreur, /illisible/);
   r = await traiter({ action: 'boost', produitId: 'P1', pct: 50, jours: 3 }, enPanne('lbc_produits'), T); assert.equal(r.code, 502); assert.doesNotMatch(r.corps.erreur, /introuvable/);
+});
+
+test('réserves Codex #6 (5e passage) : seules les annulations établies sont « certaines » ; catalogue lu en entier', async () => {
+  for (const code of ['08007', '08006', '08003', '40003', '57P01', 'XX000', 'ZZ999']) assert.equal(erreurSqlCertaine({ code }), false, code);
+  for (const code of ['P0001', '23505', '22P02', '40001', '40P01', '57014', '42501']) assert.equal(erreurSqlCertaine({ code }), true, code);
+  for (const code of ['08007', '40003']) {
+    const r = await traiter({ ...BLOQUER, confirme: true, jeton: J, ids: ['a1'] }, base({ annonces: [ann({})], rpc: () => ({ data: null, error: { code, message: 'x' } }) }).sb, T);
+    assert.equal(r.code, 502, code); assert.equal(r.corps.code, 'INDETERMINE'); assert.doesNotMatch(r.corps.erreur, /rien n’a été modifié/);
+  }
+  // 1 500 produits : la 2e correspondance est au-delà des 1 000 premiers → la recherche voit l'ambiguïté
+  const produits = Array.from({ length: 1500 }, (_, i) => ({ id: 'P' + String(i).padStart(4, '0'), nom: 'Article ' + i, dim: '', actif: true }));
+  produits[10] = { id: 'P0010', nom: 'Matelas Confort', dim: '140x190', actif: true }; produits[1400] = { id: 'P1400', nom: 'Matelas Confort', dim: '140x190', actif: true };
+  const b = base({ produits, rpc: () => ({ data: { jeton: J, lignes: [] }, error: null }) });
+  const r = await traiter({ action: 'boost', produit: 'matelas confort', pct: 50, jours: 3 }, b.sb, T);
+  assert.equal(r.corps.ambigu, true, 'les deux matelas sont trouvés'); assert.deepEqual(r.corps.candidats.map((c) => c.id), ['P0010', 'P1400']);
+  assert.ok(b.vus.lectures.filter((q) => q.table === 'lbc_produits').length >= 2, 'lecture par pages');
+  const g = base({ produits: Array.from({ length: 21000 }, (_, i) => ({ id: 'X' + i, nom: 'Article', actif: true })), rpc: () => ({}) });
+  assert.equal((await traiter({ action: 'boost', produit: 'matelas', pct: 50, jours: 3 }, g.sb, T)).corps.code, 'CATALOGUE');
 });
