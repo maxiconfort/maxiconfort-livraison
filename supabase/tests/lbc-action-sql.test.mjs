@@ -47,7 +47,7 @@ async function essai(typeDate) {
   j = await ap('decaler', { ...D, nouvelleDate: plus(4) }, ['a2']); res.decale = (await app(j, 'decaler', { ...D, nouvelleDate: plus(4) })).modifiees;
   res.dateA2 = (await q(`select date_pub::text d from lbc_annonces where id='a2'`)).d.slice(0, 10) === plus(4);
   // 6. produit : boost, puis produit modifié entre aperçu et confirmation
-  j = await ap('boost', { pct: 50, jours: 3 }, ['P1']); res.boost = (await app(j, 'boost', { pct: 50, jours: 3 })).ok;
+  j = await ap('boost', { pct: 50, jours: 3, jusqu: plus(3) }, ['P1']); res.boost = (await app(j, 'boost', { pct: 50, jours: 3 })).ok;
   res.boostVal = await q(`select boost_pct::text b, boost_until::text u from lbc_produits`);
   j = await ap('poids_zone', { zone: 'idf', poids: 70 }, ['P1']); await db.query(`update lbc_produits set boost_pct=25`);
   res.produitChange = (await app(j, 'poids_zone', { zone: 'idf', poids: 70 })).code;
@@ -64,6 +64,20 @@ async function essai(typeDate) {
   j = await ap('bloquer', D, ['a1', 'a2']); res.retrait = (await app(j, 'bloquer', D, ['a1'])).code;
   res.rienEcrit2 = st0 === (await db.query(`select string_agg(id || statut, ',' order by id) s from lbc_annonces`)).rows[0].s;
   j = await ap('bloquer', D, ['a1', 'a2']); const ok2 = await app(j, 'bloquer', D, ['a2', 'a1']); res.ordreLibre = ok2.ok; res.ciblesRenvoyees = ok2.cibles;
+  // 10. (3e passage) échéance du boost FIGÉE dans le jeton : c'est elle qui est écrite (même si la confirmation la recalculerait
+  //     autrement, ex. après minuit) ; absente ou hors bornes : aperçu refusé
+  j = await ap('boost', { pct: 25, jours: 1, jusqu: plus(1) }, ['P1']);
+  await db.query(`update lbc_action_apercus set demande = jsonb_set(demande, '{jusqu}', to_jsonb($2::text)) where jeton = $1`, [j, plus(2)]); // simule « montré : J+2 »
+  const fige = await app(j, 'boost', { pct: 25, jours: 1 }); res.figeOk = fige.ok; res.figeRenvoye = fige.jusqu; res.figeAttendu = plus(2);
+  res.figeEcrit = String((await q(`select boost_until::text u from lbc_produits`)).u).slice(0, 10) === plus(2);
+  for (const [nom, dem] of [['sansEcheance', { pct: 50, jours: 3 }], ['echeancePassee', { pct: 50, jours: 3, jusqu: plus(0) }], ['echeanceLointaine', { pct: 50, jours: 3, jusqu: plus(9) }]]) {
+    try { await apLignes('boost', dem, ['P1']); res[nom] = 'ACCEPTÉ'; } catch { res[nom] = 'refusé'; }
+  }
+  // 11. (3e passage) empreinte structurée : nom=NULL/dim='160' et nom='160'/dim=NULL ne se confondent plus
+  await db.query(`insert into lbc_produits values ('P9', null, '160', true, null, null, null, null, null)`);
+  j = await ap('poids_zone', { zone: 'prov', poids: 40 }, ['P9']);
+  await db.query(`update lbc_produits set nom = '160', dim = null where id = 'P9'`);
+  res.collision = (await app(j, 'poids_zone', { zone: 'prov', poids: 40 })).code;
   // 8. journal : ajout seul ; anon n'exécute pas
   res.journal = (await q(`select count(*) n, sum((resultat='OK')::int) ok from lbc_actions_journal`));
   try { await db.query(`delete from lbc_actions_journal`); res.suppr = 'POSSIBLE'; } catch (e) { res.suppr = 'refusée'; }
@@ -83,5 +97,8 @@ for (const t of ['date', 'text']) test('migration 036 sur Postgres réel — col
   assert.equal(r.lignes, 'a1:Créteil: a3:Lyon:https://www.leboncoin.fr/ad/1', 'lignes empreintes renvoyées, triées');
   assert.equal(r.substitue, 'APERCU'); assert.equal(r.brule, 'aperçu déjà utilisé'); assert.equal(r.ajout, 'APERCU'); assert.equal(r.retrait, 'APERCU');
   assert.equal(r.rienEcrit2, true); assert.equal(r.ordreLibre, true); assert.deepEqual(r.ciblesRenvoyees, ['a1', 'a2']);
-  assert.equal(Number(r.journal.n), 12); assert.equal(Number(r.journal.ok), 5);
+  assert.equal(r.figeOk, true); assert.equal(r.figeRenvoye, r.figeAttendu, 'la base renvoie l’échéance figée'); assert.equal(r.figeEcrit, true, 'l’échéance figée de l’aperçu est écrite telle quelle');
+  assert.equal(r.sansEcheance, 'refusé'); assert.equal(r.echeancePassee, 'refusé'); assert.equal(r.echeanceLointaine, 'refusé');
+  assert.equal(r.collision, 'CHANGE', 'NULL et valeurs déplacées : empreintes différentes');
+  assert.equal(Number(r.journal.n), 14); assert.equal(Number(r.journal.ok), 6);
 });

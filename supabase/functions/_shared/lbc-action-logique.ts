@@ -144,9 +144,17 @@ export const vueProduit = (p: ProduitLbc) => ({ id: p.id, nom: String(p.nom || '
 export const vueAnnonce = (a: AnnonceLbc) => ({ id: a.id, date_pub: String(a.date_pub || '').slice(0, 10), heure: String(a.heure || '').slice(0, 5), ville: String(a.ville || '').slice(0, 60), produit: String(a.produit || '').slice(0, 120), dim: String(a.dim || '').slice(0, 20), zone: zoneAnnonce(a), statut: String(a.statut || '').slice(0, 20) });
 
 /** Le résultat relu après écriture est-il celui attendu ? (Auditor) */
+/** Valeur comparable d'un champ produit, quel que soit son type en base (nombre ou texte) — réserve Codex #6 : « 50 » lu en
+ *  texte vaut 50 ; une date est comparée sur AAAA-MM-JJ ; vide = null. */
+export function normaliserChamp(k: string, v: unknown): string | number | null {
+  if (v === null || v === undefined || v === '') return null;
+  if (k === 'boost_pct' || k === 'poids_idf' || k === 'poids_prov') { const n = Number(v); return Number.isFinite(n) ? n : String(v); }
+  if (k === 'boost_until') return String(v).slice(0, 10);
+  return String(v);
+}
 export function verifierProduit(p: ProduitLbc | null, patch: Record<string, unknown>): boolean {
   if (!p) return false;
-  return Object.entries(patch).every(([k, v]) => k === 'updated_at' || (p as Record<string, unknown>)[k] === v || ((p as Record<string, unknown>)[k] == null && v == null) || String((p as Record<string, unknown>)[k] ?? '').slice(0, 10) === v);
+  return Object.entries(patch).every(([k, v]) => k === 'updated_at' || normaliserChamp(k, (p as Record<string, unknown>)[k]) === normaliserChamp(k, v));
 }
 export function verifierAnnonces(lues: AnnonceLbc[], ids: string[], patch: Record<string, unknown>): boolean {
   if (!Array.isArray(lues) || lues.length !== ids.length) return false;

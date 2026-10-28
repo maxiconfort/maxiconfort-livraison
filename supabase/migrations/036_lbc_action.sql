@@ -49,14 +49,16 @@ drop trigger if exists lbc_actions_journal_ajout_seul on public.lbc_actions_jour
 create trigger lbc_actions_journal_ajout_seul before update or delete on public.lbc_actions_journal
   for each row execute function interne.lbc_journal_ajout_seul();
 
--- Empreintes : TOUTES les colonnes qui comptent pour la décision de Borhen
+-- Empreintes : TOUTES les colonnes qui comptent pour la décision de Borhen, sur une représentation STRUCTURÉE (tableau JSON :
+-- chaque valeur garde sa position, NULL reste NULL, aucun séparateur à échapper). Réserve Codex #6 : concat_ws ignorait les
+-- NULL (nom=NULL, dim='160' et nom='160', dim=NULL donnaient la même chaîne).
 create or replace function interne.lbc_empreinte_annonce(a public.lbc_annonces) returns text language sql stable as $$
-  select md5(concat_ws('|', a.id::text, a.date_pub::text, a.heure::text, a.ville::text, a.dept::text, a.collab_id::text,
-    a.produit::text, a.dim::text, a.validation::text, a.statut::text, coalesce(a.lien::text, '')))
+  select md5(jsonb_build_array(a.id::text, a.date_pub::text, a.heure::text, a.ville::text, a.dept::text, a.collab_id::text,
+    a.produit::text, a.dim::text, a.validation::text, a.statut::text, a.lien::text)::text)
 $$;
 create or replace function interne.lbc_empreinte_produit(p public.lbc_produits) returns text language sql stable as $$
-  select md5(concat_ws('|', p.id::text, p.nom::text, p.dim::text, p.actif::text, p.boost_pct::text, p.boost_until::text,
-    p.poids_idf::text, p.poids_prov::text))
+  select md5(jsonb_build_array(p.id::text, p.nom::text, p.dim::text, p.actif::text, p.boost_pct::text, p.boost_until::text,
+    p.poids_idf::text, p.poids_prov::text)::text)
 $$;
 create or replace function interne.lbc_jour_paris() returns text language sql stable as $$
   select to_char((now() at time zone 'Europe/Paris')::date, 'YYYY-MM-DD')
@@ -69,6 +71,12 @@ declare v_cibles jsonb; v_lignes jsonb; v_jeton uuid;
 begin
   if p_action not in ('boost', 'fin_boost', 'poids_zone', 'bloquer', 'debloquer', 'decaler') then raise exception 'action non autorisée'; end if;
   if coalesce(array_length(p_ids, 1), 0) = 0 or array_length(p_ids, 1) > 100 then raise exception '1 à 100 cibles'; end if;
+  -- Boost : l'échéance ABSOLUE montrée dans l'aperçu (« jusqu ») est figée avec le jeton et sera écrite telle quelle, même si
+  -- la confirmation a lieu après minuit (réserve Codex #6). Elle doit être un vrai jour, de demain à J+7.
+  if p_action = 'boost' then
+    if coalesce(p_demande->>'jusqu', '') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'échéance du boost absente'; end if;
+    if (p_demande->>'jusqu')::date <= interne.lbc_jour_paris()::date or (p_demande->>'jusqu')::date > interne.lbc_jour_paris()::date + 7 then raise exception 'échéance du boost hors bornes'; end if;
+  end if;
   if p_action in ('boost', 'fin_boost', 'poids_zone') then
     select jsonb_agg(jsonb_build_object('id', p.id::text, 'empreinte', interne.lbc_empreinte_produit(p)) order by p.id::text),
            jsonb_agg(jsonb_build_object('id', p.id::text, 'nom', p.nom, 'dim', p.dim, 'actif', p.actif, 'boost_pct', p.boost_pct, 'boost_until', p.boost_until,
@@ -101,7 +109,8 @@ begin
   if not found then return jsonb_build_object('ok', false, 'code', 'APERCU', 'motif', 'aperçu inconnu : refais l’aperçu'); end if;
   if v_ap.utilise_le is not null then return jsonb_build_object('ok', false, 'code', 'APERCU', 'motif', 'aperçu déjà utilisé'); end if;
   if v_ap.cree_le < now() - interval '10 minutes' then return jsonb_build_object('ok', false, 'code', 'APERCU', 'motif', 'aperçu expiré (10 min) : refais l’aperçu'); end if;
-  if v_ap.action <> p_action or v_ap.demande <> p_demande then
+  -- Paramètres identiques à l'aperçu ; l'échéance figée (« jusqu ») vient du jeton, pas de la confirmation.
+  if v_ap.action <> p_action or (v_ap.demande - 'jusqu') <> (p_demande - 'jusqu') then
     insert into public.lbc_actions_journal (jeton, action, resultat, motif) values (p_jeton, p_action, 'REFUS', 'paramètres différents de l’aperçu');
     return jsonb_build_object('ok', false, 'code', 'APERCU', 'motif', 'les paramètres ne sont pas ceux de l’aperçu : rien n’a été modifié');
   end if;
@@ -130,7 +139,7 @@ begin
     select jsonb_agg(to_jsonb(p)) into v_avant from public.lbc_produits p where p.id::text = any(v_ids);
     if p_action = 'boost' then
       update public.lbc_produits set boost_pct = (p_demande->>'pct')::int,
-        boost_until = ((v_auj::date) + (p_demande->>'jours')::int), updated_at = now() where id::text = any(v_ids);
+        boost_until = (v_ap.demande->>'jusqu')::date, updated_at = now() where id::text = any(v_ids);   -- échéance figée de l'aperçu
     elsif p_action = 'fin_boost' then
       update public.lbc_produits set boost_pct = null, boost_until = null, updated_at = now() where id::text = any(v_ids);
     elsif p_demande->>'zone' = 'idf' then
@@ -172,7 +181,7 @@ begin
     select jsonb_agg(jsonb_build_object('id', a.id::text, 'date_pub', a.date_pub::text, 'statut', a.statut::text, 'validation', a.validation::text)) into v_apres from public.lbc_annonces a where a.id::text = any(v_ids);
   end if;
   insert into public.lbc_actions_journal (jeton, action, resultat, cibles, avant, apres) values (p_jeton, p_action, 'OK', to_jsonb(v_ids), v_avant, v_apres);
-  return jsonb_build_object('ok', true, 'modifiees', v_n, 'cibles', to_jsonb(v_ids), 'apres', v_apres);
+  return jsonb_build_object('ok', true, 'modifiees', v_n, 'cibles', to_jsonb(v_ids), 'apres', v_apres, 'jusqu', v_ap.demande->'jusqu');
 end $$;
 
 revoke all on function public.lbc_action_enregistrer_apercu(text, jsonb, text[]) from public, anon, authenticated;

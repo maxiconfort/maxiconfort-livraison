@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { traiter, erreurSqlCertaine } from '../functions/_shared/lbc-action-traitement.ts';
+import { verifierProduit, normaliserChamp } from '../functions/_shared/lbc-action-logique.ts';
 
 const T = Date.parse('2026-10-28T10:00:00Z');
 const J = '0f8fad5b-d9cb-469f-a165-70867728950e';
@@ -58,7 +59,7 @@ test('confirmation : les cibles demandées sont transmises à la base ; refus de
   const r2 = await traiter({ ...BLOQUER, confirme: true, jeton: J, ids: ['a9'] }, b2.sb, T); assert.equal(r2.code, 409); assert.equal(r2.corps.code, 'APERCU');
   // produit : produitId transmis comme cible
   const p = [{ id: 'P2', boost_pct: null, boost_until: null }];
-  const b3 = base({ produits: p, rpc: (nom, a) => { p[0].boost_pct = 50; p[0].boost_until = '2026-10-31'; return { data: { ok: true, modifiees: 1, cibles: a.p_ids, apres: [{ ...p[0] }] }, error: null }; } });
+  const b3 = base({ produits: p, rpc: (nom, a) => { p[0].boost_pct = 50; p[0].boost_until = '2026-10-31'; return { data: { ok: true, modifiees: 1, cibles: a.p_ids, apres: [{ ...p[0] }], jusqu: '2026-10-31' }, error: null }; } });
   const r3 = await traiter({ action: 'boost', produitId: 'P2', pct: 50, jours: 3, confirme: true, jeton: J }, b3.sb, T);
   assert.equal(r3.code, 200); assert.deepEqual(b3.vus.rpc[0].args.p_ids, ['P2']);
 });
@@ -80,4 +81,29 @@ test('confirmation : toute incertitude = 502 INDÉTERMINÉ ; seule une erreur SQ
   r = await traiter({ action: 'poids_zone', produitId: 'P2', zone: 'idf', poids: 70, confirme: true, jeton: J }, base({ produits: p, rpc: (n, a) => ({ data: { ok: true, modifiees: 1, cibles: a.p_ids }, error: null }) }).sb, T);
   assert.equal(r.code, 502);
   assert.equal(erreurSqlCertaine({ code: '40001' }), true); assert.equal(erreurSqlCertaine({ code: '' }), false); assert.equal(erreurSqlCertaine(null), false);
+});
+
+test('réserves Codex #6 (3e passage) : échéance du boost figée à l’aperçu ; nombres stockés en texte acceptés à la relecture', async () => {
+  // Aperçu à 23 h 58 (Paris) : l'échéance montrée est transmise à la base avec le jeton
+  const avantMinuit = Date.parse('2026-10-28T22:58:00Z'); // 23:58 à Paris (heure d'hiver)
+  let vu = null;
+  const b = base({ produits: [{ id: 'P1', nom: 'Matelas', actif: true }], rpc: (nom, a) => { vu = a; return { data: { jeton: J, lignes: [{ id: 'P1', nom: 'Matelas', actif: true }] }, error: null }; } });
+  const ap = await traiter({ action: 'boost', produitId: 'P1', pct: 50, jours: 3 }, b.sb, avantMinuit);
+  assert.equal(ap.corps.apres.boost_until, '2026-10-31'); assert.equal(vu.p_demande.jusqu, '2026-10-31', 'échéance montrée = échéance figée');
+  // Confirmation APRÈS minuit : la relecture attend l'échéance FIGÉE renvoyée par la base, pas un recalcul (qui donnerait le 01/11)
+  const apresMinuit = Date.parse('2026-10-28T23:03:00Z');
+  const p = [{ id: 'P1', boost_pct: 50, boost_until: '2026-10-31' }];
+  const conf = (data) => traiter({ action: 'boost', produitId: 'P1', pct: 50, jours: 3, confirme: true, jeton: J }, base({ produits: p, rpc: (n, a) => ({ data: { ok: true, modifiees: 1, cibles: a.p_ids, ...data }, error: null }) }).sb, apresMinuit);
+  let r = await conf({ jusqu: '2026-10-31' }); assert.equal(r.code, 200, 'échéance figée relue : vérifié');
+  r = await conf({}); assert.equal(r.code, 502, 'échéance non confirmée par la base : indéterminé');
+  r = await conf({ jusqu: '2026-11-01' }); assert.equal(r.code, 502, 'base et relecture en désaccord : indéterminé');
+  // Colonnes numériques renvoyées en TEXTE : boost et pression correctement écrits = vérifiés (pas 502)
+  const t = [{ id: 'P2', boost_pct: '50', boost_until: '2026-10-31T00:00:00', poids_idf: '70' }];
+  r = await traiter({ action: 'boost', produitId: 'P2', pct: 50, jours: 3, confirme: true, jeton: J }, base({ produits: t, rpc: (n, a) => ({ data: { ok: true, modifiees: 1, cibles: a.p_ids, jusqu: '2026-10-31' }, error: null }) }).sb, T);
+  assert.equal(r.code, 200);
+  r = await traiter({ action: 'poids_zone', produitId: 'P2', zone: 'idf', poids: 70, confirme: true, jeton: J }, base({ produits: t, rpc: (n, a) => ({ data: { ok: true, modifiees: 1, cibles: a.p_ids }, error: null }) }).sb, T);
+  assert.equal(r.code, 200);
+  assert.equal(verifierProduit({ id: 'x', poids_prov: '7' }, { poids_prov: 70 }), false, 'valeur différente toujours refusée');
+  assert.equal(verifierProduit({ id: 'x', boost_pct: null, boost_until: '' }, { boost_pct: null, boost_until: null }), true, 'fin de boost : vide = null');
+  assert.equal(normaliserChamp('boost_pct', '50'), 50); assert.equal(normaliserChamp('boost_until', '2026-10-31T00:00:00+00'), '2026-10-31');
 });

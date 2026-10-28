@@ -20,8 +20,8 @@ const INDETERMINE = (detail: string) => r(502, { ok: false, code: 'INDETERMINE',
 /** Erreur renvoyée par Postgres (transaction annulée, certain) ou incertitude de transport ? */
 export const erreurSqlCertaine = (e: any) => !!e && typeof e.code === 'string' && /^[0-9A-Z]{5}$/.test(e.code);
 
-async function enregistrer(sb: any, d: DemandeLbc, ids: string[]): Promise<{ jeton: string; lignes: any[] } | null> {
-  const { data, error } = await sb.rpc('lbc_action_enregistrer_apercu', { p_action: d.action, p_demande: parametres(d), p_ids: ids });
+async function enregistrer(sb: any, d: DemandeLbc, ids: string[], fige: Record<string, unknown> = {}): Promise<{ jeton: string; lignes: any[] } | null> {
+  const { data, error } = await sb.rpc('lbc_action_enregistrer_apercu', { p_action: d.action, p_demande: { ...parametres(d), ...fige }, p_ids: ids });
   if (error || !data || typeof data.jeton !== 'string' || !Array.isArray(data.lignes) || data.lignes.length !== ids.length) return null;
   return { jeton: data.jeton, lignes: data.lignes };
 }
@@ -49,8 +49,8 @@ async function confirmer(d: DemandeLbc, sb: any, maintenant: number): Promise<Re
       const { data: relu, error: e2 } = await sb.from('lbc_produits').select(COL_PROD).eq('id', cibles[0]).maybeSingle();
       if (e2) return INDETERMINE('relecture impossible');
       const attendu = patchProduit(d, maintenant, '');
-      const apresBase = Array.isArray(data.apres) ? data.apres[0] : null;
-      if (d.action === 'boost' && apresBase && apresBase.boost_until) attendu.boost_until = String(apresBase.boost_until).slice(0, 10); // jour calculé par la base
+      // Boost : l'échéance attendue est celle FIGÉE dans l'aperçu (renvoyée par la base depuis le jeton), pas un recalcul.
+      if (d.action === 'boost') { if (typeof data.jusqu !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(data.jusqu)) return INDETERMINE('échéance du boost non confirmée par la base'); attendu.boost_until = data.jusqu; }
       if (!verifierProduit(relu as ProduitLbc, attendu)) return INDETERMINE('relecture différente de la demande');
       return r(200, { ok: true, action: d.action, confirme: true, fait: true, verifie: true, produit: vueProduit(relu as ProduitLbc), modifiees: data.modifiees });
     }
@@ -75,11 +75,13 @@ async function apercu(d: DemandeLbc, sb: any, maintenant: number): Promise<Repon
       if (l.length > 1) return r(200, { ok: true, action: d.action, confirme: false, ambigu: true, candidats: l.slice(0, 12).map(vueProduit) });
       p = l[0];
     }
-    const e = await enregistrer(sb, d, [p.id]); if (!e) return r(502, { ok: false, erreur: 'aperçu non enregistré par la base' });
+    // Échéance du boost calculée UNE fois, ici, montrée à Borhen et figée avec le jeton (réserve Codex #6).
+    const jusqu = d.action === 'boost' ? new Date(Date.parse(new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris' }).format(new Date(maintenant)) + 'T12:00:00Z') + Number(d.jours) * 864e5).toISOString().slice(0, 10) : null;
+    const e = await enregistrer(sb, d, [p.id], jusqu ? { jusqu } : {}); if (!e) return r(502, { ok: false, erreur: 'aperçu non enregistré par la base' });
     const fige = e.lignes[0] as ProduitLbc; // ce que la base a empreint, et donc ce qui sera vérifié à la confirmation
     if (!fige || fige.id !== p.id || fige.actif === false) return r(409, { ok: false, code: 'CHANGE', erreur: 'le produit a changé pendant l’aperçu : refais-le' });
     const apres: Record<string, unknown> = { ...vueProduit(fige) };
-    if (d.action === 'boost') { apres.boost_pct = Number(d.pct); apres.boost_until = new Date(Date.parse(new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris' }).format(new Date(maintenant)) + 'T12:00:00Z') + Number(d.jours) * 864e5).toISOString().slice(0, 10); }
+    if (d.action === 'boost') { apres.boost_pct = Number(d.pct); apres.boost_until = jusqu; }
     if (d.action === 'fin_boost') { apres.boost_pct = null; apres.boost_until = null; }
     if (d.action === 'poids_zone') apres[d.zone === 'idf' ? 'poids_idf' : 'poids_prov'] = d.poids;
     return r(200, { ok: true, action: d.action, confirme: false, produit: vueProduit(fige), apres, jeton: e.jeton });
