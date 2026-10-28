@@ -140,7 +140,7 @@ Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site S
 
 ## Porte JARVIS pour le planning Leboncoin : `lbc-action` (28/10/2026, lot LBC 2)
 - Demande de Borhen : depuis JARVIS, donner des ordres au **planning** de l'outil Leboncoin (tables `lbc_produits`, `lbc_annonces`, même projet Supabase). Rien n'est publié ni modifié sur Leboncoin.
-- **Toujours en 2 temps** : `confirme:false` = aperçu (liste exacte de ce qui changera, rien n'est écrit) ; `confirme:true` = exécution après le « Confirmer » de Borhen, puis relecture. Résultat non vérifié = 502 « INDÉTERMINÉ ».
+- **Toujours en 2 temps** : `confirme:false` = aperçu (liste exacte de ce qui changera, rien n'est écrit) ; `confirme:true` + jeton de l'aperçu = exécution atomique en base après le « Confirmer » de Borhen. Erreur de la base = 500, rien n'est écrit ; réponse perdue côté JARVIS = « INDÉTERMINÉ ».
 - **Liste fermée** (`_shared/lbc-action-logique.ts`, module pur) :
   - `boost` (+25, +50 ou +100 % pendant 1, 3 ou 7 jours) et `fin_boost` ;
   - `poids_zone` (pression 0-100 en IDF ou en province) ;
