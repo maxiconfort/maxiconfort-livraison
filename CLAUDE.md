@@ -137,3 +137,18 @@ Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site S
   - `expedition` : `send-cmd-sms` le refuse sans `preuve: 'prise_en_charge_gls'` (réponse `skipped`, raison `attente_prise_en_charge_gls`) — couvre la création d'étiquette, la saisie de suivi et les appels de l'application sans les modifier. Seule `gls-sync` (cron horaire) l'envoie, au 1er événement GLS autre que DATA_RECEIVED, une seule fois, jamais pour un colis en retour, une commande annulée/livrée, ni pour une prise en charge de plus de 72 h.
 - Déployé le 19/10/2026 : `send-cmd-sms` v39, `sms-confirmation` v13, `gls-sync` v41 (avant : v38 / v12 / v39). Retour arrière : redéployer ces 3 fonctions depuis le commit `fc4e4a3` (ATTENTION : cela réactive les textes trompeurs — ne le faire qu'en cas de panne d'envoi).
 - Non traité : l'e-mail Shopify « expédiée » (`notify_customer: true`) part toujours à la création de l'étiquette des commandes du site.
+
+## Porte JARVIS pour le planning Leboncoin : `lbc-action` (28/10/2026, lot LBC 2)
+- Demande de Borhen : depuis JARVIS, donner des ordres au **planning** de l'outil Leboncoin (tables `lbc_produits`, `lbc_annonces`, même projet Supabase). Rien n'est publié ni modifié sur Leboncoin.
+- **Toujours en 2 temps** : `confirme:false` = aperçu (liste exacte de ce qui changera, rien n'est écrit) ; `confirme:true` = exécution après le « Confirmer » de Borhen, puis relecture. Résultat non vérifié = 502 « INDÉTERMINÉ ».
+- **Liste fermée** (`_shared/lbc-action-logique.ts`, module pur) :
+  - `boost` (+25, +50 ou +100 % pendant 1, 3 ou 7 jours) et `fin_boost` ;
+  - `poids_zone` (pression 0-100 en IDF ou en province) ;
+  - `bloquer`, `debloquer` et `decaler` : annonces d'un jour donné (aujourd'hui à J+30), filtrées par produit et par zone, **jamais** passées ni déjà publiées (validées ou avec un lien), 100 au plus.
+
+  Rien d'autre : pas de suppression, de prix, de titre, de catalogue ni de publication.
+- **À la confirmation**, chaque annonce de la liste de l'aperçu est recontrôlée. Si une seule a changé, rien n'est écrit (409). L'écriture garde aussi les conditions côté base : même jour, non validée, statut attendu.
+- Le boost et la pression s'appliquent aux jours **générés ensuite** dans l'outil LBC ; le planning déjà généré ne change pas.
+- **Appelant** : en-tête `x-lbc-secret`, qui doit contenir le secret `LBC_ACTION_SECRET` (dédié). Le changer suffit à couper JARVIS.
+- **Tests** : `node --test supabase/tests/*.test.mjs` (dont `lbc-action.test.mjs`).
+- **Mise en service** (Borhen) : `npx supabase secrets set LBC_ACTION_SECRET=… --project-ref jmvfjtnmebstkzcfnlgp`, puis `npx supabase functions deploy lbc-action --project-ref jmvfjtnmebstkzcfnlgp --no-verify-jwt --use-api`.
