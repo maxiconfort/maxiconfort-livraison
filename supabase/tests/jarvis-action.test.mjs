@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
-  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, critereClient, initiales } from '../functions/_shared/jarvis-action-logique.ts';
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -226,4 +226,21 @@ test('v2.1 — forme de lister_commandes avec client', () => {
   assert.match(controlerDemande({ action: 'lister_commandes', client: '' }, T), /client/);
   assert.match(controlerDemande({ action: 'lister_commandes', client: {} }, T), /client/, 'objet refusé'); assert.match(controlerDemande({ action: 'lister_commandes', client: ['Rubini'] }, T), /client/, 'tableau refusé');
   assert.match(controlerDemande({ action: 'lister_commandes', client: 'Rubini', limite: 1000 }, T), /limite/);
+});
+
+// ── v2.2 (04/11/2026) : recherche approchée par nom ──────────────────────────────────────────────────────────────
+test('v2.2 — recherche approchée : fautes de frappe, accents, ordre des mots ; refuse les noms éloignés', () => {
+  const base = [{ id: '#2041', client: 'Laurence Rubini' }, { id: '#2050', client: 'Laurent Rubio' }, { id: '#1900', client: 'Jean Dupont' }, { id: '#1588', client: 'Léa Martin' }, { id: '#1601', client: null }];
+  assert.deepStrictEqual(rechercheApprochee('Laurence Rubigny', base).map((x) => x.id), ['#2041'], 'Rubigny ≈ Rubini ; Laurent Rubio écarté');
+  assert.deepStrictEqual(rechercheApprochee('Lorence Rubini', base).map((x) => x.id), ['#2041']);
+  assert.deepStrictEqual(rechercheApprochee('rubini laurence', base).map((x) => x.id), ['#2041'], 'ordre des mots indifférent');
+  assert.deepStrictEqual(rechercheApprochee('Lea Martn', base).map((x) => x.id), ['#1588'], 'accent et lettre manquante');
+  assert.deepStrictEqual(rechercheApprochee('Dupnot', base).map((x) => x.id), ['#1900'], 'transposition');
+  assert.deepStrictEqual(rechercheApprochee('Rubin', base).map((x) => x.id), ['#2041', '#2050'], 'début de nom d’abord (0,9), puis Rubio (0,8) : plusieurs proches = JARVIS les liste');
+  assert.deepStrictEqual(rechercheApprochee('Michel Durand', base), [], 'nom sans rapport : rien');
+  assert.deepStrictEqual(rechercheApprochee('Jean Rubini', base), [], 'un mot ne correspond à rien : rien (jamais un mélange de deux clients)');
+  assert.strictEqual(scoreNom('', 'Jean'), 0); assert.ok(SEUIL_APPROCHE >= 0.7);
+  const r = rechercheApprochee('Laurence Rubigny', base)[0]; assert.ok(r.score >= 0.75 && r.score < 1, 'score renvoyé (approché, pas exact)');
+  const beaucoup = Array.from({ length: 3000 }, (_, i) => ({ id: '#' + i, client: 'Client Numero' + i })); const t0 = Date.now(); rechercheApprochee('Laurence Rubigny', beaucoup); assert.ok(Date.now() - t0 < 1500, '3 000 noms en moins de 1,5 s');
+  assert.strictEqual(rechercheApprochee('Dupont', Array.from({ length: 20 }, () => ({ client: 'Jean Dupont' }))).length, 10, '10 au plus');
 });

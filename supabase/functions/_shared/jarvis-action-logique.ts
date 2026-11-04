@@ -241,6 +241,37 @@ export function critereClient(brut: unknown): { genre: 'email' | 'tel' | 'nom'; 
   return { genre: 'nom', filtres: mots.map((m) => ({ colonne: 'client', operateur: 'imatch', valeur: motif(m) })) };
 }
 
+/** v2.2 (04/11/2026, demande de Borhen : « la recherche approximative, on ne peut pas l'intégrer tout de suite ? ») : quand la
+ *  recherche exacte par NOM ne trouve rien, on compare le nom cherché à ceux des commandes récentes en tolérant fautes de frappe,
+ *  accents et ordre des mots (« Rubigny » ≈ « Rubini », « Lorence » ≈ « Laurence »). Fonctions pures, testées. */
+const motsNom = (s: string) => SANS_ACCENT(String(s || '').toLowerCase()).replace(/[^a-z0-9' -]/g, ' ').split(/[\s'-]+/).filter((m) => m.length >= 2);
+function distance(a: string, b: string): number { // Levenshtein avec transposition (Damerau restreint), bornée à 40 caractères
+  a = a.slice(0, 40); b = b.slice(0, 40); const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+    const c = a[i - 1] === b[j - 1] ? 0 : 1; d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + c);
+    if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+  }
+  return d[a.length][b.length];
+}
+function ressemblance(a: string, b: string): number {
+  if (a === b) return 1;
+  if (a.length >= 4 && b.startsWith(a)) return 0.9; // début de nom (« Rubin » → « Rubini »)
+  return 1 - distance(a, b) / Math.max(a.length, b.length);
+}
+/** Score 0..1 : chaque mot cherché contre le mot le plus proche du nom de la commande ; moyenne, et aucun mot sous 0,6. */
+export function scoreNom(cherche: string, nom: string): number {
+  const q = motsNom(cherche), n = motsNom(nom); if (!q.length || !n.length) return 0;
+  const meilleurs = q.map((m) => Math.max(...n.map((x) => ressemblance(m, x))));
+  return Math.min(...meilleurs) < 0.6 ? 0 : meilleurs.reduce((s, x) => s + x, 0) / meilleurs.length;
+}
+export const SEUIL_APPROCHE = 0.75;
+/** Commandes dont le nom ressemble au nom cherché (score ≥ 0,75), les plus proches puis les plus récentes d'abord. */
+export function rechercheApprochee<T extends { client?: unknown }>(cherche: string, lignes: T[], max = 10): (T & { score: number })[] {
+  return lignes.map((l, i) => ({ l, i, s: scoreNom(cherche, String(l.client || '')) })).filter((x) => x.s >= SEUIL_APPROCHE)
+    .sort((a, b) => b.s - a.s || a.i - b.i).slice(0, max).map((x) => ({ ...x.l, score: Math.round(x.s * 100) / 100 }));
+}
+
 /** Aperçu SANS coordonnées complètes : commande, produit, statut, code postal et ville seulement. */
 export function apercuCommande(c: Record<string, unknown>) {
   const adr = String(c.adresse || ''); const m = adr.match(/\b(\d{5})\s+([^,\n]{2,40})/);
