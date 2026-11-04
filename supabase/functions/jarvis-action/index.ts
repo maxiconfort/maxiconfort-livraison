@@ -85,14 +85,19 @@ Deno.serve(async (req: Request) => {
       // v2.2 : rien d'exact pour un NOM → recherche approchée sur les 3 000 commandes les plus récentes (mêmes filtres date / statut /
       // livreur), réponse marquée « approchee » avec un score par ligne ; toujours sans nom complet, téléphone ni e-mail.
       if (crit && crit.genre === 'nom' && !(data || []).length) {
-        let q2 = sb.from('commandes').select('id, produit, statut, transporteur, date_livraison, adresse, tracking_transporteur, livreur, created_at, client').not('client', 'is', null).limit(3000);
-        if (d.date) q2 = q2.eq('date_livraison', d.date);
-        if (d.statut) q2 = q2.eq('statut', d.statut);
-        if (d.livreur) q2 = q2.eq('transporteur', d.livreur);
-        const { data: tous, error: e2 } = await q2.order('created_at', { ascending: false });
-        if (e2) return rep(502, { ok: false, erreur: 'lecture refusée par la base' });
-        const proches = rechercheApprochee(String(d.client), (tous || []) as any[], Math.min(d.limite || 10, 10));
-        return rep(200, { ...base, recherche: 'nom', approchee: true, total: proches.length,
+        // Relecture v2.2 (MAJEUR 1) : Supabase rend au plus 1 000 lignes par requête → 3 tranches de 1 000, comme klaviyo-exclusion.
+        const tous: any[] = [];
+        for (let de = 0; de < 3000; de += 1000) {
+          let q2 = sb.from('commandes').select('id, produit, statut, transporteur, date_livraison, adresse, tracking_transporteur, livreur, created_at, client').not('client', 'is', null);
+          if (d.date) q2 = q2.eq('date_livraison', d.date);
+          if (d.statut) q2 = q2.eq('statut', d.statut);
+          if (d.livreur) q2 = q2.eq('transporteur', d.livreur);
+          const { data: t, error: e2 } = await q2.order('created_at', { ascending: false }).range(de, de + 999);
+          if (e2) return rep(502, { ok: false, erreur: 'lecture refusée par la base' });
+          tous.push(...(t || [])); if (!t || t.length < 1000) break;
+        }
+        const proches = rechercheApprochee(String(d.client), tous, Math.min(d.limite || 10, 10));
+        return rep(200, { ...base, recherche: 'nom', approchee: true, total: proches.length, ...(proches.plus ? { plus: true } : {}),
           commandes: proches.map((x: any) => ({ ...apercuCommande(x), livreur: String(x.livreur || ''), client_initiales: initiales(String(x.client || '')), score: x.score })) });
       }
       return rep(200, { ...base, ...(crit ? { recherche: crit.genre } : {}), total: (data || []).length,

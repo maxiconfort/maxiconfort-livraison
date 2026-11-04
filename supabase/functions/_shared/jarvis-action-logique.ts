@@ -244,8 +244,14 @@ export function critereClient(brut: unknown): { genre: 'email' | 'tel' | 'nom'; 
 /** v2.2 (04/11/2026, demande de Borhen : « la recherche approximative, on ne peut pas l'intégrer tout de suite ? ») : quand la
  *  recherche exacte par NOM ne trouve rien, on compare le nom cherché à ceux des commandes récentes en tolérant fautes de frappe,
  *  accents et ordre des mots (« Rubigny » ≈ « Rubini », « Lorence » ≈ « Laurence »). Fonctions pures, testées. */
-const motsNom = (s: string) => SANS_ACCENT(String(s || '').toLowerCase()).replace(/[^a-z0-9' -]/g, ' ').split(/[\s'-]+/).filter((m) => m.length >= 2);
-function distance(a: string, b: string): number { // Levenshtein avec transposition (Damerau restreint), bornée à 40 caractères
+const motsNom = (s: string) => SANS_ACCENT(String(s || '').slice(0, 200).toLowerCase()).replace(/[^a-z0-9' -]/g, ' ').split(/[\s'-]+/).filter((m) => m.length >= 2);
+/** Simplification phonétique française légère (relecture v2.2) : « Rubigny » et « Rubini » s'écrivent pareil. */
+export function phonetique(m: string): string {
+  let p = m.replace(/ph/g, 'f').replace(/gn/g, 'n').replace(/y/g, 'i').replace(/ou/g, 'u').replace(/qu/g, 'k').replace(/h/g, '').replace(/(.)\1+/g, '$1');
+  if (p.length > 3) p = p.replace(/[estxd]$/, '');
+  return p;
+}
+function distance(a: string, b: string): number { // Levenshtein avec transposition (Damerau restreint), mots bornés à 40 caractères
   a = a.slice(0, 40); b = b.slice(0, 40); const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
   for (let j = 1; j <= b.length; j++) d[0][j] = j;
   for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
@@ -254,22 +260,32 @@ function distance(a: string, b: string): number { // Levenshtein avec transposit
   }
   return d[a.length][b.length];
 }
+const ratio = (a: string, b: string) => (Math.abs(a.length - b.length) / Math.max(a.length, b.length) > 0.4 ? 0 : 1 - distance(a, b) / Math.max(a.length, b.length));
 function ressemblance(a: string, b: string): number {
   if (a === b) return 1;
-  if (a.length >= 4 && b.startsWith(a)) return 0.9; // début de nom (« Rubin » → « Rubini »)
-  return 1 - distance(a, b) / Math.max(a.length, b.length);
+  let r = a.length >= 4 && b.startsWith(a) ? 0.9 : ratio(a, b); // début de nom (« Rubin » → « Rubini »)
+  const pa = phonetique(a), pb = phonetique(b);
+  if (pa && pb) r = Math.max(r, pa === pb ? 0.95 : Math.min(0.95, ratio(pa, pb))); // plafonné : reste « approché »
+  return r;
 }
-/** Score 0..1 : chaque mot cherché contre le mot le plus proche du nom de la commande ; moyenne, et aucun mot sous 0,6. */
+/** Mots du nom en base + mots voisins collés et nom entier collé (« Le Goff » ≈ « Legoff », « Ben Ali » ≈ « Benali »). */
+function formesNom(n: string[]): string[] { const f = [...n]; for (let i = 0; i + 1 < n.length; i++) f.push(n[i] + n[i + 1]); if (n.length > 2) f.push(n.join('')); return f; }
+/** Score 0..1 : chaque mot cherché (4 au plus) contre la forme la plus proche du nom de la commande (8 mots au plus) ; moyenne, aucun mot sous 0,6. */
 export function scoreNom(cherche: string, nom: string): number {
-  const q = motsNom(cherche), n = motsNom(nom); if (!q.length || !n.length) return 0;
-  const meilleurs = q.map((m) => Math.max(...n.map((x) => ressemblance(m, x))));
-  return Math.min(...meilleurs) < 0.6 ? 0 : meilleurs.reduce((s, x) => s + x, 0) / meilleurs.length;
+  const q = motsNom(cherche).slice(0, 4), n = formesNom(motsNom(nom).slice(0, 8)); if (!q.length || !n.length) return 0;
+  let somme = 0, mini = 1;
+  for (const m of q) { let best = 0; for (const x of n) { const r = ressemblance(m, x); if (r > best) best = r; if (best === 1) break; } somme += best; if (best < mini) mini = best; }
+  return mini < 0.6 ? 0 : somme / q.length;
 }
 export const SEUIL_APPROCHE = 0.75;
-/** Commandes dont le nom ressemble au nom cherché (score ≥ 0,75), les plus proches puis les plus récentes d'abord. */
-export function rechercheApprochee<T extends { client?: unknown }>(cherche: string, lignes: T[], max = 10): (T & { score: number })[] {
-  return lignes.map((l, i) => ({ l, i, s: scoreNom(cherche, String(l.client || '')) })).filter((x) => x.s >= SEUIL_APPROCHE)
-    .sort((a, b) => b.s - a.s || a.i - b.i).slice(0, max).map((x) => ({ ...x.l, score: Math.round(x.s * 100) / 100 }));
+/** Seuil plus strict pour un seul mot court (« Jean » ne doit pas trouver « Joan », « Paul » pas « Raul »). */
+export function seuilPour(cherche: string): number { const q = motsNom(cherche).slice(0, 4); return q.length === 1 && q[0].length <= 4 ? 0.8 : SEUIL_APPROCHE; }
+/** Commandes dont le nom ressemble au nom cherché, les plus proches puis les plus récentes d'abord ; `plus` = d'autres existent. */
+export function rechercheApprochee<T extends { client?: unknown }>(cherche0: string, lignes: T[], max = 10): (T & { score: number })[] & { plus?: boolean } {
+  const cherche = texte(cherche0, 80); const seuil = seuilPour(cherche);
+  const tous = lignes.map((l, i) => ({ l, i, s: scoreNom(cherche, String(l.client || '')) })).filter((x) => x.s >= seuil).sort((a, b) => b.s - a.s || a.i - b.i);
+  const r = tous.slice(0, max).map((x) => ({ ...x.l, score: Math.round(x.s * 100) / 100 })) as (T & { score: number })[] & { plus?: boolean };
+  r.plus = tous.length > max; return r;
 }
 
 /** Aperçu SANS coordonnées complètes : commande, produit, statut, code postal et ville seulement. */

@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
-  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE } from '../functions/_shared/jarvis-action-logique.ts';
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -243,4 +243,22 @@ test('v2.2 — recherche approchée : fautes de frappe, accents, ordre des mots 
   const r = rechercheApprochee('Laurence Rubigny', base)[0]; assert.ok(r.score >= 0.75 && r.score < 1, 'score renvoyé (approché, pas exact)');
   const beaucoup = Array.from({ length: 3000 }, (_, i) => ({ id: '#' + i, client: 'Client Numero' + i })); const t0 = Date.now(); rechercheApprochee('Laurence Rubigny', beaucoup); assert.ok(Date.now() - t0 < 1500, '3 000 noms en moins de 1,5 s');
   assert.strictEqual(rechercheApprochee('Dupont', Array.from({ length: 20 }, () => ({ client: 'Jean Dupont' }))).length, 10, '10 au plus');
+});
+
+test('v2.2 — relecture : phonétique, noms collés, prénom court strict, bornes, lecture par tranches de 1 000', async () => {
+  const base = [{ id: '#2041', client: 'Laurence Rubini' }, { id: '#3', client: 'Ben Ali' }, { id: '#4', client: 'Le Goff' }, { id: '#5', client: 'Abdel Kader' }, { id: '#6', client: 'Joan Martin' }, { id: '#7', client: 'Raul Diaz' }];
+  assert.deepStrictEqual(rechercheApprochee('Rubigny', base).map((x) => x.id), ['#2041'], 'nom seul, dicté phonétiquement (gn, y)');
+  assert.deepStrictEqual(rechercheApprochee('Benali', base).map((x) => x.id), ['#3'], 'nom collé');
+  assert.deepStrictEqual(rechercheApprochee('Legoff', base).map((x) => x.id), ['#4']);
+  assert.deepStrictEqual(rechercheApprochee('Abdelkader', base).map((x) => x.id), ['#5']);
+  assert.deepStrictEqual(rechercheApprochee('Jean', base), [], 'prénom court : Jean ne trouve pas Joan');
+  assert.deepStrictEqual(rechercheApprochee('Paul', base), [], 'Paul ne trouve pas Raul');
+  assert.strictEqual(seuilPour('Jean'), 0.8); assert.strictEqual(seuilPour('Laurence Rubigny'), SEUIL_APPROCHE);
+  assert.strictEqual(phonetique('rubigny'), phonetique('rubini'));
+  assert.ok(scoreNom('Rubigny', 'Laurence Rubini') < 1, 'phonétique plafonnée : reste « approché »');
+  const t0 = Date.now(); rechercheApprochee('mot '.repeat(2000), Array.from({ length: 3000 }, () => ({ client: 'Abcdefghijklmno Pqrstuvwxyzabcd Efghijklmnopqrs Tuvwxyzabcdefg Hijklmnopqrstu Vwxyzabcdefghi' })));
+  assert.ok(Date.now() - t0 < 2000, 'requête de 2 000 mots bornée (80 caractères, 4 mots)');
+  const plein = rechercheApprochee('Dupont', Array.from({ length: 15 }, () => ({ client: 'Jean Dupont' }))); assert.strictEqual(plein.length, 10); assert.strictEqual(plein.plus, true, 'd’autres homonymes existent');
+  const fs = await import('node:fs'); const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /for \(let de = 0; de < 3000; de \+= 1000\)/); assert.match(src, /\.range\(de, de \+ 999\)/, 'Supabase rend 1 000 lignes au plus : lecture par tranches');
 });
