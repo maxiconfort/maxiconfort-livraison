@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
-  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock } from '../functions/_shared/jarvis-action-logique.ts';
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, critereClient, initiales } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -188,4 +188,37 @@ test('v2 : stock — entrée, mouvement camion, correction en alerte, estimation
     [{ app_produit_id: 'matelas-140', quantite: 3, date_entree: '2026-10-22T09:00:00Z' }, { app_produit_id: 'matelas-140', quantite: 9, date_entree: '2026-10-01T09:00:00Z' }]);
   assert.deepEqual([s.commandes_en_cours, s.entrees, s.disponible_estime], [2, 3, 11]);
   assert.equal(estimerStock('x', null, null, [], []).disponible_estime, null, 'sans comptage : pas de chiffre inventé');
+});
+
+// ── v2.1 (04/11/2026) : recherche par client dans lister_commandes ──────────────────────────────────────────────
+test('v2.1 — critère client : nom sans accent ni casse, téléphone chiffre à chiffre, e-mail ; refus du vide', () => {
+  const nom = critereClient('Léa Dupont-Martin');
+  assert.equal(nom.genre, 'nom');
+  assert.deepEqual(nom.filtres.map((f) => f.operateur + ':' + f.colonne), ['imatch:client', 'imatch:client', 'imatch:client']);
+  assert.equal(nom.filtres[0].valeur, 'l[eéèêë][aàáâäã]');
+  assert.ok(new RegExp(nom.filtres[0].valeur, 'i').test('LÉA'), 'la majuscule accentuée est trouvée');
+  assert.ok(new RegExp(nom.filtres[1].valeur, 'i').test('dupont'));
+  assert.equal(critereClient('  rubini ').filtres.length, 1);
+  const on = critereClient("M. O'Neil (client)"); assert.equal(on.filtres.length, 2, 'initiale « M. » et lettre isolée « O » écartées, parenthèses retirées');
+  assert.ok(new RegExp(on.filtres[0].valeur, 'i').test("O'NEIL"));
+  assert.equal(critereClient('a'), null); assert.equal(critereClient(''), null); assert.equal(critereClient('%%%'), null);
+  assert.equal(critereClient('x'.repeat(200)).filtres.length, 1);
+  const tel = critereClient('06.12.34.56.78');
+  assert.equal(tel.genre, 'tel'); assert.equal(tel.filtres[0].colonne, 'tel');
+  assert.ok(new RegExp(tel.filtres[0].valeur).test('06 12 34 56 78')); assert.ok(new RegExp(tel.filtres[0].valeur).test('+33612345678'.slice(3)) === false, 'sans le 0, pas de correspondance exacte attendue : on cherche 0612…');
+  assert.equal(critereClient('12 34 56').genre, 'tel', '6 chiffres suffisent');
+  assert.equal(critereClient('12 34').genre, 'nom', 'moins de 6 chiffres = texte');
+  assert.equal(critereClient('Rue 12345').genre, 'nom', 'plus de lettres que de chiffres = nom');
+  const mail = critereClient('Jean.Dupont@Exemple.fr');
+  assert.equal(mail.genre, 'email'); assert.equal(mail.filtres[0].operateur, 'ilike'); assert.equal(mail.filtres[0].valeur, '%jean.dupont@exemple.fr%');
+  assert.equal(critereClient('a%b_@x').filtres[0].valeur, '%ab\\_@x%', 'le % est retiré, le _ est échappé pour ILIKE');
+  assert.equal(critereClient('@x'), null);
+  assert.equal(initiales('Laurence Rubini'), 'L. R.');
+});
+
+test('v2.1 — forme de lister_commandes avec client', () => {
+  assert.equal(controlerDemande({ action: 'lister_commandes', client: 'Rubini' }, T), null);
+  assert.equal(controlerDemande({ action: 'lister_commandes', client: '06 12 34 56 78', limite: 5 }, T), null);
+  assert.match(controlerDemande({ action: 'lister_commandes', client: 'a' }, T), /client/);
+  assert.match(controlerDemande({ action: 'lister_commandes', client: '' }, T), /client/);
 });

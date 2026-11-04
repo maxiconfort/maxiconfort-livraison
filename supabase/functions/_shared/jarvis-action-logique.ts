@@ -109,6 +109,7 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
       if (d.statut !== undefined && ![...STATUTS_OUVERTS, ...STATUTS_TERMINES].includes(String(d.statut))) return 'statut inconnu';
       if (d.livreur !== undefined && !LIVREURS.includes(String(d.livreur))) return 'livreur inconnu';
       if (d.limite !== undefined && !entier(d.limite, 1, 100)) return 'limite : 1 à 100';
+      if (d.client !== undefined && !critereClient(d.client)) return 'client : nom (2 lettres au moins), téléphone (6 chiffres au moins) ou e-mail';
       break;
     case 'lire_stock':
       if (d.produit !== undefined && texte(d.produit, 80).length < 2) return 'produit invalide';
@@ -214,6 +215,29 @@ export function controlerCommande(d: Demande, c: Record<string, unknown> | null)
   return null;
 }
 
+/** Recherche d'un client (v2.1, 04/11/2026 — « du mail à la commande ») : nom, téléphone ou e-mail, en lecture N1.
+ *  Renvoie les filtres PostgREST à appliquer (tous ET), ou null si le texte est inutilisable. Sans accent ni casse : chaque mot
+ *  du nom devient une expression régulière où une lettre accentuable accepte ses variantes (« lea » trouve « Léa ») ;
+ *  un téléphone est comparé chiffre à chiffre quel que soit son format (« 0612345678 » trouve « 06 12 34 56 78 »). */
+export type FiltreClient = { colonne: 'client' | 'tel' | 'email'; operateur: 'imatch' | 'ilike'; valeur: string };
+const ACCENTS: Record<string, string> = { a: 'aàáâäã', e: 'eéèêë', i: 'iíìîï', o: 'oóòôöõ', u: 'uúùûü', c: 'cç', n: 'nñ', y: 'yÿ' };
+const SANS_ACCENT = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+export function critereClient(brut: unknown): { genre: 'email' | 'tel' | 'nom'; filtres: FiltreClient[] } | null {
+  const q = texte(brut, 80).toLowerCase();
+  if (q.includes('@')) {
+    const e = q.replace(/[^a-z0-9@._+-]/g, ''); // pas de % ni de _ interprétés : _ est échappé pour ILIKE
+    return e.length >= 5 ? { genre: 'email', filtres: [{ colonne: 'email', operateur: 'ilike', valeur: '%' + e.replace(/[%_\\]/g, '\\$&') + '%' }] } : null;
+  }
+  const chiffres = q.replace(/\D/g, '');
+  if (chiffres.length >= 6 && chiffres.length >= SANS_ACCENT(q).replace(/[^a-z0-9]/g, '').length) {
+    return { genre: 'tel', filtres: [{ colonne: 'tel', operateur: 'imatch', valeur: chiffres.split('').join('\\D*') }] };
+  }
+  const mots = SANS_ACCENT(q).replace(/[^a-z0-9' -]/g, ' ').split(/[\s'-]+/).filter((m) => m.length >= 2).slice(0, 4);
+  if (!mots.length) return null;
+  const motif = (m: string) => m.split('').map((l) => (ACCENTS[l] ? '[' + ACCENTS[l] + ']' : l)).join('');
+  return { genre: 'nom', filtres: mots.map((m) => ({ colonne: 'client', operateur: 'imatch', valeur: motif(m) })) };
+}
+
 /** Aperçu SANS coordonnées complètes : commande, produit, statut, code postal et ville seulement. */
 export function apercuCommande(c: Record<string, unknown>) {
   const adr = String(c.adresse || ''); const m = adr.match(/\b(\d{5})\s+([^,\n]{2,40})/);
@@ -228,7 +252,7 @@ export function ficheCommande(c: Record<string, unknown>) {
     livreur: String(c.livreur || ''), etage: texte(c.etage, 10), ascenseur: String(c.ascenseur || ''), instr: texte(c.instr, 300), origine: String(c.origine || ''), date_commande: String(c.date_commande || ''),
     litige: c.litige_type || c.litige_statut ? { type: c.litige_type || null, statut: c.litige_statut || null } : null };
 }
-function initiales(nom: string): string { return nom.split(/\s+/).filter(Boolean).map((m) => m[0].toUpperCase() + '.').join(' ').slice(0, 12); }
+export function initiales(nom: string): string { return nom.split(/\s+/).filter(Boolean).map((m) => m[0].toUpperCase() + '.').join(' ').slice(0, 12); }
 /** Téléphone masqué pour un aperçu de SMS : 06 ** ** ** 78. */
 export function telMasque(tel: string): string { const d = tel.replace(/\D/g, ''); return d.length >= 4 ? d.slice(0, 2) + ' ** ** ** ' + d.slice(-2) : '**'; }
 
