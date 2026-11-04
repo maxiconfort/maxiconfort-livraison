@@ -277,15 +277,15 @@ export function scoreNom(cherche: string, nom: string): number {
   for (const m of q) { let best = 0; for (const x of n) { const r = ressemblance(m, x); if (r > best) best = r; if (best === 1) break; } somme += best; if (best < mini) mini = best; }
   return mini < 0.6 ? 0 : somme / q.length;
 }
-export const SEUIL_APPROCHE = 0.75;
+export const SEUIL_APPROCHE = 0.8; // relecture v2.2 : « Laurent Rubio » (0,76) ne doit pas sortir pour « Laurence Rubigny »
 /** Seuil plus strict pour un seul mot court (« Jean » ne doit pas trouver « Joan », « Paul » pas « Raul »). */
-export function seuilPour(cherche: string): number { const q = motsNom(cherche).slice(0, 4); return q.length === 1 && q[0].length <= 4 ? 0.8 : SEUIL_APPROCHE; }
+export function seuilPour(cherche: string): number { const q = motsNom(cherche).slice(0, 4); return q.length === 1 && q[0].length <= 4 ? 0.85 : SEUIL_APPROCHE; }
 /** Commandes dont le nom ressemble au nom cherché, les plus proches puis les plus récentes d'abord ; `plus` = d'autres existent. */
 export function rechercheApprochee<T extends { client?: unknown }>(cherche0: string, lignes: T[], max = 10): (T & { score: number })[] & { plus?: boolean } {
   const cherche = texte(cherche0, 80); const seuil = seuilPour(cherche);
   const tous = lignes.map((l, i) => ({ l, i, s: scoreNom(cherche, String(l.client || '')) })).filter((x) => x.s >= seuil).sort((a, b) => b.s - a.s || a.i - b.i);
   const r = tous.slice(0, max).map((x) => ({ ...x.l, score: Math.round(x.s * 100) / 100 })) as (T & { score: number })[] & { plus?: boolean };
-  r.plus = tous.length > max; return r;
+  if (tous.length > max) r.plus = true; return r;
 }
 
 /** Aperçu SANS coordonnées complètes : commande, produit, statut, code postal et ville seulement. */

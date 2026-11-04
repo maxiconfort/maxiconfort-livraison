@@ -239,7 +239,7 @@ test('v2.2 — recherche approchée : fautes de frappe, accents, ordre des mots 
   assert.deepStrictEqual(rechercheApprochee('Rubin', base).map((x) => x.id), ['#2041', '#2050'], 'début de nom d’abord (0,9), puis Rubio (0,8) : plusieurs proches = JARVIS les liste');
   assert.deepStrictEqual(rechercheApprochee('Michel Durand', base), [], 'nom sans rapport : rien');
   assert.deepStrictEqual(rechercheApprochee('Jean Rubini', base), [], 'un mot ne correspond à rien : rien (jamais un mélange de deux clients)');
-  assert.strictEqual(scoreNom('', 'Jean'), 0); assert.ok(SEUIL_APPROCHE >= 0.7);
+  assert.strictEqual(scoreNom('', 'Jean'), 0); assert.ok(SEUIL_APPROCHE >= 0.8);
   const r = rechercheApprochee('Laurence Rubigny', base)[0]; assert.ok(r.score >= 0.75 && r.score < 1, 'score renvoyé (approché, pas exact)');
   const beaucoup = Array.from({ length: 3000 }, (_, i) => ({ id: '#' + i, client: 'Client Numero' + i })); const t0 = Date.now(); rechercheApprochee('Laurence Rubigny', beaucoup); assert.ok(Date.now() - t0 < 1500, '3 000 noms en moins de 1,5 s');
   assert.strictEqual(rechercheApprochee('Dupont', Array.from({ length: 20 }, () => ({ client: 'Jean Dupont' }))).length, 10, '10 au plus');
@@ -253,7 +253,7 @@ test('v2.2 — relecture : phonétique, noms collés, prénom court strict, born
   assert.deepStrictEqual(rechercheApprochee('Abdelkader', base).map((x) => x.id), ['#5']);
   assert.deepStrictEqual(rechercheApprochee('Jean', base), [], 'prénom court : Jean ne trouve pas Joan');
   assert.deepStrictEqual(rechercheApprochee('Paul', base), [], 'Paul ne trouve pas Raul');
-  assert.strictEqual(seuilPour('Jean'), 0.8); assert.strictEqual(seuilPour('Laurence Rubigny'), SEUIL_APPROCHE);
+  assert.strictEqual(seuilPour('Jean'), 0.85); assert.strictEqual(seuilPour('Laurence Rubigny'), SEUIL_APPROCHE);
   assert.strictEqual(phonetique('rubigny'), phonetique('rubini'));
   assert.ok(scoreNom('Rubigny', 'Laurence Rubini') < 1, 'phonétique plafonnée : reste « approché »');
   const t0 = Date.now(); rechercheApprochee('mot '.repeat(2000), Array.from({ length: 3000 }, () => ({ client: 'Abcdefghijklmno Pqrstuvwxyzabcd Efghijklmnopqrs Tuvwxyzabcdefg Hijklmnopqrstu Vwxyzabcdefghi' })));
