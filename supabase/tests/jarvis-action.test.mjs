@@ -1,8 +1,9 @@
-// Tests unitaires de supabase/functions/_shared/jarvis-action-logique.ts (porte d'entrée JARVIS, 27/10/2026)
+// Tests unitaires de supabase/functions/_shared/jarvis-action-logique.ts (porte d'entrée JARVIS, v1 27/10/2026, v2 30/10/2026)
 // Lancer : node --test supabase/tests/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis } from '../functions/_shared/jarvis-action-logique.ts';
+import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, critereClient, initiales } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -62,4 +63,167 @@ test('aperçu litige (réserve Codex #5) : description existante, absente, vide,
   const longue = 'x'.repeat(499) + 'YZ' + 'w'.repeat(100);
   const d = avantLitige({ litige_description: longue }).description;
   assert.equal(d.length, 500); assert.ok(d.endsWith('xY'), 'coupée exactement à 500 caractères');
+});
+
+// ── v2 (30/10/2026) : autorisation totale sur commandes et stock, niveaux N1 / N2 / N3 ────────────────────────────────────
+
+test('v2 : liste fermée avec niveau ; créer une commande dictée = N3, depuis un mail = N2', () => {
+  assert.equal(VERSION, 'v2');
+  assert.equal(ACTIONS.length, 21); for (const a of ACTIONS) assert.ok(['N1', 'N2', 'N3'].includes(NIVEAUX[a]), a);
+  assert.equal(niveauDe({ action: 'lire_stock' }), 'N1'); assert.equal(niveauDe({ action: 'planifier' }), 'N2'); assert.equal(niveauDe({ action: 'annuler_commande' }), 'N3');
+  assert.equal(niveauDe({ action: 'creer_commande', source: 'mail' }), 'N2'); assert.equal(niveauDe({ action: 'creer_commande', source: 'dictee' }), 'N3');
+  for (const a of ['marquer_paye', 'rembourser', 'encaisser', 'shopify', 'tiktok']) assert.match(controlerDemande({ action: a, cmdId: '#1588' }, T), /non autorisée/, a);
+});
+
+test('v2 : forme des nouvelles demandes (lecture, statut, annulation, prix, SMS, stock)', () => {
+  assert.equal(controlerDemande({ action: 'lire_commande', cmdId: '#1588' }, T), null);
+  assert.equal(controlerDemande({ action: 'lister_commandes' }, T), null);
+  assert.match(controlerDemande({ action: 'lister_commandes', statut: 'perdu' }, T), /statut inconnu/);
+  assert.match(controlerDemande({ action: 'lister_commandes', limite: 1000 }, T), /limite/);
+  assert.match(controlerDemande({ action: 'changer_statut', cmdId: '#1588', statut: 'livré' }, T), /marquer_livre/);
+  assert.equal(controlerDemande({ action: 'changer_statut', cmdId: '#1588', statut: 'reporté' }, T), null);
+  assert.match(controlerDemande({ action: 'annuler_commande', cmdId: '#1588' }, T), /motif/);
+  assert.match(controlerDemande({ action: 'modifier_prix', cmdId: '#1588', prix: -5, motif: 'geste' }, T), /prix invalide/);
+  assert.match(controlerDemande({ action: 'modifier_prix', cmdId: '#1588', prix: 399 }, T), /motif/);
+  assert.equal(controlerDemande({ action: 'modifier_prix', cmdId: '#1588', prix: 399, motif: 'geste commercial rayure' }, T), null);
+  assert.match(controlerDemande({ action: 'envoyer_sms', cmdId: '#1588', texte: 'court' }, T), /trop court/);
+  assert.match(controlerDemande({ action: 'envoyer_sms', cmdId: '#1588', texte: 'Bonjour, votre livraison : https://x.y' }, T), /pas de lien/);
+  assert.equal(controlerDemande({ action: 'envoyer_sms', cmdId: '#1588', texte: 'Bonjour, votre livraison est confirmée demain matin.' }, T), null);
+  assert.match(controlerDemande({ action: 'modifier_commande', cmdId: '#1588', champs: { prix: 10 } }, T), /modifier_prix/);
+  assert.match(controlerDemande({ action: 'modifier_commande', cmdId: '#1588', champs: { paie: 'Payé' } }, T), /non modifiable/);
+  assert.match(controlerDemande({ action: 'modifier_commande', cmdId: '#1588', champs: {} }, T), /rien à modifier/);
+  assert.equal(controlerDemande({ action: 'modifier_commande', cmdId: '#1588', champs: { etage: '3', code: 'B12' } }, T), null);
+  assert.match(controlerDemande({ action: 'planifier', cmdId: '#1588', date: '2026-10-29', livreur: 'DHL' }, T), /livreur inconnu/);
+  assert.equal(controlerDemande({ action: 'deplacer', cmdId: '#1588', date: '2026-11-03' }, T), null);
+  assert.match(controlerDemande({ action: 'stock_entree', produit: 'matelas-140', qte: 0 }, T), /quantité/);
+  assert.match(controlerDemande({ action: 'stock_entree', produit: 'matelas-140', qte: 3, motif: 'vol' }, T), /motif/);
+  assert.equal(controlerDemande({ action: 'stock_entree', produit: 'matelas-140', qte: 3 }, T), null);
+  assert.match(controlerDemande({ action: 'stock_chargement', produit: 'Matelas 140', qte: 2 }, T), /livreur/);
+  assert.equal(controlerDemande({ action: 'stock_chargement', livreur: 'RANOU', produit: 'Matelas 140', qte: 2 }, T), null);
+  assert.match(controlerDemande({ action: 'stock_correction', produit: 'matelas-140', qte: 2 }, T), /motif/);
+});
+
+test('v2 : créer une commande — source obligatoire, téléphone, code postal, lignes bornées', () => {
+  const ok = { action: 'creer_commande', source: 'mail', client: 'Client Fictif', tel: '06 12 34 56 78', adresse: '1 rue Fictive', cp: '93160', ville: 'Noisy-le-Grand', lignes: [{ produit: 'Matelas 140x190', qte: 1 }] };
+  assert.equal(controlerDemande(ok, T), null);
+  assert.match(controlerDemande({ ...ok, source: undefined }, T), /source obligatoire/);
+  assert.match(controlerDemande({ ...ok, tel: '12' }, T), /téléphone/);
+  assert.match(controlerDemande({ ...ok, cp: '9316' }, T), /code postal/);
+  assert.match(controlerDemande({ ...ok, lignes: [] }, T), /au moins un produit/);
+  assert.match(controlerDemande({ ...ok, lignes: [{ produit: 'Matelas', qte: 50 }] }, T), /quantité/);
+  assert.match(controlerDemande({ ...ok, origine: 'Amazon' }, T), /origine inconnue/);
+});
+
+test('v2 : contrôles sur la commande — modifiable, annulable, supprimable, prix verrouillé, livraison GLS, SMS sans téléphone', () => {
+  assert.match(controlerCommande({ action: 'modifier_commande' }, cmd({ statut: 'livré' })), /plus modifiable/);
+  assert.match(controlerCommande({ action: 'annuler_commande' }, cmd({ statut: 'annulé' })), /déjà annulée/);
+  assert.match(controlerCommande({ action: 'annuler_commande' }, cmd({ statut: 'livré' })), /SAV ou retour/);
+  assert.equal(controlerCommande({ action: 'annuler_commande' }, cmd()), null);
+  assert.match(controlerCommande({ action: 'supprimer_commande' }, cmd({ stpaie: 'Payé' })), /encaissement/);
+  assert.match(controlerCommande({ action: 'supprimer_commande' }, cmd({ tracking_transporteur: '111' })), /étiquette GLS/);
+  assert.match(controlerCommande({ action: 'supprimer_commande' }, cmd({ statut: 'livré' })), /historique/);
+  assert.equal(controlerCommande({ action: 'supprimer_commande' }, cmd({ stpaie: 'Non payé', montant_enc: 0 })), null);
+  assert.match(controlerCommande({ action: 'modifier_prix' }, cmd({ payment_source: 'SHOPIFY_ONLINE' })), /payée en ligne/);
+  assert.equal(controlerCommande({ action: 'modifier_prix' }, cmd({ payment_source: 'LEBONCOIN' })), null);
+  assert.match(controlerCommande({ action: 'marquer_livre' }, cmd({ transporteur: 'GLS' })), /suivi GLS/);
+  assert.match(controlerCommande({ action: 'marquer_livre' }, cmd({ statut: 'livré' })), /déjà livrée/);
+  assert.match(controlerCommande({ action: 'envoyer_sms' }, cmd({ tel: '' })), /téléphone/);
+  assert.equal(controlerCommande({ action: 'lister_commandes' }, null), null, 'les lectures sans commande passent');
+  assert.match(controlerCommande({ action: 'lire_commande', cmdId: '#9' }, null), /introuvable/);
+});
+
+test('v2 : fiche et aperçus ne laissent passer ni nom, ni téléphone, ni e-mail, ni adresse', () => {
+  const f = ficheCommande(cmd({ lignes: [{ produit: 'Matelas 140x190', qte: 1, prixUnit: 299 }], prix: 299, instr: 'Sonner fort' }));
+  assert.equal(f.client_initiales, 'C. F.'); assert.equal(f.prix, 299); assert.equal(f.lignes[0].produit, 'Matelas 140x190');
+  const t = JSON.stringify(f); for (const x of ['Client Fictif', '0600000000', 'fictif@', 'rue Fictive']) assert.ok(!t.includes(x), x);
+  assert.equal(telMasque('06 12 34 56 78'), '06 ** ** ** 78');
+});
+
+test('v2 : nouvelle commande — numéro suivant, transporteur par code postal, prix du catalogue, ancienne offre refusée, paiement à la livraison', () => {
+  assert.equal(prochainNumero(['#1588', '#SAV1234567', '#1590', 'x', '#2']), '#1591');
+  assert.equal(prochainNumero([]), '#1');
+  assert.equal(transporteurPour('93160'), 'RANOU'); assert.equal(transporteurPour('69001'), 'GLS'); assert.equal(transporteurPour('75011'), 'RANOU');
+  const cat = new Map([['matelas-140', { id: 'matelas-140', nom: 'Matelas 140x190', prix: 299, actif: true }], ['vieux', { id: 'vieux', nom: 'Lit coffre 140 + matelas 20', prix: 349, actif: true, ancienne_offre: true }]]);
+  const l = lignesCommande([{ produit: 'matelas 140X190', qte: 2 }, { produit: 'Oreiller inconnu', qte: 1 }], cat);
+  assert.equal(l.erreur, null); assert.equal(l.lignes[0].produitId, 'matelas-140'); assert.equal(l.lignes[0].prixUnit, 299); assert.equal(l.lignes[0].sousTotal, 598);
+  assert.equal(l.lignes[1].produitId, null); assert.equal(l.lignes[1].prixUnit, 0);
+  assert.match(lignesCommande([{ produitId: 'vieux', produit: 'x', qte: 1 }], cat).erreur, /ancienne offre/);
+  const c = construireCommande({ action: 'creer_commande', source: 'mail', client: 'Client Fictif', tel: '06 12 34 56 78', adresse: '1 rue Fictive', cp: '93160', ville: 'Noisy-le-Grand', date: '2026-11-03', lignes: [] }, '#1591', l.lignes, T);
+  assert.equal(c.id, '#1591'); assert.equal(c.prix, 598); assert.equal(c.paie, 'Espèces'); assert.equal(c.stpaie, 'Non payé'); assert.equal(c.montant_enc, 0);
+  assert.equal(c.statut, 'en-attente'); assert.equal(c.transporteur, 'RANOU'); assert.equal(c.origine, 'Mail'); assert.equal(c.adresse, '1 rue Fictive, 93160 Noisy-le-Grand');
+  assert.match(c.produit, /2× Matelas 140x190 \+ Oreiller inconnu/); assert.match(c.instr, /mail client/); assert.equal(c.date_commande, jourParis(T));
+});
+
+test('v2 : modification — champs autorisés seulement, avertissements adresse / étiquette / prix', () => {
+  const m = champsModification({ action: 'modifier_commande', champs: { adresse: '2 rue Neuve 93160 Noisy', etage: '4', produit: 'Sommier 160' } }, cmd({ tracking_transporteur: '111', etage: '1' }), T);
+  assert.equal(m.apres.etage, '4'); assert.equal(m.avant.etage, '1'); assert.ok(!('prix' in m.apres)); assert.ok(m.apres.updated_at);
+  assert.ok(m.avertissements.some((a) => /étiquette GLS/.test(a))); assert.ok(m.avertissements.some((a) => /prix n'est pas recalculé/.test(a)));
+  assert.ok(champsModification({ action: 'modifier_commande', champs: { adresse: 'rue sans code' } }, cmd(), T).avertissements.some((a) => /code postal/.test(a)));
+});
+
+test('v2 : planifier / déplacer / annuler / prix', () => {
+  const p = champsPlanification({ action: 'planifier', date: '2026-11-03', livreur: 'GLS' }, cmd(), T);
+  assert.equal(p.date_livraison, '2026-11-03'); assert.equal(p.transporteur, 'GLS'); assert.equal(p.livreur, ''); assert.ok(!('statut' in p));
+  const d = champsPlanification({ action: 'deplacer', date: '2026-11-03' }, cmd({ date_livraison: '2026-10-20' }), T);
+  assert.equal(d.statut, 'reporté', 'date passée → reporté');
+  assert.ok(!('statut' in champsPlanification({ action: 'deplacer', date: '2026-11-03' }, cmd({ date_livraison: '2026-10-30' }), T)), 'date à venir : statut inchangé');
+  const a = champsAnnulation({ action: 'annuler_commande', motif: 'Client injoignable' }, T);
+  assert.equal(a.statut, 'annulé'); assert.equal(a.annulation_motif, 'Client injoignable'); assert.equal(a.annulation_commentaire, null);
+  const b = champsAnnulation({ action: 'annuler_commande', motif: 'le client est parti au Maroc' }, T);
+  assert.equal(b.annulation_motif, 'Autre'); assert.equal(b.annulation_commentaire, 'le client est parti au Maroc');
+  const x = champsPrix({ action: 'modifier_prix', prix: 349, motif: 'geste commercial' }, cmd({ prix: 399, instr: 'Sonner' }), T);
+  assert.equal(x.prix, 349); assert.equal(x.prix_brut, 349); assert.equal(x.remise_globale, 0); assert.match(x.instr, /^Sonner\n💶 Prix 399 € → 349 €/);
+});
+
+test('v2 : stock — entrée, mouvement camion, correction en alerte, estimation', () => {
+  const e = entreeStock({ action: 'stock_entree', produit: 'matelas-140', qte: 5 }, T);
+  assert.equal(e.app_produit_id, 'matelas-140'); assert.equal(e.quantite, 5); assert.equal(e.motif, 'reassort'); assert.equal(e.saisi_par, 'JARVIS');
+  const m = mouvementCamion({ action: 'stock_chargement', livreur: 'RANOU', produit: 'Matelas 140', qte: 2 });
+  assert.equal(m.type, 'chargement'); assert.equal(m.source, 'depot'); assert.equal(m.destination, 'camion:RANOU'); assert.equal(m.par_user, 'JARVIS');
+  assert.equal(mouvementCamion({ action: 'stock_retour_depot', livreur: 'RANOU', produit: 'x', qte: 1 }).type, 'retour_depot');
+  const a = alerteCorrectionStock({ action: 'stock_correction', produit: 'matelas-140', qte: 2, motif: 'casse au dépôt' }, T);
+  assert.equal(a.type, 'stock-correction'); assert.match(a.message, /−2 × matelas-140/); assert.equal(a.jour, jourParis(T));
+  const s = estimerStock('matelas-140', 10, '2026-10-20T18:00:00Z',
+    [{ statut: 'en-attente', created_at: '2026-10-25T10:00:00Z', lignes: [{ produitId: 'matelas-140', qte: 2 }] }, { statut: 'livré', created_at: '2026-10-25T10:00:00Z', lignes: [{ produitId: 'matelas-140', qte: 9 }] }, { statut: 'en-attente', created_at: '2026-10-10T10:00:00Z', lignes: [{ produitId: 'matelas-140', qte: 9 }] }],
+    [{ app_produit_id: 'matelas-140', quantite: 3, date_entree: '2026-10-22T09:00:00Z' }, { app_produit_id: 'matelas-140', quantite: 9, date_entree: '2026-10-01T09:00:00Z' }]);
+  assert.deepEqual([s.commandes_en_cours, s.entrees, s.disponible_estime], [2, 3, 11]);
+  assert.equal(estimerStock('x', null, null, [], []).disponible_estime, null, 'sans comptage : pas de chiffre inventé');
+});
+
+// ── v2.1 (04/11/2026) : recherche par client dans lister_commandes ──────────────────────────────────────────────
+test('v2.1 — critère client : nom sans accent ni casse, téléphone chiffre à chiffre, e-mail ; refus du vide', () => {
+  const nom = critereClient('Léa Dupont-Martin');
+  assert.equal(nom.genre, 'nom');
+  assert.deepEqual(nom.filtres.map((f) => f.operateur + ':' + f.colonne), ['imatch:client', 'imatch:client', 'imatch:client']);
+  assert.equal(nom.filtres[0].valeur, 'l[eéèêëÉÈÊË][aàáâäãÀÁÂÄÃ]');
+  assert.ok(new RegExp(nom.filtres[0].valeur, 'i').test('LÉA'), 'la majuscule accentuée est trouvée');
+  assert.ok(new RegExp(nom.filtres[1].valeur, 'i').test('dupont'));
+  assert.equal(critereClient('  rubini ').filtres.length, 1);
+  const on = critereClient("M. O'Neil (client)"); assert.equal(on.filtres.length, 2, 'initiale « M. » et lettre isolée « O » écartées, parenthèses retirées');
+  assert.ok(new RegExp(on.filtres[0].valeur, 'i').test("O'NEIL"));
+  assert.equal(critereClient('a'), null); assert.equal(critereClient(''), null); assert.equal(critereClient('%%%'), null);
+  assert.equal(critereClient('x'.repeat(200)).filtres.length, 1);
+  const tel = critereClient('06.12.34.56.78');
+  assert.equal(tel.genre, 'tel'); assert.equal(tel.filtres[0].colonne, 'tel');
+  assert.equal(tel.filtres[0].valeur, '6\\D*1\\D*2\\D*3\\D*4\\D*5\\D*6\\D*7\\D*8', '9 chiffres significatifs');
+  for (const cherche of ['06.12.34.56.78', '+33 6 12 34 56 78', '0612345678', 'tél 06 12 34 56 78']) for (const base of ['06 12 34 56 78', '+33612345678', '06.12.34.56.78']) assert.ok(new RegExp(critereClient(cherche).filtres[0].valeur).test(base), cherche + ' doit trouver ' + base);
+  assert.equal(critereClient('06-12').genre, 'nom', 'moins de 6 chiffres = texte (mots « 06 » et « 12 »)');
+  assert.equal(critereClient('12 34 56').genre, 'tel', '6 chiffres suffisent');
+  assert.equal(critereClient('12 34').genre, 'nom', 'moins de 6 chiffres = texte');
+  assert.equal(critereClient('Rue 12345').genre, 'nom', 'moins de 6 chiffres = nom'); assert.equal(critereClient('Résidence 123456 Dupont').genre, 'nom', 'plus de 3 lettres = nom');
+  assert.equal(critereClient('x Dupont').filtres.length, 1, 'lettre isolée écartée'); assert.ok(new RegExp(critereClient('Lea').filtres[0].valeur, 'i').test('LÉA'), '~* replie la casse ; la classe porte aussi les majuscules accentuées (ctype C)'); assert.equal(critereClient('Lea').filtres[0].valeur, 'l[eéèêëÉÈÊË][aàáâäãÀÁÂÄÃ]'); assert.equal(critereClient('Œuvre').filtres[0].valeur.startsWith('[oóòôöõÓÒÔÖÕ][eéèêëÉÈÊË]'), true, 'ligature translittérée');
+  const mail = critereClient('Jean.Dupont@Exemple.fr');
+  assert.equal(mail.genre, 'email'); assert.equal(mail.filtres[0].operateur, 'ilike'); assert.equal(mail.filtres[0].valeur, '%jean.dupont@exemple.fr%');
+  assert.equal(critereClient('a%b_@x').filtres[0].valeur, '%ab\\_@x%', 'le % est retiré, le _ est échappé pour ILIKE');
+  assert.equal(critereClient('@x'), null); assert.equal(critereClient('jean@exemple.fr, Dupont').filtres[0].valeur, '%jean@exemple.fr%', 'seul le jeton @ est gardé');
+  assert.equal(initiales('Laurence Rubini'), 'L. R.'); assert.equal(initiales('jean-pierre de la fontaine du bois'), 'J. D. L. F.');
+});
+
+test('v2.1 — forme de lister_commandes avec client', () => {
+  assert.equal(controlerDemande({ action: 'lister_commandes', client: 'Rubini' }, T), null);
+  assert.equal(controlerDemande({ action: 'lister_commandes', client: '06 12 34 56 78', limite: 5 }, T), null);
+  assert.match(controlerDemande({ action: 'lister_commandes', client: 'a' }, T), /client/);
+  assert.match(controlerDemande({ action: 'lister_commandes', client: '' }, T), /client/);
+  assert.match(controlerDemande({ action: 'lister_commandes', client: {} }, T), /client/, 'objet refusé'); assert.match(controlerDemande({ action: 'lister_commandes', client: ['Rubini'] }, T), /client/, 'tableau refusé');
+  assert.match(controlerDemande({ action: 'lister_commandes', client: 'Rubini', limite: 1000 }, T), /limite/);
 });
