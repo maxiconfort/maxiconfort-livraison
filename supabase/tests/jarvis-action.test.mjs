@@ -195,7 +195,7 @@ test('v2.1 — critère client : nom sans accent ni casse, téléphone chiffre �
   const nom = critereClient('Léa Dupont-Martin');
   assert.equal(nom.genre, 'nom');
   assert.deepEqual(nom.filtres.map((f) => f.operateur + ':' + f.colonne), ['imatch:client', 'imatch:client', 'imatch:client']);
-  assert.equal(nom.filtres[0].valeur, 'l[eéèêë][aàáâäã]');
+  assert.equal(nom.filtres[0].valeur, 'l[eéèêëÉÈÊË][aàáâäãÀÁÂÄÃ]');
   assert.ok(new RegExp(nom.filtres[0].valeur, 'i').test('LÉA'), 'la majuscule accentuée est trouvée');
   assert.ok(new RegExp(nom.filtres[1].valeur, 'i').test('dupont'));
   assert.equal(critereClient('  rubini ').filtres.length, 1);
@@ -205,15 +205,18 @@ test('v2.1 — critère client : nom sans accent ni casse, téléphone chiffre �
   assert.equal(critereClient('x'.repeat(200)).filtres.length, 1);
   const tel = critereClient('06.12.34.56.78');
   assert.equal(tel.genre, 'tel'); assert.equal(tel.filtres[0].colonne, 'tel');
-  assert.ok(new RegExp(tel.filtres[0].valeur).test('06 12 34 56 78')); assert.ok(new RegExp(tel.filtres[0].valeur).test('+33612345678'.slice(3)) === false, 'sans le 0, pas de correspondance exacte attendue : on cherche 0612…');
+  assert.equal(tel.filtres[0].valeur, '6\\D*1\\D*2\\D*3\\D*4\\D*5\\D*6\\D*7\\D*8', '9 chiffres significatifs');
+  for (const cherche of ['06.12.34.56.78', '+33 6 12 34 56 78', '0612345678', 'tél 06 12 34 56 78']) for (const base of ['06 12 34 56 78', '+33612345678', '06.12.34.56.78']) assert.ok(new RegExp(critereClient(cherche).filtres[0].valeur).test(base), cherche + ' doit trouver ' + base);
+  assert.equal(critereClient('06-12').genre, 'nom', 'moins de 6 chiffres = texte (mots « 06 » et « 12 »)');
   assert.equal(critereClient('12 34 56').genre, 'tel', '6 chiffres suffisent');
   assert.equal(critereClient('12 34').genre, 'nom', 'moins de 6 chiffres = texte');
-  assert.equal(critereClient('Rue 12345').genre, 'nom', 'plus de lettres que de chiffres = nom');
+  assert.equal(critereClient('Rue 12345').genre, 'nom', 'moins de 6 chiffres = nom'); assert.equal(critereClient('Résidence 123456 Dupont').genre, 'nom', 'plus de 3 lettres = nom');
+  assert.equal(critereClient('x Dupont').filtres.length, 1, 'lettre isolée écartée'); assert.ok(new RegExp(critereClient('Lea').filtres[0].valeur, 'i').test('LÉA'), '~* replie la casse ; la classe porte aussi les majuscules accentuées (ctype C)'); assert.equal(critereClient('Lea').filtres[0].valeur, 'l[eéèêëÉÈÊË][aàáâäãÀÁÂÄÃ]'); assert.equal(critereClient('Œuvre').filtres[0].valeur.startsWith('[oóòôöõÓÒÔÖÕ][eéèêëÉÈÊË]'), true, 'ligature translittérée');
   const mail = critereClient('Jean.Dupont@Exemple.fr');
   assert.equal(mail.genre, 'email'); assert.equal(mail.filtres[0].operateur, 'ilike'); assert.equal(mail.filtres[0].valeur, '%jean.dupont@exemple.fr%');
   assert.equal(critereClient('a%b_@x').filtres[0].valeur, '%ab\\_@x%', 'le % est retiré, le _ est échappé pour ILIKE');
-  assert.equal(critereClient('@x'), null);
-  assert.equal(initiales('Laurence Rubini'), 'L. R.');
+  assert.equal(critereClient('@x'), null); assert.equal(critereClient('jean@exemple.fr, Dupont').filtres[0].valeur, '%jean@exemple.fr%', 'seul le jeton @ est gardé');
+  assert.equal(initiales('Laurence Rubini'), 'L. R.'); assert.equal(initiales('jean-pierre de la fontaine du bois'), 'J. D. L. F.');
 });
 
 test('v2.1 — forme de lister_commandes avec client', () => {
@@ -221,4 +224,6 @@ test('v2.1 — forme de lister_commandes avec client', () => {
   assert.equal(controlerDemande({ action: 'lister_commandes', client: '06 12 34 56 78', limite: 5 }, T), null);
   assert.match(controlerDemande({ action: 'lister_commandes', client: 'a' }, T), /client/);
   assert.match(controlerDemande({ action: 'lister_commandes', client: '' }, T), /client/);
+  assert.match(controlerDemande({ action: 'lister_commandes', client: {} }, T), /client/, 'objet refusé'); assert.match(controlerDemande({ action: 'lister_commandes', client: ['Rubini'] }, T), /client/, 'tableau refusé');
+  assert.match(controlerDemande({ action: 'lister_commandes', client: 'Rubini', limite: 1000 }, T), /limite/);
 });
