@@ -92,11 +92,12 @@ Deno.serve(async (req: Request) => {
           if (d.date) q2 = q2.eq('date_livraison', d.date);
           if (d.statut) q2 = q2.eq('statut', d.statut);
           if (d.livreur) q2 = q2.eq('transporteur', d.livreur);
-          const { data: t, error: e2 } = await q2.order('created_at', { ascending: false }).range(de, de + 999);
+          const { data: t, error: e2 } = await q2.order('created_at', { ascending: false }).order('id', { ascending: true }).range(de, de + 999); // ordre stable entre tranches
           if (e2) return rep(502, { ok: false, erreur: 'lecture refusée par la base' });
           tous.push(...(t || [])); if (!t || t.length < 1000) break;
         }
-        const proches = rechercheApprochee(String(d.client), tous, Math.min(d.limite || 10, 10));
+        const vus = new Set<string>(); const uniques = tous.filter((x) => { const k = String(x.id); if (vus.has(k)) return false; vus.add(k); return true; }); // commande lue deux fois entre deux tranches
+        const proches = rechercheApprochee(String(d.client), uniques, Math.min(d.limite || 10, 10));
         return rep(200, { ...base, recherche: 'nom', approchee: true, total: proches.length, ...(proches.plus ? { plus: true } : {}),
           commandes: proches.map((x: any) => ({ ...apercuCommande(x), livreur: String(x.livreur || ''), client_initiales: initiales(String(x.client || '')), score: x.score })) });
       }

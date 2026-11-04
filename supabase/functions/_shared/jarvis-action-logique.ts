@@ -247,7 +247,7 @@ export function critereClient(brut: unknown): { genre: 'email' | 'tel' | 'nom'; 
 const motsNom = (s: string) => SANS_ACCENT(String(s || '').slice(0, 200).toLowerCase()).replace(/[^a-z0-9' -]/g, ' ').split(/[\s'-]+/).filter((m) => m.length >= 2);
 /** Simplification phonétique française légère (relecture v2.2) : « Rubigny » et « Rubini » s'écrivent pareil. */
 export function phonetique(m: string): string {
-  let p = m.replace(/ph/g, 'f').replace(/gn/g, 'n').replace(/y/g, 'i').replace(/ou/g, 'u').replace(/qu/g, 'k').replace(/h/g, '').replace(/(.)\1+/g, '$1');
+  let p = m.replace(/ph/g, 'f').replace(/au/g, 'o').replace(/gn/g, 'n').replace(/y/g, 'i').replace(/ou/g, 'u').replace(/qu/g, 'k').replace(/h/g, '').replace(/(.)\1+/g, '$1');
   if (p.length > 3) p = p.replace(/[estxd]$/, '');
   return p;
 }
@@ -264,8 +264,10 @@ const ratio = (a: string, b: string) => (Math.abs(a.length - b.length) / Math.ma
 function ressemblance(a: string, b: string): number {
   if (a === b) return 1;
   let r = a.length >= 4 && b.startsWith(a) ? 0.9 : ratio(a, b); // début de nom (« Rubin » → « Rubini »)
+  // Phonétique (contre-relecture v2.2) : seulement si l'orthographe est déjà proche (≥ 0,7) — « Hamid » ne doit pas trouver « Ami », « Mathis »
+  // pas « Mati » — et plafonnée à 0,9 (jamais devant un vrai début de nom ou une seule faute).
   const pa = phonetique(a), pb = phonetique(b);
-  if (pa && pb) r = Math.max(r, pa === pb ? 0.95 : Math.min(0.95, ratio(pa, pb))); // plafonné : reste « approché »
+  if (pa && pb && r >= 0.7) r = Math.max(r, pa === pb ? 0.9 : Math.min(0.9, ratio(pa, pb)));
   return r;
 }
 /** Mots du nom en base + mots voisins collés et nom entier collé (« Le Goff » ≈ « Legoff », « Ben Ali » ≈ « Benali »). */

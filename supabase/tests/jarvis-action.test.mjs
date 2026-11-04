@@ -262,3 +262,15 @@ test('v2.2 — relecture : phonétique, noms collés, prénom court strict, born
   const fs = await import('node:fs'); const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
   assert.match(src, /for \(let de = 0; de < 3000; de \+= 1000\)/); assert.match(src, /\.range\(de, de \+ 999\)/, 'Supabase rend 1 000 lignes au plus : lecture par tranches');
 });
+
+test('v2.2 — contre-relecture : phonétique seulement si l’orthographe est proche, « Lorence », ordre stable et dédoublonnage', async () => {
+  const b = [{ id: '#1', client: 'Ami Diop' }, { id: '#2', client: 'Karim Hamidi' }, { id: '#3', client: 'Ian Smith' }, { id: '#4', client: 'Yanna Lee' }, { id: '#5', client: 'Mati Sow' }, { id: '#6', client: 'Mathias Roy' }, { id: '#7', client: 'Laurence Rubini' }];
+  assert.deepStrictEqual(rechercheApprochee('Hamid', b).map((x) => x.id), ['#2'], 'Hamid ne trouve pas Ami');
+  assert.ok(!rechercheApprochee('Yann', b).some((x) => x.id === '#3'), 'Yann ne trouve pas Ian');
+  assert.ok(!rechercheApprochee('Mathis', b).some((x) => x.id === '#5'), 'Mathis ne trouve pas Mati');
+  assert.deepStrictEqual(rechercheApprochee('Lorence', b).map((x) => x.id), ['#7'], 'Lorence seul ≈ Laurence');
+  assert.deepStrictEqual(rechercheApprochee('Rubigny', b).map((x) => x.id), ['#7']);
+  assert.ok(scoreNom('Rubigny', 'Laurence Rubini') <= 0.9, 'phonétique plafonnée à 0,9');
+  const fs = await import('node:fs'); const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /\.order\('id', \{ ascending: true \}\)\.range\(de, de \+ 999\)/); assert.match(src, /const uniques = tous\.filter/);
+});
