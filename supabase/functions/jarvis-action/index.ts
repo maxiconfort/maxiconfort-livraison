@@ -1,5 +1,6 @@
 // ════════════════════════════════════════════════════════════════════
-// Edge Function : jarvis-action (v2 — 30/10/2026 ; v2.1 04/11/2026 : lister_commandes { client } = recherche par nom / téléphone / e-mail)
+// Edge Function : jarvis-action (v2 — 30/10/2026 ; v2.1 04/11/2026 : lister_commandes { client } = recherche par nom / téléphone / e-mail ;
+// v2.2 04/11/2026 : recherche approchée par nom quand rien d'exact — « approchee: true » + score)
 // ════════════════════════════════════════════════════════════════════
 // Porte d'entrée RÉSERVÉE À JARVIS (MAXI BRAIN, mini-PC de Borhen). Décision de Borhen du 30/10 : « autorisation totale sur
 // commandes et stock », confirmation vocale en deux temps, graduée par NIVEAU (logique dans _shared/jarvis-action-logique.ts) :
@@ -19,7 +20,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, egal, initiales, entreeStock, estimerStock, ficheCommande, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+  controlerCommande, controlerDemande, critereClient, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
 const SECRET_JARVIS = Deno.env.get('JARVIS_ACTION_SECRET') || '';
@@ -81,6 +82,25 @@ Deno.serve(async (req: Request) => {
       for (const f of crit?.filtres || []) q = q.filter(f.colonne, f.operateur, f.valeur);
       const { data, error } = await (crit ? q.order('created_at', { ascending: false }) : q.order('date_livraison', { ascending: true, nullsFirst: false }).order('created_at', { ascending: false }));
       if (error) return rep(502, { ok: false, erreur: 'lecture refusée par la base' });
+      // v2.2 : rien d'exact pour un NOM → recherche approchée sur les 3 000 commandes les plus récentes (mêmes filtres date / statut /
+      // livreur), réponse marquée « approchee » avec un score par ligne ; toujours sans nom complet, téléphone ni e-mail.
+      if (crit && crit.genre === 'nom' && !(data || []).length) {
+        // Relecture v2.2 (MAJEUR 1) : Supabase rend au plus 1 000 lignes par requête → 3 tranches de 1 000, comme klaviyo-exclusion.
+        const tous: any[] = [];
+        for (let de = 0; de < 3000; de += 1000) {
+          let q2 = sb.from('commandes').select('id, produit, statut, transporteur, date_livraison, adresse, tracking_transporteur, livreur, created_at, client').not('client', 'is', null);
+          if (d.date) q2 = q2.eq('date_livraison', d.date);
+          if (d.statut) q2 = q2.eq('statut', d.statut);
+          if (d.livreur) q2 = q2.eq('transporteur', d.livreur);
+          const { data: t, error: e2 } = await q2.order('created_at', { ascending: false }).order('id', { ascending: true }).range(de, de + 999); // ordre stable entre tranches
+          if (e2) return rep(502, { ok: false, erreur: 'lecture refusée par la base' });
+          tous.push(...(t || [])); if (!t || t.length < 1000) break;
+        }
+        const vus = new Set<string>(); const uniques = tous.filter((x) => { const k = String(x.id); if (vus.has(k)) return false; vus.add(k); return true; }); // commande lue deux fois entre deux tranches
+        const proches = rechercheApprochee(String(d.client), uniques, Math.min(d.limite || 10, 10));
+        return rep(200, { ...base, recherche: 'nom', approchee: true, total: proches.length, ...(proches.plus ? { plus: true } : {}),
+          commandes: proches.map((x: any) => ({ ...apercuCommande(x), livreur: String(x.livreur || ''), client_initiales: initiales(String(x.client || '')), score: x.score })) });
+      }
       return rep(200, { ...base, ...(crit ? { recherche: crit.genre } : {}), total: (data || []).length,
         commandes: (data || []).map((x: any) => ({ ...apercuCommande(x), livreur: String(x.livreur || ''), ...(crit ? { client_initiales: initiales(String(x.client || '')) } : {}) })) });
     }
