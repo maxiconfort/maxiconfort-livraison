@@ -419,6 +419,7 @@ textarea{resize:vertical;min-height:65px}
     <div class="pin-lbl" id="pin-lbl">Code PIN</div>
     <div id="lv-name-wrap" style="display:none"><input class="lv-name-input" id="lv-name" placeholder="Votre prénom (ex: Karim B.)"></div>
     <div class="pin-dots"><div class="pdot" id="pd0"></div><div class="pdot" id="pd1"></div><div class="pdot" id="pd2"></div><div class="pdot" id="pd3"></div></div>
+    <label id="confiance-wrap" style="display:none;margin:0 auto 10px;font-size:12px;color:var(--t2);cursor:pointer;text-align:center"><input type="checkbox" id="confiance-chk" style="vertical-align:middle;margin-right:6px">Rester connecté sur cet ordinateur (40 jours)</label>
     <div class="keypad">
       <button class="key" onclick="pk('1')">1</button><button class="key" onclick="pk('2')">2</button><button class="key" onclick="pk('3')">3</button>
       <button class="key" onclick="pk('4')">4</button><button class="key" onclick="pk('5')">5</button><button class="key" onclick="pk('6')">6</button>
@@ -2881,6 +2882,14 @@ function mxSupprimer(cle) {
 var MX_SESSION_CLE = 'mx_session_app';
 var MX_SESSION_MEM = null;
 var MX_DUREE_SESSION_MS = 12 * 3600 * 1000;
+// CONF-DEBUT — Appareil de confiance (v7.5.121, 05/11/2026, GO Borhen « 40 jours collab ») : case « Rester connecté sur
+// cet ordinateur » réservée à la Collaboratrice. Le serveur (migration 036, connexion_pin_confiance) vérifie le même PIN
+// avec les mêmes limites et donne un jeton de 40 jours, révocable (Déconnexion, changement du PIN collab).
+// À l'ouverture de la page, une session de confiance encore valide côté serveur rouvre l'appli sans redemander le code.
+var MX_DUREE_CONFIANCE_MS = 40 * 24 * 3600 * 1000;
+function mxDureeSession(s) { return (s && s.confiance === true && s.role === 'collab') ? MX_DUREE_CONFIANCE_MS : MX_DUREE_SESSION_MS; }
+function mxRepriseConfiance(s) { return !!(s && s.confiance === true && s.role === 'collab' && mxSessionValide(s)); }
+// CONF-FIN
 function mxSessionBrute() {
   if (MX_SESSION_MEM) return MX_SESSION_MEM;
   try { return JSON.parse(localStorage.getItem(MX_SESSION_CLE) || 'null'); } catch (e) { return null; }
@@ -4962,7 +4971,7 @@ function sessionLire() { return mxSessionObjet(); }
 // dependre de l'horloge du telephone, et on garde une copie en memoire pour les appareils
 // ou localStorage est bloque (sinon : deconnexion a la premiere requete, cas RANOU 03/10).
 function sessionEcrire(s) {
-  s = Object.assign({}, s, { fin_locale: Date.now() + MX_DUREE_SESSION_MS });
+  s = Object.assign({}, s, { fin_locale: Date.now() + mxDureeSession(s) });
   MX_SESSION_MEM = s;
   try { localStorage.setItem(SESSION_CLE, JSON.stringify(s)); } catch(e) {}
 }
@@ -5022,6 +5031,9 @@ function pickRole(r) {
 
   document.getElementById('lv-name-wrap').style.display = r==='livreur'?'block':'none';
   if (r==='livreur') document.getElementById('lv-name').value='';
+  var _cw=document.getElementById('confiance-wrap'), _cc=document.getElementById('confiance-chk');
+  if (_cw) _cw.style.display = r==='collab' ? 'block' : 'none';
+  if (_cc) _cc.checked = false;
 }
 
 function pk(k) {
@@ -5052,7 +5064,19 @@ async function checkPin() {
   _checkPinEnCours = true;
   if (errEl) errEl.textContent = 'Vérification…';
   var res = null, horsLigne = false;
-  try { res = await rpcPin('connexion_pin', { p_role: r0, p_pin: essai, p_livreur: nomLv || null }); }
+  var _ccEl = document.getElementById('confiance-chk');
+  var confiance = r0 === 'collab' && !!(_ccEl && _ccEl.checked);
+  try {
+    if (confiance) {
+      try { res = await rpcPin('connexion_pin_confiance', { p_pin: essai }); }
+      catch(e2) {
+        // fonction pas encore installée sur le serveur (HTTP 404) : connexion normale de 12 h
+        if (!/HTTP 404/.test(String(e2 && e2.message))) throw e2;
+        confiance = false; toast('Option 40 jours pas encore active : connexion normale (12 h)', 'info');
+      }
+    }
+    if (!res) res = await rpcPin('connexion_pin', { p_role: r0, p_pin: essai, p_livreur: nomLv || null });
+  }
   catch(e) { horsLigne = true; }
   finally { _checkPinEnCours = false; }
   if (horsLigne) {
@@ -5072,11 +5096,28 @@ async function checkPin() {
     echec(res && res.erreur === 'trop_d_essais' ? 'Trop d\'essais — patientez 15 minutes' : 'Code incorrect — réessayez');
     return;
   }
-  sessionEcrire({ jeton: res.jeton, role: r0, expire: res.expire_at, livreur: nomLv ? nomLv.toUpperCase() : null });
+  sessionEcrire({ jeton: res.jeton, role: r0, expire: res.expire_at, livreur: nomLv ? nomLv.toUpperCase() : null, confiance: !!(confiance && res.confiance === true) });
   if (errEl) errEl.textContent = '';
   if (r0==='livreur') livNom = nomLv.toUpperCase();
   loginOk(r0);
 }
+
+// CONF : à l'ouverture, reprise d'une session de confiance (collab) encore valide côté serveur — sinon écran du code.
+async function repriseSessionConfiance() {
+  var s = mxSessionBrute();
+  if (!mxRepriseConfiance(s) || role) return false;
+  if (navigator.onLine) {
+    try {
+      var v = await rpcPin('verifier_session', { p_jeton: s.jeton });
+      if (!v || v.ok !== true || v.role !== 'collab') { sessionEffacer(); return false; }
+    } catch(e) { /* réseau : on garde la session locale, le serveur reste juge de chaque requête */ }
+  }
+  if (role) return false;
+  MX_SESSION_MEM = s;
+  loginOk('collab');
+  return true;
+}
+document.addEventListener('DOMContentLoaded', function(){ setTimeout(function(){ repriseSessionConfiance().catch(function(){}); }, 300); });
 
 function backLogin() {
   selRole=null; pinStr='';

@@ -113,6 +113,14 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - **Garde-fous** : en aperçu d'une autre journée, l'**écran plein écran « CHARGEMENT OBLIGATOIRE » ne s'affiche pas** (sinon regarder la tournée suivante bloquerait l'écran) ; mention « 👁️ APERÇU » dans la barre et dans l'en-tête ; au rechargement, retour automatique à la tournée du jour (l'aperçu n'est pas mémorisé). Le choix automatique de la tournée (v7.5.83 : celle du jour, sinon la prochaine) est inchangé.
 - **Tests** : `node outils/test-vue-livreur.js` (21 tests, sans connexion). À relancer avec les autres bancs après toute modification de la vue livreur.
 
+## Appareil de confiance : Collaboratrice connectée 40 jours (v7.5.121 + migration 036, 05/11/2026)
+- Demande de Borhen : sur SON ordinateur, l'appli ne doit plus redemander le code toutes les 12 h, pour que Claude enregistre les commandes Leboncoin sans lui. Décision (05/11 16:02) : « 40 jours collab, garde les mêmes 4 chiffres ».
+- **Écran du code** : case « Rester connecté sur cet ordinateur (40 jours) », visible seulement pour la Collaboratrice, décochée par défaut, au-dessus du clavier (à cocher AVANT de taper le code). Admin et livreur : inchangés (12 h).
+- **Base** (migration 036) : `public.connexion_pin_confiance(p_pin)` appelle `connexion_pin('collab', …)` (même PIN, mêmes limites d'essais, même jeton) puis porte l'expiration de CETTE session à 40 jours (`appareil` préfixé `confiance-40j |`). Au plus 3 appareils de confiance actifs (les plus anciens révoqués). Le PIN n'est pas modifié.
+- **Application** (bloc `CONF-DEBUT … CONF-FIN` + `repriseSessionConfiance`) : fin locale 40 jours ; à l'ouverture de la page, une session de confiance vérifiée par le serveur (`verifier_session`) rouvre l'appli en collab sans code. Si la migration n'est pas installée (404), connexion normale de 12 h.
+- **Couper** : bouton Déconnexion sur l'ordinateur, ou changement du PIN collab (révoque toutes les sessions collab), ou `revoquer_sessions('collab')` depuis une session admin.
+- **Tests** : `node outils/test-confiance.js` (25 tests, sans connexion).
+
 ## Pièges connus
 - PATCH Supabase via PowerShell : encoder le corps en UTF-8 (`[Text.Encoding]::UTF8.GetBytes`) et URL-encoder `#` en `%23`.
 - Variables PowerShell insensibles à la casse (`$p` = `$P`) : ne pas réutiliser un nom pour deux valeurs (incident du 27/09 : chemin local publié à la place de la clé pendant 2 min).
