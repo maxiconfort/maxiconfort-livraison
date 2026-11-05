@@ -419,7 +419,6 @@ textarea{resize:vertical;min-height:65px}
     <div class="pin-lbl" id="pin-lbl">Code PIN</div>
     <div id="lv-name-wrap" style="display:none"><input class="lv-name-input" id="lv-name" placeholder="Votre prénom (ex: Karim B.)"></div>
     <div class="pin-dots"><div class="pdot" id="pd0"></div><div class="pdot" id="pd1"></div><div class="pdot" id="pd2"></div><div class="pdot" id="pd3"></div></div>
-    <label id="confiance-wrap" style="display:none;margin:0 auto 10px;font-size:12px;color:var(--t2);cursor:pointer;text-align:center"><input type="checkbox" id="confiance-chk" style="vertical-align:middle;margin-right:6px">Rester connecté sur cet ordinateur (40 jours)</label>
     <div class="keypad">
       <button class="key" onclick="pk('1')">1</button><button class="key" onclick="pk('2')">2</button><button class="key" onclick="pk('3')">3</button>
       <button class="key" onclick="pk('4')">4</button><button class="key" onclick="pk('5')">5</button><button class="key" onclick="pk('6')">6</button>
@@ -2192,6 +2191,11 @@ Maxiconfort — {TEL_CONTACT}</textarea>
         <button class="btn" onclick="savePin('livreur')">💾 Enregistrer</button>
         <div style="font-size:12px;color:var(--t3);margin-top:8px">Chaque livreur saisit ce PIN + son prénom pour accéder uniquement à sa tournée.</div>
       </div>
+      <div class="card">
+        <div class="card-t">💻 Appareil de confiance (cet ordinateur)</div>
+        <div style="font-size:12px;color:var(--t2);margin-bottom:10px">Connecte CET ordinateur en <b>Collaboratrice pendant 40 jours</b>, sans redemander le code (pour Claude, qui enregistre les commandes). À faire seulement sur votre ordinateur personnel. Pour couper : bouton Déconnexion sur cet ordinateur, ou changer le PIN Collaboratrice. 3 appareils au plus.</div>
+        <button class="btn btn-v" id="btn-confiance" onclick="activerAppareilConfiance()">💻 Connecter cet ordinateur 40 jours (Collaboratrice)</button>
+      </div>
     </div>
 
     <!-- ── ONGLET LIVREURS ── -->
@@ -2882,10 +2886,10 @@ function mxSupprimer(cle) {
 var MX_SESSION_CLE = 'mx_session_app';
 var MX_SESSION_MEM = null;
 var MX_DUREE_SESSION_MS = 12 * 3600 * 1000;
-// CONF-DEBUT — Appareil de confiance (v7.5.121, 05/11/2026, GO Borhen « 40 jours collab ») : case « Rester connecté sur
-// cet ordinateur » réservée à la Collaboratrice. Le serveur (migration 036, connexion_pin_confiance) vérifie le même PIN
-// avec les mêmes limites et donne un jeton de 40 jours, révocable (Déconnexion, changement du PIN collab).
-// À l'ouverture de la page, une session de confiance encore valide côté serveur rouvre l'appli sans redemander le code.
+// CONF-DEBUT — Appareil de confiance (v7.5.121, 05/11/2026, GO Borhen « 40 jours collab ») : l'ADMIN, connecté avec son
+// code, déclare l'ordinateur où il se trouve (Paramètres → Codes PIN). Le serveur (migration 036, activer_appareil_confiance,
+// session admin exigée) donne à cet appareil une session Collaboratrice de 40 jours, révocable (Déconnexion, changement du
+// PIN collab). À l'ouverture de la page, une session de confiance encore valide côté serveur rouvre l'appli sans code.
 var MX_DUREE_CONFIANCE_MS = 40 * 24 * 3600 * 1000;
 function mxDureeSession(s) { return (s && s.confiance === true && s.role === 'collab') ? MX_DUREE_CONFIANCE_MS : MX_DUREE_SESSION_MS; }
 function mxRepriseConfiance(s) { return !!(s && s.confiance === true && s.role === 'collab' && mxSessionValide(s)); }
@@ -5031,9 +5035,6 @@ function pickRole(r) {
 
   document.getElementById('lv-name-wrap').style.display = r==='livreur'?'block':'none';
   if (r==='livreur') document.getElementById('lv-name').value='';
-  var _cw=document.getElementById('confiance-wrap'), _cc=document.getElementById('confiance-chk');
-  if (_cw) _cw.style.display = r==='collab' ? 'block' : 'none';
-  if (_cc) _cc.checked = false;
 }
 
 function pk(k) {
@@ -5064,19 +5065,7 @@ async function checkPin() {
   _checkPinEnCours = true;
   if (errEl) errEl.textContent = 'Vérification…';
   var res = null, horsLigne = false;
-  var _ccEl = document.getElementById('confiance-chk');
-  var confiance = r0 === 'collab' && !!(_ccEl && _ccEl.checked);
-  try {
-    if (confiance) {
-      try { res = await rpcPin('connexion_pin_confiance', { p_pin: essai }); }
-      catch(e2) {
-        // fonction pas encore installée sur le serveur (HTTP 404) : connexion normale de 12 h
-        if (!/HTTP 404/.test(String(e2 && e2.message))) throw e2;
-        confiance = false; toast('Option 40 jours pas encore active : connexion normale (12 h)', 'info');
-      }
-    }
-    if (!res) res = await rpcPin('connexion_pin', { p_role: r0, p_pin: essai, p_livreur: nomLv || null });
-  }
+  try { res = await rpcPin('connexion_pin', { p_role: r0, p_pin: essai, p_livreur: nomLv || null }); }
   catch(e) { horsLigne = true; }
   finally { _checkPinEnCours = false; }
   if (horsLigne) {
@@ -5096,7 +5085,7 @@ async function checkPin() {
     echec(res && res.erreur === 'trop_d_essais' ? 'Trop d\'essais — patientez 15 minutes' : 'Code incorrect — réessayez');
     return;
   }
-  sessionEcrire({ jeton: res.jeton, role: r0, expire: res.expire_at, livreur: nomLv ? nomLv.toUpperCase() : null, confiance: !!(confiance && res.confiance === true) });
+  sessionEcrire({ jeton: res.jeton, role: r0, expire: res.expire_at, livreur: nomLv ? nomLv.toUpperCase() : null });
   if (errEl) errEl.textContent = '';
   if (r0==='livreur') livNom = nomLv.toUpperCase();
   loginOk(r0);
@@ -5109,13 +5098,36 @@ async function repriseSessionConfiance() {
   if (navigator.onLine) {
     try {
       var v = await rpcPin('verifier_session', { p_jeton: s.jeton });
-      if (!v || v.ok !== true || v.role !== 'collab') { sessionEffacer(); return false; }
+      if (v && v.ok === false && !v.erreur) { sessionEffacer(); return false; } // session révoquée ou expirée
+      if (!v || v.ok !== true || v.role !== 'collab') return false;              // autre réponse : écran du code, session gardée
     } catch(e) { /* réseau : on garde la session locale, le serveur reste juge de chaque requête */ }
   }
   if (role) return false;
   MX_SESSION_MEM = s;
   loginOk('collab');
   return true;
+}
+// CONF : depuis une session ADMIN, transformer cet appareil en appareil de confiance (session collab 40 jours).
+// Deux clics : le premier arme le bouton, le second (dans les 10 s) confirme — pas de fenêtre de dialogue.
+var _confianceArme = 0;
+async function activerAppareilConfiance() {
+  var s = sessionLire(), btn = document.getElementById('btn-confiance');
+  if (!s || s.role !== 'admin' || role !== 'admin') { toast('Réservé à l\'administrateur connecté', 'err'); return; }
+  if (Date.now() - _confianceArme > 10000) {
+    _confianceArme = Date.now();
+    if (btn) btn.textContent = '⚠️ Cliquez encore pour confirmer (cet ordinateur passera en Collaboratrice)';
+    setTimeout(function(){ if (btn && Date.now() - _confianceArme >= 10000) btn.textContent = '💻 Connecter cet ordinateur 40 jours (Collaboratrice)'; }, 10100);
+    return;
+  }
+  _confianceArme = 0;
+  var res = null;
+  try { res = await rpcPin('activer_appareil_confiance', {}); }
+  catch(e) { toast(/HTTP 404/.test(String(e && e.message)) ? '❌ Fonction pas encore installée sur le serveur (migration 036)' : '❌ Pas de connexion : rien n\'a changé', 'err'); return; }
+  if (!res || !res.ok || !res.jeton) { toast('❌ Refusé : ' + ((res && res.erreur) || 'erreur'), 'err'); return; }
+  try { await rpcPin('deconnexion', {}); } catch(e) {} // fin de la session admin de cet appareil
+  sessionEcrire({ jeton: res.jeton, role: 'collab', expire: res.expire_at, livreur: null, confiance: true });
+  toast('✅ Cet ordinateur reste connecté en Collaboratrice jusqu\'au ' + new Date(res.expire_at).toLocaleDateString('fr-FR'), 'ok');
+  setTimeout(function(){ try { location.reload(); } catch(e) {} }, 1200);
 }
 document.addEventListener('DOMContentLoaded', function(){ setTimeout(function(){ repriseSessionConfiance().catch(function(){}); }, 300); });
 

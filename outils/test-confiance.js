@@ -3,6 +3,7 @@
 // Il EXTRAIT le vrai code de maxiconfort-v7.html (session de l'appareil + bloc CONF) et l'exécute dans un bac à sable :
 // aucune connexion, aucune donnée réelle. Il relit aussi la migration 036 (contrôles de forme, sans base).
 // Décision de Borhen (05/11/2026 16:02) : « 40 jours collab, garde les mêmes 4 chiffres ».
+// Après relecture (05/11) : seul l'ADMIN connecté peut déclarer un appareil de confiance (bouton dans Paramètres).
 const fs = require('fs'), path = require('path'), vm = require('vm');
 const racine = path.join(__dirname, '..');
 const html = fs.readFileSync(process.env.MX_HTML || path.join(racine, 'maxiconfort-v7.html'), 'utf8');
@@ -71,24 +72,33 @@ function bac(opts) {
   stock.mx_session_app = posee('collab', true, 20 * 864e5);
   test('réseau en panne : reprise sur la session locale (le serveur reste juge de chaque requête)', (await b.repriseSessionConfiance()) === true && b._connecte === 'collab');
 
-  console.log('\n3. ÉCRAN DU CODE');
+  ({ b, stock } = bac({ reponse: { ok: false, erreur: 'non_autorise' } }));
+  stock.mx_session_app = posee('collab', true, 20 * 864e5);
+  test('réponse « non autorisé » (page en cache) : écran du code, session GARDÉE', (await b.repriseSessionConfiance()) === false && b._efface === 0);
+
+  console.log('\n3. ÉCRAN DU CODE ET PARAMÈTRES');
   const pick = entre('function pickRole(r)', 'function pk(k)');
-  test('la case n\'est montrée que pour la Collaboratrice', /_cw\.style\.display = r==='collab' \? 'block' : 'none'/.test(pick));
-  test('la case est décochée à chaque choix de rôle', /_cc\.checked = false/.test(pick));
-  const check = entre('async function checkPin()', 'function backLogin()');
-  test('case cochée → connexion_pin_confiance (PIN seul, rôle imposé par le serveur)', /rpcPin\('connexion_pin_confiance', \{ p_pin: essai \}\)/.test(check));
-  test('fonction absente du serveur (404) → connexion normale 12 h', /HTTP 404/.test(check) && /confiance = false/.test(check));
-  test('la session n\'est marquée confiance que si le serveur le confirme', /confiance: !!\(confiance && res\.confiance === true\)/.test(check));
-  test('libellé visible « Rester connecté sur cet ordinateur (40 jours) »', html.includes('Rester connecté sur cet ordinateur (40 jours)'));
+  const check = entre('async function checkPin()', "// CONF : à l'ouverture");
+  test('plus aucune case « 40 jours » sur l\'écran du code (connaître le PIN collab ne suffit pas)', !/confiance/.test(pick) && !/confiance/.test(check) && !html.includes('confiance-chk'));
+  test('connexion par code : uniquement connexion_pin (inchangée, 12 h)', /rpcPin\('connexion_pin', \{ p_role: r0, p_pin: essai, p_livreur: nomLv \|\| null \}\)/.test(check) && !/connexion_pin_confiance/.test(html));
+  const act = entre('async function activerAppareilConfiance()', "document.addEventListener('DOMContentLoaded', function(){ setTimeout(function(){ repriseSessionConfiance");
+  test('bouton réservé à l\'admin connecté', /s\.role !== 'admin' \|\| role !== 'admin'/.test(act));
+  test('deux clics pour confirmer, sans fenêtre de dialogue', /_confianceArme/.test(act) && !/confirm\(|alert\(|prompt\(/.test(act));
+  test('appelle activer_appareil_confiance sans paramètre (le serveur lit la session admin)', /rpcPin\('activer_appareil_confiance', \{\}\)/.test(act));
+  test('ferme la session admin AVANT d\'écrire la session collab', act.indexOf("rpcPin('deconnexion'") > 0 && act.indexOf("rpcPin('deconnexion'") < act.indexOf('sessionEcrire('));
+  test('session écrite en collab + confiance', /sessionEcrire\(\{ jeton: res\.jeton, role: 'collab'[^}]*confiance: true \}\)/.test(act));
+  test('carte visible dans l\'onglet Codes PIN', html.includes('id="btn-confiance"') && html.indexOf('id="btn-confiance"') > html.indexOf('PIN Livreur (partagé'));
   test('Déconnexion efface toujours la session (inchangé)', /function doLogout\(\)[\s\S]{0,400}rpcPin\('deconnexion'[\s\S]{0,120}sessionEffacer/.test(html));
 
-  console.log('\n4. MIGRATION 036 (relue sans base)');
-  test('réutilise connexion_pin pour le rôle collab (mêmes contrôles de PIN et d\'essais)', /public\.connexion_pin\('collab', p_pin, null\)/.test(sql));
-  test('aucun autre rôle possible', !/connexion_pin\('admin'|connexion_pin\('livreur'|p_role/.test(sql));
+  console.log('\n4. MIGRATION 036 (relue sans base ; essai réel : node outils/test-confiance-base.js)');
+  test('session ADMIN exigée', /session_role\(\) is distinct from 'admin'/.test(sql) && /_app_secret_ok\(\)/.test(sql));
+  test('rôle collab écrit en dur, aucun paramètre', /activer_appareil_confiance\(\)\s*\n?returns/.test(sql) && /values \(v_hash, 'collab'/.test(sql));
   test('expiration 40 jours', /interval '40 days'/.test(sql));
+  test('colonne dédiée « confiance » posée par la fonction seule (pas le User-Agent)', /add column if not exists confiance boolean not null default false/.test(sql) && /where confiance and/.test(sql));
+  test('verrou contre deux activations simultanées', /pg_advisory_xact_lock/.test(sql));
   test('ne touche pas aux empreintes de PIN (le code reste le même)', !/secrets_serveur|crypt\(/.test(sql));
   test('au plus 3 appareils de confiance actifs', /limit 2/.test(sql) && /revoquee_at = now\(\)/.test(sql));
-  test('droits : retirés à tous puis donnés au seul rôle anon (comme connexion_pin)', /revoke all on function public\.connexion_pin_confiance\(text\) from public, anon, authenticated/.test(sql) && /grant execute on function public\.connexion_pin_confiance\(text\) to anon/.test(sql));
+  test('droits : retirés à tous puis donnés au seul rôle anon', /revoke all on function public\.activer_appareil_confiance\(\) from public, anon, authenticated/.test(sql) && /grant execute on function public\.activer_appareil_confiance\(\) to anon/.test(sql));
   test('aucune valeur secrète dans la migration', !/sb_secret_|mc_[A-Za-z0-9_-]{20,}/.test(sql));
 
   console.log('\n5. MISE EN LIGNE');
