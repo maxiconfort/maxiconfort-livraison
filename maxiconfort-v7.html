@@ -2191,6 +2191,11 @@ Maxiconfort — {TEL_CONTACT}</textarea>
         <button class="btn" onclick="savePin('livreur')">💾 Enregistrer</button>
         <div style="font-size:12px;color:var(--t3);margin-top:8px">Chaque livreur saisit ce PIN + son prénom pour accéder uniquement à sa tournée.</div>
       </div>
+      <div class="card">
+        <div class="card-t">💻 Appareil de confiance (cet ordinateur)</div>
+        <div style="font-size:12px;color:var(--t2);margin-bottom:10px">Connecte CET ordinateur en <b>Collaboratrice pendant 40 jours</b>, sans redemander le code (pour Claude, qui enregistre les commandes). À faire seulement sur votre ordinateur personnel. Pour couper : bouton Déconnexion sur cet ordinateur, ou changer le PIN Collaboratrice. 3 appareils au plus.</div>
+        <button class="btn btn-v" id="btn-confiance" onclick="activerAppareilConfiance()">💻 Connecter cet ordinateur 40 jours (Collaboratrice)</button>
+      </div>
     </div>
 
     <!-- ── ONGLET LIVREURS ── -->
@@ -2881,6 +2886,14 @@ function mxSupprimer(cle) {
 var MX_SESSION_CLE = 'mx_session_app';
 var MX_SESSION_MEM = null;
 var MX_DUREE_SESSION_MS = 12 * 3600 * 1000;
+// CONF-DEBUT — Appareil de confiance (v7.5.121, 05/11/2026, GO Borhen « 40 jours collab ») : l'ADMIN, connecté avec son
+// code, déclare l'ordinateur où il se trouve (Paramètres → Codes PIN). Le serveur (migration 036, activer_appareil_confiance,
+// session admin exigée) donne à cet appareil une session Collaboratrice de 40 jours, révocable (Déconnexion, changement du
+// PIN collab). À l'ouverture de la page, une session de confiance encore valide côté serveur rouvre l'appli sans code.
+var MX_DUREE_CONFIANCE_MS = 40 * 24 * 3600 * 1000;
+function mxDureeSession(s) { return (s && s.confiance === true && s.role === 'collab') ? MX_DUREE_CONFIANCE_MS : MX_DUREE_SESSION_MS; }
+function mxRepriseConfiance(s) { return !!(s && s.confiance === true && s.role === 'collab' && mxSessionValide(s)); }
+// CONF-FIN
 function mxSessionBrute() {
   if (MX_SESSION_MEM) return MX_SESSION_MEM;
   try { return JSON.parse(localStorage.getItem(MX_SESSION_CLE) || 'null'); } catch (e) { return null; }
@@ -4962,7 +4975,7 @@ function sessionLire() { return mxSessionObjet(); }
 // dependre de l'horloge du telephone, et on garde une copie en memoire pour les appareils
 // ou localStorage est bloque (sinon : deconnexion a la premiere requete, cas RANOU 03/10).
 function sessionEcrire(s) {
-  s = Object.assign({}, s, { fin_locale: Date.now() + MX_DUREE_SESSION_MS });
+  s = Object.assign({}, s, { fin_locale: Date.now() + mxDureeSession(s) });
   MX_SESSION_MEM = s;
   try { localStorage.setItem(SESSION_CLE, JSON.stringify(s)); } catch(e) {}
 }
@@ -5077,6 +5090,46 @@ async function checkPin() {
   if (r0==='livreur') livNom = nomLv.toUpperCase();
   loginOk(r0);
 }
+
+// CONF : à l'ouverture, reprise d'une session de confiance (collab) encore valide côté serveur — sinon écran du code.
+async function repriseSessionConfiance() {
+  var s = mxSessionBrute();
+  if (!mxRepriseConfiance(s) || role) return false;
+  if (navigator.onLine) {
+    try {
+      var v = await rpcPin('verifier_session', { p_jeton: s.jeton });
+      if (v && v.ok === false && !v.erreur) { sessionEffacer(); return false; } // session révoquée ou expirée
+      if (!v || v.ok !== true || v.role !== 'collab' || v.confiance !== true) return false; // autre réponse : écran du code, session gardée
+    } catch(e) { /* réseau : on garde la session locale, le serveur reste juge de chaque requête */ }
+  }
+  if (role) return false;
+  MX_SESSION_MEM = s;
+  loginOk('collab');
+  return true;
+}
+// CONF : depuis une session ADMIN, transformer cet appareil en appareil de confiance (session collab 40 jours).
+// Deux clics : le premier arme le bouton, le second (dans les 10 s) confirme — pas de fenêtre de dialogue.
+var _confianceArme = 0;
+async function activerAppareilConfiance() {
+  var s = sessionLire(), btn = document.getElementById('btn-confiance');
+  if (!s || s.role !== 'admin' || role !== 'admin') { toast('Réservé à l\'administrateur connecté', 'err'); return; }
+  if (Date.now() - _confianceArme > 10000) {
+    _confianceArme = Date.now();
+    if (btn) btn.textContent = '⚠️ Cliquez encore pour confirmer (cet ordinateur passera en Collaboratrice)';
+    setTimeout(function(){ if (btn && Date.now() - _confianceArme >= 10000) btn.textContent = '💻 Connecter cet ordinateur 40 jours (Collaboratrice)'; }, 10100);
+    return;
+  }
+  _confianceArme = 0;
+  var res = null;
+  try { res = await rpcPin('activer_appareil_confiance', {}); }
+  catch(e) { toast(/HTTP 404/.test(String(e && e.message)) ? '❌ Fonction pas encore installée sur le serveur (migration 036)' : '❌ Pas de connexion : rien n\'a changé', 'err'); return; }
+  if (!res || !res.ok || !res.jeton) { toast('❌ Refusé : ' + ((res && res.erreur) || 'erreur'), 'err'); return; }
+  try { await rpcPin('deconnexion', {}); } catch(e) {} // secours : le serveur a déjà fermé la session admin de cet appareil
+  sessionEcrire({ jeton: res.jeton, role: 'collab', expire: res.expire_at, livreur: null, confiance: true });
+  toast('✅ Cet ordinateur reste connecté en Collaboratrice jusqu\'au ' + new Date(res.expire_at).toLocaleDateString('fr-FR'), 'ok');
+  setTimeout(function(){ try { location.reload(); } catch(e) {} }, 1200);
+}
+document.addEventListener('DOMContentLoaded', function(){ setTimeout(function(){ repriseSessionConfiance().catch(function(){}); }, 300); });
 
 function backLogin() {
   selRole=null; pinStr='';
