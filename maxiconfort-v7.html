@@ -5099,7 +5099,7 @@ async function repriseSessionConfiance() {
     try {
       var v = await rpcPin('verifier_session', { p_jeton: s.jeton });
       if (v && v.ok === false && !v.erreur) { sessionEffacer(); return false; } // session révoquée ou expirée
-      if (!v || v.ok !== true || v.role !== 'collab') return false;              // autre réponse : écran du code, session gardée
+      if (!v || v.ok !== true || v.role !== 'collab' || v.confiance !== true) return false; // autre réponse : écran du code, session gardée
     } catch(e) { /* réseau : on garde la session locale, le serveur reste juge de chaque requête */ }
   }
   if (role) return false;
@@ -5124,7 +5124,7 @@ async function activerAppareilConfiance() {
   try { res = await rpcPin('activer_appareil_confiance', {}); }
   catch(e) { toast(/HTTP 404/.test(String(e && e.message)) ? '❌ Fonction pas encore installée sur le serveur (migration 036)' : '❌ Pas de connexion : rien n\'a changé', 'err'); return; }
   if (!res || !res.ok || !res.jeton) { toast('❌ Refusé : ' + ((res && res.erreur) || 'erreur'), 'err'); return; }
-  try { await rpcPin('deconnexion', {}); } catch(e) {} // fin de la session admin de cet appareil
+  try { await rpcPin('deconnexion', {}); } catch(e) {} // secours : le serveur a déjà fermé la session admin de cet appareil
   sessionEcrire({ jeton: res.jeton, role: 'collab', expire: res.expire_at, livreur: null, confiance: true });
   toast('✅ Cet ordinateur reste connecté en Collaboratrice jusqu\'au ' + new Date(res.expire_at).toLocaleDateString('fr-FR'), 'ok');
   setTimeout(function(){ try { location.reload(); } catch(e) {} }, 1200);

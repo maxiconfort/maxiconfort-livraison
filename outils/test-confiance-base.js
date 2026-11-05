@@ -36,16 +36,27 @@ begin
   select role, confiance, expire_at, revoquee_at into s from public.sessions_app where jeton_hash = encode(extensions.digest(r1 ->> 'jeton', 'sha256'), 'hex');
   res := res || case when (r1 ->> 'ok')::boolean and s.role = 'collab' and s.confiance and s.revoquee_at is null then 'OK' else 'KO' end || '|admin : session collab de confiance créée|' || coalesce(s.role, '?') || E'\\n';
   res := res || case when s.expire_at between now() + interval '39 days 23 hours' and now() + interval '40 days 1 minute' then 'OK' else 'KO' end || '|expire dans 40 jours|' || s.expire_at::text || E'\\n';
+  select revoquee_at into s from public.sessions_app where jeton_hash = encode(extensions.digest(ta, 'sha256'), 'hex');
+  res := res || case when s.revoquee_at is not null then 'OK' else 'KO' end || '|la session admin de l''appareil est fermée par le serveur|' || E'\\n';
+  -- reprise des essais suivants avec une nouvelle session admin
+  ta := encode(extensions.gen_random_bytes(32), 'hex');
+  insert into public.sessions_app (jeton_hash, role, livreur, expire_at, appareil) values (encode(extensions.digest(ta, 'sha256'), 'hex'), 'admin', null, now() + interval '5 minutes', 'test-automatique');
   -- 5. le nouveau jeton est reconnu comme Collaboratrice (jamais admin)
   perform set_config('request.headers', json_build_object('x-app-secret', secret, 'x-session-token', r1 ->> 'jeton')::text, true);
   res := res || case when public.session_role() = 'collab' then 'OK' else 'KO' end || '|le jeton ouvre le rôle collab|' || coalesce(public.session_role(), 'null') || E'\\n';
   r := public.activer_appareil_confiance();
   res := res || case when r ->> 'erreur' = 'session_admin_requise' then 'OK' else 'KO' end || '|un appareil de confiance ne peut pas en créer un autre|' || r::text || E'\\n';
   r := public.verifier_session(r1 ->> 'jeton');
-  res := res || case when (r ->> 'ok')::boolean and r ->> 'role' = 'collab' then 'OK' else 'KO' end || '|verifier_session répond collab (reprise à l''ouverture)|' || r::text || E'\\n';
+  res := res || case when (r ->> 'ok')::boolean and r ->> 'role' = 'collab' and (r ->> 'confiance')::boolean then 'OK' else 'KO' end || '|verifier_session répond collab + confiance (reprise à l''ouverture)|' || r::text || E'\\n';
+  r := public.verifier_session(tc);
+  res := res || case when (r ->> 'ok')::boolean and (r ->> 'confiance')::boolean = false then 'OK' else 'KO' end || '|session collab ordinaire : confiance = faux|' || r::text || E'\\n';
   -- 6. au plus 3 appareils : 3 activations de plus, la 1re est révoquée
-  perform set_config('request.headers', json_build_object('x-app-secret', secret, 'x-session-token', ta)::text, true);
-  perform public.activer_appareil_confiance(); perform public.activer_appareil_confiance(); perform public.activer_appareil_confiance();
+  for i in 1..3 loop -- chaque activation ferme la session admin appelante : une nouvelle session admin à chaque fois
+    ta := encode(extensions.gen_random_bytes(32), 'hex');
+    insert into public.sessions_app (jeton_hash, role, livreur, expire_at, appareil) values (encode(extensions.digest(ta, 'sha256'), 'hex'), 'admin', null, now() + interval '5 minutes', 'test-automatique');
+    perform set_config('request.headers', json_build_object('x-app-secret', secret, 'x-session-token', ta)::text, true);
+    perform public.activer_appareil_confiance();
+  end loop;
   select count(*) into n from public.sessions_app where confiance and revoquee_at is null and expire_at > now();
   res := res || case when n = 3 then 'OK' else 'KO' end || '|3 appareils de confiance actifs au plus|' || n || E'\\n';
   select revoquee_at into s from public.sessions_app where jeton_hash = encode(extensions.digest(r1 ->> 'jeton', 'sha256'), 'hex');
@@ -71,5 +82,5 @@ end $$`;
     if (etat === 'OK') { ok++; console.log('  OK    ' + nom); } else { ko++; console.log('  ÉCHEC ' + nom + ' — ' + (det || '').slice(0, 200)); }
   }
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s) — tout a été annulé dans la base (rien n\'est resté).');
-  process.exit(ko || ok < 12 ? 1 : 0);
+  process.exit(ko || ok < 14 ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

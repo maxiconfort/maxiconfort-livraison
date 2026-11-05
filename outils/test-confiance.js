@@ -50,7 +50,7 @@ function bac(opts) {
 
   console.log('\n2. RÉOUVERTURE DE LA PAGE');
   const posee = (role, confiance, finMs) => JSON.stringify({ jeton: 'b'.repeat(64), role, confiance, expire: new Date(Date.now() + finMs).toISOString(), fin_locale: Date.now() + finMs });
-  ({ b, stock } = bac({ reponse: { ok: true, role: 'collab' } }));
+  ({ b, stock } = bac({ reponse: { ok: true, role: 'collab', confiance: true } }));
   stock.mx_session_app = posee('collab', true, 20 * 864e5);
   test('session de confiance valide, serveur d\'accord : appli rouverte en collab sans code', (await b.repriseSessionConfiance()) === true && b._connecte === 'collab' && b._appel.fn === 'verifier_session');
   ({ b, stock } = bac({ reponse: { ok: false } }));
@@ -59,19 +59,22 @@ function bac(opts) {
   ({ b, stock } = bac({ reponse: { ok: true, role: 'admin' } }));
   stock.mx_session_app = posee('collab', true, 20 * 864e5);
   test('serveur répond un autre rôle : refus', (await b.repriseSessionConfiance()) === false && b._connecte === null);
-  ({ b, stock } = bac({ reponse: { ok: true, role: 'collab' } }));
+  ({ b, stock } = bac({ reponse: { ok: true, role: 'collab', confiance: true } }));
   stock.mx_session_app = posee('collab', false, 6 * 36e5);
   test('session collab ordinaire (12 h) : pas de reprise automatique (comportement inchangé)', (await b.repriseSessionConfiance()) === false && !b._appel);
   ({ b, stock } = bac({ reponse: { ok: true, role: 'admin' } }));
   stock.mx_session_app = posee('admin', true, 20 * 864e5);
   test('session admin marquée confiance : pas de reprise', (await b.repriseSessionConfiance()) === false && !b._appel);
-  ({ b, stock } = bac({ reponse: { ok: true, role: 'collab' } }));
+  ({ b, stock } = bac({ reponse: { ok: true, role: 'collab', confiance: true } }));
   stock.mx_session_app = posee('collab', true, -1000);
   test('session de confiance expirée : pas de reprise', (await b.repriseSessionConfiance()) === false && b._connecte === null);
   ({ b, stock } = bac({ erreurReseau: true }));
   stock.mx_session_app = posee('collab', true, 20 * 864e5);
   test('réseau en panne : reprise sur la session locale (le serveur reste juge de chaque requête)', (await b.repriseSessionConfiance()) === true && b._connecte === 'collab');
 
+  ({ b, stock } = bac({ reponse: { ok: true, role: 'collab', confiance: false } }));
+  stock.mx_session_app = posee('collab', true, 20 * 864e5);
+  test('marqueur « confiance » ajouté à la main sur l\'appareil, serveur dit non : pas de reprise', (await b.repriseSessionConfiance()) === false && b._connecte === null);
   ({ b, stock } = bac({ reponse: { ok: false, erreur: 'non_autorise' } }));
   stock.mx_session_app = posee('collab', true, 20 * 864e5);
   test('réponse « non autorisé » (page en cache) : écran du code, session GARDÉE', (await b.repriseSessionConfiance()) === false && b._efface === 0);
@@ -99,6 +102,8 @@ function bac(opts) {
   test('ne touche pas aux empreintes de PIN (le code reste le même)', !/secrets_serveur|crypt\(/.test(sql));
   test('au plus 3 appareils de confiance actifs', /limit 2/.test(sql) && /revoquee_at = now\(\)/.test(sql));
   test('droits : retirés à tous puis donnés au seul rôle anon', /revoke all on function public\.activer_appareil_confiance\(\) from public, anon, authenticated/.test(sql) && /grant execute on function public\.activer_appareil_confiance\(\) to anon/.test(sql));
+  test('la session admin appelante est fermée par le serveur', /v_admin := h ->> 'x-session-token'/.test(sql) && /digest\(coalesce\(v_admin, ''\), 'sha256'\)/.test(sql));
+  test('verifier_session renvoie « confiance »', /'confiance', r\.confiance/.test(sql));
   test('aucune valeur secrète dans la migration', !/sb_secret_|mc_[A-Za-z0-9_-]{20,}/.test(sql));
 
   console.log('\n5. MISE EN LIGNE');
