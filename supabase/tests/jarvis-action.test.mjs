@@ -295,5 +295,7 @@ test('v2.3 : « total » = nombre exact de la base, plus la longueur de la liste
   const bloc = src.slice(src.indexOf("d.action === 'compter_commandes'"), src.indexOf("d.action === 'lire_stock'"));
   assert.match(bloc, /select\('id', \{ count: 'exact', head: true \}\)/, 'requêtes « head » : aucune ligne, aucune donnée client');
   assert.match(bloc, /not\('id', 'like', '#TEST%'\)/, 'lignes de test exclues');
+  assert.match(src, /\{ count: 'exact' \}\)\.limit\(d\.limite \|\| 30\);\n\s*q = q\.not\('id', 'like', '#TEST%'\)/, 'mêmes exclusions dans lister_commandes');
+  assert.match(bloc, /Promise\.all/); assert.match(bloc, /autre \(statut vide ou ancien\)/); assert.match(bloc, /total: toutes/);
   assert.doesNotMatch(bloc.replace(/\/\/.*/g, ''), /'(client|tel|email|adresse)'|select\('\*'/);
 });

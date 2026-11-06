@@ -77,6 +77,7 @@ Deno.serve(async (req: Request) => {
       // v2.1 (04/11) : recherche par client (nom / téléphone / e-mail) — toutes commandes, les plus récentes d'abord, initiales seulement.
       const crit = d.client !== undefined ? critereClient(d.client) : null;
       let q = sb.from('commandes').select('id, produit, statut, transporteur, date_livraison, adresse, tracking_transporteur, livreur, created_at' + (crit ? ', client' : ''), { count: 'exact' }).limit(d.limite || 30);
+      q = q.not('id', 'like', '#TEST%'); // v2.3 : mêmes exclusions que compter_commandes (relecture : sinon 73 ici, 72 là)
       if (d.date) q = q.eq('date_livraison', d.date);
       if (d.statut) q = q.eq('statut', d.statut); else if (!d.date && !crit) q = q.not('statut', 'in', '(' + STATUTS_TERMINES.map((s) => '"' + s + '"').join(',') + ')');
       if (d.livreur) q = q.eq('transporteur', d.livreur);
@@ -109,19 +110,24 @@ Deno.serve(async (req: Request) => {
     }
     if (d.action === 'compter_commandes') {
       // v2.3 (06/11) : un comptage exact par statut, fait par la base (requêtes « head », aucune ligne lue, aucune donnée client).
-      const par_statut: Record<string, number> = {};
-      for (const st of [...STATUTS_OUVERTS, ...STATUTS_TERMINES]) {
-        let q = sb.from('commandes').select('id', { count: 'exact', head: true }).eq('statut', st).not('id', 'like', '#TEST%');
+      const compter = async (st: string | null) => {
+        let q = sb.from('commandes').select('id', { count: 'exact', head: true }).not('id', 'like', '#TEST%');
+        if (st) q = q.eq('statut', st);
         if (d.livreur) q = q.eq('transporteur', d.livreur);
         if (d.date) q = q.eq('date_livraison', d.date);
         if ((d as any).date_debut) q = q.gte('date_livraison', (d as any).date_debut);
         if ((d as any).date_fin) q = q.lte('date_livraison', (d as any).date_fin);
-        const { count, error } = await q; if (error || typeof count !== 'number') return rep(502, { ok: false, erreur: 'comptage refusé par la base' });
-        par_statut[st] = count;
-      }
+        const { count, error } = await q; return error || typeof count !== 'number' ? null : count;
+      };
+      const statuts = [...STATUTS_OUVERTS, ...STATUTS_TERMINES];
+      const nombres = await Promise.all([...statuts.map((st) => compter(st)), compter(null)]); // en parallèle ; le dernier = toutes
+      if (nombres.some((n) => n === null)) return rep(502, { ok: false, erreur: 'comptage refusé par la base' });
+      const par_statut: Record<string, number> = {}; statuts.forEach((st, i) => { par_statut[st] = nombres[i] as number; });
+      const toutes = nombres[statuts.length] as number; const connus = statuts.reduce((a, st) => a + par_statut[st], 0);
+      if (toutes > connus) par_statut['autre (statut vide ou ancien)'] = toutes - connus; // aucune contrainte en base sur statut
       const ouvertes = STATUTS_OUVERTS.reduce((a, st) => a + par_statut[st], 0);
       return rep(200, { ...base, exact: true, filtres: { livreur: d.livreur || null, date: d.date || null, date_debut: (d as any).date_debut || null, date_fin: (d as any).date_fin || null },
-        par_statut, ouvertes, total: ouvertes + STATUTS_TERMINES.reduce((a, st) => a + par_statut[st], 0) });
+        par_statut, ouvertes, total: toutes });
     }
     if (d.action === 'lire_stock') {
       const cat = await catalogue(); const voulu = d.produit ? String(d.produit).toLowerCase() : '';
