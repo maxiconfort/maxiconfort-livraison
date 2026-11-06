@@ -122,6 +122,12 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - **Risques acceptés** : jeton de 40 jours gardé dans le navigateur de l'ordinateur (vol du PC ou faille dans la page = 40 jours d'accès collab : couper comme ci-dessus) ; hors ligne, la session locale s'ouvre sans code (comme avant, mais 40 jours au lieu de 12 h).
 - **Tests** : `node outils/test-confiance.js` (30 tests, sans connexion) et `node outils/test-confiance-base.js` (14 tests RÉELS dans une seule opération ANNULÉE à la fin : rien ne reste dans la base ; essayés le 05/11 sur une base Postgres 16 locale reproduisant les fonctions de la 019).
 
+## JARVIS montre l'appli : ancre #jarvis=… (v7.5.122, 06/11/2026)
+- Demande de Borhen (étape 2) : JARVIS affiche l'appli à la voix (« montre-moi la commande 2145 », « les livraisons de demain de RANOU », « le planning »), dans une fenêtre de JARVIS ou en grand.
+- Bloc `JVUE-DEBUT … JVUE-FIN` : `jvueLire(hash)` (pure) accepte seulement `fiche:<numéro>`, `commandes:<today|tomorrow|week|late|all>[:RANOU|GLS]`, `tournees`, `accueil` ; `jvueAppliquer()` attend une session bureau (admin ou collab, jamais livreur) et les commandes chargées (5 min au plus ; suffixe « ;n » = numéro de demande pour réafficher la même vue), puis navigue (`goTo`, `ouvrirCmd`, `cmdFiltreRapide`). **Navigation seulement** : aucune écriture, aucun appel serveur de plus ; sans session, l'écran du code reste affiché. Réagit aussi à `hashchange` (JARVIS change la vue sans recharger).
+- Dans la fenêtre de JARVIS (iframe sur 127.0.0.1), le navigateur garde une session SÉPARÉE : se connecter une fois dedans (code admin), puis Paramètres → Codes PIN → « Connecter cet ordinateur 40 jours ».
+- Tests : `node outils/test-vue-jarvis.js` (23 tests, sans connexion).
+
 ## Pièges connus
 - PATCH Supabase via PowerShell : encoder le corps en UTF-8 (`[Text.Encoding]::UTF8.GetBytes`) et URL-encoder `#` en `%23`.
 - Variables PowerShell insensibles à la casse (`$p` = `$P`) : ne pas réutiliser un nom pour deux valeurs (incident du 27/09 : chemin local publié à la place de la clé pendant 2 min).
