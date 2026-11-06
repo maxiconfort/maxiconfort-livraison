@@ -10,7 +10,7 @@ const bloc = html.slice(i, j);
 const appels = []; let minuteur = null;
 const b = { location: { hash: '' }, role: null, commandes: [], window: { addEventListener() {} }, document: { addEventListener() {}, querySelector: () => null, getElementById: () => ({ value: 'GLS' }) },
   setInterval: (f) => { minuteur = f; return 1; }, clearInterval: () => { minuteur = null; }, setTimeout: (f) => f(),
-  goTo: (p) => appels.push('goTo:' + p), ouvrirCmd: (id) => appels.push('fiche:' + id), cmdFiltreRapide: (p) => appels.push('preset:' + p), decodeURIComponent, JSON };
+  goTo: (p) => appels.push('goTo:' + p), ouvrirCmd: (id) => appels.push('fiche:' + id), toast: () => {}, cmdFiltreRapide: (p) => appels.push('preset:' + p), decodeURIComponent, JSON };
 vm.createContext(b); vm.runInContext(bloc, b);
 
 console.log('\n1. LECTURE DE L\'ANCRE (fonction pure)');
@@ -30,6 +30,7 @@ test('personne connecté : rien ne bouge (attend l\'écran du code)', lancer('#j
 test('livreur : jamais de vue bureau', lancer('#jarvis=fiche:2145', 'livreur', [{ id: '#2145' }]).length === 0);
 test('collab : fiche ouverte', JSON.stringify(lancer('#jarvis=fiche:2145', 'collab', [{ id: '#2145' }])) === JSON.stringify(['goTo:commandes', 'fiche:#2145']));
 test('chiffre en trop entendu (21405) : #2145 ouvert s\'il est le seul possible', JSON.stringify(lancer('#jarvis=fiche:21405', 'admin', [{ id: '#2145' }, { id: '#1999' }])) === JSON.stringify(['goTo:commandes', 'fiche:#2145']));
+test('4 chiffres : jamais rapproché', JSON.stringify(lancer('#jarvis=fiche:2146', 'admin', [{ id: '#214' }])) === JSON.stringify(['goTo:commandes']));
 test('deux possibilités : rien n\'est ouvert', JSON.stringify(lancer('#jarvis=fiche:21455', 'admin', [{ id: '#2145' }, { id: '#2155' }])) === JSON.stringify(['goTo:commandes']));
 test('fiche inconnue : page commandes seulement', JSON.stringify(lancer('#jarvis=fiche:9999', 'admin', [{ id: '#2145' }])) === JSON.stringify(['goTo:commandes']));
 test('demain RANOU : page commandes + filtre rapide', JSON.stringify(lancer('#jarvis=commandes:tomorrow:RANOU', 'collab', [{ id: '#1' }])) === JSON.stringify(['goTo:commandes', 'preset:tomorrow']));

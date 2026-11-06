@@ -127,8 +127,8 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - Bloc `JVUE-DEBUT … JVUE-FIN` : `jvueLire(hash)` (pure) accepte seulement `fiche:<numéro>`, `commandes:<today|tomorrow|week|late|all>[:RANOU|GLS]`, `tournees`, `accueil`, `parametres` (v7.5.123, admin seulement → Paramètres / Codes PIN) ; `jvueAppliquer()` attend une session bureau (admin ou collab, jamais livreur) et les commandes chargées (5 min au plus ; suffixe « ;n » = numéro de demande pour réafficher la même vue), puis navigue (`goTo`, `ouvrirCmd`, `cmdFiltreRapide`). **Navigation seulement** : aucune écriture, aucun appel serveur de plus ; sans session, l'écran du code reste affiché. Réagit aussi à `hashchange` (JARVIS change la vue sans recharger).
 - Dans la fenêtre de JARVIS (iframe sur 127.0.0.1), le navigateur garde une session SÉPARÉE : se connecter une fois dedans (code admin), puis Paramètres → Codes PIN → « Connecter cet ordinateur 40 jours ».
 - v7.5.123 : menu de gauche qui défile (`.sidebar` overflow-y:auto) — sur un écran court, Paramètres était inaccessible.
-- v7.5.124 : numéro mal entendu (« 2145 » → « 21405 ») : si la fiche n'existe pas, on retire UN chiffre et on ouvre seulement s'il n'y a qu'une commande possible (`jvueRapprocher`, pure).
-- Tests : `node outils/test-vue-jarvis.js` (28 tests, sans connexion).
+- v7.5.124 : numéro mal entendu (« 2145 » → « 21405 ») : si la fiche n'existe pas, numéro de 5-6 chiffres : on retire UN chiffre et on ouvre seulement s'il n'y a qu'une commande possible, avec le message « 21405 introuvable → #2145 ouverte » (`jvueRapprocher`, pure).
+- Tests : `node outils/test-vue-jarvis.js` (29 tests, sans connexion).
 
 ## Pièges connus
 - PATCH Supabase via PowerShell : encoder le corps en UTF-8 (`[Text.Encoding]::UTF8.GetBytes`) et URL-encoder `#` en `%23`.
