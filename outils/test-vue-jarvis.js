@@ -29,7 +29,7 @@ const lancer = (h, role, cmds) => { appels.length = 0; b.location.hash = h; b.ro
 test('personne connecté : rien ne bouge (attend l\'écran du code)', lancer('#jarvis=fiche:2145', null, []).length === 0);
 test('livreur : jamais de vue bureau', lancer('#jarvis=fiche:2145', 'livreur', [{ id: '#2145' }]).length === 0);
 test('collab : fiche ouverte', JSON.stringify(lancer('#jarvis=fiche:2145', 'collab', [{ id: '#2145' }])) === JSON.stringify(['goTo:commandes', 'fiche:#2145']));
-test('chiffre en trop entendu (21405) : #2145 ouvert s\'il est le seul possible', JSON.stringify(lancer('#jarvis=fiche:21405', 'admin', [{ id: '#2145' }, { id: '#1405' }])) === JSON.stringify(['goTo:commandes', 'fiche:#2145']));
+test('chiffre en trop entendu (21405) : #2145 ouvert s\'il est le seul possible', JSON.stringify(lancer('#jarvis=fiche:21405', 'admin', [{ id: '#2145' }, { id: '#1999' }])) === JSON.stringify(['goTo:commandes', 'fiche:#2145']));
 test('deux possibilités : rien n\'est ouvert', JSON.stringify(lancer('#jarvis=fiche:21455', 'admin', [{ id: '#2145' }, { id: '#2155' }])) === JSON.stringify(['goTo:commandes']));
 test('fiche inconnue : page commandes seulement', JSON.stringify(lancer('#jarvis=fiche:9999', 'admin', [{ id: '#2145' }])) === JSON.stringify(['goTo:commandes']));
 test('demain RANOU : page commandes + filtre rapide', JSON.stringify(lancer('#jarvis=commandes:tomorrow:RANOU', 'collab', [{ id: '#1' }])) === JSON.stringify(['goTo:commandes', 'preset:tomorrow']));
