@@ -107,7 +107,7 @@ function bac(opts) {
   test('aucune valeur secrète dans la migration', !/sb_secret_|mc_[A-Za-z0-9_-]{20,}/.test(sql));
 
   console.log('\n5. MISE EN LIGNE');
-  test('CACHE_VERSION augmentée (v7-5-121)', /CACHE_VERSION = 'maxiconfort-v7-5-121'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
+  test('CACHE_VERSION augmentée (v7-5-121 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(2[1-9]|[3-9]\d)'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
