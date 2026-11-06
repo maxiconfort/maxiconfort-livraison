@@ -5147,6 +5147,13 @@ function jvueLire(hash) {
   if (p[0] === 'parametres' && p.length === 1) return { vue: 'parametres' }; // v7.5.123 : Paramètres → Codes PIN (appareil de confiance)
   return null;
 }
+/** v7.5.124 (recette 06/11 16:39) : la reconnaissance vocale ajoute souvent un chiffre (« 2145 » entendu « 21405 » / « 21485 »).
+ * Si le numéro n'existe pas, on essaie de retirer UN chiffre ; on n'ouvre que s'il n'y a qu'UNE commande possible (fonction pure). */
+function jvueRapprocher(id, ids) {
+  var m = /^#(\d{5,6})$/.exec(id || ''); if (!m) return null; var n = m[1], vus = {}; // 5-6 chiffres seulement (relecture)
+  for (var i = 0; i < n.length; i++) { var c = '#' + n.slice(0, i) + n.slice(i + 1); if (ids.indexOf(c) >= 0) vus[c] = 1; }
+  var k = Object.keys(vus); return k.length === 1 ? k[0] : null;
+}
 var _jvueMinuteur = null;
 function jvueAppliquer() {
   var v = jvueLire(location.hash); if (!v) return;
@@ -5156,7 +5163,12 @@ function jvueAppliquer() {
     if (!role || role === 'livreur' || typeof commandes === 'undefined' || !commandes.length) return; // attend la connexion bureau et les données
     clearInterval(_jvueMinuteur);
     try {
-      if (v.vue === 'fiche') { goTo('commandes', document.querySelector('.ni[onclick*="\'commandes\'"]')); if (commandes.some(function (c) { return c.id === v.id; })) ouvrirCmd(v.id); }
+      if (v.vue === 'fiche') {
+        goTo('commandes', document.querySelector('.ni[onclick*="\'commandes\'"]'));
+        var ids = commandes.map(function (c) { return c.id; });
+        var cible = ids.indexOf(v.id) >= 0 ? v.id : jvueRapprocher(v.id, ids); // v7.5.124 : « 21405 » entendu → #2145 s'il est le seul possible
+        if (cible) { ouvrirCmd(cible); if (cible !== v.id && typeof toast === 'function') toast('🔎 ' + v.id + ' introuvable → ' + cible + ' ouverte'); }
+      }
       else if (v.vue === 'commandes') {
         goTo('commandes', document.querySelector('.ni[onclick*="\'commandes\'"]'));
         setTimeout(function () { var t = document.getElementById('cmd-filter-transporteur'); if (t) t.value = v.livreur; cmdFiltreRapide(v.preset); }, 50);
