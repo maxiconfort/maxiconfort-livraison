@@ -1,10 +1,11 @@
 // ════════════════════════════════════════════════════════════════════
 // Edge Function : jarvis-action (v2 — 30/10/2026 ; v2.1 04/11/2026 : lister_commandes { client } = recherche par nom / téléphone / e-mail ;
-// v2.2 04/11/2026 : recherche approchée par nom quand rien d'exact — « approchee: true » + score)
+// v2.2 04/11/2026 : recherche approchée par nom quand rien d'exact — « approchee: true » + score ;
+// v2.3 06/11/2026 : « total » = nombre EXACT compté par la base (plus la longueur de la liste coupée) + action compter_commandes)
 // ════════════════════════════════════════════════════════════════════
 // Porte d'entrée RÉSERVÉE À JARVIS (MAXI BRAIN, mini-PC de Borhen). Décision de Borhen du 30/10 : « autorisation totale sur
 // commandes et stock », confirmation vocale en deux temps, graduée par NIVEAU (logique dans _shared/jarvis-action-logique.ts) :
-//   N1 lecture    : lire_commande, lister_commandes, lire_stock — exécutées directement ;
+//   N1 lecture    : lire_commande, lister_commandes, compter_commandes, lire_stock — exécutées directement ;
 //   N2 réversible : creer_commande (depuis un mail), modifier_commande, planifier, deplacer, changer_statut, sav, gls_etiquette,
 //                   gls_retour, litige, stock_entree, stock_chargement, stock_retour_depot — aperçu puis exécution ;
 //   N3 critique   : creer_commande (dictée), annuler_commande, supprimer_commande, modifier_prix, envoyer_sms, marquer_livre,
@@ -20,7 +21,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+  controlerCommande, controlerDemande, critereClient, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
 const SECRET_JARVIS = Deno.env.get('JARVIS_ACTION_SECRET') || '';
@@ -75,12 +76,12 @@ Deno.serve(async (req: Request) => {
     if (d.action === 'lister_commandes') {
       // v2.1 (04/11) : recherche par client (nom / téléphone / e-mail) — toutes commandes, les plus récentes d'abord, initiales seulement.
       const crit = d.client !== undefined ? critereClient(d.client) : null;
-      let q = sb.from('commandes').select('id, produit, statut, transporteur, date_livraison, adresse, tracking_transporteur, livreur, created_at' + (crit ? ', client' : '')).limit(d.limite || 30);
+      let q = sb.from('commandes').select('id, produit, statut, transporteur, date_livraison, adresse, tracking_transporteur, livreur, created_at' + (crit ? ', client' : ''), { count: 'exact' }).limit(d.limite || 30);
       if (d.date) q = q.eq('date_livraison', d.date);
       if (d.statut) q = q.eq('statut', d.statut); else if (!d.date && !crit) q = q.not('statut', 'in', '(' + STATUTS_TERMINES.map((s) => '"' + s + '"').join(',') + ')');
       if (d.livreur) q = q.eq('transporteur', d.livreur);
       for (const f of crit?.filtres || []) q = q.filter(f.colonne, f.operateur, f.valeur);
-      const { data, error } = await (crit ? q.order('created_at', { ascending: false }) : q.order('date_livraison', { ascending: true, nullsFirst: false }).order('created_at', { ascending: false }));
+      const { data, error, count } = await (crit ? q.order('created_at', { ascending: false }) : q.order('date_livraison', { ascending: true, nullsFirst: false }).order('created_at', { ascending: false }));
       if (error) return rep(502, { ok: false, erreur: 'lecture refusée par la base' });
       // v2.2 : rien d'exact pour un NOM → recherche approchée sur les 3 000 commandes les plus récentes (mêmes filtres date / statut /
       // livreur), réponse marquée « approchee » avec un score par ligne ; toujours sans nom complet, téléphone ni e-mail.
@@ -101,8 +102,26 @@ Deno.serve(async (req: Request) => {
         return rep(200, { ...base, recherche: 'nom', approchee: true, total: proches.length, ...(proches.plus ? { plus: true } : {}),
           commandes: proches.map((x: any) => ({ ...apercuCommande(x), livreur: String(x.livreur || ''), client_initiales: initiales(String(x.client || '')), score: x.score })) });
       }
-      return rep(200, { ...base, ...(crit ? { recherche: crit.genre } : {}), total: (data || []).length,
+      // v2.3 (06/11, recette Borhen) : « total » était la longueur de la liste COUPÉE (30 par défaut, 100 au plus) → JARVIS comptait faux.
+      const n = (data || []).length; const totalExact = typeof count === 'number' ? count : n;
+      return rep(200, { ...base, ...(crit ? { recherche: crit.genre } : {}), total: totalExact, affichees: n, tronquee: totalExact > n,
         commandes: (data || []).map((x: any) => ({ ...apercuCommande(x), livreur: String(x.livreur || ''), ...(crit ? { client_initiales: initiales(String(x.client || '')) } : {}) })) });
+    }
+    if (d.action === 'compter_commandes') {
+      // v2.3 (06/11) : un comptage exact par statut, fait par la base (requêtes « head », aucune ligne lue, aucune donnée client).
+      const par_statut: Record<string, number> = {};
+      for (const st of [...STATUTS_OUVERTS, ...STATUTS_TERMINES]) {
+        let q = sb.from('commandes').select('id', { count: 'exact', head: true }).eq('statut', st).not('id', 'like', '#TEST%');
+        if (d.livreur) q = q.eq('transporteur', d.livreur);
+        if (d.date) q = q.eq('date_livraison', d.date);
+        if ((d as any).date_debut) q = q.gte('date_livraison', (d as any).date_debut);
+        if ((d as any).date_fin) q = q.lte('date_livraison', (d as any).date_fin);
+        const { count, error } = await q; if (error || typeof count !== 'number') return rep(502, { ok: false, erreur: 'comptage refusé par la base' });
+        par_statut[st] = count;
+      }
+      const ouvertes = STATUTS_OUVERTS.reduce((a, st) => a + par_statut[st], 0);
+      return rep(200, { ...base, exact: true, filtres: { livreur: d.livreur || null, date: d.date || null, date_debut: (d as any).date_debut || null, date_fin: (d as any).date_fin || null },
+        par_statut, ouvertes, total: ouvertes + STATUTS_TERMINES.reduce((a, st) => a + par_statut[st], 0) });
     }
     if (d.action === 'lire_stock') {
       const cat = await catalogue(); const voulu = d.produit ? String(d.produit).toLowerCase() : '';

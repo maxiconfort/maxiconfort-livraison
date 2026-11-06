@@ -17,7 +17,7 @@ export const VERSION = 'v2';
 
 export type Niveau = 'N1' | 'N2' | 'N3';
 export const NIVEAUX: Record<string, Niveau> = {
-  lire_commande: 'N1', lister_commandes: 'N1', lire_stock: 'N1',
+  lire_commande: 'N1', lister_commandes: 'N1', compter_commandes: 'N1', lire_stock: 'N1',
   creer_commande: 'N2', modifier_commande: 'N2', planifier: 'N2', deplacer: 'N2', changer_statut: 'N2',
   sav: 'N2', gls_etiquette: 'N2', gls_retour: 'N2', litige: 'N2',
   stock_entree: 'N2', stock_chargement: 'N2', stock_retour_depot: 'N2',
@@ -79,7 +79,7 @@ export type Demande = {
 /** Contrôle de forme d'une demande (avant toute lecture). Renvoie un message d'erreur ou null. */
 export function controlerDemande(d: Demande, maintenant = Date.now()): string | null {
   if (!ACTIONS.includes(d.action)) return 'action non autorisée pour JARVIS';
-  const aCmd = !['lister_commandes', 'lire_stock', 'creer_commande', 'stock_entree', 'stock_chargement', 'stock_retour_depot', 'stock_correction'].includes(d.action);
+  const aCmd = !['lister_commandes', 'compter_commandes', 'lire_stock', 'creer_commande', 'stock_entree', 'stock_chargement', 'stock_retour_depot', 'stock_correction'].includes(d.action);
   if (aCmd && !ID_CMD.test(String(d.cmdId || ''))) return 'numéro de commande invalide (ex. #1588)';
   switch (d.action) {
     case 'gls_retour':
@@ -110,6 +110,12 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
       if (d.livreur !== undefined && !LIVREURS.includes(String(d.livreur))) return 'livreur inconnu';
       if (d.limite !== undefined && !entier(d.limite, 1, 100)) return 'limite : 1 à 100';
       if (d.client !== undefined && (typeof d.client !== 'string' || !critereClient(d.client))) return 'client : nom (2 lettres au moins), téléphone (6 chiffres au moins) ou e-mail';
+      break;
+    case 'compter_commandes': // v2.3 (06/11) : comptage EXACT par statut, fait par la base (jamais une liste coupée)
+      for (const k of ['date', 'date_debut', 'date_fin']) if ((d as any)[k] !== undefined && !dateValide(String((d as any)[k]))) return k + ' invalide (AAAA-MM-JJ)';
+      if (d.date !== undefined && ((d as any).date_debut !== undefined || (d as any).date_fin !== undefined)) return 'date OU période (date_debut / date_fin), pas les deux';
+      if ((d as any).date_debut && (d as any).date_fin && String((d as any).date_debut) > String((d as any).date_fin)) return 'période inversée';
+      if (d.livreur !== undefined && !LIVREURS.includes(String(d.livreur))) return 'livreur inconnu';
       break;
     case 'lire_stock':
       if (d.produit !== undefined && texte(d.produit, 80).length < 2) return 'produit invalide';
@@ -175,7 +181,7 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
 
 /** Contrôle de la commande trouvée en base, selon l'action. */
 export function controlerCommande(d: Demande, c: Record<string, unknown> | null): string | null {
-  if (!['lister_commandes', 'lire_stock', 'creer_commande', 'stock_entree', 'stock_chargement', 'stock_retour_depot', 'stock_correction'].includes(d.action) && !c) return 'commande introuvable';
+  if (!['lister_commandes', 'compter_commandes', 'lire_stock', 'creer_commande', 'stock_entree', 'stock_chargement', 'stock_retour_depot', 'stock_correction'].includes(d.action) && !c) return 'commande introuvable';
   if (!c) return null;
   const statut = String(c.statut || ''); const suivi = String(c.tracking_transporteur || '').trim(); const termine = STATUTS_TERMINES.includes(statut);
   const cp5 = /\b\d{5}\b/.test(String(c.adresse || ''));

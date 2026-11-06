@@ -69,7 +69,7 @@ test('aperçu litige (réserve Codex #5) : description existante, absente, vide,
 
 test('v2 : liste fermée avec niveau ; créer une commande dictée = N3, depuis un mail = N2', () => {
   assert.equal(VERSION, 'v2');
-  assert.equal(ACTIONS.length, 21); for (const a of ACTIONS) assert.ok(['N1', 'N2', 'N3'].includes(NIVEAUX[a]), a);
+  assert.equal(ACTIONS.length, 22); for (const a of ACTIONS) assert.ok(['N1', 'N2', 'N3'].includes(NIVEAUX[a]), a);
   assert.equal(niveauDe({ action: 'lire_stock' }), 'N1'); assert.equal(niveauDe({ action: 'planifier' }), 'N2'); assert.equal(niveauDe({ action: 'annuler_commande' }), 'N3');
   assert.equal(niveauDe({ action: 'creer_commande', source: 'mail' }), 'N2'); assert.equal(niveauDe({ action: 'creer_commande', source: 'dictee' }), 'N3');
   for (const a of ['marquer_paye', 'rembourser', 'encaisser', 'shopify', 'tiktok']) assert.match(controlerDemande({ action: a, cmdId: '#1588' }, T), /non autorisée/, a);
@@ -273,4 +273,27 @@ test('v2.2 — contre-relecture : phonétique seulement si l’orthographe est p
   assert.ok(scoreNom('Rubigny', 'Laurence Rubini') <= 0.9, 'phonétique plafonnée à 0,9');
   const fs = await import('node:fs'); const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
   assert.match(src, /\.order\('id', \{ ascending: true \}\)\.range\(de, de \+ 999\)/); assert.match(src, /const uniques = tous\.filter/);
+});
+
+// ── v2.3 (06/11/2026) : comptage exact (recette Borhen : JARVIS se contredisait sur les nombres) ─────────────────────
+test('v2.3 compter_commandes : N1, lecture sans commande, contrôles de forme', () => {
+  assert.equal(NIVEAUX.compter_commandes, 'N1'); assert.ok(ACTIONS.includes('compter_commandes'));
+  assert.equal(controlerDemande({ action: 'compter_commandes' }, T), null);
+  assert.equal(controlerDemande({ action: 'compter_commandes', livreur: 'RANOU', date_debut: '2026-11-01', date_fin: '2026-11-30' }, T), null);
+  assert.match(controlerDemande({ action: 'compter_commandes', livreur: 'BIDULE' }, T), /livreur inconnu/);
+  assert.match(controlerDemande({ action: 'compter_commandes', date: '07/11' }, T), /date invalide/);
+  assert.match(controlerDemande({ action: 'compter_commandes', date: '2026-11-07', date_debut: '2026-11-01' }, T), /pas les deux/);
+  assert.match(controlerDemande({ action: 'compter_commandes', date_debut: '2026-11-30', date_fin: '2026-11-01' }, T), /inversée/);
+  assert.equal(controlerCommande({ action: 'compter_commandes' }, null), null);
+});
+
+test('v2.3 : « total » = nombre exact de la base, plus la longueur de la liste coupée ; comptage sans aucune ligne lue', async () => {
+  const fs = await import('node:fs'); const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /, \{ count: 'exact' \}\)\.limit\(d\.limite \|\| 30\)/);
+  assert.match(src, /total: totalExact, affichees: n, tronquee: totalExact > n/);
+  assert.doesNotMatch(src, /total: \(data \|\| \[\]\)\.length/, 'plus jamais la longueur de la liste comme total');
+  const bloc = src.slice(src.indexOf("d.action === 'compter_commandes'"), src.indexOf("d.action === 'lire_stock'"));
+  assert.match(bloc, /select\('id', \{ count: 'exact', head: true \}\)/, 'requêtes « head » : aucune ligne, aucune donnée client');
+  assert.match(bloc, /not\('id', 'like', '#TEST%'\)/, 'lignes de test exclues');
+  assert.doesNotMatch(bloc.replace(/\/\/.*/g, ''), /'(client|tel|email|adresse)'|select\('\*'/);
 });
