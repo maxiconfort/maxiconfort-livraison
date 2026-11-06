@@ -99,7 +99,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:14
 /* ── APP ── */
 #app{display:none;height:100vh;overflow:hidden}
 #app.on{display:flex}
-.sidebar{width:224px;flex-shrink:0;background:var(--card);border-right:1px solid var(--brd);display:flex;flex-direction:column}
+.sidebar{width:224px;flex-shrink:0;background:var(--card);border-right:1px solid var(--brd);display:flex;flex-direction:column;overflow-y:auto} /* v7.5.123 : écran court (fenêtre JARVIS, petit portable) = menu qui défile jusqu'à Paramètres */
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden}
 .page{flex:1;overflow-y:auto;padding:22px;display:none}
 .page.on{display:block;overflow-y:auto;height:calc(100vh - 54px);animation:fi .18s ease}
@@ -5144,6 +5144,7 @@ function jvueLire(hash) {
   if (p[0] === 'commandes' && JVUE_PRESETS.indexOf(p[1]) >= 0 && p.length <= 3 && (p.length < 3 || JVUE_LIVREURS.indexOf(p[2]) >= 0)) return { vue: 'commandes', preset: p[1], livreur: p[2] || '' };
   if (p[0] === 'tournees' && p.length === 1) return { vue: 'tournees' };
   if (p[0] === 'accueil' && p.length === 1) return { vue: 'accueil' };
+  if (p[0] === 'parametres' && p.length === 1) return { vue: 'parametres' }; // v7.5.123 : Paramètres → Codes PIN (appareil de confiance)
   return null;
 }
 var _jvueMinuteur = null;
@@ -5161,6 +5162,7 @@ function jvueAppliquer() {
         setTimeout(function () { var t = document.getElementById('cmd-filter-transporteur'); if (t) t.value = v.livreur; cmdFiltreRapide(v.preset); }, 50);
       }
       else if (v.vue === 'tournees') goTo('tournees', document.querySelector('[data-p="tournees"]'));
+      else if (v.vue === 'parametres') { if (role === 'admin') goTo('pins', document.querySelector('[data-p="pins"]')); }
       else goTo('dashboard', document.querySelector('.ni[onclick*="\'dashboard\'"]'));
     } catch (e) { /* vue impossible : l'appli reste où elle est */ }
   }, 500);

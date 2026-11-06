@@ -19,6 +19,7 @@ test('fiche:2145 → #2145', JSON.stringify(L('#jarvis=fiche:2145')) === JSON.st
 test('commandes de demain RANOU', JSON.stringify(L('#jarvis=commandes:tomorrow:RANOU')) === JSON.stringify({ vue: 'commandes', preset: 'tomorrow', livreur: 'RANOU' }));
 test('ancre encodée acceptée', L('#jarvis=commandes%3Alate').preset === 'late');
 test('numéro de demande accepté (même vue redemandée)', L('#jarvis=fiche:2145;1730900000').id === '#2145');
+test('paramètres', L('#jarvis=parametres').vue === 'parametres');
 test('tournées et accueil', L('#jarvis=tournees').vue === 'tournees' && L('#jarvis=accueil').vue === 'accueil');
 for (const h of ['', '#autre', '#jarvis=fiche:21;drop', '#jarvis=fiche:<script>', '#jarvis=commandes:hier', '#jarvis=commandes:today:INCONNU', '#jarvis=supprimer:2145', '#jarvis=fiche:2145&x=1', '#jarvis=fiche:2145;abc', '#jarvis=%E0%A4%A'])
   test('refusé : ' + (h || '(vide)'), b.jvueLire(h) === null);
@@ -31,8 +32,10 @@ test('collab : fiche ouverte', JSON.stringify(lancer('#jarvis=fiche:2145', 'coll
 test('fiche inconnue : page commandes seulement', JSON.stringify(lancer('#jarvis=fiche:9999', 'admin', [{ id: '#2145' }])) === JSON.stringify(['goTo:commandes']));
 test('demain RANOU : page commandes + filtre rapide', JSON.stringify(lancer('#jarvis=commandes:tomorrow:RANOU', 'collab', [{ id: '#1' }])) === JSON.stringify(['goTo:commandes', 'preset:tomorrow']));
 test('tournées', JSON.stringify(lancer('#jarvis=tournees', 'admin', [{ id: '#1' }])) === JSON.stringify(['goTo:tournees']));
+test('paramètres : admin seulement', JSON.stringify(lancer('#jarvis=parametres', 'admin', [{ id: '#1' }])) === JSON.stringify(['goTo:pins']) && lancer('#jarvis=parametres', 'collab', [{ id: '#1' }]).length === 0);
+test('menu de gauche qui défile (écran court)', /\.sidebar\{[^}]*overflow-y:auto\}/.test(html));
 test('aucune écriture dans le bloc', !/sbSave|rpcPin|fetch\(|sessionEcrire|localStorage\.setItem|\.insert\(|\.update\(/.test(bloc));
 
 console.log('\n3. MISE EN LIGNE');
-test('CACHE_VERSION augmentée (v7-5-122)', /CACHE_VERSION = 'maxiconfort-v7-5-122'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
+test('CACHE_VERSION augmentée (v7-5-123)', /CACHE_VERSION = 'maxiconfort-v7-5-123'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
