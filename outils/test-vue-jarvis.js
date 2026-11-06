@@ -29,6 +29,8 @@ const lancer = (h, role, cmds) => { appels.length = 0; b.location.hash = h; b.ro
 test('personne connecté : rien ne bouge (attend l\'écran du code)', lancer('#jarvis=fiche:2145', null, []).length === 0);
 test('livreur : jamais de vue bureau', lancer('#jarvis=fiche:2145', 'livreur', [{ id: '#2145' }]).length === 0);
 test('collab : fiche ouverte', JSON.stringify(lancer('#jarvis=fiche:2145', 'collab', [{ id: '#2145' }])) === JSON.stringify(['goTo:commandes', 'fiche:#2145']));
+test('chiffre en trop entendu (21405) : #2145 ouvert s\'il est le seul possible', JSON.stringify(lancer('#jarvis=fiche:21405', 'admin', [{ id: '#2145' }, { id: '#1405' }])) === JSON.stringify(['goTo:commandes', 'fiche:#2145']));
+test('deux possibilités : rien n\'est ouvert', JSON.stringify(lancer('#jarvis=fiche:21455', 'admin', [{ id: '#2145' }, { id: '#2155' }])) === JSON.stringify(['goTo:commandes']));
 test('fiche inconnue : page commandes seulement', JSON.stringify(lancer('#jarvis=fiche:9999', 'admin', [{ id: '#2145' }])) === JSON.stringify(['goTo:commandes']));
 test('demain RANOU : page commandes + filtre rapide', JSON.stringify(lancer('#jarvis=commandes:tomorrow:RANOU', 'collab', [{ id: '#1' }])) === JSON.stringify(['goTo:commandes', 'preset:tomorrow']));
 test('tournées', JSON.stringify(lancer('#jarvis=tournees', 'admin', [{ id: '#1' }])) === JSON.stringify(['goTo:tournees']));
@@ -37,5 +39,5 @@ test('menu de gauche qui défile (écran court)', /\.sidebar\{[^}]*overflow-y:au
 test('aucune écriture dans le bloc', !/sbSave|rpcPin|fetch\(|sessionEcrire|localStorage\.setItem|\.insert\(|\.update\(/.test(bloc));
 
 console.log('\n3. MISE EN LIGNE');
-test('CACHE_VERSION augmentée (v7-5-123)', /CACHE_VERSION = 'maxiconfort-v7-5-123'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
+test('CACHE_VERSION augmentée (v7-5-124)', /CACHE_VERSION = 'maxiconfort-v7-5-124'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
