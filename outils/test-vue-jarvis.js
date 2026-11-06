@@ -18,8 +18,9 @@ const L = (h) => JSON.parse(JSON.stringify(b.jvueLire(h)));
 test('fiche:2145 → #2145', JSON.stringify(L('#jarvis=fiche:2145')) === JSON.stringify({ vue: 'fiche', id: '#2145' }));
 test('commandes de demain RANOU', JSON.stringify(L('#jarvis=commandes:tomorrow:RANOU')) === JSON.stringify({ vue: 'commandes', preset: 'tomorrow', livreur: 'RANOU' }));
 test('ancre encodée acceptée', L('#jarvis=commandes%3Alate').preset === 'late');
+test('numéro de demande accepté (même vue redemandée)', L('#jarvis=fiche:2145;1730900000').id === '#2145');
 test('tournées et accueil', L('#jarvis=tournees').vue === 'tournees' && L('#jarvis=accueil').vue === 'accueil');
-for (const h of ['', '#autre', '#jarvis=fiche:21;drop', '#jarvis=fiche:<script>', '#jarvis=commandes:hier', '#jarvis=commandes:today:INCONNU', '#jarvis=supprimer:2145', '#jarvis=fiche:2145&x=1', '#jarvis=%E0%A4%A'])
+for (const h of ['', '#autre', '#jarvis=fiche:21;drop', '#jarvis=fiche:<script>', '#jarvis=commandes:hier', '#jarvis=commandes:today:INCONNU', '#jarvis=supprimer:2145', '#jarvis=fiche:2145&x=1', '#jarvis=fiche:2145;abc', '#jarvis=%E0%A4%A'])
   test('refusé : ' + (h || '(vide)'), b.jvueLire(h) === null);
 
 console.log('\n2. APPLICATION (navigation seulement)');

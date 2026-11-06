@@ -5137,7 +5137,7 @@ var JVUE_PRESETS = ['today', 'tomorrow', 'week', 'late', 'all'];
 var JVUE_LIVREURS = ['RANOU', 'GLS'];
 /** Ancre → vue demandée, ou null (fonction pure). */
 function jvueLire(hash) {
-  var m = /^#jarvis=([^&]*)$/.exec(String(hash || '')); if (!m) return null;
+  var m = /^#jarvis=([^&;]*)(?:;\d{1,12})?$/.exec(String(hash || '')); if (!m) return null; // « ;n » : numéro de demande (même vue redemandée)
   var v; try { v = decodeURIComponent(m[1]); } catch (e) { return null; }
   var p = v.split(':');
   if (p[0] === 'fiche' && /^(\d{3,6}|SAV[\w-]{1,20})$/.test(p[1] || '') && p.length === 2) return { vue: 'fiche', id: '#' + p[1] };
@@ -5151,7 +5151,7 @@ function jvueAppliquer() {
   var v = jvueLire(location.hash); if (!v) return;
   clearInterval(_jvueMinuteur); var essais = 0;
   _jvueMinuteur = setInterval(function () {
-    essais++; if (essais > 60) { clearInterval(_jvueMinuteur); return; } // 30 s au plus (connexion, chargement)
+    essais++; if (essais > 600) { clearInterval(_jvueMinuteur); return; } // 5 min au plus (première connexion dans la fenêtre, chargement)
     if (!role || role === 'livreur' || typeof commandes === 'undefined' || !commandes.length) return; // attend la connexion bureau et les données
     clearInterval(_jvueMinuteur);
     try {

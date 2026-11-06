@@ -124,9 +124,9 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 
 ## JARVIS montre l'appli : ancre #jarvis=… (v7.5.122, 06/11/2026)
 - Demande de Borhen (étape 2) : JARVIS affiche l'appli à la voix (« montre-moi la commande 2145 », « les livraisons de demain de RANOU », « le planning »), dans une fenêtre de JARVIS ou en grand.
-- Bloc `JVUE-DEBUT … JVUE-FIN` : `jvueLire(hash)` (pure) accepte seulement `fiche:<numéro>`, `commandes:<today|tomorrow|week|late|all>[:RANOU|GLS]`, `tournees`, `accueil` ; `jvueAppliquer()` attend une session bureau (admin ou collab, jamais livreur) et les commandes chargées (30 s au plus), puis navigue (`goTo`, `ouvrirCmd`, `cmdFiltreRapide`). **Navigation seulement** : aucune écriture, aucun appel serveur de plus ; sans session, l'écran du code reste affiché. Réagit aussi à `hashchange` (JARVIS change la vue sans recharger).
+- Bloc `JVUE-DEBUT … JVUE-FIN` : `jvueLire(hash)` (pure) accepte seulement `fiche:<numéro>`, `commandes:<today|tomorrow|week|late|all>[:RANOU|GLS]`, `tournees`, `accueil` ; `jvueAppliquer()` attend une session bureau (admin ou collab, jamais livreur) et les commandes chargées (5 min au plus ; suffixe « ;n » = numéro de demande pour réafficher la même vue), puis navigue (`goTo`, `ouvrirCmd`, `cmdFiltreRapide`). **Navigation seulement** : aucune écriture, aucun appel serveur de plus ; sans session, l'écran du code reste affiché. Réagit aussi à `hashchange` (JARVIS change la vue sans recharger).
 - Dans la fenêtre de JARVIS (iframe sur 127.0.0.1), le navigateur garde une session SÉPARÉE : se connecter une fois dedans (code admin), puis Paramètres → Codes PIN → « Connecter cet ordinateur 40 jours ».
-- Tests : `node outils/test-vue-jarvis.js` (21 tests, sans connexion).
+- Tests : `node outils/test-vue-jarvis.js` (23 tests, sans connexion).
 
 ## Pièges connus
 - PATCH Supabase via PowerShell : encoder le corps en UTF-8 (`[Text.Encoding]::UTF8.GetBytes`) et URL-encoder `#` en `%23`.
