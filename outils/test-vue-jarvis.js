@@ -88,7 +88,7 @@ test('aucune écriture dans le bloc', !/sbSave|rpcPin|fetch\(|sessionEcrire|loca
     test('origines refusées : Tailscale public, autre site, https local', !essai('https://x.y.ts.net') && !essai('https://pirate.example') && !essai('https://127.0.0.1:49265'));
     test('origine acceptée : http://127.0.0.1:49265', essai('http://127.0.0.1:49265')); b.window = w; b.location.ancestorOrigins = a; }
 }
-test('v7.5.128 : enregistrer l’ordre — une fois par tournée en 2 min, seulement sur l’ordre déjà calculé de CETTE tournée', /Date\.now\(\) - deja < 120000/.test(html) && /optimTourneeId === lo\[0\]\.id && typeof optimStops/.test(html) && /optimCalculeFini === lo\[0\]\.id/.test(html) && /optimCalculeFini = optimTourneeId;/.test(html) && !/optimLancer\(\)/.test(html.slice(html.indexOf('// JVUE-DEBUT'), html.indexOf('// JVUE-FIN'))));
+test('v7.5.128 : enregistrer l’ordre — une fois par tournée en 2 min, seulement sur l’ordre déjà calculé de CETTE tournée', /Date\.now\(\) - deja < 120000/.test(html) && /optimTourneeId === lo\[0\]\.id && typeof optimStops/.test(html) && /optimCalculeFini === lo\[0\]\.id/.test(html) && /optimCalculeFini = optimTourneeId;/.test(html) && /async function optimCharger\(\) \{\n  optimCalculeFini = null;/.test(html) && !/optimLancer\(\)/.test(html.slice(html.indexOf('// JVUE-DEBUT'), html.indexOf('// JVUE-FIN'))));
 test('v7.5.128 : plus aucun caractère invisible « retour arrière » dans l’appli (code postal de l’optimiseur)', !/\x08/.test(html) && /a\.match\(\/\\b\(75\|77/.test(html));
 console.log('\n3. MISE EN LIGNE');
 test('CACHE_VERSION augmentée (v7-5-128)', /CACHE_VERSION = 'maxiconfort-v7-5-128'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));

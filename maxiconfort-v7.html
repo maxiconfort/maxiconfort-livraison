@@ -13619,6 +13619,7 @@ function optimResoudreCreneau(s) {
 }
 
 async function optimCharger() {
+  optimCalculeFini = null; // v7.5.128 : un nouveau chargement (géocodage) n'est pas un calcul fini
   const tid = document.getElementById('optim-tournee-sel').value;
   if (!tid) {
     document.getElementById('optim-empty').style.display = 'block';
