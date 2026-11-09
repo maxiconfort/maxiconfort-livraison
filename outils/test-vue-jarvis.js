@@ -10,7 +10,7 @@ const bloc = html.slice(i, j);
 const appels = []; let minuteur = null;
 const b = { location: { hash: '' }, role: null, commandes: [], window: { addEventListener() {} }, document: { addEventListener() {}, querySelector: () => null, getElementById: () => ({ value: 'GLS' }) },
   setInterval: (f) => { minuteur = f; return 1; }, clearInterval: () => { minuteur = null; }, setTimeout: (f) => f(),
-  goTo: (p) => appels.push('goTo:' + p), ouvrirCmd: (id) => appels.push('fiche:' + id), toast: () => {}, cmdFiltreRapide: (p) => appels.push('preset:' + p), decodeURIComponent, JSON };
+  closePanel: () => appels.push('fermer'), goTo: (p) => appels.push('goTo:' + p), ouvrirCmd: (id) => appels.push('fiche:' + id), toast: () => {}, cmdFiltreRapide: (p) => appels.push('preset:' + p), decodeURIComponent, JSON };
 vm.createContext(b); vm.runInContext(bloc, b);
 
 console.log('\n1. LECTURE DE L\'ANCRE (fonction pure)');
@@ -33,12 +33,13 @@ test('chiffre en trop entendu (21405) : #2145 ouvert s\'il est le seul possible'
 test('4 chiffres : jamais rapproché', JSON.stringify(lancer('#jarvis=fiche:2146', 'admin', [{ id: '#214' }])) === JSON.stringify(['goTo:commandes']));
 test('deux possibilités : rien n\'est ouvert', JSON.stringify(lancer('#jarvis=fiche:21455', 'admin', [{ id: '#2145' }, { id: '#2155' }])) === JSON.stringify(['goTo:commandes']));
 test('fiche inconnue : page commandes seulement', JSON.stringify(lancer('#jarvis=fiche:9999', 'admin', [{ id: '#2145' }])) === JSON.stringify(['goTo:commandes']));
-test('demain RANOU : page commandes + filtre rapide', JSON.stringify(lancer('#jarvis=commandes:tomorrow:RANOU', 'collab', [{ id: '#1' }])) === JSON.stringify(['goTo:commandes', 'preset:tomorrow']));
-test('tournées', JSON.stringify(lancer('#jarvis=tournees', 'admin', [{ id: '#1' }])) === JSON.stringify(['goTo:tournees']));
-test('paramètres : admin seulement', JSON.stringify(lancer('#jarvis=parametres', 'admin', [{ id: '#1' }])) === JSON.stringify(['goTo:pins']) && lancer('#jarvis=parametres', 'collab', [{ id: '#1' }]).length === 0);
+test('demain RANOU : page commandes + filtre rapide', JSON.stringify(lancer('#jarvis=commandes:tomorrow:RANOU', 'collab', [{ id: '#1' }])) === JSON.stringify(['fermer', 'goTo:commandes', 'preset:tomorrow']));
+test('tournées', JSON.stringify(lancer('#jarvis=tournees', 'admin', [{ id: '#1' }])) === JSON.stringify(['fermer', 'goTo:tournees']));
+test('paramètres : admin seulement', JSON.stringify(lancer('#jarvis=parametres', 'admin', [{ id: '#1' }])) === JSON.stringify(['fermer', 'goTo:pins']) && JSON.stringify(lancer('#jarvis=parametres', 'collab', [{ id: '#1' }])) === JSON.stringify(['fermer']));
+test('fiche ouverte : jamais refermée par une vue fiche, refermée par la liste', JSON.stringify(lancer('#jarvis=commandes:all', 'admin', [{ id: '#1' }])) === JSON.stringify(['fermer', 'goTo:commandes', 'preset:all']) && lancer('#jarvis=fiche:2145', 'admin', [{ id: '#2145' }]).indexOf('fermer') < 0);
 test('menu de gauche qui défile (écran court)', /\.sidebar\{[^}]*overflow-y:auto\}/.test(html));
 test('aucune écriture dans le bloc', !/sbSave|rpcPin|fetch\(|sessionEcrire|localStorage\.setItem|\.insert\(|\.update\(/.test(bloc));
 
 console.log('\n3. MISE EN LIGNE');
-test('CACHE_VERSION augmentée (v7-5-124)', /CACHE_VERSION = 'maxiconfort-v7-5-124'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
+test('CACHE_VERSION augmentée (v7-5-125)', /CACHE_VERSION = 'maxiconfort-v7-5-125'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
