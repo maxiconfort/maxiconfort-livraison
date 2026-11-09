@@ -69,6 +69,27 @@ test('aucune écriture dans le bloc', !/sbSave|rpcPin|fetch\(|sessionEcrire|loca
   test('v7.5.127 : origine sans commande chargée gardée dans le menu (jamais « toutes »)', opts.includes('TikTok Shop') && sel.value === 'TikTok Shop', opts);
   test('v7.5.127 : filtre Origine insensible à la casse', /\(c\.origine \|\| ''\)\.toLowerCase\(\) !== origine\.toLowerCase\(\)/.test(html));
 }
+{ // v7.5.128 (recette JARVIS 09/11 22:45) : tournées au jour demandé, optimiser, autres rubriques
+  console.log('\n2 bis. TOURNÉES, OPTIMISER, RUBRIQUES (v7.5.128)');
+  test('tournees:tomorrow', JSON.stringify(L('#jarvis=tournees:tomorrow')) === JSON.stringify({ vue: 'tournees', jour: 'tomorrow', livreur: '', appliquer: false }));
+  test('tournees::RANOU (livreur sans jour)', L('#jarvis=tournees::RANOU').livreur === 'RANOU');
+  test('tournees:2026-11-10:RANOU', L('#jarvis=tournees:2026-11-10:RANOU').livreur === 'RANOU');
+  test('optim:tomorrow::appliquer accepté (livreur facultatif)', L('#jarvis=optim:tomorrow::appliquer').appliquer === true);
+  test('optim:today:RANOU:appliquer', L('#jarvis=optim:today:RANOU:appliquer').appliquer === true);
+  test('« lancer » n’existe plus (le calcul part à l’ouverture)', b.jvueLire('#jarvis=optim:today:RANOU:lancer') === null);
+  test('page:suivi / page:stock', L('#jarvis=page:suivi').page === 'suivi' && L('#jarvis=page:stock').page === 'stock');
+  for (const h of ['#jarvis=tournees:hier', '#jarvis=tournees:today:XX', '#jarvis=optim:appliquer', '#jarvis=optim::RANOU:appliquer', '#jarvis=optim:today:RANOU:effacer', '#jarvis=page:pins', '#jarvis=page:inconnue', '#jarvis=tournees:today:RANOU:appliquer'])
+    test('v7.5.128 refusé : ' + h, b.jvueLire(h) === null);
+  test('jour « demain » à l’heure de l’appareil', b.jvueJour('tomorrow', new Date(2026, 10, 9, 23, 30).getTime()) === '2026-11-10');
+  test('tournées du jour filtrées par livreur', b.jvueTourneesDuJour([{ id: 'T1', date: '2026-11-10', livreur: 'RANOU' }, { id: 'T2', date: '2026-11-10', livreur: 'GLS' }, { id: 'T3', date: '2026-11-11', livreur: 'RANOU' }], '2026-11-10', 'RANOU').map((t) => t.id).join() === 'T1');
+  test('écriture (optimiser) refusée hors fenêtre JARVIS', (() => { const w = b.window; b.window = { top: null }; b.window.top = b.window; const r = b.jvueDansJarvis(); b.window = w; return r === false; })());
+  test('écriture : origine du parent = JARVIS sur cet appareil seulement (127.0.0.1 / localhost)', /127\\\.0\\\.0\\\.1\|localhost\)/.test(html) && !/ts\\\.net/.test(html.slice(html.indexOf('function jvueDansJarvis'), html.indexOf('function jvueDansJarvis') + 600)));
+  { const w = b.window, a = b.location.ancestorOrigins; b.window = { top: {} }; const essai = (o) => { b.location.ancestorOrigins = [o]; return b.jvueDansJarvis(); };
+    test('origines refusées : Tailscale public, autre site, https local', !essai('https://x.y.ts.net') && !essai('https://pirate.example') && !essai('https://127.0.0.1:49265'));
+    test('origine acceptée : http://127.0.0.1:49265', essai('http://127.0.0.1:49265')); b.window = w; b.location.ancestorOrigins = a; }
+}
+test('v7.5.128 : enregistrer l’ordre — une fois par tournée en 2 min, seulement sur l’ordre déjà calculé de CETTE tournée', /Date\.now\(\) - deja < 120000/.test(html) && /optimTourneeId === lo\[0\]\.id && typeof optimStops/.test(html) && /optimCalculeFini === lo\[0\]\.id/.test(html) && /optimCalculeFini = optimTourneeId;/.test(html) && /async function optimCharger\(\) \{\n  optimCalculeFini = null;/.test(html) && !/optimLancer\(\)/.test(html.slice(html.indexOf('// JVUE-DEBUT'), html.indexOf('// JVUE-FIN'))));
+test('v7.5.128 : plus aucun caractère invisible « retour arrière » dans l’appli (code postal de l’optimiseur)', !/\x08/.test(html) && /a\.match\(\/\\b\(75\|77/.test(html));
 console.log('\n3. MISE EN LIGNE');
-test('CACHE_VERSION augmentée (v7-5-127)', /CACHE_VERSION = 'maxiconfort-v7-5-127'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
+test('CACHE_VERSION augmentée (v7-5-128)', /CACHE_VERSION = 'maxiconfort-v7-5-128'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
