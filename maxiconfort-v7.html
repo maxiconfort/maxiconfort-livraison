@@ -6475,6 +6475,11 @@ function cmdPeuplerFiltresSelects() {
         var icon = o.indexOf('SAV') === 0 ? '🔧' : (o === 'LeBonCoin' ? '📌' : (o.indexOf('Maxiconfort') >= 0 || o.indexOf('Site') === 0 ? '🌐' : '📍'));
         return '<option value="'+o+'">'+icon+' '+o+'</option>';
       }).join('');
+    // v7.5.127 (relecture) : une origine demandée par JARVIS sans commande chargée garde son option — sinon le menu
+    // retombait sur « Toutes origines » et la liste montrait TOUTES les commandes sous l'annonce « TikTok Shop ».
+    if (valSauv && origines.indexOf(valSauv) < 0 && typeof JVUE_ORIGINES !== 'undefined' && JVUE_ORIGINES.indexOf(valSauv) >= 0) {
+      var opS = document.createElement('option'); opS.value = valSauv; opS.textContent = '📍 ' + valSauv; selOr.appendChild(opS);
+    }
     selOr.value = valSauv;
   }
   // Villes uniques
@@ -6567,7 +6572,7 @@ function cmdAppliquerFiltres() {
     }
     if (statut && c.statut !== statut) return false;
     if (transp && cmdGetTransporteur(c) !== transp) return false;
-    if (origine && (c.origine || '') !== origine) return false;
+    if (origine && (c.origine || '').toLowerCase() !== origine.toLowerCase()) return false; // v7.5.127 : casse ignorée (« Leboncoin » ancien = « LeBonCoin »)
     if (paiement && !paiFiltre(c, paiement)) return false; // v7.5.113
     if (ville) {
       var v = cmdExtraireVille(c.adresse || '');

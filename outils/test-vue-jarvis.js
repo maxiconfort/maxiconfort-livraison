@@ -61,6 +61,14 @@ test('aucune écriture dans le bloc', !/sbSave|rpcPin|fetch\(|sessionEcrire|loca
   test('v7.5.127 : sans origine demandée, le filtre Origine est vidé', champs['cmd-filter-origine'].value === '', champs);
   b.document.getElementById = avant;
 }
+{ // v7.5.127 (relecture, MAJEUR) : le VRAI cmdPeuplerFiltresSelects garde l'origine demandée même sans commande chargée
+  const k = html.indexOf('function cmdPeuplerFiltresSelects()'); const fin = html.indexOf('\n}\n', k);
+  const opts = []; const sel = { value: 'TikTok Shop', set innerHTML(h) { opts.length = 0; (h.match(/value="([^"]*)"/g) || []).forEach((m) => opts.push(m.slice(7, -1))); }, appendChild(o) { opts.push(o.value); } };
+  const bac = { commandes: [{ origine: 'LeBonCoin', adresse: '' }], produits: [], JVUE_ORIGINES: b.JVUE_ORIGINES, cmdExtraireVille: () => '', document: { getElementById: (id) => (id === 'cmd-filter-origine' ? sel : null), createElement: () => ({}) } };
+  vm.createContext(bac); vm.runInContext(html.slice(k, fin + 2) + '\ncmdPeuplerFiltresSelects();', bac);
+  test('v7.5.127 : origine sans commande chargée gardée dans le menu (jamais « toutes »)', opts.includes('TikTok Shop') && sel.value === 'TikTok Shop', opts);
+  test('v7.5.127 : filtre Origine insensible à la casse', /\(c\.origine \|\| ''\)\.toLowerCase\(\) !== origine\.toLowerCase\(\)/.test(html));
+}
 console.log('\n3. MISE EN LIGNE');
 test('CACHE_VERSION augmentée (v7-5-127)', /CACHE_VERSION = 'maxiconfort-v7-5-127'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
