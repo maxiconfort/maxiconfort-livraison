@@ -5176,7 +5176,8 @@ function jvueAppliquer() {
       }
       else if (v.vue === 'commandes') {
         goTo('commandes', document.querySelector('.ni[onclick*="\'commandes\'"]'));
-        setTimeout(function () { var t = document.getElementById('cmd-filter-transporteur'); if (t) t.value = v.livreur; var st = document.getElementById('cmd-filter-statut'); if (st) st.value = v.statut || ''; cmdFiltreRapide(v.preset); }, 50);
+        // v7.5.126 : la vue montre EXACTEMENT ce qui est demandé : recherche et autres filtres vidés, livreur et statut posés.
+        setTimeout(function () { ['cmd-search', 'cmd-filter-origine', 'cmd-filter-ville', 'cmd-filter-produit', 'cmd-filter-paiement'].forEach(function (id) { var e = document.getElementById(id); if (e) e.value = ''; }); var t = document.getElementById('cmd-filter-transporteur'); if (t) t.value = v.livreur; var st = document.getElementById('cmd-filter-statut'); if (st) st.value = v.statut || ''; cmdFiltreRapide(v.preset); }, 50);
       }
       else if (v.vue === 'tournees') goTo('tournees', document.querySelector('[data-p="tournees"]'));
       else if (v.vue === 'parametres') { if (role === 'admin') goTo('pins', document.querySelector('[data-p="pins"]')); }

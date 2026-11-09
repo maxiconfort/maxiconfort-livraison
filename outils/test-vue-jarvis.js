@@ -50,6 +50,7 @@ test('aucune écriture dans le bloc', !/sbSave|rpcPin|fetch\(|sessionEcrire|loca
   test('v7.5.126 : GLS + en attente appliqués', champs['cmd-filter-transporteur'].value === 'GLS' && champs['cmd-filter-statut'].value === 'en-attente', champs);
   lancer('#jarvis=commandes:tomorrow:RANOU', 'admin', [{ id: '#1' }]);
   test('v7.5.126 : sans statut demandé, le filtre Statut est vidé', champs['cmd-filter-statut'].value === '', champs);
+  test('v7.5.126 : recherche et autres filtres vidés', ['cmd-search', 'cmd-filter-origine', 'cmd-filter-ville', 'cmd-filter-produit', 'cmd-filter-paiement'].every((id) => champs[id] && champs[id].value === ''), champs);
   b.document.getElementById = avant;
 }
 console.log('\n3. MISE EN LIGNE');
