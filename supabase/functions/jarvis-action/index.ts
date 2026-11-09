@@ -1,6 +1,7 @@
 // ════════════════════════════════════════════════════════════════════
 // Edge Function : jarvis-action (v2 — 30/10/2026 ; v2.1 04/11/2026 : lister_commandes { client } = recherche par nom / téléphone / e-mail ;
 // v2.2 04/11/2026 : recherche approchée par nom quand rien d'exact — « approchee: true » + score ;
+// v2.4 09/11/2026 : compter_commandes par origine et date de prise de commande (date_commande), + montant hors annulées et hors SAV
 // v2.3 06/11/2026 : « total » = nombre EXACT compté par la base (plus la longueur de la liste coupée) + action compter_commandes)
 // ════════════════════════════════════════════════════════════════════
 // Porte d'entrée RÉSERVÉE À JARVIS (MAXI BRAIN, mini-PC de Borhen). Décision de Borhen du 30/10 : « autorisation totale sur
@@ -21,7 +22,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
 const SECRET_JARVIS = Deno.env.get('JARVIS_ACTION_SECRET') || '';
@@ -110,6 +111,18 @@ Deno.serve(async (req: Request) => {
     }
     if (d.action === 'compter_commandes') {
       // v2.3 (06/11) : un comptage exact par statut, fait par la base (requêtes « head », aucune ligne lue, aucune donnée client).
+      // v2.4 (09/11) : + origine (valeur de l'appli, casse ignorée) et date de PRISE de commande = colonne date_commande (relecture :
+      // c'est la date des statistiques de l'appli, corrigeable, pas created_at). Avec une date de prise, les SAV sont exclus comme
+      // dans l'appli (ce ne sont pas des ventes).
+      const origine = d.origine ? origineCanonique(d.origine) : null;
+      const prise = !!((d as any).cree_debut || (d as any).cree_fin);
+      const filtresPrise = (q: any) => {
+        if (origine) q = q.ilike('origine', origine.replace(/[%_\\]/g, '\\$&'));
+        if ((d as any).cree_debut) q = q.gte('date_commande', String((d as any).cree_debut));
+        if ((d as any).cree_fin) q = q.lte('date_commande', String((d as any).cree_fin));
+        if (prise) q = q.not('origine', 'ilike', 'SAV%');
+        return q;
+      };
       const compter = async (st: string | null) => {
         let q = sb.from('commandes').select('id', { count: 'exact', head: true }).not('id', 'like', '#TEST%');
         if (st) q = q.eq('statut', st);
@@ -117,6 +130,7 @@ Deno.serve(async (req: Request) => {
         if (d.date) q = q.eq('date_livraison', d.date);
         if ((d as any).date_debut) q = q.gte('date_livraison', (d as any).date_debut);
         if ((d as any).date_fin) q = q.lte('date_livraison', (d as any).date_fin);
+        q = filtresPrise(q);
         const { count, error } = await q; return error || typeof count !== 'number' ? null : count;
       };
       const statuts = [...STATUTS_OUVERTS, ...STATUTS_TERMINES];
@@ -126,8 +140,28 @@ Deno.serve(async (req: Request) => {
       const toutes = nombres[statuts.length] as number; const connus = statuts.reduce((a, st) => a + par_statut[st], 0);
       if (toutes > connus) par_statut['autre (statut vide ou ancien)'] = toutes - connus; // aucune contrainte en base sur statut
       const ouvertes = STATUTS_OUVERTS.reduce((a, st) => a + par_statut[st], 0);
-      return rep(200, { ...base, exact: true, filtres: { livreur: d.livreur || null, date: d.date || null, date_debut: (d as any).date_debut || null, date_fin: (d as any).date_fin || null },
-        par_statut, ouvertes, total: toutes });
+      // v2.4 : avec une origine ou une période de prise de commande, MONTANT des commandes non annulées (colonne prix seule,
+      // aucune donnée client) — par tranches de 1 000 (limite Supabase), 5 000 commandes au plus, sinon « montant_partiel ».
+      let montant: number | null = null; let montant_partiel = false;
+      if (origine || prise) {
+        montant = 0;
+        for (let de = 0; de < 5000; de += 1000) {
+          let q = sb.from('commandes').select('prix').not('id', 'like', '#TEST%').or('statut.is.null,statut.neq.annulé');
+          if (d.livreur) q = q.eq('transporteur', d.livreur);
+          if (d.date) q = q.eq('date_livraison', d.date);
+          if ((d as any).date_debut) q = q.gte('date_livraison', (d as any).date_debut);
+          if ((d as any).date_fin) q = q.lte('date_livraison', (d as any).date_fin);
+          const { data, error } = await filtresPrise(q).order('id', { ascending: true }).range(de, de + 999);
+          if (error) return rep(502, { ok: false, erreur: 'lecture des montants refusée par la base' });
+          for (const r of (data as any[]) || []) montant += Number(r.prix) || 0;
+          if (!data || data.length < 1000) break;
+          if (de + 1000 >= 5000) montant_partiel = true;
+        }
+        montant = Math.round(montant * 100) / 100;
+      }
+      return rep(200, { ...base, exact: true, filtres: { livreur: d.livreur || null, date: d.date || null, date_debut: (d as any).date_debut || null, date_fin: (d as any).date_fin || null,
+        origine, cree_debut: (d as any).cree_debut || null, cree_fin: (d as any).cree_fin || null },
+        par_statut, ouvertes, total: toutes, ...(montant !== null ? { montant_hors_annulees: montant, montant_partiel } : {}) });
     }
     if (d.action === 'lire_stock') {
       const cat = await catalogue(); const voulu = d.produit ? String(d.produit).toLowerCase() : '';

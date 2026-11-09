@@ -14,6 +14,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 export const VERSION = 'v2';
+// v2.4 (09/11/2026) : compter_commandes par origine et par jour de prise de commande, + montant hors annulées.
 
 export type Niveau = 'N1' | 'N2' | 'N3';
 export const NIVEAUX: Record<string, Niveau> = {
@@ -37,6 +38,17 @@ export const STATUTS_OUVERTS = ['en-attente', 'en-cours', 'reporté']; // change
 export const STATUTS_TERMINES = ['livré', 'annulé'];
 export const LIVREURS = ['RANOU', 'GLS', 'KUNHGE ET NAGEL'];
 export const ORIGINES = ['Téléphone', 'Leboncoin', 'Mail', 'Boutique', 'Site Maxiconfort', 'Autre'];
+/** v2.4 (relecture) : origines telles que l'APPLI les enregistre (menu f-origine de maxiconfort-v7.html + synchro TikTok Shop),
+ *  avec les mots courants de Borhen / JARVIS. Le comptage filtre sur la valeur de l'appli (casse ignorée en base). */
+export const ORIGINES_APPLI = ['Site Maxiconfort', 'Appel direct', 'Email direct', 'Boutique physique', 'Recommandation', 'LeBonCoin', 'TikTok Shop',
+  'Amazon', 'Cdiscount', 'Fnac Darty', 'Rakuten', 'Rue du Commerce', 'Ubaldi', 'ManoMano', 'Conforama', 'But', 'La Redoute', 'Maison du Monde', 'Boulanger', 'Leroy Merlin', 'eBay', 'Wish'];
+const SYNONYMES_ORIGINE: Record<string, string> = { leboncoin: 'LeBonCoin', lbc: 'LeBonCoin', site: 'Site Maxiconfort', sitemaxiconfort: 'Site Maxiconfort', maxiconfort: 'Site Maxiconfort',
+  telephone: 'Appel direct', 'téléphone': 'Appel direct', appel: 'Appel direct', mail: 'Email direct', email: 'Email direct', boutique: 'Boutique physique', tiktok: 'TikTok Shop' };
+/** v2.4 : origine de COMPTAGE → valeur de l'appli (casse et espaces ignorés), ou null si inconnue. */
+export function origineCanonique(v: unknown): string | null {
+  const t = String(v ?? '').toLowerCase().replace(/\s+/g, ''); if (!t) return null;
+  return SYNONYMES_ORIGINE[t] || ORIGINES_APPLI.find((o) => o.toLowerCase().replace(/\s+/g, '') === t) || null;
+}
 export const ANN_MOTIFS = ['Rupture de stock', 'Délai trop long', 'Client injoignable', 'Client a changé d\'avis', 'Problème de livraison', 'Prix / désaccord commercial', 'Doublon / erreur de commande', 'Motif inconnu / non communiqué par le client', 'Autre'];
 export const STOCK_MOTIFS = ['reassort', 'retour_gls', 'reprise_sav', 'correction']; // contrainte de la table stock_entrees
 /** Champs modifiables par JARVIS (N2). Tout le reste est refusé : prix / remises / frais (→ modifier_prix, N3), paiement
@@ -116,6 +128,11 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
       if (d.date !== undefined && ((d as any).date_debut !== undefined || (d as any).date_fin !== undefined)) return 'date OU période (date_debut / date_fin), pas les deux';
       if ((d as any).date_debut && (d as any).date_fin && String((d as any).date_debut) > String((d as any).date_fin)) return 'période inversée';
       if (d.livreur !== undefined && !LIVREURS.includes(String(d.livreur))) return 'livreur inconnu';
+      // v2.4 (09/11) : par ORIGINE (valeurs de l'appli, synonymes admis) et par date de PRISE de commande (cree_debut / cree_fin =
+      // colonne date_commande, comme les statistiques de l'appli) — ex. « combien de commandes Leboncoin aujourd'hui ? ».
+      if (d.origine !== undefined && origineCanonique(d.origine) === null) return 'origine inconnue (ex. Leboncoin, Site Maxiconfort, Appel direct, Email direct, Boutique physique, TikTok Shop)';
+      for (const k of ['cree_debut', 'cree_fin']) if ((d as any)[k] !== undefined && !dateValide(String((d as any)[k]))) return k + ' invalide (AAAA-MM-JJ)';
+      if ((d as any).cree_debut && (d as any).cree_fin && String((d as any).cree_debut) > String((d as any).cree_fin)) return 'période de prise de commande inversée';
       break;
     case 'lire_stock':
       if (d.produit !== undefined && texte(d.produit, 80).length < 2) return 'produit invalide';
