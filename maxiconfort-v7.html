@@ -5150,13 +5150,13 @@ function jvueJour(j, maintenant) {
 function jvueTourneesDuJour(liste, jour, livreur) {
   return (liste || []).filter(function (t) { return t && t.date === jour && (!livreur || String(t.livreur || '').toUpperCase() === livreur); });
 }
-/** v7.5.128 : une ÉCRITURE demandée par l'ancre (« optimiser » enregistre le nouvel ordre) n'est permise que si l'appli est
- *  affichée DANS la fenêtre de JARVIS (page de JARVIS sur cet appareil ou le réseau privé), jamais par un lien ouvert ailleurs. */
+/** v7.5.128 : une ÉCRITURE demandée par l'ancre (« appliquer » enregistre l'ordre optimisé) n'est permise que si l'appli est
+ *  affichée DANS la fenêtre de JARVIS servie sur cet appareil (127.0.0.1 / localhost), jamais par un lien ouvert ailleurs. */
 function jvueDansJarvis() {
   try {
     if (window.top === window) return false;
     var a = location.ancestorOrigins; if (!a || !a.length) return false;
-    return /^(https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?|https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.ts\.net)$/i.test(a[0]);
+    return /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}$/.test(a[0]); // relecture 09/11 : JARVIS sur CET appareil seulement (jamais une adresse publique)
   } catch (e) { return false; }
 }
 /** Ancre → vue demandée, ou null (fonction pure). */
@@ -5176,13 +5176,13 @@ function jvueLire(hash) {
     if (ok) return { vue: 'commandes', preset: p[1], livreur: p[2] || '', statut: p[3] || '', origine: p[4] || '' };
   }
   // v7.5.128 (recette JARVIS 09/11 22:45 : « montre la tournée de demain », « optimise la tournée ») :
-  // tournees[:<jour>[:<livreur>]] et optim[:<jour>[:<livreur>[:lancer]]], jour = today | tomorrow | AAAA-MM-JJ.
+  // tournees[:<jour>[:<livreur>]] et optim[:<jour>[:<livreur>[:appliquer]]], jour = today | tomorrow | AAAA-MM-JJ.
   if ((p[0] === 'tournees' || p[0] === 'optim') && p.length <= (p[0] === 'optim' ? 4 : 3)) {
-    var jour = p[1] || '', liv = p[2] || '', lancer = p[3] || '';
+    var jour = p[1] || '', liv = p[2] || '', action = p[3] || '';
     if (jour && !/^(today|tomorrow|\d{4}-\d{2}-\d{2})$/.test(jour)) return null;
     if (liv && JVUE_LIVREURS.indexOf(liv) < 0) return null;
-    if (lancer && (lancer !== 'lancer' || !jour)) return null;
-    return { vue: p[0], jour: jour, livreur: liv, lancer: lancer === 'lancer' };
+    if (action && (action !== 'appliquer' || !jour)) return null;
+    return { vue: p[0], jour: jour, livreur: liv, appliquer: action === 'appliquer' };
   }
   // v7.5.128 : les autres rubriques du menu (navigation seulement ; une rubrique absente du menu du rôle n'est jamais ouverte).
   if (p[0] === 'page' && p.length === 2 && JVUE_PAGES.indexOf(p[1]) >= 0) return { vue: 'page', page: p[1] };
@@ -5198,8 +5198,13 @@ function jvueRapprocher(id, ids) {
   var k = Object.keys(vus); return k.length === 1 ? k[0] : null;
 }
 var _jvueMinuteur = null;
+var _jvueDerniere = '';
 function jvueAppliquer() {
   var v = jvueLire(location.hash); if (!v) return;
+  // Relecture 09/11 : JARVIS retire « :appliquer » de l'adresse après coup → même vue sans action : rien à refaire (pas de recalcul).
+  var cle = String(location.hash).replace(/;\d+$/, ''); var sansAction = cle.replace(/:appliquer$/, '');
+  if (!v.appliquer && sansAction === _jvueDerniere.replace(/:appliquer$/, '') && /:appliquer$/.test(_jvueDerniere)) { _jvueDerniere = cle; return; }
+  _jvueDerniere = cle;
   clearInterval(_jvueMinuteur); var essais = 0;
   _jvueMinuteur = setInterval(function () {
     essais++; if (essais > 600) { clearInterval(_jvueMinuteur); return; } // 5 min au plus (première connexion dans la fenêtre, chargement)
@@ -5234,20 +5239,22 @@ function jvueAppliquer() {
       }
       else if (v.vue === 'optim') {
         var nav = document.querySelector('.ni[data-p="optim"]'); if (!nav) return; // rubrique absente pour ce rôle
-        goTo('optim', nav);
-        if (v.jour) {
-          var lo = jvueTourneesDuJour(typeof tournees !== 'undefined' ? tournees : [], jvueJour(v.jour), v.livreur);
-          var sel = document.getElementById('optim-tournee-sel');
-          if (lo.length === 1 && sel) {
-            sel.value = lo[0].id; if (typeof optimCharger === 'function') optimCharger();
-            // Lancer l'optimisation (enregistre le nouvel ordre) : seulement dans la fenêtre de JARVIS, après l'accord vocal de Borhen.
-            // Une seule fois par tournée en 2 min : une ancre réaffichée (fenêtre déplacée, même vue redemandée) ne relance jamais.
-            var cleO = 'jvue-optim-' + lo[0].id, deja = 0; try { deja = Number(sessionStorage.getItem(cleO)) || 0; } catch (e) {}
-            if (v.lancer && Date.now() - deja < 120000) { if (typeof toast === 'function') toast('Optimisation déjà lancée il y a moins de 2 min'); }
-            else if (v.lancer && jvueDansJarvis() && typeof optimLancer === 'function') { try { sessionStorage.setItem(cleO, String(Date.now())); } catch (e) {} setTimeout(function () { optimLancer(); }, 600); }
-            else if (v.lancer && typeof toast === 'function') toast('Optimisation non lancée : à faire depuis JARVIS ou en cliquant « Optimiser »');
-          } else if (typeof toast === 'function') toast(lo.length ? lo.length + ' tournées ce jour-là : choisis-la dans la liste' : 'Aucune tournée le ' + jvueJour(v.jour).split('-').reverse().join('/'));
+        // Relecture 09/11 (BLOQUANT) : « optimiser » = CALCUL de l'ordre (rien d'enregistré) — la tournée du jour est choisie AVANT
+        // d'ouvrir la rubrique, pour qu'un seul calcul parte (optimInit → optimCharger). L'enregistrement (« Appliquer cet ordre »)
+        // est l'ancre optim:<jour>:<livreur>:appliquer, après le oui de Borhen, sur l'ordre DÉJÀ calculé de cette tournée.
+        var lo = v.jour ? jvueTourneesDuJour(typeof tournees !== 'undefined' ? tournees : [], jvueJour(v.jour), v.livreur) : [];
+        if (v.appliquer) {
+          var cleO = 'jvue-optim-' + (lo[0] && lo[0].id), deja = 0; try { deja = Number(sessionStorage.getItem(cleO)) || 0; } catch (e) {}
+          var pret = lo.length === 1 && typeof optimTourneeId !== 'undefined' && optimTourneeId === lo[0].id && typeof optimStops !== 'undefined' && optimStops && optimStops.length;
+          if (!jvueDansJarvis()) { if (typeof toast === 'function') toast('Ordre non enregistré : à faire depuis JARVIS ou avec « Appliquer cet ordre »'); }
+          else if (!pret) { if (typeof toast === 'function') toast('Ordre non enregistré : calcule d’abord l’optimisation de cette tournée'); }
+          else if (Date.now() - deja < 120000) { if (typeof toast === 'function') toast('Ordre déjà enregistré il y a moins de 2 min'); }
+          else if (typeof optimAppliquer === 'function') { try { sessionStorage.setItem(cleO, String(Date.now())); } catch (e) {} optimAppliquer(); }
+          return;
         }
+        if (lo.length === 1 && typeof optimTourneeId !== 'undefined') optimTourneeId = lo[0].id;
+        goTo('optim', nav);
+        if (v.jour && lo.length !== 1 && typeof toast === 'function') toast(lo.length ? lo.length + ' tournées ce jour-là : choisis-la dans la liste' : 'Aucune tournée le ' + jvueJour(v.jour).split('-').reverse().join('/'));
       }
       else if (v.vue === 'page') { var np = document.querySelector('.ni[data-p="' + v.page + '"]'); if (np) goTo(v.page, np); else if (typeof toast === 'function') toast('Rubrique non disponible pour ce compte'); }
       else if (v.vue === 'parametres') { if (role === 'admin') goTo('pins', document.querySelector('[data-p="pins"]')); }
