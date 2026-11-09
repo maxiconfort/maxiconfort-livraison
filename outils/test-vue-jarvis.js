@@ -16,10 +16,14 @@ vm.createContext(b); vm.runInContext(bloc, b);
 console.log('\n1. LECTURE DE L\'ANCRE (fonction pure)');
 const L = (h) => JSON.parse(JSON.stringify(b.jvueLire(h)));
 test('fiche:2145 → #2145', JSON.stringify(L('#jarvis=fiche:2145')) === JSON.stringify({ vue: 'fiche', id: '#2145' }));
-test('commandes de demain RANOU', JSON.stringify(L('#jarvis=commandes:tomorrow:RANOU')) === JSON.stringify({ vue: 'commandes', preset: 'tomorrow', livreur: 'RANOU' }));
+test('commandes de demain RANOU', JSON.stringify(L('#jarvis=commandes:tomorrow:RANOU')) === JSON.stringify({ vue: 'commandes', preset: 'tomorrow', livreur: 'RANOU', statut: '' }));
 test('ancre encodée acceptée', L('#jarvis=commandes%3Alate').preset === 'late');
 test('numéro de demande accepté (même vue redemandée)', L('#jarvis=fiche:2145;1730900000').id === '#2145');
 test('paramètres', L('#jarvis=parametres').vue === 'parametres');
+test('v7.5.126 : GLS en attente', JSON.stringify(L('#jarvis=commandes:all:GLS:en-attente')) === JSON.stringify({ vue: 'commandes', preset: 'all', livreur: 'GLS', statut: 'en-attente' }));
+test('v7.5.126 : statut sans livreur (champ vide)', JSON.stringify(L('#jarvis=commandes:week::annul%C3%A9')) === JSON.stringify({ vue: 'commandes', preset: 'week', livreur: '', statut: 'annulé' }));
+for (const h of ['#jarvis=commandes:all:GLS:supprime', '#jarvis=commandes:all:GLS:en-attente:x', '#jarvis=commandes:all:', '#jarvis=commandes:all::', '#jarvis=commandes:all:XX:en-attente'])
+  test('v7.5.126 refusé : ' + h, b.jvueLire(h) === null);
 test('tournées et accueil', L('#jarvis=tournees').vue === 'tournees' && L('#jarvis=accueil').vue === 'accueil');
 for (const h of ['', '#autre', '#jarvis=fiche:21;drop', '#jarvis=fiche:<script>', '#jarvis=commandes:hier', '#jarvis=commandes:today:INCONNU', '#jarvis=supprimer:2145', '#jarvis=fiche:2145&x=1', '#jarvis=fiche:2145;abc', '#jarvis=%E0%A4%A'])
   test('refusé : ' + (h || '(vide)'), b.jvueLire(h) === null);
@@ -40,6 +44,15 @@ test('fiche ouverte : jamais refermée par une vue fiche, refermée par la liste
 test('menu de gauche qui défile (écran court)', /\.sidebar\{[^}]*overflow-y:auto\}/.test(html));
 test('aucune écriture dans le bloc', !/sbSave|rpcPin|fetch\(|sessionEcrire|localStorage\.setItem|\.insert\(|\.update\(/.test(bloc));
 
+{ // v7.5.126 : le menu « Statut » est positionné (et vidé quand la vue n'en demande pas)
+  const champs = {}; const avant = b.document.getElementById; b.document.getElementById = (id) => (champs[id] = champs[id] || { value: 'ancien' });
+  lancer('#jarvis=commandes:all:GLS:en-attente', 'admin', [{ id: '#1' }]);
+  test('v7.5.126 : GLS + en attente appliqués', champs['cmd-filter-transporteur'].value === 'GLS' && champs['cmd-filter-statut'].value === 'en-attente', champs);
+  lancer('#jarvis=commandes:tomorrow:RANOU', 'admin', [{ id: '#1' }]);
+  test('v7.5.126 : sans statut demandé, le filtre Statut est vidé', champs['cmd-filter-statut'].value === '', champs);
+  test('v7.5.126 : recherche et autres filtres vidés', ['cmd-search', 'cmd-filter-origine', 'cmd-filter-ville', 'cmd-filter-produit', 'cmd-filter-paiement'].every((id) => champs[id] && champs[id].value === ''), champs);
+  b.document.getElementById = avant;
+}
 console.log('\n3. MISE EN LIGNE');
-test('CACHE_VERSION augmentée (v7-5-125)', /CACHE_VERSION = 'maxiconfort-v7-5-125'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
+test('CACHE_VERSION augmentée (v7-5-126)', /CACHE_VERSION = 'maxiconfort-v7-5-126'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);

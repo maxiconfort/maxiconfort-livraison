@@ -5135,13 +5135,16 @@ document.addEventListener('DOMContentLoaded', function(){ setTimeout(function(){
 // écriture, aucun appel serveur de plus ; la session et les droits restent ceux de l'appareil (écran du code si personne n'est connecté).
 var JVUE_PRESETS = ['today', 'tomorrow', 'week', 'late', 'all'];
 var JVUE_LIVREURS = ['RANOU', 'GLS'];
+// v7.5.126 (JARVIS 09/11 20:21, « filtre toutes les commandes GLS en attente ») : statut facultatif, valeurs EXACTES du menu « Statut ».
+var JVUE_STATUTS = ['en-attente', 'en-route', 'arrivé', 'livré', 'reporté', 'annulé'];
 /** Ancre → vue demandée, ou null (fonction pure). */
 function jvueLire(hash) {
   var m = /^#jarvis=([^&;]*)(?:;\d{1,12})?$/.exec(String(hash || '')); if (!m) return null; // « ;n » : numéro de demande (même vue redemandée)
   var v; try { v = decodeURIComponent(m[1]); } catch (e) { return null; }
   var p = v.split(':');
   if (p[0] === 'fiche' && /^(\d{3,6}|SAV[\w-]{1,20})$/.test(p[1] || '') && p.length === 2) return { vue: 'fiche', id: '#' + p[1] };
-  if (p[0] === 'commandes' && JVUE_PRESETS.indexOf(p[1]) >= 0 && p.length <= 3 && (p.length < 3 || JVUE_LIVREURS.indexOf(p[2]) >= 0)) return { vue: 'commandes', preset: p[1], livreur: p[2] || '' };
+  // commandes:<période>[:<livreur>|vide[:<statut>]] — ex. commandes:all:GLS:en-attente, commandes:week::annulé
+  if (p[0] === 'commandes' && JVUE_PRESETS.indexOf(p[1]) >= 0 && p.length <= 4 && (p.length < 3 || p[2] === '' && p.length === 4 || JVUE_LIVREURS.indexOf(p[2]) >= 0) && (p.length < 4 || JVUE_STATUTS.indexOf(p[3]) >= 0)) return { vue: 'commandes', preset: p[1], livreur: p[2] || '', statut: p[3] || '' };
   if (p[0] === 'tournees' && p.length === 1) return { vue: 'tournees' };
   if (p[0] === 'accueil' && p.length === 1) return { vue: 'accueil' };
   if (p[0] === 'parametres' && p.length === 1) return { vue: 'parametres' }; // v7.5.123 : Paramètres → Codes PIN (appareil de confiance)
@@ -5173,7 +5176,8 @@ function jvueAppliquer() {
       }
       else if (v.vue === 'commandes') {
         goTo('commandes', document.querySelector('.ni[onclick*="\'commandes\'"]'));
-        setTimeout(function () { var t = document.getElementById('cmd-filter-transporteur'); if (t) t.value = v.livreur; cmdFiltreRapide(v.preset); }, 50);
+        // v7.5.126 : la vue montre EXACTEMENT ce qui est demandé : recherche et autres filtres vidés, livreur et statut posés.
+        setTimeout(function () { ['cmd-search', 'cmd-filter-origine', 'cmd-filter-ville', 'cmd-filter-produit', 'cmd-filter-paiement'].forEach(function (id) { var e = document.getElementById(id); if (e) e.value = ''; }); var t = document.getElementById('cmd-filter-transporteur'); if (t) t.value = v.livreur; var st = document.getElementById('cmd-filter-statut'); if (st) st.value = v.statut || ''; cmdFiltreRapide(v.preset); }, 50);
       }
       else if (v.vue === 'tournees') goTo('tournees', document.querySelector('[data-p="tournees"]'));
       else if (v.vue === 'parametres') { if (role === 'admin') goTo('pins', document.querySelector('[data-p="pins"]')); }
