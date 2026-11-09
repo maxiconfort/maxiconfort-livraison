@@ -5139,6 +5139,26 @@ var JVUE_LIVREURS = ['RANOU', 'GLS'];
 var JVUE_STATUTS = ['en-attente', 'en-route', 'arrivé', 'livré', 'reporté', 'annulé'];
 // v7.5.127 (JARVIS 09/11 20:42, « filtre les commandes de TikTok ») : origine facultative, liste FERMÉE (= ORIGINES_APPLI de jarvis-action).
 var JVUE_ORIGINES = ['Site Maxiconfort', 'Appel direct', 'Email direct', 'Boutique physique', 'Recommandation', 'LeBonCoin', 'TikTok Shop', 'Amazon', 'Cdiscount', 'Fnac Darty', 'Rakuten', 'Rue du Commerce', 'Ubaldi', 'ManoMano', 'Conforama', 'But', 'La Redoute', 'Maison du Monde', 'Boulanger', 'Leroy Merlin', 'eBay', 'Wish'];
+var JVUE_PAGES = ['dashboard', 'commandes', 'tournees', 'suivi', 'notifs', 'optim', 'stock', 'camion', 'finance', 'gps', 'sante', 'livreur'];
+/** Jour JARVIS → AAAA-MM-JJ à l'heure de l'appareil (jamais l'heure UTC : le soir, « demain » resterait aujourd'hui). */
+function jvueJour(j, maintenant) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(j)) return j;
+  var d = new Date(maintenant || Date.now()); if (j === 'tomorrow') d.setDate(d.getDate() + 1);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+/** Tournées du jour (et du livreur) parmi la liste (fonction pure). */
+function jvueTourneesDuJour(liste, jour, livreur) {
+  return (liste || []).filter(function (t) { return t && t.date === jour && (!livreur || String(t.livreur || '').toUpperCase() === livreur); });
+}
+/** v7.5.128 : une ÉCRITURE demandée par l'ancre (« optimiser » enregistre le nouvel ordre) n'est permise que si l'appli est
+ *  affichée DANS la fenêtre de JARVIS (page de JARVIS sur cet appareil ou le réseau privé), jamais par un lien ouvert ailleurs. */
+function jvueDansJarvis() {
+  try {
+    if (window.top === window) return false;
+    var a = location.ancestorOrigins; if (!a || !a.length) return false;
+    return /^(https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?|https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.ts\.net)$/i.test(a[0]);
+  } catch (e) { return false; }
+}
 /** Ancre → vue demandée, ou null (fonction pure). */
 function jvueLire(hash) {
   var m = /^#jarvis=([^&;]*)(?:;\d{1,12})?$/.exec(String(hash || '')); if (!m) return null; // « ;n » : numéro de demande (même vue redemandée)
@@ -5155,7 +5175,17 @@ function jvueLire(hash) {
     }
     if (ok) return { vue: 'commandes', preset: p[1], livreur: p[2] || '', statut: p[3] || '', origine: p[4] || '' };
   }
-  if (p[0] === 'tournees' && p.length === 1) return { vue: 'tournees' };
+  // v7.5.128 (recette JARVIS 09/11 22:45 : « montre la tournée de demain », « optimise la tournée ») :
+  // tournees[:<jour>[:<livreur>]] et optim[:<jour>[:<livreur>[:lancer]]], jour = today | tomorrow | AAAA-MM-JJ.
+  if ((p[0] === 'tournees' || p[0] === 'optim') && p.length <= (p[0] === 'optim' ? 4 : 3)) {
+    var jour = p[1] || '', liv = p[2] || '', lancer = p[3] || '';
+    if (jour && !/^(today|tomorrow|\d{4}-\d{2}-\d{2})$/.test(jour)) return null;
+    if (liv && JVUE_LIVREURS.indexOf(liv) < 0) return null;
+    if (lancer && (lancer !== 'lancer' || !jour)) return null;
+    return { vue: p[0], jour: jour, livreur: liv, lancer: lancer === 'lancer' };
+  }
+  // v7.5.128 : les autres rubriques du menu (navigation seulement ; une rubrique absente du menu du rôle n'est jamais ouverte).
+  if (p[0] === 'page' && p.length === 2 && JVUE_PAGES.indexOf(p[1]) >= 0) return { vue: 'page', page: p[1] };
   if (p[0] === 'accueil' && p.length === 1) return { vue: 'accueil' };
   if (p[0] === 'parametres' && p.length === 1) return { vue: 'parametres' }; // v7.5.123 : Paramètres → Codes PIN (appareil de confiance)
   return null;
@@ -5189,7 +5219,37 @@ function jvueAppliquer() {
         // v7.5.126 : la vue montre EXACTEMENT ce qui est demandé : recherche et autres filtres vidés, livreur et statut posés.
         setTimeout(function () { ['cmd-search', 'cmd-filter-origine', 'cmd-filter-ville', 'cmd-filter-produit', 'cmd-filter-paiement'].forEach(function (id) { var e = document.getElementById(id); if (e) e.value = ''; }); var o = document.getElementById('cmd-filter-origine'); if (o && v.origine) { if (o.querySelector && !o.querySelector('option[value="' + v.origine + '"]') && o.appendChild && typeof document.createElement === 'function') { var op = document.createElement('option'); op.value = v.origine; op.textContent = v.origine; o.appendChild(op); } o.value = v.origine; } var t = document.getElementById('cmd-filter-transporteur'); if (t) t.value = v.livreur; var st = document.getElementById('cmd-filter-statut'); if (st) st.value = v.statut || ''; cmdFiltreRapide(v.preset); }, 50);
       }
-      else if (v.vue === 'tournees') goTo('tournees', document.querySelector('[data-p="tournees"]'));
+      else if (v.vue === 'tournees') {
+        goTo('tournees', document.querySelector('[data-p="tournees"]'));
+        // v7.5.128 : le jour demandé filtre la liste ; une seule tournée ce jour-là → elle s'ouvre ; aucune → la création est
+        // préparée à cette date (rien n'est créé : « Créer la tournée » reste un clic de Borhen).
+        var fd = document.getElementById('tour-search-date'), fl = document.getElementById('tour-search');
+        if (fd) fd.value = v.jour ? jvueJour(v.jour) : ''; if (fl) fl.value = v.livreur || '';
+        if (typeof renderTournees === 'function') renderTournees();
+        if (v.jour) {
+          var lt = jvueTourneesDuJour(typeof tournees !== 'undefined' ? tournees : [], jvueJour(v.jour), v.livreur);
+          if (lt.length === 1 && typeof afficherTournee === 'function') afficherTournee(lt[0].id);
+          else if (!lt.length) { var td2 = document.getElementById('t-date'); if (td2) { td2.value = jvueJour(v.jour); try { td2.dispatchEvent(new Event('change')); } catch (e) {} } if (typeof toast === 'function') toast('Aucune tournée le ' + jvueJour(v.jour).split('-').reverse().join('/') + ' : création prête à droite'); }
+        }
+      }
+      else if (v.vue === 'optim') {
+        var nav = document.querySelector('.ni[data-p="optim"]'); if (!nav) return; // rubrique absente pour ce rôle
+        goTo('optim', nav);
+        if (v.jour) {
+          var lo = jvueTourneesDuJour(typeof tournees !== 'undefined' ? tournees : [], jvueJour(v.jour), v.livreur);
+          var sel = document.getElementById('optim-tournee-sel');
+          if (lo.length === 1 && sel) {
+            sel.value = lo[0].id; if (typeof optimCharger === 'function') optimCharger();
+            // Lancer l'optimisation (enregistre le nouvel ordre) : seulement dans la fenêtre de JARVIS, après l'accord vocal de Borhen.
+            // Une seule fois par tournée en 2 min : une ancre réaffichée (fenêtre déplacée, même vue redemandée) ne relance jamais.
+            var cleO = 'jvue-optim-' + lo[0].id, deja = 0; try { deja = Number(sessionStorage.getItem(cleO)) || 0; } catch (e) {}
+            if (v.lancer && Date.now() - deja < 120000) { if (typeof toast === 'function') toast('Optimisation déjà lancée il y a moins de 2 min'); }
+            else if (v.lancer && jvueDansJarvis() && typeof optimLancer === 'function') { try { sessionStorage.setItem(cleO, String(Date.now())); } catch (e) {} setTimeout(function () { optimLancer(); }, 600); }
+            else if (v.lancer && typeof toast === 'function') toast('Optimisation non lancée : à faire depuis JARVIS ou en cliquant « Optimiser »');
+          } else if (typeof toast === 'function') toast(lo.length ? lo.length + ' tournées ce jour-là : choisis-la dans la liste' : 'Aucune tournée le ' + jvueJour(v.jour).split('-').reverse().join('/'));
+        }
+      }
+      else if (v.vue === 'page') { var np = document.querySelector('.ni[data-p="' + v.page + '"]'); if (np) goTo(v.page, np); else if (typeof toast === 'function') toast('Rubrique non disponible pour ce compte'); }
       else if (v.vue === 'parametres') { if (role === 'admin') goTo('pins', document.querySelector('[data-p="pins"]')); }
       else goTo('dashboard', document.querySelector('.ni[onclick*="\'dashboard\'"]'));
     } catch (e) { /* vue impossible : l'appli reste où elle est */ }
@@ -13241,7 +13301,7 @@ function getCoordsFromAdresse(adresse) {
     if (ville !== 'default' && a.includes(ville)) return COORDS_VILLES[ville];
   }
   // Extraire code postal IDF
-  var cpMatch = a.match(/(75|77|78|91|92|93|94|95)\d{3}/);
+  var cpMatch = a.match(/\b(75|77|78|91|92|93|94|95)\d{3}\b/); // v7.5.128 : « \b » était un caractère invisible (retour arrière) → le code postal n'était jamais reconnu
   if (cpMatch) {
     var cp = cpMatch[0];
     var dep = cp.slice(0,2);

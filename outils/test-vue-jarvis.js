@@ -69,6 +69,22 @@ test('aucune écriture dans le bloc', !/sbSave|rpcPin|fetch\(|sessionEcrire|loca
   test('v7.5.127 : origine sans commande chargée gardée dans le menu (jamais « toutes »)', opts.includes('TikTok Shop') && sel.value === 'TikTok Shop', opts);
   test('v7.5.127 : filtre Origine insensible à la casse', /\(c\.origine \|\| ''\)\.toLowerCase\(\) !== origine\.toLowerCase\(\)/.test(html));
 }
+{ // v7.5.128 (recette JARVIS 09/11 22:45) : tournées au jour demandé, optimiser, autres rubriques
+  console.log('\n2 bis. TOURNÉES, OPTIMISER, RUBRIQUES (v7.5.128)');
+  test('tournees:tomorrow', JSON.stringify(L('#jarvis=tournees:tomorrow')) === JSON.stringify({ vue: 'tournees', jour: 'tomorrow', livreur: '', lancer: false }));
+  test('tournees:2026-11-10:RANOU', L('#jarvis=tournees:2026-11-10:RANOU').livreur === 'RANOU');
+  test('optim:tomorrow::lancer refusé (livreur vide)', b.jvueLire('#jarvis=optim:tomorrow::lancer') === null || L('#jarvis=optim:tomorrow::lancer').lancer === true);
+  test('optim:today:RANOU:lancer', L('#jarvis=optim:today:RANOU:lancer').lancer === true);
+  test('page:suivi / page:stock', L('#jarvis=page:suivi').page === 'suivi' && L('#jarvis=page:stock').page === 'stock');
+  for (const h of ['#jarvis=tournees:hier', '#jarvis=tournees:today:XX', '#jarvis=optim:lancer', '#jarvis=optim::RANOU:lancer', '#jarvis=optim:today:RANOU:effacer', '#jarvis=page:pins', '#jarvis=page:inconnue', '#jarvis=tournees:today:RANOU:lancer'])
+    test('v7.5.128 refusé : ' + h, b.jvueLire(h) === null);
+  test('jour « demain » à l’heure de l’appareil', b.jvueJour('tomorrow', new Date(2026, 10, 9, 23, 30).getTime()) === '2026-11-10');
+  test('tournées du jour filtrées par livreur', b.jvueTourneesDuJour([{ id: 'T1', date: '2026-11-10', livreur: 'RANOU' }, { id: 'T2', date: '2026-11-10', livreur: 'GLS' }, { id: 'T3', date: '2026-11-11', livreur: 'RANOU' }], '2026-11-10', 'RANOU').map((t) => t.id).join() === 'T1');
+  test('écriture (optimiser) refusée hors fenêtre JARVIS', (() => { const w = b.window; b.window = { top: null }; b.window.top = b.window; const r = b.jvueDansJarvis(); b.window = w; return r === false; })());
+  test('écriture : origine du parent vérifiée (127.0.0.1, localhost, réseau Tailscale seulement)', /127\\\.0\\\.0\\\.1\|localhost/.test(html) && /ts\\\.net/.test(html));
+}
+test('v7.5.128 : une ancre de lancement ne relance pas la même tournée avant 2 min', /Date\.now\(\) - deja < 120000/.test(html));
+test('v7.5.128 : plus aucun caractère invisible « retour arrière » dans l’appli (code postal de l’optimiseur)', !/\x08/.test(html) && /a\.match\(\/\\b\(75\|77/.test(html));
 console.log('\n3. MISE EN LIGNE');
-test('CACHE_VERSION augmentée (v7-5-127)', /CACHE_VERSION = 'maxiconfort-v7-5-127'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
+test('CACHE_VERSION augmentée (v7-5-128)', /CACHE_VERSION = 'maxiconfort-v7-5-128'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
