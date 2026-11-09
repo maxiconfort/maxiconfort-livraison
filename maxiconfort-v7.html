@@ -5163,6 +5163,8 @@ function jvueAppliquer() {
     if (!role || role === 'livreur' || typeof commandes === 'undefined' || !commandes.length) return; // attend la connexion bureau et les données
     clearInterval(_jvueMinuteur);
     try {
+      // v7.5.125 (recette JARVIS 09/11 01:26) : toute vue autre qu'une fiche referme la fiche ouverte (« ferme la commande 21586 »).
+      if (v.vue !== 'fiche' && typeof closePanel === 'function') closePanel();
       if (v.vue === 'fiche') {
         goTo('commandes', document.querySelector('.ni[onclick*="\'commandes\'"]'));
         var ids = commandes.map(function (c) { return c.id; });
