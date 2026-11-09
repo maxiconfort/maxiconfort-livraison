@@ -14,6 +14,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 export const VERSION = 'v2';
+// v2.4 (09/11/2026) : compter_commandes par origine et par jour de prise de commande, + montant hors annulées.
 
 export type Niveau = 'N1' | 'N2' | 'N3';
 export const NIVEAUX: Record<string, Niveau> = {
@@ -37,6 +38,22 @@ export const STATUTS_OUVERTS = ['en-attente', 'en-cours', 'reporté']; // change
 export const STATUTS_TERMINES = ['livré', 'annulé'];
 export const LIVREURS = ['RANOU', 'GLS', 'KUNHGE ET NAGEL'];
 export const ORIGINES = ['Téléphone', 'Leboncoin', 'Mail', 'Boutique', 'Site Maxiconfort', 'Autre'];
+/** v2.4 : origine reconnue sans tenir compte des majuscules ni des espaces (« LeBonCoin » = « Leboncoin ») ; null si inconnue. */
+export function origineCanonique(v: unknown): string | null {
+  const t = String(v ?? '').toLowerCase().replace(/\s+/g, ''); return ORIGINES.find((o) => o.toLowerCase().replace(/\s+/g, '') === t) || null;
+}
+/** v2.4 : instant ISO du début d'un jour de Paris (00:00 heure de Paris, heure d'été comprise), pour filtrer created_at. */
+export function debutJourParis(jour: string): string {
+  const [a, m, j] = jour.split('-').map(Number);
+  for (const h of [-2, -1, 0]) { // minuit à Paris = 22:00 ou 23:00 UTC la veille selon la saison
+    const t = Date.UTC(a, m - 1, j, 0, 0, 0) + h * 3600000;
+    const f = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(t));
+    if (f === `${String(j).padStart(2, '0')}/${String(m).padStart(2, '0')}/${a}, 00:00`) return new Date(t).toISOString();
+  }
+  return new Date(Date.UTC(a, m - 1, j)).toISOString();
+}
+/** v2.4 : lendemain d'un jour AAAA-MM-JJ. */
+export function lendemain(jour: string): string { const [a, m, j] = jour.split('-').map(Number); return new Date(Date.UTC(a, m - 1, j + 1)).toISOString().slice(0, 10); }
 export const ANN_MOTIFS = ['Rupture de stock', 'Délai trop long', 'Client injoignable', 'Client a changé d\'avis', 'Problème de livraison', 'Prix / désaccord commercial', 'Doublon / erreur de commande', 'Motif inconnu / non communiqué par le client', 'Autre'];
 export const STOCK_MOTIFS = ['reassort', 'retour_gls', 'reprise_sav', 'correction']; // contrainte de la table stock_entrees
 /** Champs modifiables par JARVIS (N2). Tout le reste est refusé : prix / remises / frais (→ modifier_prix, N3), paiement
@@ -116,6 +133,11 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
       if (d.date !== undefined && ((d as any).date_debut !== undefined || (d as any).date_fin !== undefined)) return 'date OU période (date_debut / date_fin), pas les deux';
       if ((d as any).date_debut && (d as any).date_fin && String((d as any).date_debut) > String((d as any).date_fin)) return 'période inversée';
       if (d.livreur !== undefined && !LIVREURS.includes(String(d.livreur))) return 'livreur inconnu';
+      // v2.4 (09/11) : par ORIGINE (casse ignorée : l'appli enregistre « LeBonCoin », JARVIS « Leboncoin ») et par jour de PRISE de
+      // commande (cree_debut / cree_fin, jours de Paris) — ex. « combien de commandes Leboncoin aujourd'hui ? ».
+      if (d.origine !== undefined && origineCanonique(d.origine) === null) return 'origine inconnue (' + ORIGINES.join(', ') + ')';
+      for (const k of ['cree_debut', 'cree_fin']) if ((d as any)[k] !== undefined && !dateValide(String((d as any)[k]))) return k + ' invalide (AAAA-MM-JJ)';
+      if ((d as any).cree_debut && (d as any).cree_fin && String((d as any).cree_debut) > String((d as any).cree_fin)) return 'période de prise de commande inversée';
       break;
     case 'lire_stock':
       if (d.produit !== undefined && texte(d.produit, 80).length < 2) return 'produit invalide';

@@ -299,3 +299,22 @@ test('v2.3 : « total » = nombre exact de la base, plus la longueur de la liste
   assert.match(bloc, /Promise\.all/); assert.match(bloc, /autre \(statut vide ou ancien\)/); assert.match(bloc, /total: toutes/);
   assert.doesNotMatch(bloc.replace(/\/\/.*/g, ''), /'(client|tel|email|adresse)'|select\('\*'/);
 });
+
+test('v2.4 compter_commandes : par origine (casse ignorée) et jour de prise de commande, montant hors annulées', async () => {
+  const { origineCanonique, debutJourParis, lendemain } = await import('../functions/_shared/jarvis-action-logique.ts');
+  assert.equal(origineCanonique('LeBonCoin'), 'Leboncoin'); assert.equal(origineCanonique('leboncoin'), 'Leboncoin');
+  assert.equal(origineCanonique('site maxiconfort'), 'Site Maxiconfort'); assert.equal(origineCanonique('Vinted'), null); assert.equal(origineCanonique(''), null);
+  assert.equal(debutJourParis('2026-11-09'), '2026-11-08T23:00:00.000Z', 'hiver : UTC+1');
+  assert.equal(debutJourParis('2026-07-01'), '2026-06-30T22:00:00.000Z', 'été : UTC+2');
+  assert.equal(debutJourParis('2026-03-29'), '2026-03-28T23:00:00.000Z', 'jour du changement d’heure');
+  assert.equal(lendemain('2026-11-30'), '2026-12-01'); assert.equal(lendemain('2026-12-31'), '2027-01-01');
+  assert.equal(controlerDemande({ action: 'compter_commandes', origine: 'LeBonCoin', cree_debut: '2026-11-09', cree_fin: '2026-11-09' }, T), null);
+  assert.match(controlerDemande({ action: 'compter_commandes', origine: 'Vinted' }, T), /origine inconnue/);
+  assert.match(controlerDemande({ action: 'compter_commandes', cree_debut: '09/11' }, T), /cree_debut invalide/);
+  assert.match(controlerDemande({ action: 'compter_commandes', cree_debut: '2026-11-10', cree_fin: '2026-11-01' }, T), /inversée/);
+  const fs = await import('node:fs'); const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  const bloc = src.slice(src.indexOf("d.action === 'compter_commandes'"), src.indexOf("d.action === 'lire_stock'"));
+  assert.match(bloc, /q\.ilike\('origine', origine/); assert.match(bloc, /gte\('created_at', debutJourParis/); assert.match(bloc, /lt\('created_at', debutJourParis\(lendemain/);
+  assert.match(bloc, /select\('prix'\)/, 'montant : colonne prix seule'); assert.match(bloc, /neq\('statut', 'annulé'\)/);
+  assert.doesNotMatch(bloc.replace(/\/\/.*/g, ''), /'(client|tel|email|adresse)'|select\('\*'/, 'aucune donnée client');
+});
