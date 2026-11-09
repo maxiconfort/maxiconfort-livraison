@@ -16,12 +16,16 @@ vm.createContext(b); vm.runInContext(bloc, b);
 console.log('\n1. LECTURE DE L\'ANCRE (fonction pure)');
 const L = (h) => JSON.parse(JSON.stringify(b.jvueLire(h)));
 test('fiche:2145 → #2145', JSON.stringify(L('#jarvis=fiche:2145')) === JSON.stringify({ vue: 'fiche', id: '#2145' }));
-test('commandes de demain RANOU', JSON.stringify(L('#jarvis=commandes:tomorrow:RANOU')) === JSON.stringify({ vue: 'commandes', preset: 'tomorrow', livreur: 'RANOU', statut: '' }));
+test('commandes de demain RANOU', JSON.stringify(L('#jarvis=commandes:tomorrow:RANOU')) === JSON.stringify({ vue: 'commandes', preset: 'tomorrow', livreur: 'RANOU', statut: '', origine: '' }));
 test('ancre encodée acceptée', L('#jarvis=commandes%3Alate').preset === 'late');
 test('numéro de demande accepté (même vue redemandée)', L('#jarvis=fiche:2145;1730900000').id === '#2145');
 test('paramètres', L('#jarvis=parametres').vue === 'parametres');
-test('v7.5.126 : GLS en attente', JSON.stringify(L('#jarvis=commandes:all:GLS:en-attente')) === JSON.stringify({ vue: 'commandes', preset: 'all', livreur: 'GLS', statut: 'en-attente' }));
-test('v7.5.126 : statut sans livreur (champ vide)', JSON.stringify(L('#jarvis=commandes:week::annul%C3%A9')) === JSON.stringify({ vue: 'commandes', preset: 'week', livreur: '', statut: 'annulé' }));
+test('v7.5.126 : GLS en attente', JSON.stringify(L('#jarvis=commandes:all:GLS:en-attente')) === JSON.stringify({ vue: 'commandes', preset: 'all', livreur: 'GLS', statut: 'en-attente', origine: '' }));
+test('v7.5.126 : statut sans livreur (champ vide)', JSON.stringify(L('#jarvis=commandes:week::annul%C3%A9')) === JSON.stringify({ vue: 'commandes', preset: 'week', livreur: '', statut: 'annulé', origine: '' }));
+test('v7.5.127 : origine seule', JSON.stringify(L('#jarvis=commandes:all:::TikTok%20Shop')) === JSON.stringify({ vue: 'commandes', preset: 'all', livreur: '', statut: '', origine: 'TikTok Shop' }));
+test('v7.5.127 : statut + origine', L('#jarvis=commandes:week::en-attente:LeBonCoin').origine === 'LeBonCoin');
+for (const h of ['#jarvis=commandes:all:::Inconnu', '#jarvis=commandes:all::::', '#jarvis=commandes:all:::', '#jarvis=commandes:all:::TikTok%20Shop:x', '#jarvis=commandes:all:::%3Cscript%3E'])
+  test('v7.5.127 refusé : ' + h, b.jvueLire(h) === null);
 for (const h of ['#jarvis=commandes:all:GLS:supprime', '#jarvis=commandes:all:GLS:en-attente:x', '#jarvis=commandes:all:', '#jarvis=commandes:all::', '#jarvis=commandes:all:XX:en-attente'])
   test('v7.5.126 refusé : ' + h, b.jvueLire(h) === null);
 test('tournées et accueil', L('#jarvis=tournees').vue === 'tournees' && L('#jarvis=accueil').vue === 'accueil');
@@ -51,8 +55,12 @@ test('aucune écriture dans le bloc', !/sbSave|rpcPin|fetch\(|sessionEcrire|loca
   lancer('#jarvis=commandes:tomorrow:RANOU', 'admin', [{ id: '#1' }]);
   test('v7.5.126 : sans statut demandé, le filtre Statut est vidé', champs['cmd-filter-statut'].value === '', champs);
   test('v7.5.126 : recherche et autres filtres vidés', ['cmd-search', 'cmd-filter-origine', 'cmd-filter-ville', 'cmd-filter-produit', 'cmd-filter-paiement'].every((id) => champs[id] && champs[id].value === ''), champs);
+  lancer('#jarvis=commandes:all:::TikTok%20Shop', 'admin', [{ id: '#1' }]);
+  test('v7.5.127 : origine posée', champs['cmd-filter-origine'].value === 'TikTok Shop' && champs['cmd-filter-statut'].value === '' && champs['cmd-filter-transporteur'].value === '', champs);
+  lancer('#jarvis=commandes:all:GLS', 'admin', [{ id: '#1' }]);
+  test('v7.5.127 : sans origine demandée, le filtre Origine est vidé', champs['cmd-filter-origine'].value === '', champs);
   b.document.getElementById = avant;
 }
 console.log('\n3. MISE EN LIGNE');
-test('CACHE_VERSION augmentée (v7-5-126)', /CACHE_VERSION = 'maxiconfort-v7-5-126'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
+test('CACHE_VERSION augmentée (v7-5-127)', /CACHE_VERSION = 'maxiconfort-v7-5-127'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
