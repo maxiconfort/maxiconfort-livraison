@@ -130,6 +130,7 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - v7.5.124 : numéro mal entendu (« 2145 » → « 21405 ») : si la fiche n'existe pas, numéro de 5-6 chiffres : on retire UN chiffre et on ouvre seulement s'il n'y a qu'une commande possible, avec le message « 21405 introuvable → #2145 ouverte » (`jvueRapprocher`, pure).
 - v7.5.125 : toute vue autre qu'une fiche referme d'abord la fiche ouverte (`closePanel`) — « ferme la commande 21586 » dans JARVIS revient à la liste au lieu de fermer la fenêtre.
 - v7.5.126 (09/11/2026, « filtre toutes les commandes GLS en attente ») : statut facultatif `commandes:<période>:<RANOU|GLS|vide>:<en-attente|en-route|arrivé|livré|reporté|annulé>` → menu « Statut » de la page Commandes positionné (navigation seulement).
+- v7.5.127 (09/11/2026, « filtre les commandes de TikTok ») : origine facultative en 5e partie (liste fermée = ORIGINES_APPLI), ex. `commandes:all:::TikTok Shop`, `commandes:week::en-attente:LeBonCoin` ; option ajoutée au menu Origine si absente.
 - Tests : `node outils/test-vue-jarvis.js` (sans connexion).
 
 ## Pièges connus
