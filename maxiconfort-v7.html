@@ -5245,9 +5245,9 @@ function jvueAppliquer() {
         var lo = v.jour ? jvueTourneesDuJour(typeof tournees !== 'undefined' ? tournees : [], jvueJour(v.jour), v.livreur) : [];
         if (v.appliquer) {
           var cleO = 'jvue-optim-' + (lo[0] && lo[0].id), deja = 0; try { deja = Number(sessionStorage.getItem(cleO)) || 0; } catch (e) {}
-          var pret = lo.length === 1 && typeof optimTourneeId !== 'undefined' && optimTourneeId === lo[0].id && typeof optimStops !== 'undefined' && optimStops && optimStops.length;
+          var pret = lo.length === 1 && typeof optimTourneeId !== 'undefined' && optimTourneeId === lo[0].id && typeof optimStops !== 'undefined' && optimStops && optimStops.length && typeof optimCalculeFini !== 'undefined' && optimCalculeFini === lo[0].id; // relecture : calcul TERMINÉ
           if (!jvueDansJarvis()) { if (typeof toast === 'function') toast('Ordre non enregistré : à faire depuis JARVIS ou avec « Appliquer cet ordre »'); }
-          else if (!pret) { if (typeof toast === 'function') toast('Ordre non enregistré : calcule d’abord l’optimisation de cette tournée'); }
+          else if (!pret) { if (typeof toast === 'function') toast('Ordre non enregistré : le calcul de cette tournée n’est pas fini (ou pas lancé)'); }
           else if (Date.now() - deja < 120000) { if (typeof toast === 'function') toast('Ordre déjà enregistré il y a moins de 2 min'); }
           else if (typeof optimAppliquer === 'function') { try { sessionStorage.setItem(cleO, String(Date.now())); } catch (e) {} optimAppliquer(); }
           return;
@@ -13231,6 +13231,7 @@ function sauvegarderAjustement() {
 
 let optimTourneeId = null;
 let optimStops = [];      // stops courants avec ETAs calculées
+let optimCalculeFini = null; // v7.5.128 : id de la tournée dont le calcul d'ordre est TERMINÉ (JARVIS n'enregistre qu'après)
 let optimStopsOrig = [];  // ordre original avant optimisation
 
 // Données simulées de distances inter-stops (en minutes de trajet)
@@ -13701,6 +13702,7 @@ var optimDerniereMatrice = null;
 var optimDernierMode = null; // 'osrm' ou 'fallback'
 
 async function optimCalculer() {
+  optimCalculeFini = null; // v7.5.128 : calcul en cours
   if (!optimStops.length) return;
   const strat = document.getElementById('optim-strat').value;
 
@@ -13808,6 +13810,7 @@ async function optimCalculer() {
 
   optimStops = ordreFinal;
   optimCalculerETAs();
+  optimCalculeFini = optimTourneeId; // v7.5.128 : l'ordre affiché est fini de calculer
   optimRendrePage();
   // Re-afficher la carte une fois l'ordre fige
   setTimeout(function(){ try { optimAfficherCarte(); } catch(e){} }, 100);
