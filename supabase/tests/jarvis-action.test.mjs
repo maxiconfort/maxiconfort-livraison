@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
-  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -365,4 +365,17 @@ test('v2.7 creer_commande depuis une commande existante : coordonnées recopiée
   assert.equal(cmd.adresse, src.adresse, 'adresse reprise telle quelle (pas de code postal en double)');
   assert.equal(cmd.ascenseur, 'Oui'); assert.equal(cmd.transporteur, 'RANOU');
   assert.match(cmd.instr, /coordonnées reprises de #2141/);
+});
+
+test('v2.7 relecture : ville lue sur les adresses réelles, nom annoncé comparé (oui / non seulement)', () => {
+  const v = (a) => coordonneesDepuis({ client: 'A B', tel: '0600000000', adresse: a }).champs;
+  assert.deepEqual([v('1 rue X, 93160, Noisy-le-Grand, 93160, France').cp, v('1 rue X, 93160, Noisy-le-Grand, 93160, France').ville], ['93160', 'Noisy-le-Grand']);
+  assert.equal(v('1 rue X, 95000 Cergy CEDEX, France').ville, 'Cergy');
+  assert.equal(v('21 route de vizille, 38560, CHAMP-SUR-DRAC, France').ville, 'CHAMP-SUR-DRAC');
+  assert.ok(nomConcorde('Myriam Zeroual', 'Meryem zaroual'), 'mêmes initiales');
+  assert.ok(nomConcorde('Meryem', 'Meryem zaroual'));
+  assert.ok(!nomConcorde('Jean Dupont', 'Meryem zaroual'));
+  assert.equal(controlerDemande({ action: 'creer_commande', source: 'commande', depuis: '#2141', nom_annonce: 'Meryem', lignes: [{ produit: 'Matelas', qte: 1 }] }, T), null);
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /statut_source: String\(\(src as any\)\.statut \|\| ''\)/);
 });

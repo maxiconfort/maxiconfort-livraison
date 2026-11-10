@@ -93,7 +93,7 @@ export type Demande = {
   // v2
   statut?: string; livreur?: string; champs?: Record<string, unknown>; prix?: number; texte?: string; commentaire?: string;
   client?: string; tel?: string; email?: string; adresse?: string; cp?: string; ville?: string; etage?: string; code?: string; instr?: string;
-  lignes?: Ligne[]; origine?: string; source?: 'mail' | 'dictee' | 'commande'; depuis?: string; produit?: string; qte?: number; limite?: number;
+  lignes?: Ligne[]; origine?: string; source?: 'mail' | 'dictee' | 'commande'; depuis?: string; nom_annonce?: string; produit?: string; qte?: number; limite?: number;
 };
 
 /** Contrôle de forme d'une demande (avant toute lecture). Renvoie un message d'erreur ou null. */
@@ -156,6 +156,7 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
       if (d.source !== 'mail' && d.source !== 'dictee' && d.source !== 'commande') return 'source obligatoire : mail (coordonnées lues), dictee (coordonnées dictées) ou commande (coordonnées reprises d’une commande existante)';
       if (d.source === 'commande') { // v2.7 : les coordonnées viennent de la commande « depuis », lues par le serveur
         if (!ID_CMD.test(String(d.depuis || ''))) return 'numéro de la commande dont reprendre les coordonnées obligatoire (ex. #2141)';
+        if (d.nom_annonce !== undefined && (typeof d.nom_annonce !== 'string' || d.nom_annonce.length > 80)) return 'nom annoncé invalide';
         for (const k of ['client', 'tel', 'email', 'adresse', 'cp', 'ville']) if ((d as any)[k] !== undefined) return 'source commande : les coordonnées sont reprises de ' + d.depuis + ', ne pas les fournir (' + k + ')';
         if (!Array.isArray(d.lignes) || !d.lignes.length || d.lignes.length > 10) return 'au moins un produit (10 lignes au plus)';
         for (const l of d.lignes) { if (texte(l?.produit, 120).length < 2) return 'produit de la ligne obligatoire'; if (!entier(l?.qte, 1, 20)) return 'quantité : 1 à 20'; }
@@ -519,10 +520,21 @@ export function lienFacture(d: Demande, c: Record<string, unknown>): { erreur: s
 export function coordonneesDepuis(src: Record<string, unknown> | null): { erreur: string } | { champs: Record<string, string> } {
   if (!src) return { erreur: 'commande source introuvable' };
   const adresse = String(src.adresse || '').trim(); const tel = String(src.tel || '').trim(); const client = String(src.client || '').trim();
-  const m = [...adresse.matchAll(/\b(\d{5})\s*,?\s*([^,\d\s][^,]*)/g)].pop(); // « 94140 Alfortville » ou « 94140, Alfortville » (format de l'appli)
+  // « 94140 Alfortville » ou « 94140, Alfortville » (format de l'appli) ; relecture : « …, 93160, Noisy-le-Grand, 93160, France » → la
+  // dernière correspondance dont la ville n'est pas « France » ; « CEDEX » retiré.
+  const m = [...adresse.matchAll(/\b(\d{5})\s*,?\s*([^,\d\s][^,]*)/g)].filter((x) => !/^france$/i.test(x[2].trim())).pop();
   if (client.length < 2) return { erreur: 'la commande source n’a pas de nom de client' };
   if (!tel) return { erreur: 'la commande source n’a pas de téléphone' };
   if (!m) return { erreur: 'code postal introuvable dans l’adresse de la commande source' };
   return { champs: { client, tel, email: String(src.email || '').trim(), adresse, etage: String(src.etage || '').trim(), ascenseur: String(src.ascenseur || '') === 'Oui' ? 'Oui' : 'Non',
-    code: String(src.code || '').trim(), cp: m[1], ville: m[2].replace(/\s+France$/i, '').trim() } };
+    code: String(src.code || '').trim(), cp: m[1], ville: m[2].replace(/\s+France$/i, '').replace(/\s+cedex(\s+\d+)?$/i, '').trim() } };
+}
+
+/** v2.7 (relecture) — Le nom que Borhen a dit correspond-il au client de la commande source ? Nom proche (scoreNom ≥ seuil) OU mêmes
+ *  initiales dans n'importe quel ordre (« Myriam Zeroual » ≈ « Meryem zaroual »). Seul un oui / non est renvoyé, jamais le nom. */
+export function nomConcorde(annonce: string, client: string): boolean {
+  const ini = (s: string) => motsNom(s).map((m) => m[0]).sort().join('');
+  if (!motsNom(annonce).length) return true;
+  if (scoreNom(annonce, client) >= seuilPour(annonce)) return true;
+  const a = ini(annonce), c = ini(client); return a.length > 0 && (a === c || (motsNom(annonce).length === 1 && c.includes(a)));
 }
