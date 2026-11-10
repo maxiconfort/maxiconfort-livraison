@@ -277,7 +277,7 @@ Deno.serve(async (req: Request) => {
       const { data: ids } = await sb.from('commandes').select('id').like('id', '#%').order('created_at', { ascending: false }).limit(300);
       let id = prochainNumero((ids || []).map((x: any) => String(x.id)));
       const cmd = construireCommande(d, id, l.lignes);
-      const visible = { id, ...(l.rapproches ? { produits_rapproches: l.rapproches } : {}), ...(d.source === 'commande' ? { coordonnees_reprises_de: d.depuis, client_initiales: initiales(String(d.client || '')), client_nom: String(d.client || '').slice(0, 60), ...reprise } : {}), produit: cmd.produit, prix: cmd.prix, cp: d.cp, ville: d.ville, transporteur: cmd.transporteur, date_livraison: cmd.date_livraison, origine: cmd.origine, paiement: 'à la livraison', sans_prix: l.lignes.filter((x) => !x.produitId).map((x) => x.produit) };
+      const visible = { id, ...(l.rapproches ? { produits_rapproches: l.rapproches } : {}), ...(d.source === 'commande' ? { coordonnees_reprises_de: d.depuis, client_initiales: initiales(String(d.client || '')), client_nom: String(d.client || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 60), ...reprise } : {}), produit: cmd.produit, prix: cmd.prix, cp: d.cp, ville: d.ville, transporteur: cmd.transporteur, date_livraison: cmd.date_livraison, origine: cmd.origine, paiement: 'à la livraison', sans_prix: l.lignes.filter((x) => !x.produitId).map((x) => x.produit) };
       if (!confirme) return rep(200, { ...base, nouvelle: visible });
       let { error } = await sb.from('commandes').insert(cmd);
       if (error && String((error as any).code) === '23505') { id = '#' + (Number(id.slice(1)) + 1); ({ error } = await sb.from('commandes').insert({ ...cmd, id })); }
