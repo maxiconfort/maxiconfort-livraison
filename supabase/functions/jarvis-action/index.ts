@@ -78,7 +78,7 @@ Deno.serve(async (req: Request) => {
       if (String(c!.transporteur || '') !== 'GLS' || !String(c!.tracking_transporteur || '').trim()) return rep(422, { ok: false, erreur: 'pas de colis GLS enregistré sur cette commande' });
       const r = await interne('gls-sync', { cmdIds: [String(c!.id)] });
       if (r.http !== 200 || !r.j?.ok || r.j?.lectureSeule !== true) return rep(502, { ok: false, erreur: 'suivi GLS indisponible pour l’instant' });
-      const s = resumeSuivi((r.j.commandes || [])[0]); return 'erreur' in s ? rep(404, { ok: false, erreur: s.erreur }) : rep(200, { ...base, suivi: s });
+      const s = resumeSuivi((r.j.commandes || [])[0]); return 'erreur' in s ? rep(/ne répond pas/.test(String(s.erreur)) ? 502 : 404, { ok: false, erreur: s.erreur }) : rep(200, { ...base, suivi: s });
     }
     if (d.action === 'lien_facture') { const f = lienFacture(d, c!); return 'erreur' in f ? rep(422, { ok: false, erreur: f.erreur }) : rep(200, { ...base, facture: f }); }
     if (d.action === 'lister_commandes') {

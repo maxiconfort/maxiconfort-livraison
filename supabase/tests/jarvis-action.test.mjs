@@ -433,6 +433,10 @@ test('v2.10 suivi_gls : lecture seule, colis par colis, heure de Paris, aucune d
   assert.equal(r.colis[0].dernier_libelle, 'The parcel has been handed over to GLS.');
   assert.equal(JSON.stringify(r).includes('NE DOIT PAS SORTIR'), false);
   assert.match(resumeSuivi(undefined).erreur, /introuvable/);
+  // relecture (majeur) : panne GLS ≠ « pas pris en charge »
+  assert.match(resumeSuivi({ etat_gls: 'erreur', colis: [{ trackId: 'A', etat: 'erreur' }, { trackId: 'B', etat: 'erreur' }] }).erreur, /GLS ne répond pas/);
+  const part = resumeSuivi({ etat_gls: 'erreur', colis: [{ trackId: 'A', etat: 'transit', priseEnCharge: '2026-10-16T08:12:00Z' }, { trackId: 'B', etat: 'erreur' }] });
+  assert.equal(part.pris_en_charge, null); assert.equal(part.lecture_partielle, true); assert.equal(part.colis[1].pris_en_charge, null); assert.match(part.colis[1].detail, /lecture GLS impossible/);
   const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
   assert.match(src, /interne\('gls-sync', \{ cmdIds: \[String\(c!\.id\)\] \}\)/); assert.match(src, /r\.j\?\.lectureSeule !== true/);
 });

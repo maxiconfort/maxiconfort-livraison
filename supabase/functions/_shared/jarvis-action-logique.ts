@@ -612,6 +612,12 @@ export function resumeSuivi(x: any): { erreur: string } | Record<string, unknown
     pris_en_charge: c?.priseEnCharge ? enParis(c.priseEnCharge) : null, livre_client: c?.livreClient ? enParis(c.livreClient) : null,
     retour: c?.retour ? enParis(c.retour) : null, dernier_evenement: enParis(c?.dernier), dernier_libelle: texte(c?.dernierLibelle, 120) || null,
   }));
+  // Relecture 10/11 (majeur) : GLS injoignable ou colis illisible ≠ « pas pris en charge ». Tout en erreur → erreur nette ; une partie →
+  // pris_en_charge inconnu (null) et colis marqués « lecture GLS impossible ».
+  const enErreur = (c: any) => c.etat === 'erreur';
+  if (texte(x.etat_gls, 30) === 'erreur' && (!colis.length || colis.every(enErreur))) return { erreur: 'GLS ne répond pas pour l’instant : impossible de dire si le colis est pris en charge' };
+  for (const c of colis) if (enErreur(c)) Object.assign(c, { pris_en_charge: null, detail: 'lecture GLS impossible pour ce colis (GLS ne répond pas)' });
+  const inconnu = colis.some(enErreur);
   return { etat_gls: texte(x.etat_gls, 30), detail: texte(x.detail, 200), date_livraison_gls: x.date_livraison_gls || null,
-    pris_en_charge: colis.length ? colis.every((c: any) => !!c.pris_en_charge) : false, colis };
+    pris_en_charge: inconnu ? null : colis.length ? colis.every((c: any) => !!c.pris_en_charge) : false, ...(inconnu ? { lecture_partielle: true } : {}), colis };
 }
