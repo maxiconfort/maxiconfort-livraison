@@ -2,7 +2,7 @@
 // Edge Function : jarvis-action (v2 — 30/10/2026 ; v2.1 04/11/2026 : lister_commandes { client } = recherche par nom / téléphone / e-mail ;
 // v2.2 04/11/2026 : recherche approchée par nom quand rien d'exact — « approchee: true » + score ;
 // v2.4 09/11/2026 : compter_commandes par origine et date de prise de commande (date_commande), + montant hors annulées et hors SAV
-// v2.11 10/11/2026 : nom complet du client (client_nom) dans chaque commande renvoyée ;
+// v2.11 10/11/2026 : nom complet du client (client_nom) dans chaque commande renvoyée (colonne client lue aussi pour la liste d'un jour) ;
 // v2.3 06/11/2026 : « total » = nombre EXACT compté par la base (plus la longueur de la liste coupée) + action compter_commandes)
 // ════════════════════════════════════════════════════════════════════
 // Porte d'entrée RÉSERVÉE À JARVIS (MAXI BRAIN, mini-PC de Borhen). Décision de Borhen du 30/10 : « autorisation totale sur
@@ -84,9 +84,9 @@ Deno.serve(async (req: Request) => {
     }
     if (d.action === 'lien_facture') { const f = lienFacture(d, c!); return 'erreur' in f ? rep(422, { ok: false, erreur: f.erreur }) : rep(200, { ...base, facture: f }); }
     if (d.action === 'lister_commandes') {
-      // v2.1 (04/11) : recherche par client (nom / téléphone / e-mail) — toutes commandes, les plus récentes d'abord, initiales seulement.
+      // v2.1 (04/11) : recherche par client (nom / téléphone / e-mail) — toutes commandes, les plus récentes d'abord ; nom complet (client_nom, v2.11), jamais téléphone, e-mail ni adresse.
       const crit = d.client !== undefined ? critereClient(d.client) : null;
-      let q = sb.from('commandes').select('id, produit, statut, transporteur, date_livraison, adresse, tracking_transporteur, livreur, created_at' + (crit ? ', client' : ''), { count: 'exact' }).limit(d.limite || 30);
+      let q = sb.from('commandes').select('id, produit, statut, transporteur, date_livraison, adresse, tracking_transporteur, livreur, created_at, client', { count: 'exact' }).limit(d.limite || 30);
       q = q.not('id', 'like', '#TEST%'); // v2.3 : mêmes exclusions que compter_commandes (relecture : sinon 73 ici, 72 là)
       if (d.date) q = q.eq('date_livraison', d.date);
       if ((d as any).sans_date) q = q.or('date_livraison.is.null,date_livraison.eq.'); // v2.6 : sans date (vide ou absente)
@@ -96,7 +96,7 @@ Deno.serve(async (req: Request) => {
       const { data, error, count } = await (crit ? q.order('created_at', { ascending: false }) : q.order('date_livraison', { ascending: true, nullsFirst: false }).order('created_at', { ascending: false }));
       if (error) return rep(502, { ok: false, erreur: 'lecture refusée par la base' });
       // v2.2 : rien d'exact pour un NOM → recherche approchée sur les 3 000 commandes les plus récentes (mêmes filtres date / statut /
-      // livreur), réponse marquée « approchee » avec un score par ligne ; toujours sans nom complet, téléphone ni e-mail.
+      // livreur), réponse marquée « approchee » avec un score par ligne ; nom complet (client_nom, v2.11), jamais téléphone, e-mail ni adresse.
       if (crit && crit.genre === 'nom' && !(data || []).length) {
         // Relecture v2.2 (MAJEUR 1) : Supabase rend au plus 1 000 lignes par requête → 3 tranches de 1 000, comme klaviyo-exclusion.
         const tous: any[] = [];

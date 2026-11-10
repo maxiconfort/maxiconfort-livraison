@@ -34,6 +34,11 @@ test('contrôles sur la commande : déjà étiquetée, livrée, adresse sans cod
   assert.match(controlerCommande({ action: 'planifier' }, null), /introuvable/);
 });
 
+test('v2.11 : la liste d’un jour lit aussi la colonne client (sinon client_nom vide, recette 10/11 22:01)', () => {
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /select\('id, produit, statut, transporteur, date_livraison, adresse, tracking_transporteur, livreur, created_at, client', \{ count: 'exact' \}\)\.limit/);
+  assert.doesNotMatch(src, /crit \? ', client' : ''/);
+});
 test('aperçu sans coordonnées : nom du client (v2.11), code postal et ville seulement', () => {
   const a = apercuCommande(cmd());
   assert.equal(a.cp, '93160'); assert.equal(a.ville, 'Noisy-le-Grand');
