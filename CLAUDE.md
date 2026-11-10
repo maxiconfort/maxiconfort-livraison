@@ -156,6 +156,8 @@ Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site S
 
 - **v2.6 (10/11/2026, « go Claude livraison ») : `sans_date: true`** sur `lister_commandes` et `compter_commandes` = commandes dont la date de livraison est vide ou absente (« pas planifiées » ; la liste triée les met en fin, donc souvent coupées). Exclusif avec date / période. Tests 85.
 
+- **v2.7 (10/11/2026) : `creer_commande { source: "commande", depuis: "#NNNN", lignes }`** = nouvelle commande avec les coordonnées du client RECOPIÉES par la fonction depuis une commande existante (nom, téléphone, e-mail, adresse, étage, ascenseur, code ; code postal et ville relus dans l'adresse). Coordonnées fournies en plus refusées ; N3 ; la réponse ne donne que les initiales. Fonction pure `coordonneesDepuis` ; tests 86.
+
 ## Porte d'entrée JARVIS : `jarvis-action` v1 (27/10/2026) — remplacée par la v2 ci-dessus
 - Demande de Borhen : depuis JARVIS (MAXI BRAIN, mini-PC), créer une étiquette ou un retour GLS, mettre une commande en planning, créer un SAV, mettre à jour un litige — sans ouvrir l'appli.
 - **Toujours en 2 temps** : `confirme:false` = aperçu (contrôles + aperçu GLS `dryRun`, rien n'est écrit) ; `confirme:true` = exécution après le « Confirmer » de Borhen dans JARVIS.

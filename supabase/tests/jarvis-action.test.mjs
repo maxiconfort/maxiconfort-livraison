@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
-  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -343,4 +343,26 @@ test('v2.6 sans_date : commandes sans date de livraison (liste et comptage)', ()
   assert.equal(src.split("or('date_livraison.is.null,date_livraison.eq.')").length - 1, 4, 'liste, recherche approchée, comptage et montant');
   assert.match(src, /sans_date: !!\(d as any\)\.sans_date,/, 'comptage : filtre renvoyé (garde de version côté JARVIS)');
   assert.equal(src.split("...((d as any).sans_date ? { sans_date: true } : {})").length - 1, 2, 'liste : filtre renvoyé');
+});
+
+test('v2.7 creer_commande depuis une commande existante : coordonnées recopiées par le serveur, jamais fournies', () => {
+  const ok = { action: 'creer_commande', source: 'commande', depuis: '#2141', lignes: [{ produit: 'Matelas 140x190', qte: 1 }] };
+  assert.equal(controlerDemande(ok, T), null);
+  assert.equal(niveauDe(ok), 'N3');
+  assert.match(controlerDemande({ ...ok, depuis: '2141' }, T), /numéro de la commande/);
+  assert.match(controlerDemande({ ...ok, tel: '0612345678' }, T), /ne pas les fournir \(tel\)/);
+  assert.match(controlerDemande({ ...ok, lignes: [] }, T), /au moins un produit/);
+  assert.match(controlerDemande({ ...ok, source: 'autre' }, T), /source obligatoire/);
+  const src = { client: 'Fictive Exemple', tel: '0600000000', email: 'f@exemple.test', adresse: '7 rue Fictive, entrée 7, 94140, Alfortville, France', etage: '3', ascenseur: 'Oui', code: 'A12' };
+  const co = coordonneesDepuis(src);
+  assert.deepEqual(co, { champs: { client: 'Fictive Exemple', tel: '0600000000', email: 'f@exemple.test', adresse: src.adresse, etage: '3', ascenseur: 'Oui', code: 'A12', cp: '94140', ville: 'Alfortville' } });
+  const co2 = coordonneesDepuis({ ...src, adresse: '12 avenue Test, 75017 Paris 17e Arrondissement, France' });
+  assert.equal(co2.champs.cp, '75017'); assert.equal(co2.champs.ville, 'Paris 17e Arrondissement');
+  assert.match(coordonneesDepuis(null).erreur, /introuvable/);
+  assert.match(coordonneesDepuis({ ...src, tel: '' }).erreur, /pas de téléphone/);
+  assert.match(coordonneesDepuis({ ...src, adresse: 'sans code postal' }).erreur, /code postal introuvable/);
+  const cmd = construireCommande({ ...ok, ...co.champs }, '#2200', [{ produit: 'Matelas 140x190', qte: 1, sousTotal: 199 }], Date.parse('2026-11-10T13:00:00Z'));
+  assert.equal(cmd.adresse, src.adresse, 'adresse reprise telle quelle (pas de code postal en double)');
+  assert.equal(cmd.ascenseur, 'Oui'); assert.equal(cmd.transporteur, 'RANOU');
+  assert.match(cmd.instr, /coordonnées reprises de #2141/);
 });

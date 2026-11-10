@@ -15,6 +15,9 @@
 
 export const VERSION = 'v2';
 // v2.4 (09/11/2026) : compter_commandes par origine et par jour de prise de commande, + montant hors annulées.
+// v2.7 (10/11/2026, recette vidéo 14:19 « crée une commande pour Meryem… reprends les informations de la commande 2141 ») :
+//   creer_commande { source: "commande", depuis: "#2141", lignes } = coordonnées du client RECOPIÉES par le serveur depuis une commande
+//   existante (nom, téléphone, e-mail, adresse, étage, ascenseur, code) — JARVIS ne les voit jamais. N3 (confirmation à chaque fois).
 // v2.6 (10/11/2026, GO Borhen 13:57 « go Claude livraison ») : sans_date (lister_commandes, compter_commandes) = commandes SANS date
 //   de livraison (vide ou absente) — recette : la liste triée mettait ces commandes à la FIN, coupée à 30 lignes, et JARVIS les comptait mal.
 // v2.5 (10/11/2026, GO Borhen 12:07 « go facture dans les mails ») : lien_facture (N1) — lien de la facture publique d'une commande,
@@ -90,7 +93,7 @@ export type Demande = {
   // v2
   statut?: string; livreur?: string; champs?: Record<string, unknown>; prix?: number; texte?: string; commentaire?: string;
   client?: string; tel?: string; email?: string; adresse?: string; cp?: string; ville?: string; etage?: string; code?: string; instr?: string;
-  lignes?: Ligne[]; origine?: string; source?: 'mail' | 'dictee'; produit?: string; qte?: number; limite?: number;
+  lignes?: Ligne[]; origine?: string; source?: 'mail' | 'dictee' | 'commande'; depuis?: string; produit?: string; qte?: number; limite?: number;
 };
 
 /** Contrôle de forme d'une demande (avant toute lecture). Renvoie un message d'erreur ou null. */
@@ -150,7 +153,16 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
       if (d.produit !== undefined && texte(d.produit, 80).length < 2) return 'produit invalide';
       break;
     case 'creer_commande': {
-      if (d.source !== 'mail' && d.source !== 'dictee') return 'source obligatoire : mail (coordonnées lues) ou dictee (coordonnées dictées)';
+      if (d.source !== 'mail' && d.source !== 'dictee' && d.source !== 'commande') return 'source obligatoire : mail (coordonnées lues), dictee (coordonnées dictées) ou commande (coordonnées reprises d’une commande existante)';
+      if (d.source === 'commande') { // v2.7 : les coordonnées viennent de la commande « depuis », lues par le serveur
+        if (!ID_CMD.test(String(d.depuis || ''))) return 'numéro de la commande dont reprendre les coordonnées obligatoire (ex. #2141)';
+        for (const k of ['client', 'tel', 'email', 'adresse', 'cp', 'ville']) if ((d as any)[k] !== undefined) return 'source commande : les coordonnées sont reprises de ' + d.depuis + ', ne pas les fournir (' + k + ')';
+        if (!Array.isArray(d.lignes) || !d.lignes.length || d.lignes.length > 10) return 'au moins un produit (10 lignes au plus)';
+        for (const l of d.lignes) { if (texte(l?.produit, 120).length < 2) return 'produit de la ligne obligatoire'; if (!entier(l?.qte, 1, 20)) return 'quantité : 1 à 20'; }
+        if (d.date !== undefined) { const e = dateFuture(String(d.date), maintenant); if (e) return e; }
+        if (d.origine !== undefined && !ORIGINES.includes(String(d.origine))) return 'origine inconnue (Téléphone, Leboncoin, Mail, Boutique, Site Maxiconfort, Autre)';
+        break;
+      }
       if (texte(d.client, 80).length < 2) return 'nom du client obligatoire';
       if (!TEL.test(texte(d.tel, 20))) return 'téléphone invalide (10 chiffres, ex. 06 12 34 56 78)';
       if (texte(d.adresse, 160).length < 5) return 'adresse obligatoire';
@@ -405,14 +417,14 @@ export function lignesCommande(lignes: Ligne[], catalogue: Catalogue): { lignes:
 /** Nouvelle commande (mêmes colonnes que sbSaveCommande de l'appli). Paiement à la livraison par défaut : Espèces / Non payé. */
 export function construireCommande(d: Demande, id: string, lignes: Record<string, unknown>[], maintenant = Date.now()): Record<string, unknown> {
   const total = lignes.reduce((s, l) => s + (Number(l.sousTotal) || 0), 0);
-  const adresse = [texte(d.adresse, 160), texte(d.cp, 5) + ' ' + texte(d.ville, 60)].join(', ');
+  const adresse = d.source === 'commande' ? texte(d.adresse, 240) : [texte(d.adresse, 160), texte(d.cp, 5) + ' ' + texte(d.ville, 60)].join(', '); // v2.7 : adresse reprise telle quelle
   const origine = d.origine ? String(d.origine) : (d.source === 'mail' ? 'Mail' : 'Téléphone');
   return {
-    id, client: texte(d.client, 80), tel: texte(d.tel, 20), email: texte(d.email, 120), adresse, etage: texte(d.etage, 10), ascenseur: 'Non', code: texte(d.code, 40),
+    id, client: texte(d.client, 80), tel: texte(d.tel, 20), email: texte(d.email, 120), adresse, etage: texte(d.etage, 10), ascenseur: d.source === 'commande' && (d as any).ascenseur === 'Oui' ? 'Oui' : 'Non', code: texte(d.code, 40),
     produit: lignes.map((l) => (Number(l.qte) > 1 ? l.qte + '× ' : '') + l.produit).join(' + ').slice(0, 300), lignes, qte: lignes.reduce((s, l) => s + (Number(l.qte) || 1), 0),
     prix: total, prix_brut: total, frais_port: 0, stock_deduit: false, remise_globale: 0, remise_globale_val: 0, remise_globale_type: 'pct', remise_motif: '',
     paie: 'Espèces', stpaie: 'Non payé', montant_enc: 0, livreur: '', statut: 'en-attente', date_livraison: d.date || '', date_commande: jourParis(maintenant),
-    instr: [texte(d.instr, 300), 'Créée depuis JARVIS (' + (d.source === 'mail' ? 'mail client' : 'dictée') + ')'].filter(Boolean).join('\n'),
+    instr: [texte(d.instr, 300), 'Créée depuis JARVIS (' + (d.source === 'mail' ? 'mail client' : d.source === 'commande' ? 'coordonnées reprises de ' + texte(d.depuis, 12) : 'dictée') + ')'].filter(Boolean).join('\n'),
     origine, ref_marketplace: '', transporteur: transporteurPour(texte(d.cp, 5)), tracking_transporteur: null, updated_at: new Date(maintenant).toISOString(),
   };
 }
@@ -500,4 +512,17 @@ export function lienFacture(d: Demande, c: Record<string, unknown>): { erreur: s
   const jeton = String(c.tracking_token || '').trim();
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(jeton)) return { erreur: 'commande sans lien de facture (pas de jeton de suivi)' };
   return { lien: 'https://livraison.maxiconfort.fr/facture.html?t=' + encodeURIComponent(jeton), acquittee: c.stpaie === 'Payé', commande: String(c.id || '') };
+}
+
+/** v2.7 — Coordonnées reprises d'une commande existante (pure) : nom, téléphone, e-mail, adresse complète, étage, ascenseur, code,
+ *  + code postal et ville relus dans l'adresse (pour le transporteur). Refus si la source n'a ni téléphone ni code postal. */
+export function coordonneesDepuis(src: Record<string, unknown> | null): { erreur: string } | { champs: Record<string, string> } {
+  if (!src) return { erreur: 'commande source introuvable' };
+  const adresse = String(src.adresse || '').trim(); const tel = String(src.tel || '').trim(); const client = String(src.client || '').trim();
+  const m = [...adresse.matchAll(/\b(\d{5})\s*,?\s*([^,\d\s][^,]*)/g)].pop(); // « 94140 Alfortville » ou « 94140, Alfortville » (format de l'appli)
+  if (client.length < 2) return { erreur: 'la commande source n’a pas de nom de client' };
+  if (!tel) return { erreur: 'la commande source n’a pas de téléphone' };
+  if (!m) return { erreur: 'code postal introuvable dans l’adresse de la commande source' };
+  return { champs: { client, tel, email: String(src.email || '').trim(), adresse, etage: String(src.etage || '').trim(), ascenseur: String(src.ascenseur || '') === 'Oui' ? 'Oui' : 'Non',
+    code: String(src.code || '').trim(), cp: m[1], ville: m[2].replace(/\s+France$/i, '').trim() } };
 }

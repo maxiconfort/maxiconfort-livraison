@@ -22,7 +22,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
 const SECRET_JARVIS = Deno.env.get('JARVIS_ACTION_SECRET') || '';
@@ -258,11 +258,16 @@ Deno.serve(async (req: Request) => {
       return rep(200, { ...base, litige: { avant, apres: p }, fait: true });
     }
     if (d.action === 'creer_commande') {
+      if (d.source === 'commande') { // v2.7 : coordonnées recopiées par le serveur, jamais renvoyées
+        const { data: src } = await sb.from('commandes').select('client, tel, email, adresse, etage, ascenseur, code').eq('id', d.depuis).maybeSingle();
+        const co = coordonneesDepuis(src as any); if ('erreur' in co) return rep(422, { ok: false, erreur: co.erreur });
+        Object.assign(d, co.champs);
+      }
       const cat = await catalogue(); const l = lignesCommande(d.lignes!, cat); if (l.erreur) return rep(422, { ok: false, erreur: l.erreur });
       const { data: ids } = await sb.from('commandes').select('id').like('id', '#%').order('created_at', { ascending: false }).limit(300);
       let id = prochainNumero((ids || []).map((x: any) => String(x.id)));
       const cmd = construireCommande(d, id, l.lignes);
-      const visible = { id, produit: cmd.produit, prix: cmd.prix, cp: d.cp, ville: d.ville, transporteur: cmd.transporteur, date_livraison: cmd.date_livraison, origine: cmd.origine, paiement: 'à la livraison', sans_prix: l.lignes.filter((x) => !x.produitId).map((x) => x.produit) };
+      const visible = { id, ...(d.source === 'commande' ? { coordonnees_reprises_de: d.depuis, client_initiales: initiales(String(d.client || '')) } : {}), produit: cmd.produit, prix: cmd.prix, cp: d.cp, ville: d.ville, transporteur: cmd.transporteur, date_livraison: cmd.date_livraison, origine: cmd.origine, paiement: 'à la livraison', sans_prix: l.lignes.filter((x) => !x.produitId).map((x) => x.produit) };
       if (!confirme) return rep(200, { ...base, nouvelle: visible });
       let { error } = await sb.from('commandes').insert(cmd);
       if (error && String((error as any).code) === '23505') { id = '#' + (Number(id.slice(1)) + 1); ({ error } = await sb.from('commandes').insert({ ...cmd, id })); }
