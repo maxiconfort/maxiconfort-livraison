@@ -414,7 +414,7 @@ test('v2.9 recherche par nom : voyelles mal entendues tolérées, sans ouvrir la
   assert.ok(ok('Myriam Zeroual', 'Meryem zaroual'), 'vidéo 14:19');
   assert.ok(ok('Meryem Zeroual', 'Myriam Zaroual'));
   assert.ok(ok('Mohamed Benali', 'Mouhamad Ben Ali'));
-  for (const [q, n] of [['Hamid', 'Ami'], ['Mathis', 'Mati'], ['Laurence Rubigny', 'Laurent Rubio'], ['Jean', 'Joan'], ['Paul', 'Raul'], ['Myriam Zeroual', 'Mario Zerbib'], ['Karim Dupont', 'Kerem Dupuis']])
+  for (const [q, n] of [['Hamid', 'Ami'], ['Mathis', 'Mati'], ['Laurence Rubigny', 'Laurent Rubio'], ['Jean', 'Joan'], ['Paul', 'Raul'], ['Myriam Zeroual', 'Mario Zerbib'], ['Karim Dupont', 'Kerem Dupuis'], ['Karim', 'Kerem'], ['Malik', 'Melek'], ['Salim', 'Selma'], ['Martin', 'Morton'], ['Salem', 'Slim'], ['Myriam', 'Meryem']])
     assert.ok(!ok(q, n), q + ' ≠ ' + n);
   const res = rechercheApprochee('Myriam Zeroual', [{ client: 'Jean Martin' }, { client: 'Meryem zaroual' }, { client: 'Myriam Durand' }]);
   assert.deepEqual(res.map((x) => x.client), ['Meryem zaroual']);

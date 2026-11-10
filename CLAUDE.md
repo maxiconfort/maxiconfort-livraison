@@ -160,7 +160,7 @@ Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site S
 
 - **v2.8 (10/11/2026, « go produit catalogue ») : produit dit approximativement** (« matelas Dodo 140x190 ») → produit du catalogue retenu SEULEMENT s'il est le seul à correspondre (même famille — un matelas n'est jamais un ensemble —, toutes les dimensions et tous les mots dits) ; plusieurs → refus avec la liste (3 au plus) pour que Borhen choisisse ; rien → ligne à 0 € signalée comme avant. Le nom retenu est dit dans l'aperçu (`produits_rapproches`), jamais enregistré dans la ligne. `produitProche` ; tests 88.
 
-- **v2.9 (10/11/2026, « go recherche nom ») : recherche approchée par nom** — voyelles mal entendues tolérées (mêmes consonnes dans le même ordre, même première lettre, 3 consonnes au moins, longueurs proches : « Myriam Zeroual » ≈ « Meryem zaroual »), plafonné à 0,8 (un mot court seul ne suffit pas). `squelette` ; tests 89.
+- **v2.9 (10/11/2026, « go recherche nom ») : recherche approchée par nom** — voyelles mal entendues tolérées (mêmes consonnes dans le même ordre, même première lettre, 3 consonnes au moins, longueurs proches : « Myriam Zeroual » ≈ « Meryem zaroual »), plafonné à 0,79 (un mot SEUL ne passe jamais : Karim ≠ Kerem ; il faut un 2e mot proche). `squelette` ; tests 89.
 
 ## Porte d'entrée JARVIS : `jarvis-action` v1 (27/10/2026) — remplacée par la v2 ci-dessus
 - Demande de Borhen : depuis JARVIS (MAXI BRAIN, mini-PC), créer une étiquette ou un retour GLS, mettre une commande en planning, créer un SAV, mettre à jour un litige — sans ouvrir l'appli.

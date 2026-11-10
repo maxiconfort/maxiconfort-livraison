@@ -323,9 +323,10 @@ function ressemblance(a: string, b: string): number {
   if (pa && pb && r >= 0.7) r = Math.max(r, pa === pb ? 0.9 : Math.min(0.9, ratio(pa, pb)));
   // v2.9 (10/11/2026, « go recherche nom » — vidéo 14:19 : « Myriam Zeroual » ne trouvait pas « Meryem zaroual ») : mêmes CONSONNES dans
   // le même ordre, même première lettre, au moins 3 consonnes et longueurs proches → voyelles mal entendues (« Myriam » ≈ « Meryem »,
-  // « Mohamed » ≈ « Mouhamad »). Plafond 0,8 : seul, ce mot ne passe pas le seuil d'un mot court ; il passe avec un 2e mot proche.
+  // « Mohamed » ≈ « Mouhamad »). Plafond 0,79 (relecture) : un mot SEUL ne passe jamais le seuil (Karim ≠ Kerem, Malik ≠ Melek) ;
+  // il ne compte qu'avec un 2e mot proche (« Myriam Zeroual » ≈ « Meryem zaroual »).
   const sa = squelette(pa), sb = squelette(pb);
-  if (sa.length >= 3 && sa === sb && a[0] === b[0] && Math.abs(a.length - b.length) <= 2) r = Math.max(r, 0.8);
+  if (sa.length >= 3 && sa === sb && a[0] === b[0] && Math.abs(a.length - b.length) <= 2) r = Math.max(r, 0.79);
   return r;
 }
 /** Mots du nom en base + mots voisins collés et nom entier collé (« Le Goff » ≈ « Legoff », « Ben Ali » ≈ « Benali »). */
