@@ -15,6 +15,7 @@
 
 export const VERSION = 'v2';
 // v2.4 (09/11/2026) : compter_commandes par origine et par jour de prise de commande, + montant hors annulées.
+// v2.9 (10/11/2026, « go recherche nom ») : recherche approchée par nom — voyelles mal entendues tolérées (« Myriam Zeroual » ≈ « Meryem zaroual »).
 // v2.8 (10/11/2026, « go produit catalogue ») : produit dit approximativement (« matelas Dodo 140x190 ») → produit du catalogue le plus
 //   proche (dimensions obligatoires), dit dans l'aperçu ; plusieurs aussi proches → question avec la liste ; jamais 0 € en silence.
 // v2.7 (10/11/2026, recette vidéo 14:19 « crée une commande pour Meryem… reprends les informations de la commande 2141 ») :
@@ -301,6 +302,8 @@ export function phonetique(m: string): string {
   if (p.length > 3) p = p.replace(/[estxd]$/, '');
   return p;
 }
+/** v2.9 — consonnes seules (après la simplification phonétique). */
+export const squelette = (p: string) => p.replace(/[aeiouy]/g, '');
 function distance(a: string, b: string): number { // Levenshtein avec transposition (Damerau restreint), mots bornés à 40 caractères
   a = a.slice(0, 40); b = b.slice(0, 40); const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
   for (let j = 1; j <= b.length; j++) d[0][j] = j;
@@ -318,6 +321,11 @@ function ressemblance(a: string, b: string): number {
   // pas « Mati » — et plafonnée à 0,9 (jamais devant un vrai début de nom ou une seule faute).
   const pa = phonetique(a), pb = phonetique(b);
   if (pa && pb && r >= 0.7) r = Math.max(r, pa === pb ? 0.9 : Math.min(0.9, ratio(pa, pb)));
+  // v2.9 (10/11/2026, « go recherche nom » — vidéo 14:19 : « Myriam Zeroual » ne trouvait pas « Meryem zaroual ») : mêmes CONSONNES dans
+  // le même ordre, même première lettre, au moins 3 consonnes et longueurs proches → voyelles mal entendues (« Myriam » ≈ « Meryem »,
+  // « Mohamed » ≈ « Mouhamad »). Plafond 0,8 : seul, ce mot ne passe pas le seuil d'un mot court ; il passe avec un 2e mot proche.
+  const sa = squelette(pa), sb = squelette(pb);
+  if (sa.length >= 3 && sa === sb && a[0] === b[0] && Math.abs(a.length - b.length) <= 2) r = Math.max(r, 0.8);
   return r;
 }
 /** Mots du nom en base + mots voisins collés et nom entier collé (« Le Goff » ≈ « Legoff », « Ben Ali » ≈ « Benali »). */

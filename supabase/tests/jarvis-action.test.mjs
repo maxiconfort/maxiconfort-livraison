@@ -408,3 +408,14 @@ test('v2.8 produit dit approximativement → produit du catalogue (noms réels),
   assert.match(lignesCommande([{ produit: 'lit coffre 140x190', qte: 1 }], cat).erreur, /plusieurs produits possibles — lequel \? .*« Lit Coffre 140×190 Cuir PU Blanc/);
   assert.equal(lignesCommande([{ produit: 'Sommier Tapissier 140×190 Blanc', qte: 1 }], cat).rapproches, undefined, 'nom exact : rien à dire');
 });
+
+test('v2.9 recherche par nom : voyelles mal entendues tolérées, sans ouvrir la porte aux faux amis', () => {
+  const ok = (q, n) => scoreNom(q, n) >= seuilPour(q);
+  assert.ok(ok('Myriam Zeroual', 'Meryem zaroual'), 'vidéo 14:19');
+  assert.ok(ok('Meryem Zeroual', 'Myriam Zaroual'));
+  assert.ok(ok('Mohamed Benali', 'Mouhamad Ben Ali'));
+  for (const [q, n] of [['Hamid', 'Ami'], ['Mathis', 'Mati'], ['Laurence Rubigny', 'Laurent Rubio'], ['Jean', 'Joan'], ['Paul', 'Raul'], ['Myriam Zeroual', 'Mario Zerbib'], ['Karim Dupont', 'Kerem Dupuis']])
+    assert.ok(!ok(q, n), q + ' ≠ ' + n);
+  const res = rechercheApprochee('Myriam Zeroual', [{ client: 'Jean Martin' }, { client: 'Meryem zaroual' }, { client: 'Myriam Durand' }]);
+  assert.deepEqual(res.map((x) => x.client), ['Meryem zaroual']);
+});
