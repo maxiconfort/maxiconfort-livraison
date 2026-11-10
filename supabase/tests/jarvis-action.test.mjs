@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
-  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, resumeSuivi, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -70,7 +70,7 @@ test('aperçu litige (réserve Codex #5) : description existante, absente, vide,
 
 test('v2 : liste fermée avec niveau ; créer une commande dictée = N3, depuis un mail = N2', () => {
   assert.equal(VERSION, 'v2');
-  assert.equal(ACTIONS.length, 23); for (const a of ACTIONS) assert.ok(['N1', 'N2', 'N3'].includes(NIVEAUX[a]), a);
+  assert.equal(ACTIONS.length, 24); for (const a of ACTIONS) assert.ok(['N1', 'N2', 'N3'].includes(NIVEAUX[a]), a);
   assert.equal(niveauDe({ action: 'lire_stock' }), 'N1'); assert.equal(niveauDe({ action: 'planifier' }), 'N2'); assert.equal(niveauDe({ action: 'annuler_commande' }), 'N3');
   assert.equal(niveauDe({ action: 'creer_commande', source: 'mail' }), 'N2'); assert.equal(niveauDe({ action: 'creer_commande', source: 'dictee' }), 'N3');
   for (const a of ['marquer_paye', 'rembourser', 'encaisser', 'shopify', 'tiktok']) assert.match(controlerDemande({ action: a, cmdId: '#1588' }, T), /non autorisée/, a);
@@ -418,4 +418,21 @@ test('v2.9 recherche par nom : voyelles mal entendues tolérées, sans ouvrir la
     assert.ok(!ok(q, n), q + ' ≠ ' + n);
   const res = rechercheApprochee('Myriam Zeroual', [{ client: 'Jean Martin' }, { client: 'Meryem zaroual' }, { client: 'Myriam Durand' }]);
   assert.deepEqual(res.map((x) => x.client), ['Meryem zaroual']);
+});
+
+test('v2.10 suivi_gls : lecture seule, colis par colis, heure de Paris, aucune donnée client', () => {
+  assert.equal(NIVEAUX.suivi_gls, 'N1');
+  assert.equal(controlerDemande({ action: 'suivi_gls', cmdId: '#1897' }, T), null);
+  assert.match(controlerDemande({ action: 'suivi_gls' }, T), /numéro de commande/);
+  const x = { cmdId: '#1897', etat_gls: 'transit', detail: 'en transit', date_livraison_gls: null, colis: [
+    { trackId: '00LDFKFH', etat: 'transit', motif: 'en transit (dernier scan 16/10)', priseEnCharge: '2026-10-16T08:12:00Z', livreClient: null, retour: null, dernier: '2026-10-16T08:12:00Z', dernierLibelle: 'The parcel has been handed over to GLS.' },
+    { trackId: '00LDFKGF', etat: 'sans-scan', motif: 'aucun scan', priseEnCharge: null, livreClient: null, retour: null, dernier: '2026-10-15T10:30:00Z', dernierLibelle: 'DATA_RECEIVED', client: 'NE DOIT PAS SORTIR' } ] };
+  const r = resumeSuivi(x);
+  assert.equal(r.pris_en_charge, false, 'un colis sur deux seulement');
+  assert.equal(r.colis[0].pris_en_charge, '16/10/2026 10:12'); assert.equal(r.colis[1].pris_en_charge, null);
+  assert.equal(r.colis[0].dernier_libelle, 'The parcel has been handed over to GLS.');
+  assert.equal(JSON.stringify(r).includes('NE DOIT PAS SORTIR'), false);
+  assert.match(resumeSuivi(undefined).erreur, /introuvable/);
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /interne\('gls-sync', \{ cmdIds: \[String\(c!\.id\)\] \}\)/); assert.match(src, /r\.j\?\.lectureSeule !== true/);
 });

@@ -6,7 +6,7 @@
 // ════════════════════════════════════════════════════════════════════
 // Porte d'entrée RÉSERVÉE À JARVIS (MAXI BRAIN, mini-PC de Borhen). Décision de Borhen du 30/10 : « autorisation totale sur
 // commandes et stock », confirmation vocale en deux temps, graduée par NIVEAU (logique dans _shared/jarvis-action-logique.ts) :
-//   N1 lecture    : lire_commande, lister_commandes, compter_commandes, lire_stock, lien_facture (v2.5) — exécutées directement ;
+//   N1 lecture    : lire_commande, lister_commandes, compter_commandes, lire_stock, lien_facture (v2.5), suivi_gls (v2.10) — exécutées directement ;
 //   N2 réversible : creer_commande (depuis un mail), modifier_commande, planifier, deplacer, changer_statut, sav, gls_etiquette,
 //                   gls_retour, litige, stock_entree, stock_chargement, stock_retour_depot — aperçu puis exécution ;
 //   N3 critique   : creer_commande (dictée), annuler_commande, supprimer_commande, modifier_prix, envoyer_sms, marquer_livre,
@@ -22,7 +22,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
 const SECRET_JARVIS = Deno.env.get('JARVIS_ACTION_SECRET') || '';
@@ -74,6 +74,12 @@ Deno.serve(async (req: Request) => {
   try {
     // ── N1 : lectures ──────────────────────────────────────────────────────────────────────────────────────────────
     if (d.action === 'lire_commande') return rep(200, { ...base, fiche: ficheCommande(c!) });
+    if (d.action === 'suivi_gls') { // v2.10 : lecture GLS en direct (gls-sync, mode audit : jamais d'écriture)
+      if (String(c!.transporteur || '') !== 'GLS' || !String(c!.tracking_transporteur || '').trim()) return rep(422, { ok: false, erreur: 'pas de colis GLS enregistré sur cette commande' });
+      const r = await interne('gls-sync', { cmdIds: [String(c!.id)] });
+      if (r.http !== 200 || !r.j?.ok || r.j?.lectureSeule !== true) return rep(502, { ok: false, erreur: 'suivi GLS indisponible pour l’instant' });
+      const s = resumeSuivi((r.j.commandes || [])[0]); return 'erreur' in s ? rep(404, { ok: false, erreur: s.erreur }) : rep(200, { ...base, suivi: s });
+    }
     if (d.action === 'lien_facture') { const f = lienFacture(d, c!); return 'erreur' in f ? rep(422, { ok: false, erreur: f.erreur }) : rep(200, { ...base, facture: f }); }
     if (d.action === 'lister_commandes') {
       // v2.1 (04/11) : recherche par client (nom / téléphone / e-mail) — toutes commandes, les plus récentes d'abord, initiales seulement.

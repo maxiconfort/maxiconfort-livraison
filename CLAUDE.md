@@ -162,6 +162,8 @@ Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site S
 
 - **v2.9 (10/11/2026, « go recherche nom ») : recherche approchée par nom** — voyelles mal entendues tolérées (mêmes consonnes dans le même ordre, même première lettre, 3 consonnes au moins, longueurs proches : « Myriam Zeroual » ≈ « Meryem zaroual »), plafonné à 0,79 (un mot SEUL ne passe jamais : Karim ≠ Kerem ; il faut un 2e mot proche). `squelette` ; tests 89.
 
+- **v2.10 (10/11/2026, vidéo 17:01 « comment voir si GLS a pris son colis ? ») : `suivi_gls { cmdId }`** (N1) = suivi GLS EN DIRECT d'une commande GLS, via `gls-sync` en mode audit (`{cmdIds}`, lecture seule, réponse refusée si elle ne porte pas `lectureSeule: true`) : par colis, prise en charge, dernier événement et son libellé GLS, livraison, retour (heure de Paris). Aucune donnée client. `resumeSuivi` ; tests 90.
+
 ## Porte d'entrée JARVIS : `jarvis-action` v1 (27/10/2026) — remplacée par la v2 ci-dessus
 - Demande de Borhen : depuis JARVIS (MAXI BRAIN, mini-PC), créer une étiquette ou un retour GLS, mettre une commande en planning, créer un SAV, mettre à jour un litige — sans ouvrir l'appli.
 - **Toujours en 2 temps** : `confirme:false` = aperçu (contrôles + aperçu GLS `dryRun`, rien n'est écrit) ; `confirme:true` = exécution après le « Confirmer » de Borhen dans JARVIS.

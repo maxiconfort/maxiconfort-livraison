@@ -15,6 +15,8 @@
 
 export const VERSION = 'v2';
 // v2.4 (09/11/2026) : compter_commandes par origine et par jour de prise de commande, + montant hors annulées.
+// v2.10 (10/11/2026, vidéo 17:01 « comment faire pour voir si GLS a pris son colis ? ») : suivi_gls (N1) — suivi GLS EN DIRECT d'une
+//   commande (lecture seule, via gls-sync en mode audit) : prise en charge, dernier événement et son libellé, livraison, retour, par colis.
 // v2.9 (10/11/2026, « go recherche nom ») : recherche approchée par nom — voyelles mal entendues tolérées (« Myriam Zeroual » ≈ « Meryem zaroual »).
 // v2.8 (10/11/2026, « go produit catalogue ») : produit dit approximativement (« matelas Dodo 140x190 ») → produit du catalogue le plus
 //   proche (dimensions obligatoires), dit dans l'aperçu ; plusieurs aussi proches → question avec la liste ; jamais 0 € en silence.
@@ -28,7 +30,7 @@ export const VERSION = 'v2';
 
 export type Niveau = 'N1' | 'N2' | 'N3';
 export const NIVEAUX: Record<string, Niveau> = {
-  lire_commande: 'N1', lister_commandes: 'N1', compter_commandes: 'N1', lire_stock: 'N1', lien_facture: 'N1',
+  lire_commande: 'N1', lister_commandes: 'N1', compter_commandes: 'N1', lire_stock: 'N1', lien_facture: 'N1', suivi_gls: 'N1',
   creer_commande: 'N2', modifier_commande: 'N2', planifier: 'N2', deplacer: 'N2', changer_statut: 'N2',
   sav: 'N2', gls_etiquette: 'N2', gls_retour: 'N2', litige: 'N2',
   stock_entree: 'N2', stock_chargement: 'N2', stock_retour_depot: 'N2',
@@ -598,4 +600,18 @@ export function nomConcorde(annonce: string, client: string): boolean {
   if (!motsNom(annonce).length) return true;
   if (scoreNom(annonce, client) >= seuilPour(annonce)) return true;
   const a = ini(annonce), c = ini(client); return a.length > 0 && (a === c || (motsNom(annonce).length === 1 && c.includes(a)));
+}
+
+/** v2.10 — Résumé du suivi GLS en direct d'une commande (réponse de gls-sync en mode audit {cmdIds}). Aucune donnée client : numéros de
+ *  colis, états et libellés GLS seulement ; dates en heure de Paris. Pure. */
+const enParis = (iso: unknown) => { if (!iso) return null; const t = Date.parse(String(iso)); return Number.isNaN(t) ? null : new Date(t).toLocaleString('fr-FR', { timeZone: 'Europe/Paris', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }); };
+export function resumeSuivi(x: any): { erreur: string } | Record<string, unknown> {
+  if (!x || typeof x !== 'object') return { erreur: 'suivi GLS introuvable pour cette commande' };
+  const colis = (Array.isArray(x.colis) ? x.colis : []).slice(0, 10).map((c: any) => ({
+    colis: texte(c?.trackId, 20), etat: texte(c?.etat, 30), detail: texte(c?.motif, 160),
+    pris_en_charge: c?.priseEnCharge ? enParis(c.priseEnCharge) : null, livre_client: c?.livreClient ? enParis(c.livreClient) : null,
+    retour: c?.retour ? enParis(c.retour) : null, dernier_evenement: enParis(c?.dernier), dernier_libelle: texte(c?.dernierLibelle, 120) || null,
+  }));
+  return { etat_gls: texte(x.etat_gls, 30), detail: texte(x.detail, 200), date_livraison_gls: x.date_livraison_gls || null,
+    pris_en_charge: colis.length ? colis.every((c: any) => !!c.pris_en_charge) : false, colis };
 }
