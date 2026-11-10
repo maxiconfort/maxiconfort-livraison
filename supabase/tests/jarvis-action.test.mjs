@@ -391,12 +391,13 @@ test('v2.8 produit dit approximativement → produit du catalogue (noms réels),
   assert.equal(nom('matelas Dodo 140x190'), 'Matelas DODOCONFORT 140×190×15');
   assert.equal(nom('Matelas Dodo Confort 140 x 190'), 'Matelas DODOCONFORT 140×190×15');
   assert.equal(nom('matelas dodo 160x200'), 'Matelas DODOCONFORT / OEKO-TEX 160×200×20 Mémoire de Forme');
-  assert.equal(nom('matelas 140x190 20 cm'), null, 'pas de matelas seul 140×190 en 20 cm : surtout pas un ensemble');
+  assert.deepEqual(nom('matelas 140x190 20 cm'), ['Matelas DODOCONFORT 140×190×15'], 'pas de 20 cm : on propose le 15 cm, jamais un ensemble, jamais choisi d’office');
+  assert.match(lignesCommande([{ produit: 'matelas 140x190 20 cm', qte: 1 }], cat).erreur, /cette épaisseur n’existe pas au catalogue — voulez-vous plutôt « Matelas DODOCONFORT 140×190×15 »/);
   assert.equal(nom('matelas dodo 90x190'), null, 'ancienne offre jamais proposée');
   assert.equal(nom('sommier à lattes 140x190 noir'), 'Sommier à lattes contour cuir PU 140×190 Noir');
   assert.equal(nom('sommier 140x190').length, 3, 'tapissier ou lattes, noir ou blanc : on demande');
-  assert.deepEqual(nom('lit coffre 140x190').sort(), ['Lit Coffre 140×190 Cuir PU Blanc + Sommier À Lattes', 'Lit Coffre 140×190 Cuir PU Noir + Sommier À Lattes']);
-  assert.equal(nom('lit coffre noir 140'), 'Lit Coffre 140×190 Cuir PU Noir + Sommier À Lattes', '« lit » n’est pas le « pack lit »');
+  assert.deepEqual(nom('lit coffre 140x190').sort(), ['Lit Coffre 140×190 Cuir PU Blanc + Sommier À Lattes', 'Lit Coffre 140×190 Cuir PU Noir + Sommier À Lattes', 'PACK LIT COFFRE NOIR 140/190/15'], 'noir, blanc ou pack : on demande');
+  assert.deepEqual(nom('lit coffre noir 140').sort(), ['Lit Coffre 140×190 Cuir PU Noir + Sommier À Lattes', 'PACK LIT COFFRE NOIR 140/190/15'], 'lit seul ou pack lit : on demande (relecture)');
   assert.equal(nom('pack lit coffre noir 140x190'), 'PACK LIT COFFRE NOIR 140/190/15');
   assert.equal(nom('sommier tapissier 160x200'), 'Sommier Tapissier 160×200 Blanc', 'doublons de même nom et même prix');
   assert.equal(nom('ensemble 140x190').length, 2);
@@ -404,6 +405,6 @@ test('v2.8 produit dit approximativement → produit du catalogue (noms réels),
   assert.equal(l.erreur, null); assert.equal(l.lignes[0].produit, 'Matelas DODOCONFORT 140×190×15'); assert.equal(l.lignes[0].sousTotal, 200);
   assert.deepEqual(l.rapproches, [{ dit: 'matelas Dodo 140x190', produit: 'Matelas DODOCONFORT 140×190×15' }]);
   assert.equal('dit' in l.lignes[0], false, 'rien d’ajouté à la ligne enregistrée');
-  assert.match(lignesCommande([{ produit: 'lit coffre 140x190', qte: 1 }], cat).erreur, /plusieurs produits possibles — lequel \? « Lit Coffre 140×190 Cuir PU (Blanc|Noir)/);
+  assert.match(lignesCommande([{ produit: 'lit coffre 140x190', qte: 1 }], cat).erreur, /plusieurs produits possibles — lequel \? .*« Lit Coffre 140×190 Cuir PU Blanc/);
   assert.equal(lignesCommande([{ produit: 'Sommier Tapissier 140×190 Blanc', qte: 1 }], cat).rapproches, undefined, 'nom exact : rien à dire');
 });

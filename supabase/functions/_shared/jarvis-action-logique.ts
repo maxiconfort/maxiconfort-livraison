@@ -420,19 +420,25 @@ const familleDe = (mots: string[]) => mots.find((m) => FAMILLES.includes(m)) || 
  *  réel du 10/11) : produits actifs et non retirés ; même FAMILLE (un « matelas » n'est jamais un ensemble matelas + sommier) ; TOUS les mots
  *  dits présents (« 140 » seul = une largeur 140×…, « 20 » = épaisseur) ; choisi seulement s'il n'en reste qu'UN (ou des doublons de même
  *  nom et même prix) ; sinon la liste (3 au plus, les plus proches d'abord) est renvoyée pour que Borhen choisisse. Rien → null (0 € signalé). Pure. */
-export function produitProche(dit: string, catalogue: Catalogue): { produit: CatalogueProduit } | { ambigus: CatalogueProduit[] } | null {
-  const q = motsProduit(dit); if (!q.length) return null;
+export function produitProche(dit: string, catalogue: Catalogue, sansEpaisseur = false): { produit: CatalogueProduit } | { ambigus: CatalogueProduit[]; epaisseur?: boolean } | null {
+  let q = motsProduit(dit); if (!q.length) return null;
+  if (sansEpaisseur) q = q.filter((m) => !/^\d{1,2}$/.test(m));
   const fam = familleDe(q);
   const present = (m: string, n: Set<string>) => n.has(m) || (/^\d{2,3}$/.test(m) && Number(m) >= 80 && [...n].some((x) => x.startsWith(m + 'x')));
   const cands: { p: CatalogueProduit; mots: string[]; surplus: number }[] = [];
   for (const p of catalogue.values()) {
     if (p.actif === false || p.ancienne_offre) continue;
     const mots = motsProduit(p.nom); const n = new Set(mots);
-    if (fam && familleDe(mots) !== fam) continue;
+    // relecture (majeur) : un « lit » peut aussi être un pack lit ou un ensemble lit → ils entrent dans la liste au lieu d'un choix
+    const f2 = familleDe(mots); if (fam && f2 !== fam && !(fam === 'lit' && (f2 === 'pack' || f2 === 'ensemble') && n.has('lit'))) continue;
     if (!q.every((m) => present(m, n))) continue;
     cands.push({ p, mots, surplus: n.size - q.length });
   }
-  if (!cands.length) return null;
+  if (!cands.length) { // relecture (mineur) : épaisseur inexistante → la liste des tailles voisines, jamais un choix
+    if (sansEpaisseur || !q.some((m) => /^\d{1,2}$/.test(m))) return null;
+    const r = produitProche(dit, catalogue, true); if (!r) return null;
+    return { ambigus: 'produit' in r ? [r.produit] : r.ambigus, epaisseur: true };
+  }
   cands.sort((a, b) => a.surplus - b.surplus || a.p.nom.localeCompare(b.p.nom, 'fr'));
   const cle = (c: { mots: string[]; p: CatalogueProduit }) => [...new Set(c.mots)].sort().join(' ') + '|' + c.p.prix;
   if (cands.every((c) => cle(c) === cle(cands[0]))) return { produit: cands[0].p };
@@ -448,7 +454,7 @@ export function lignesCommande(lignes: Ligne[], catalogue: Catalogue): { lignes:
     let rapproche = false;
     if (!p) { // v2.8 : nom pas exact → produit le plus proche, ou question si plusieurs le sont autant
       const r = produitProche(nom, catalogue);
-      if (r && 'ambigus' in r) return { lignes: [], erreur: `« ${nom} » : plusieurs produits possibles — lequel ? ` + r.ambigus.map((c) => `« ${c.nom} » (${c.prix} €)`).join(', ') };
+      if (r && 'ambigus' in r) return { lignes: [], erreur: `« ${nom} » : ` + (r.epaisseur ? 'cette épaisseur n’existe pas au catalogue — voulez-vous plutôt ' : 'plusieurs produits possibles — lequel ? ') + r.ambigus.map((c) => `« ${c.nom} » (${c.prix} €)`).join(', ') };
       if (r) { p = r.produit; rapproche = true; }
     }
     if (p && p.ancienne_offre) return { lignes: [], erreur: `« ${p.nom} » est une ancienne offre : plus vendue` };
