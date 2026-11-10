@@ -95,6 +95,7 @@ Deno.serve(async (req: Request) => {
         for (let de = 0; de < 3000; de += 1000) {
           let q2 = sb.from('commandes').select('id, produit, statut, transporteur, date_livraison, adresse, tracking_transporteur, livreur, created_at, client').not('client', 'is', null);
           if (d.date) q2 = q2.eq('date_livraison', d.date);
+          if ((d as any).sans_date) q2 = q2.or('date_livraison.is.null,date_livraison.eq.'); // v2.6 (relecture, mineur)
           if (d.statut) q2 = q2.eq('statut', d.statut);
           if (d.livreur) q2 = q2.eq('transporteur', d.livreur);
           const { data: t, error: e2 } = await q2.order('created_at', { ascending: false }).order('id', { ascending: true }).range(de, de + 999); // ordre stable entre tranches
@@ -103,12 +104,12 @@ Deno.serve(async (req: Request) => {
         }
         const vus = new Set<string>(); const uniques = tous.filter((x) => { const k = String(x.id); if (vus.has(k)) return false; vus.add(k); return true; }); // commande lue deux fois entre deux tranches
         const proches = rechercheApprochee(String(d.client), uniques, Math.min(d.limite || 10, 10));
-        return rep(200, { ...base, recherche: 'nom', approchee: true, total: proches.length, ...(proches.plus ? { plus: true } : {}),
+        return rep(200, { ...base, recherche: 'nom', approchee: true, ...((d as any).sans_date ? { sans_date: true } : {}), total: proches.length, ...(proches.plus ? { plus: true } : {}),
           commandes: proches.map((x: any) => ({ ...apercuCommande(x), livreur: String(x.livreur || ''), client_initiales: initiales(String(x.client || '')), score: x.score })) });
       }
       // v2.3 (06/11, recette Borhen) : « total » était la longueur de la liste COUPÉE (30 par défaut, 100 au plus) → JARVIS comptait faux.
       const n = (data || []).length; const totalExact = typeof count === 'number' ? count : n;
-      return rep(200, { ...base, ...(crit ? { recherche: crit.genre } : {}), total: totalExact, affichees: n, tronquee: totalExact > n,
+      return rep(200, { ...base, ...(crit ? { recherche: crit.genre } : {}), ...((d as any).sans_date ? { sans_date: true } : {}), total: totalExact, affichees: n, tronquee: totalExact > n,
         commandes: (data || []).map((x: any) => ({ ...apercuCommande(x), livreur: String(x.livreur || ''), ...(crit ? { client_initiales: initiales(String(x.client || '')) } : {}) })) });
     }
     if (d.action === 'compter_commandes') {
@@ -154,6 +155,7 @@ Deno.serve(async (req: Request) => {
           if (d.date) q = q.eq('date_livraison', d.date);
           if ((d as any).date_debut) q = q.gte('date_livraison', (d as any).date_debut);
           if ((d as any).date_fin) q = q.lte('date_livraison', (d as any).date_fin);
+          if ((d as any).sans_date) q = q.or('date_livraison.is.null,date_livraison.eq.'); // v2.6 (relecture, majeur) : deux or() = ET
           const { data, error } = await filtresPrise(q).order('id', { ascending: true }).range(de, de + 999);
           if (error) return rep(502, { ok: false, erreur: 'lecture des montants refusée par la base' });
           for (const r of (data as any[]) || []) montant += Number(r.prix) || 0;
@@ -162,7 +164,7 @@ Deno.serve(async (req: Request) => {
         }
         montant = Math.round(montant * 100) / 100;
       }
-      return rep(200, { ...base, exact: true, filtres: { livreur: d.livreur || null, date: d.date || null, date_debut: (d as any).date_debut || null, date_fin: (d as any).date_fin || null,
+      return rep(200, { ...base, exact: true, filtres: { livreur: d.livreur || null, date: d.date || null, date_debut: (d as any).date_debut || null, date_fin: (d as any).date_fin || null, sans_date: !!(d as any).sans_date,
         origine, cree_debut: (d as any).cree_debut || null, cree_fin: (d as any).cree_fin || null },
         par_statut, ouvertes, total: toutes, ...(montant !== null ? { montant_hors_annulees: montant, montant_partiel } : {}) });
     }

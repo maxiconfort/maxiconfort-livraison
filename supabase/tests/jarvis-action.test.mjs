@@ -340,5 +340,7 @@ test('v2.6 sans_date : commandes sans date de livraison (liste et comptage)', ()
   assert.match(controlerDemande({ action: 'lister_commandes', sans_date: true, date: '2026-11-12' }, T), /pas les deux/);
   assert.match(controlerDemande({ action: 'compter_commandes', sans_date: true, date_debut: '2026-11-01' }, T), /pas les deux/);
   const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
-  assert.equal(src.split("q.or('date_livraison.is.null,date_livraison.eq.')").length - 1, 2, 'liste ET comptage');
+  assert.equal(src.split("or('date_livraison.is.null,date_livraison.eq.')").length - 1, 4, 'liste, recherche approchée, comptage et montant');
+  assert.match(src, /sans_date: !!\(d as any\)\.sans_date,/, 'comptage : filtre renvoyé (garde de version côté JARVIS)');
+  assert.equal(src.split("...((d as any).sans_date ? { sans_date: true } : {})").length - 1, 2, 'liste : filtre renvoyé');
 });
