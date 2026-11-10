@@ -15,10 +15,12 @@
 
 export const VERSION = 'v2';
 // v2.4 (09/11/2026) : compter_commandes par origine et par jour de prise de commande, + montant hors annulées.
+// v2.5 (10/11/2026, GO Borhen 12:07 « go facture dans les mails ») : lien_facture (N1) — lien de la facture publique d'une commande,
+//   donné SEULEMENT si l'e-mail de la commande est celui du client à qui JARVIS répond (jamais la facture d'un client à un autre).
 
 export type Niveau = 'N1' | 'N2' | 'N3';
 export const NIVEAUX: Record<string, Niveau> = {
-  lire_commande: 'N1', lister_commandes: 'N1', compter_commandes: 'N1', lire_stock: 'N1',
+  lire_commande: 'N1', lister_commandes: 'N1', compter_commandes: 'N1', lire_stock: 'N1', lien_facture: 'N1',
   creer_commande: 'N2', modifier_commande: 'N2', planifier: 'N2', deplacer: 'N2', changer_statut: 'N2',
   sav: 'N2', gls_etiquette: 'N2', gls_retour: 'N2', litige: 'N2',
   stock_entree: 'N2', stock_chargement: 'N2', stock_retour_depot: 'N2',
@@ -57,6 +59,7 @@ export const CHAMPS_MODIFIABLES = ['client', 'tel', 'email', 'adresse', 'etage',
 export const DEPARTEMENTS_RANOU = ['75', '77', '78', '91', '92', '93', '94', '95']; // Île-de-France = RANOU, sinon GLS
 
 const ID_CMD = /^#(?:SAV)?\d{1,9}$/;
+const EMAIL_SIMPLE = /^[^\s@<>"]{1,64}@[^\s@<>"]{1,190}\.[a-z]{2,24}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const TEL = /^(?:\+33\s?[1-9]|0[1-9])(?:[\s.-]?\d{2}){4}$/;
 
@@ -115,6 +118,9 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
       if (d.litige_statut && !LITIGE_STATUTS.includes(d.litige_statut)) return 'statut de litige inconnu';
       if (d.litige_num && !/^\d{13}$/.test(d.litige_num)) return 'n° de réclamation GLS : 13 chiffres';
       if (!d.litige_type && !d.litige_statut && !d.litige_num && !d.litige_description) return 'rien à mettre à jour';
+      break;
+    case 'lien_facture': // v2.5 : l'adresse du client à qui on répond est obligatoire (contrôle d'appartenance)
+      if (typeof d.email !== 'string' || !EMAIL_SIMPLE.test(d.email.trim())) return 'e-mail du destinataire obligatoire pour joindre une facture';
       break;
     case 'lister_commandes':
       if (d.date !== undefined && !dateValide(String(d.date))) return 'date invalide (AAAA-MM-JJ)';
@@ -475,4 +481,17 @@ export function egal(a: string, b: string): boolean {
   if (!a || !b || a.length !== b.length) return false;
   let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return r === 0;
+}
+
+/** v2.5 — Lien de la facture publique (facture.html, lecture par jeton comme track.html) pour une réponse par mail.
+ *  Donné seulement si l'e-mail de la commande est EXACTEMENT celui du destinataire (casse et espaces ignorés) ; jamais pour une
+ *  commande annulée ou sans jeton. Rien d'autre n'est renvoyé (ni nom, ni e-mail, ni adresse). */
+export function lienFacture(d: Demande, c: Record<string, unknown>): { erreur: string } | { lien: string; acquittee: boolean; commande: string } {
+  const norme = (v: unknown) => String(v || '').trim().toLowerCase();
+  if (String(c.statut || '') === 'annulé') return { erreur: 'commande annulée : pas de facture' };
+  if (!norme(c.email)) return { erreur: 'pas d’e-mail sur cette commande : impossible de vérifier que c’est bien ce client' };
+  if (norme(c.email) !== norme(d.email)) return { erreur: 'l’e-mail de cette commande n’est pas celui du client à qui tu réponds' };
+  const jeton = String(c.tracking_token || '').trim();
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(jeton)) return { erreur: 'commande sans lien de facture (pas de jeton de suivi)' };
+  return { lien: 'https://livraison.maxiconfort.fr/facture.html?t=' + encodeURIComponent(jeton), acquittee: c.stpaie === 'Payé', commande: String(c.id || '') };
 }

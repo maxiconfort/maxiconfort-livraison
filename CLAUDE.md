@@ -152,6 +152,8 @@ Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site S
 
 - **v2.3 (06/11/2026) : comptage exact** — recette de Borhen : JARVIS se contredisait sur les nombres, car `lister_commandes` renvoyait `total` = longueur de la liste COUPÉE (30 par défaut, 100 au plus). Désormais `total` = nombre exact compté par la base (`count: 'exact'`), avec `affichees` et `tronquee`. Nouvelle action N1 `compter_commandes { livreur?, date? | date_debut?, date_fin? }` : un nombre par statut (`par_statut`), `ouvertes`, `total`, calculés par la base (requêtes `head`, aucune ligne ni donnée client lue ; lignes `#TEST…` exclues). Tests : 82 (`node --test supabase/tests/*.test.mjs`).
 
+- **v2.5 (10/11/2026, « facture dans les mails ») : `lien_facture { cmdId, email }`** (N1) = lien de la page publique `facture.html` de la commande, renvoyé SEULEMENT si l'e-mail de la commande est exactement `email` (le client à qui JARVIS répond ; casse et espaces ignorés), jamais pour une commande annulée ou sans jeton. Rien d'autre n'est renvoyé. Fonction pure `lienFacture` ; tests 84.
+
 ## Porte d'entrée JARVIS : `jarvis-action` v1 (27/10/2026) — remplacée par la v2 ci-dessus
 - Demande de Borhen : depuis JARVIS (MAXI BRAIN, mini-PC), créer une étiquette ou un retour GLS, mettre une commande en planning, créer un SAV, mettre à jour un litige — sans ouvrir l'appli.
 - **Toujours en 2 temps** : `confirme:false` = aperçu (contrôles + aperçu GLS `dryRun`, rien n'est écrit) ; `confirme:true` = exécution après le « Confirmer » de Borhen dans JARVIS.

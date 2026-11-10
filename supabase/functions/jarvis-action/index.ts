@@ -6,7 +6,7 @@
 // ════════════════════════════════════════════════════════════════════
 // Porte d'entrée RÉSERVÉE À JARVIS (MAXI BRAIN, mini-PC de Borhen). Décision de Borhen du 30/10 : « autorisation totale sur
 // commandes et stock », confirmation vocale en deux temps, graduée par NIVEAU (logique dans _shared/jarvis-action-logique.ts) :
-//   N1 lecture    : lire_commande, lister_commandes, compter_commandes, lire_stock — exécutées directement ;
+//   N1 lecture    : lire_commande, lister_commandes, compter_commandes, lire_stock, lien_facture (v2.5) — exécutées directement ;
 //   N2 réversible : creer_commande (depuis un mail), modifier_commande, planifier, deplacer, changer_statut, sav, gls_etiquette,
 //                   gls_retour, litige, stock_entree, stock_chargement, stock_retour_depot — aperçu puis exécution ;
 //   N3 critique   : creer_commande (dictée), annuler_commande, supprimer_commande, modifier_prix, envoyer_sms, marquer_livre,
@@ -22,7 +22,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
 const SECRET_JARVIS = Deno.env.get('JARVIS_ACTION_SECRET') || '';
@@ -74,6 +74,7 @@ Deno.serve(async (req: Request) => {
   try {
     // ── N1 : lectures ──────────────────────────────────────────────────────────────────────────────────────────────
     if (d.action === 'lire_commande') return rep(200, { ...base, fiche: ficheCommande(c!) });
+    if (d.action === 'lien_facture') { const f = lienFacture(d, c!); return 'erreur' in f ? rep(422, { ok: false, erreur: f.erreur }) : rep(200, { ...base, facture: f }); }
     if (d.action === 'lister_commandes') {
       // v2.1 (04/11) : recherche par client (nom / téléphone / e-mail) — toutes commandes, les plus récentes d'abord, initiales seulement.
       const crit = d.client !== undefined ? critereClient(d.client) : null;

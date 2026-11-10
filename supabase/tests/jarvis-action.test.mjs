@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
-  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -69,7 +69,7 @@ test('aperçu litige (réserve Codex #5) : description existante, absente, vide,
 
 test('v2 : liste fermée avec niveau ; créer une commande dictée = N3, depuis un mail = N2', () => {
   assert.equal(VERSION, 'v2');
-  assert.equal(ACTIONS.length, 22); for (const a of ACTIONS) assert.ok(['N1', 'N2', 'N3'].includes(NIVEAUX[a]), a);
+  assert.equal(ACTIONS.length, 23); for (const a of ACTIONS) assert.ok(['N1', 'N2', 'N3'].includes(NIVEAUX[a]), a);
   assert.equal(niveauDe({ action: 'lire_stock' }), 'N1'); assert.equal(niveauDe({ action: 'planifier' }), 'N2'); assert.equal(niveauDe({ action: 'annuler_commande' }), 'N3');
   assert.equal(niveauDe({ action: 'creer_commande', source: 'mail' }), 'N2'); assert.equal(niveauDe({ action: 'creer_commande', source: 'dictee' }), 'N3');
   for (const a of ['marquer_paye', 'rembourser', 'encaisser', 'shopify', 'tiktok']) assert.match(controlerDemande({ action: a, cmdId: '#1588' }, T), /non autorisée/, a);
@@ -315,4 +315,19 @@ test('v2.4 compter_commandes : par origine (valeurs de l’appli) et date de pri
   assert.doesNotMatch(bloc.replace(/\/\/.*/g, ''), /created_at/, 'date de prise = date_commande, comme l’appli'); assert.match(bloc, /not\('origine', 'ilike', 'SAV%'\)/);
   assert.match(bloc, /select\('prix'\)/, 'montant : colonne prix seule'); assert.match(bloc, /statut\.is\.null,statut\.neq\.annulé/);
   assert.doesNotMatch(bloc.replace(/\/\/.*/g, ''), /'(client|tel|email|adresse)'|select\('\*'/, 'aucune donnée client');
+});
+
+test('v2.5 lien_facture : seulement au bon client, jamais d’autre donnée', () => {
+  const tok = '3f2b8c1e-0d4a-4b7e-9c11-5a6f7e8d9c0b';
+  assert.equal(NIVEAUX.lien_facture, 'N1');
+  assert.match(controlerDemande({ action: 'lien_facture', cmdId: '#1588' }, T), /e-mail du destinataire/);
+  assert.match(controlerDemande({ action: 'lien_facture', cmdId: '#1588', email: 'pas un mail' }, T), /e-mail du destinataire/);
+  assert.equal(controlerDemande({ action: 'lien_facture', cmdId: '#1588', email: 'fictif@exemple.test' }, T), null);
+  const ok = lienFacture({ action: 'lien_facture', email: '  FICTIF@exemple.TEST ' }, cmd({ tracking_token: tok, stpaie: 'Payé' }));
+  assert.deepEqual(ok, { lien: 'https://livraison.maxiconfort.fr/facture.html?t=' + tok, acquittee: true, commande: '#1588' });
+  assert.match(lienFacture({ email: 'autre@exemple.test' }, cmd({ tracking_token: tok })).erreur, /pas celui du client/);
+  assert.match(lienFacture({ email: 'fictif@exemple.test' }, cmd({ tracking_token: tok, email: '' })).erreur, /pas d’e-mail/);
+  assert.match(lienFacture({ email: 'fictif@exemple.test' }, cmd({ tracking_token: tok, statut: 'annulé' })).erreur, /annulée/);
+  assert.match(lienFacture({ email: 'fictif@exemple.test' }, cmd({ tracking_token: '' })).erreur, /sans lien/);
+  assert.equal(lienFacture({ email: 'fictif@exemple.test' }, cmd({ tracking_token: tok })).acquittee, false);
 });
