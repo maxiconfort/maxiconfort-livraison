@@ -34,10 +34,13 @@ test('contrôles sur la commande : déjà étiquetée, livrée, adresse sans cod
   assert.match(controlerCommande({ action: 'planifier' }, null), /introuvable/);
 });
 
-test('aperçu sans coordonnées : code postal et ville seulement', () => {
+test('aperçu sans coordonnées : nom du client (v2.11), code postal et ville seulement', () => {
   const a = apercuCommande(cmd());
   assert.equal(a.cp, '93160'); assert.equal(a.ville, 'Noisy-le-Grand');
-  const t = JSON.stringify(a); for (const x of ['Client Fictif', '0600000000', 'fictif@', 'rue Fictive']) assert.ok(!t.includes(x), x);
+  assert.equal(a.client_nom, 'Client Fictif', 'v2.11 (GO Borhen 10/11 18:50) : nom complet');
+  assert.equal(apercuCommande(cmd({ client: 'X'.repeat(90) })).client_nom.length, 60, 'nom borné');
+  assert.equal(apercuCommande(cmd({ client: null })).client_nom, '');
+  const t = JSON.stringify(a); for (const x of ['0600000000', 'fictif@', 'rue Fictive']) assert.ok(!t.includes(x), x);
 });
 
 test('SAV : construit comme dans l’appli, sans argent (Déjà payé, 0 €), note lisible par le livreur', () => {
@@ -136,7 +139,8 @@ test('v2 : contrôles sur la commande — modifiable, annulable, supprimable, pr
 test('v2 : fiche et aperçus ne laissent passer ni nom, ni téléphone, ni e-mail, ni adresse', () => {
   const f = ficheCommande(cmd({ lignes: [{ produit: 'Matelas 140x190', qte: 1, prixUnit: 299 }], prix: 299, instr: 'Sonner fort' }));
   assert.equal(f.client_initiales, 'C. F.'); assert.equal(f.prix, 299); assert.equal(f.lignes[0].produit, 'Matelas 140x190');
-  const t = JSON.stringify(f); for (const x of ['Client Fictif', '0600000000', 'fictif@', 'rue Fictive']) assert.ok(!t.includes(x), x);
+  assert.equal(f.client_nom, 'Client Fictif');
+  const t = JSON.stringify(f); for (const x of ['0600000000', 'fictif@', 'rue Fictive']) assert.ok(!t.includes(x), x);
   assert.equal(telMasque('06 12 34 56 78'), '06 ** ** ** 78');
 });
 

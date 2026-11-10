@@ -355,6 +355,8 @@ export function rechercheApprochee<T extends { client?: unknown }>(cherche0: str
 export function apercuCommande(c: Record<string, unknown>) {
   const adr = String(c.adresse || ''); const m = adr.match(/\b(\d{5})\s+([^,\n]{2,40})/);
   return { cmd: String(c.id || ''), produit: texte(c.produit, 120), statut: String(c.statut || ''), transporteur: String(c.transporteur || ''), date_livraison: String(c.date_livraison || ''),
+    // v2.11 (GO Borhen 10/11/2026 18:50 « go noms complets ») : NOM COMPLET du client (jamais téléphone, e-mail ni adresse complète).
+    client_nom: texte(c.client, 60),
     cp: m ? m[1] : null, ville: m ? texte(m[2], 40) : null, colis_suivis: String(c.tracking_transporteur || '').split(',').map((x) => x.trim()).filter(Boolean).length };
 }
 /** Fiche détaillée pour JARVIS (N1) : toujours sans téléphone, e-mail ni adresse complète ; les montants ne sont pas des données personnelles. */

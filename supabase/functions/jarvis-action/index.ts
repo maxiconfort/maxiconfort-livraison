@@ -2,6 +2,7 @@
 // Edge Function : jarvis-action (v2 — 30/10/2026 ; v2.1 04/11/2026 : lister_commandes { client } = recherche par nom / téléphone / e-mail ;
 // v2.2 04/11/2026 : recherche approchée par nom quand rien d'exact — « approchee: true » + score ;
 // v2.4 09/11/2026 : compter_commandes par origine et date de prise de commande (date_commande), + montant hors annulées et hors SAV
+// v2.11 10/11/2026 : nom complet du client (client_nom) dans chaque commande renvoyée ;
 // v2.3 06/11/2026 : « total » = nombre EXACT compté par la base (plus la longueur de la liste coupée) + action compter_commandes)
 // ════════════════════════════════════════════════════════════════════
 // Porte d'entrée RÉSERVÉE À JARVIS (MAXI BRAIN, mini-PC de Borhen). Décision de Borhen du 30/10 : « autorisation totale sur
@@ -14,7 +15,8 @@
 // Toujours en 2 temps pour N2/N3 : { ..., confirme:false } → APERÇU (rien n'est écrit) ; { ..., confirme:true } → exécution.
 // Hors liste, toujours : encaissement (marquer payé, montant encaissé, remboursement), Shopify, TikTok, tables secrètes.
 // Appelant : en-tête x-jarvis-secret = secret JARVIS_ACTION_SECRET (dédié, révocable en le changeant). Aucun autre accès.
-// Réponses : jamais de nom complet, téléphone, e-mail ni adresse complète (code postal et ville seulement) ; PDF non renvoyé.
+// Réponses : jamais de téléphone, e-mail ni adresse complète (code postal et ville seulement) ; PDF non renvoyé. Nom complet du
+// client depuis la v2.11 (GO Borhen 10/11/2026 18:50 « go noms complets » ; JARVIS ne le donne qu'au cerveau Claude de son abonnement).
 // Les compteurs journaliers (150 / jour, 20 N3, 30 SMS) et le « oui, toujours » sont tenus côté JARVIS (livraison-actions-locaux.js).
 // Déploiement : npx supabase functions deploy jarvis-action --project-ref jmvfjtnmebstkzcfnlgp --no-verify-jwt --use-api
 // ════════════════════════════════════════════════════════════════════
@@ -275,7 +277,7 @@ Deno.serve(async (req: Request) => {
       const { data: ids } = await sb.from('commandes').select('id').like('id', '#%').order('created_at', { ascending: false }).limit(300);
       let id = prochainNumero((ids || []).map((x: any) => String(x.id)));
       const cmd = construireCommande(d, id, l.lignes);
-      const visible = { id, ...(l.rapproches ? { produits_rapproches: l.rapproches } : {}), ...(d.source === 'commande' ? { coordonnees_reprises_de: d.depuis, client_initiales: initiales(String(d.client || '')), ...reprise } : {}), produit: cmd.produit, prix: cmd.prix, cp: d.cp, ville: d.ville, transporteur: cmd.transporteur, date_livraison: cmd.date_livraison, origine: cmd.origine, paiement: 'à la livraison', sans_prix: l.lignes.filter((x) => !x.produitId).map((x) => x.produit) };
+      const visible = { id, ...(l.rapproches ? { produits_rapproches: l.rapproches } : {}), ...(d.source === 'commande' ? { coordonnees_reprises_de: d.depuis, client_initiales: initiales(String(d.client || '')), client_nom: String(d.client || '').slice(0, 60), ...reprise } : {}), produit: cmd.produit, prix: cmd.prix, cp: d.cp, ville: d.ville, transporteur: cmd.transporteur, date_livraison: cmd.date_livraison, origine: cmd.origine, paiement: 'à la livraison', sans_prix: l.lignes.filter((x) => !x.produitId).map((x) => x.produit) };
       if (!confirme) return rep(200, { ...base, nouvelle: visible });
       let { error } = await sb.from('commandes').insert(cmd);
       if (error && String((error as any).code) === '23505') { id = '#' + (Number(id.slice(1)) + 1); ({ error } = await sb.from('commandes').insert({ ...cmd, id })); }
