@@ -2,6 +2,7 @@
 // Lancer : node --test supabase/tests/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
   VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
 
@@ -330,4 +331,14 @@ test('v2.5 lien_facture : seulement au bon client, jamais d’autre donnée', ()
   assert.match(lienFacture({ email: 'fictif@exemple.test' }, cmd({ tracking_token: tok, statut: 'annulé' })).erreur, /annulée/);
   assert.match(lienFacture({ email: 'fictif@exemple.test' }, cmd({ tracking_token: '' })).erreur, /sans lien/);
   assert.equal(lienFacture({ email: 'fictif@exemple.test' }, cmd({ tracking_token: tok })).acquittee, false);
+});
+
+test('v2.6 sans_date : commandes sans date de livraison (liste et comptage)', () => {
+  assert.equal(controlerDemande({ action: 'lister_commandes', sans_date: true }, T), null);
+  assert.equal(controlerDemande({ action: 'compter_commandes', sans_date: true, livreur: 'GLS' }, T), null);
+  assert.match(controlerDemande({ action: 'lister_commandes', sans_date: 'oui' }, T), /true seulement/);
+  assert.match(controlerDemande({ action: 'lister_commandes', sans_date: true, date: '2026-11-12' }, T), /pas les deux/);
+  assert.match(controlerDemande({ action: 'compter_commandes', sans_date: true, date_debut: '2026-11-01' }, T), /pas les deux/);
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.equal(src.split("q.or('date_livraison.is.null,date_livraison.eq.')").length - 1, 2, 'liste ET comptage');
 });

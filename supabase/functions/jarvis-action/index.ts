@@ -81,6 +81,7 @@ Deno.serve(async (req: Request) => {
       let q = sb.from('commandes').select('id, produit, statut, transporteur, date_livraison, adresse, tracking_transporteur, livreur, created_at' + (crit ? ', client' : ''), { count: 'exact' }).limit(d.limite || 30);
       q = q.not('id', 'like', '#TEST%'); // v2.3 : mêmes exclusions que compter_commandes (relecture : sinon 73 ici, 72 là)
       if (d.date) q = q.eq('date_livraison', d.date);
+      if ((d as any).sans_date) q = q.or('date_livraison.is.null,date_livraison.eq.'); // v2.6 : sans date (vide ou absente)
       if (d.statut) q = q.eq('statut', d.statut); else if (!d.date && !crit) q = q.not('statut', 'in', '(' + STATUTS_TERMINES.map((s) => '"' + s + '"').join(',') + ')');
       if (d.livreur) q = q.eq('transporteur', d.livreur);
       for (const f of crit?.filtres || []) q = q.filter(f.colonne, f.operateur, f.valeur);
@@ -131,6 +132,7 @@ Deno.serve(async (req: Request) => {
         if (d.date) q = q.eq('date_livraison', d.date);
         if ((d as any).date_debut) q = q.gte('date_livraison', (d as any).date_debut);
         if ((d as any).date_fin) q = q.lte('date_livraison', (d as any).date_fin);
+        if ((d as any).sans_date) q = q.or('date_livraison.is.null,date_livraison.eq.'); // v2.6
         q = filtresPrise(q);
         const { count, error } = await q; return error || typeof count !== 'number' ? null : count;
       };

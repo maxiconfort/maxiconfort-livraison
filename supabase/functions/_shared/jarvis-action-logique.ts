@@ -15,6 +15,8 @@
 
 export const VERSION = 'v2';
 // v2.4 (09/11/2026) : compter_commandes par origine et par jour de prise de commande, + montant hors annulées.
+// v2.6 (10/11/2026, GO Borhen 13:57 « go Claude livraison ») : sans_date (lister_commandes, compter_commandes) = commandes SANS date
+//   de livraison (vide ou absente) — recette : la liste triée mettait ces commandes à la FIN, coupée à 30 lignes, et JARVIS les comptait mal.
 // v2.5 (10/11/2026, GO Borhen 12:07 « go facture dans les mails ») : lien_facture (N1) — lien de la facture publique d'une commande,
 //   donné SEULEMENT si l'e-mail de la commande est celui du client à qui JARVIS répond (jamais la facture d'un client à un autre).
 
@@ -128,10 +130,14 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
       if (d.livreur !== undefined && !LIVREURS.includes(String(d.livreur))) return 'livreur inconnu';
       if (d.limite !== undefined && !entier(d.limite, 1, 100)) return 'limite : 1 à 100';
       if (d.client !== undefined && (typeof d.client !== 'string' || !critereClient(d.client))) return 'client : nom (2 lettres au moins), téléphone (6 chiffres au moins) ou e-mail';
+      if ((d as any).sans_date !== undefined && (d as any).sans_date !== true) return 'sans_date : true seulement';
+      if ((d as any).sans_date && d.date !== undefined) return 'sans_date OU date, pas les deux';
       break;
     case 'compter_commandes': // v2.3 (06/11) : comptage EXACT par statut, fait par la base (jamais une liste coupée)
       for (const k of ['date', 'date_debut', 'date_fin']) if ((d as any)[k] !== undefined && !dateValide(String((d as any)[k]))) return k + ' invalide (AAAA-MM-JJ)';
       if (d.date !== undefined && ((d as any).date_debut !== undefined || (d as any).date_fin !== undefined)) return 'date OU période (date_debut / date_fin), pas les deux';
+      if ((d as any).sans_date !== undefined && (d as any).sans_date !== true) return 'sans_date : true seulement';
+      if ((d as any).sans_date && (d.date !== undefined || (d as any).date_debut !== undefined || (d as any).date_fin !== undefined)) return 'sans_date OU date / période, pas les deux';
       if ((d as any).date_debut && (d as any).date_fin && String((d as any).date_debut) > String((d as any).date_fin)) return 'période inversée';
       if (d.livreur !== undefined && !LIVREURS.includes(String(d.livreur))) return 'livreur inconnu';
       // v2.4 (09/11) : par ORIGINE (valeurs de l'appli, synonymes admis) et par date de PRISE de commande (cree_debut / cree_fin =

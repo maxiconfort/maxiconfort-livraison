@@ -154,6 +154,8 @@ Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site S
 
 - **v2.5 (10/11/2026, « facture dans les mails ») : `lien_facture { cmdId, email }`** (N1) = lien de la page publique `facture.html` de la commande, renvoyé SEULEMENT si l'e-mail de la commande est exactement `email` (le client à qui JARVIS répond ; casse et espaces ignorés), jamais pour une commande annulée ou sans jeton. Rien d'autre n'est renvoyé. Fonction pure `lienFacture` ; tests 84.
 
+- **v2.6 (10/11/2026, « go Claude livraison ») : `sans_date: true`** sur `lister_commandes` et `compter_commandes` = commandes dont la date de livraison est vide ou absente (« pas planifiées » ; la liste triée les met en fin, donc souvent coupées). Exclusif avec date / période. Tests 85.
+
 ## Porte d'entrée JARVIS : `jarvis-action` v1 (27/10/2026) — remplacée par la v2 ci-dessus
 - Demande de Borhen : depuis JARVIS (MAXI BRAIN, mini-PC), créer une étiquette ou un retour GLS, mettre une commande en planning, créer un SAV, mettre à jour un litige — sans ouvrir l'appli.
 - **Toujours en 2 temps** : `confirme:false` = aperçu (contrôles + aperçu GLS `dryRun`, rien n'est écrit) ; `confirme:true` = exécution après le « Confirmer » de Borhen dans JARVIS.
