@@ -158,6 +158,8 @@ Périmètre : l'app de livraison + GLS intégré (étiquettes, suivi). Le site S
 
 - **v2.7 (10/11/2026) : `creer_commande { source: "commande", depuis: "#NNNN", lignes }`** = nouvelle commande avec les coordonnées du client RECOPIÉES par la fonction depuis une commande existante (nom, téléphone, e-mail, adresse, étage, ascenseur, code ; code postal et ville relus dans l'adresse). Coordonnées fournies en plus refusées ; N3 ; la réponse ne donne que les initiales. Fonction pure `coordonneesDepuis` ; tests 86.
 
+- **v2.8 (10/11/2026, « go produit catalogue ») : produit dit approximativement** (« matelas Dodo 140x190 ») → produit du catalogue retenu SEULEMENT s'il est le seul à correspondre (même famille — un matelas n'est jamais un ensemble —, toutes les dimensions et tous les mots dits) ; plusieurs → refus avec la liste (3 au plus) pour que Borhen choisisse ; rien → ligne à 0 € signalée comme avant. Le nom retenu est dit dans l'aperçu (`produits_rapproches`), jamais enregistré dans la ligne. `produitProche` ; tests 88.
+
 ## Porte d'entrée JARVIS : `jarvis-action` v1 (27/10/2026) — remplacée par la v2 ci-dessus
 - Demande de Borhen : depuis JARVIS (MAXI BRAIN, mini-PC), créer une étiquette ou un retour GLS, mettre une commande en planning, créer un SAV, mettre à jour un litige — sans ouvrir l'appli.
 - **Toujours en 2 temps** : `confirme:false` = aperçu (contrôles + aperçu GLS `dryRun`, rien n'est écrit) ; `confirme:true` = exécution après le « Confirmer » de Borhen dans JARVIS.

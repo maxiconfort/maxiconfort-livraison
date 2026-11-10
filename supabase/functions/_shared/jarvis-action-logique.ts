@@ -15,6 +15,8 @@
 
 export const VERSION = 'v2';
 // v2.4 (09/11/2026) : compter_commandes par origine et par jour de prise de commande, + montant hors annulées.
+// v2.8 (10/11/2026, « go produit catalogue ») : produit dit approximativement (« matelas Dodo 140x190 ») → produit du catalogue le plus
+//   proche (dimensions obligatoires), dit dans l'aperçu ; plusieurs aussi proches → question avec la liste ; jamais 0 € en silence.
 // v2.7 (10/11/2026, recette vidéo 14:19 « crée une commande pour Meryem… reprends les informations de la commande 2141 ») :
 //   creer_commande { source: "commande", depuis: "#2141", lignes } = coordonnées du client RECOPIÉES par le serveur depuis une commande
 //   existante (nom, téléphone, e-mail, adresse, étage, ascenseur, code) — JARVIS ne les voit jamais. N3 (confirmation à chaque fois).
@@ -397,22 +399,66 @@ export function prochainNumero(ids: string[]): string {
   return '#' + (max + 1);
 }
 
-export type Catalogue = Map<string, { id: string; nom: string; prix: number; actif?: boolean; ancienne_offre?: boolean }>;
+export type CatalogueProduit = { id: string; nom: string; prix: number; actif?: boolean; ancienne_offre?: boolean };
+export type Catalogue = Map<string, CatalogueProduit>;
 /** Lignes de commande prêtes à enregistrer : prix du catalogue quand le produit est connu (par identifiant ou nom exact), 0 sinon (à régler par
  *  modifier_prix). Une ancienne offre est refusée (règle du 09/10). Renvoie { lignes, erreur }. */
-export function lignesCommande(lignes: Ligne[], catalogue: Catalogue): { lignes: Record<string, unknown>[]; erreur: string | null } {
-  const out: Record<string, unknown>[] = [];
+/** v2.8 (10/11/2026, « go produit catalogue ») — mots d'un nom de produit : sans accent ni casse ; dimensions « 140 x 190 », « 140×190 »,
+ *  « 140/190 » → « 140x190 » (épaisseur « ×15 », « /15 », « 20cm » → « 15 », « 20 ») ; « Dodo Confort » / « Dodo » → « dodoconfort »
+ *  (nom du catalogue) ; mots vides et pluriels retirés. Pure. */
+const MOTS_VIDES_PRODUIT = new Set(['de', 'du', 'des', 'le', 'la', 'les', 'un', 'une', 'et', 'avec', 'en', 'a', 'cm', 'x', 'pour', 'site', 'place', 'personne']);
+export function motsProduit(nom: string): string[] {
+  const t = String(nom || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/(\d{2,3})\s*[x*/×]\s*(\d{2,3})(?:\s*[x*/×]\s*(\d{1,2})\b)?/g, (_m, a, b, c) => a + 'x' + b + (c ? ' ' + c : ''))
+    .replace(/(\d)\s*cm\b/g, '$1').replace(/\bdodo\s*confort\b/g, 'dodoconfort').replace(/\bdodo\b/g, 'dodoconfort');
+  return t.split(/[^a-z0-9]+/).filter((m) => m && !MOTS_VIDES_PRODUIT.has(m)).map((m) => (m.length > 3 && m.endsWith('s') && !/\d/.test(m) ? m.slice(0, -1) : m));
+}
+/** Famille d'un nom : le PREMIER mot de famille qui y figure (« Ensemble 140×190 Matelas… » = ensemble, pas matelas). */
+const FAMILLES = ['ensemble', 'pack', 'lit', 'matela', 'sommier', 'canape', 'coussin', 'oreiller'];
+const familleDe = (mots: string[]) => mots.find((m) => FAMILLES.includes(m)) || '';
+/** v2.8 — Produit du catalogue qui correspond à ce que Borhen a dit (« matelas Dodo 140x190 »). Règles PRUDENTES (essai sur le catalogue
+ *  réel du 10/11) : produits actifs et non retirés ; même FAMILLE (un « matelas » n'est jamais un ensemble matelas + sommier) ; TOUS les mots
+ *  dits présents (« 140 » seul = une largeur 140×…, « 20 » = épaisseur) ; choisi seulement s'il n'en reste qu'UN (ou des doublons de même
+ *  nom et même prix) ; sinon la liste (3 au plus, les plus proches d'abord) est renvoyée pour que Borhen choisisse. Rien → null (0 € signalé). Pure. */
+export function produitProche(dit: string, catalogue: Catalogue): { produit: CatalogueProduit } | { ambigus: CatalogueProduit[] } | null {
+  const q = motsProduit(dit); if (!q.length) return null;
+  const fam = familleDe(q);
+  const present = (m: string, n: Set<string>) => n.has(m) || (/^\d{2,3}$/.test(m) && Number(m) >= 80 && [...n].some((x) => x.startsWith(m + 'x')));
+  const cands: { p: CatalogueProduit; mots: string[]; surplus: number }[] = [];
+  for (const p of catalogue.values()) {
+    if (p.actif === false || p.ancienne_offre) continue;
+    const mots = motsProduit(p.nom); const n = new Set(mots);
+    if (fam && familleDe(mots) !== fam) continue;
+    if (!q.every((m) => present(m, n))) continue;
+    cands.push({ p, mots, surplus: n.size - q.length });
+  }
+  if (!cands.length) return null;
+  cands.sort((a, b) => a.surplus - b.surplus || a.p.nom.localeCompare(b.p.nom, 'fr'));
+  const cle = (c: { mots: string[]; p: CatalogueProduit }) => [...new Set(c.mots)].sort().join(' ') + '|' + c.p.prix;
+  if (cands.every((c) => cle(c) === cle(cands[0]))) return { produit: cands[0].p };
+  return { ambigus: cands.slice(0, 3).map((c) => c.p) };
+}
+
+export function lignesCommande(lignes: Ligne[], catalogue: Catalogue): { lignes: Record<string, unknown>[]; erreur: string | null; rapproches?: { dit: string; produit: string }[] } {
+  const out: Record<string, unknown>[] = []; const rapproches: { dit: string; produit: string }[] = [];
   for (const l of lignes) {
     const nom = texte(l.produit, 120);
     let p = l.produitId ? catalogue.get(String(l.produitId)) : undefined;
     if (!p) for (const x of catalogue.values()) if (x.nom.toLowerCase() === nom.toLowerCase()) { p = x; break; }
+    let rapproche = false;
+    if (!p) { // v2.8 : nom pas exact → produit le plus proche, ou question si plusieurs le sont autant
+      const r = produitProche(nom, catalogue);
+      if (r && 'ambigus' in r) return { lignes: [], erreur: `« ${nom} » : plusieurs produits possibles — lequel ? ` + r.ambigus.map((c) => `« ${c.nom} » (${c.prix} €)`).join(', ') };
+      if (r) { p = r.produit; rapproche = true; }
+    }
     if (p && p.ancienne_offre) return { lignes: [], erreur: `« ${p.nom} » est une ancienne offre : plus vendue` };
     if (p && p.actif === false) return { lignes: [], erreur: `« ${p.nom} » n'est plus au catalogue` };
     const pu = p ? Number(p.prix) || 0 : (typeof l.prixUnit === 'number' && l.prixUnit >= 0 ? l.prixUnit : 0);
     const q = Number(l.qte) || 1;
     out.push({ produitId: p ? p.id : null, produit: p ? p.nom : nom, qte: q, prixUnit: pu, prixBrut: pu * q, remiseLigne: 0, remiseVal: 0, remiseType: 'pct', sousTotal: pu * q });
+    if (rapproche && p) rapproches.push({ dit: nom, produit: p.nom }); // dit dans l'aperçu, jamais enregistré dans la commande
   }
-  return { lignes: out, erreur: null };
+  return { lignes: out, erreur: null, ...(rapproches.length ? { rapproches } : {}) };
 }
 
 /** Nouvelle commande (mêmes colonnes que sbSaveCommande de l'appli). Paiement à la livraison par défaut : Espèces / Non payé. */
