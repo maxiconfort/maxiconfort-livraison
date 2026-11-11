@@ -14,6 +14,9 @@
 // ════════════════════════════════════════════════════════════════════
 
 export const VERSION = 'v2';
+// v2.12 (11/11/2026, vidéo 21:21 « tous ceux qui sont absents aujourd'hui, tu les mets pour demain ») : déplacer une commande au
+//   statut « absent » (posé par le livreur sur l'arrêt de sa tournée) vers une AUTRE date la passe à « reporté » — sinon elle gardait
+//   « absent » dans la liste des commandes alors qu'elle est replanifiée, et serait relue le lendemain comme une absente du jour.
 // v2.4 (09/11/2026) : compter_commandes par origine et par jour de prise de commande, + montant hors annulées.
 // v2.10 (10/11/2026, vidéo 17:01 « comment faire pour voir si GLS a pris son colis ? ») : suivi_gls (N1) — suivi GLS EN DIRECT d'une
 //   commande (lecture seule, via gls-sync en mode audit) : prise en charge, dernier événement et son libellé, livraison, retour, par colis.
@@ -514,6 +517,7 @@ export function champsPlanification(d: Demande, c: Record<string, unknown>, main
   const p: Record<string, unknown> = { date_livraison: d.date, updated_at: new Date(maintenant).toISOString() };
   if (d.livreur) { p.transporteur = d.livreur; p.livreur = d.livreur === 'RANOU' ? 'RANOU' : ''; }
   if (d.action === 'deplacer') { const anc = String(c.date_livraison || ''); if (anc && anc < jourParis(maintenant) && String(c.statut) !== 'en-cours') p.statut = 'reporté'; }
+  if (d.action === 'deplacer' && String(c.statut) === 'absent' && d.date && String(d.date) !== String(c.date_livraison || '')) p.statut = 'reporté'; // v2.12 : client absent replanifié
   return p;
 }
 

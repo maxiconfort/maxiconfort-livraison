@@ -177,6 +177,12 @@ test('v2 : planifier / déplacer / annuler / prix', () => {
   const d = champsPlanification({ action: 'deplacer', date: '2026-11-03' }, cmd({ date_livraison: '2026-10-20' }), T);
   assert.equal(d.statut, 'reporté', 'date passée → reporté');
   assert.ok(!('statut' in champsPlanification({ action: 'deplacer', date: '2026-11-03' }, cmd({ date_livraison: '2026-10-30' }), T)), 'date à venir : statut inchangé');
+  // v2.12 : une commande « absent » (client absent au passage du livreur) déplacée vers une autre date passe à « reporté ».
+  assert.equal(champsPlanification({ action: 'deplacer', date: '2026-10-28' }, cmd({ statut: 'absent', date_livraison: '2026-10-27' }), T).statut, 'reporté', 'absent du jour → demain : reporté');
+  assert.equal(champsPlanification({ action: 'deplacer', date: '2026-11-03' }, cmd({ statut: 'absent', date_livraison: '2026-10-30' }), T).statut, 'reporté', 'absent à une date à venir, déplacé : reporté');
+  assert.ok(!('statut' in champsPlanification({ action: 'deplacer', date: '2026-10-27' }, cmd({ statut: 'absent', date_livraison: '2026-10-27' }), T)), 'même date : rien ne change');
+  assert.ok(!('statut' in champsPlanification({ action: 'planifier', date: '2026-10-28' }, cmd({ statut: 'absent', date_livraison: '2026-10-27' }), T)), 'planifier ne touche pas au statut');
+  assert.ok(!('statut' in champsPlanification({ action: 'deplacer', date: '2026-10-28' }, cmd({ statut: 'en-attente', date_livraison: '2026-10-27' }), T)), 'les autres statuts : inchangé');
   const a = champsAnnulation({ action: 'annuler_commande', motif: 'Client injoignable' }, T);
   assert.equal(a.statut, 'annulé'); assert.equal(a.annulation_motif, 'Client injoignable'); assert.equal(a.annulation_commentaire, null);
   const b = champsAnnulation({ action: 'annuler_commande', motif: 'le client est parti au Maroc' }, T);
