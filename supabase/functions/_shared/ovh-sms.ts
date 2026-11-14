@@ -71,6 +71,16 @@ export async function creditsOVH(): Promise<number | null> {
   } catch { return null; }
 }
 
+// v2.14 (jarvis-action credits_sms) : lecture seule du compte SMS (GET /sms/{service}). Renvoie la réponse brute d'OVH ; l'appelant
+// (resumeCredits) n'en garde que le solde et le nom du service. null = secrets absents ou appel impossible. Aucun envoi.
+export async function lireCompteSmsOVH(): Promise<{ http: number; data: any; service: string } | null> {
+  if (!OVH_AK || !OVH_AS || !OVH_CK) return null;
+  try {
+    const r = await ovh('GET', `/sms/${OVH_SERVICE}`);
+    return { http: r.status, data: r.data, service: OVH_SERVICE };
+  } catch { return null; }
+}
+
 // Normalisation téléphone FR → +336/+337 (mobiles uniquement)
 export function telIntl(tel: string): string {
   if (!tel) return '';

@@ -18,6 +18,8 @@ export const VERSION = 'v2';
 //   statut « absent » (posé par le livreur sur l'arrêt de sa tournée) vers une AUTRE date la passe à « reporté » — sinon elle gardait
 //   « absent » dans la liste des commandes alors qu'elle est replanifiée, et serait relue le lendemain comme une absente du jour.
 // v2.4 (09/11/2026) : compter_commandes par origine et par jour de prise de commande, + montant hors annulées.
+// v2.14 (15/11/2026) : credits_sms (N1) — « combien de crédits SMS reste-t-il ? » : lecture seule du solde du compte OVH (GET /sms/{service}),
+//   état ok / bas / zéro / indisponible, seuil SEUIL_CREDITS_SMS_BAS ; jamais de secret, jamais d'envoi ; OVH muet = « solde indisponible », jamais un faux « ok ». resumeCredits.
 // v2.13 (14/11/2026) : sms_statut (N1) — « un SMS est-il parti pour la commande N ? » : journal de la commande (envois réussis, heure exacte) + journal
 // général par numéro de téléphone (échecs, envois manuels, heure indicative). Lecture seule ; jamais le texte, le numéro ni le nom. resumeSms.
 // v2.10 (10/11/2026, vidéo 17:01 « comment faire pour voir si GLS a pris son colis ? ») : suivi_gls (N1) — suivi GLS EN DIRECT d'une
@@ -35,7 +37,7 @@ export const VERSION = 'v2';
 
 export type Niveau = 'N1' | 'N2' | 'N3';
 export const NIVEAUX: Record<string, Niveau> = {
-  lire_commande: 'N1', lister_commandes: 'N1', compter_commandes: 'N1', lire_stock: 'N1', lien_facture: 'N1', suivi_gls: 'N1', sms_statut: 'N1',
+  lire_commande: 'N1', lister_commandes: 'N1', compter_commandes: 'N1', lire_stock: 'N1', lien_facture: 'N1', suivi_gls: 'N1', sms_statut: 'N1', credits_sms: 'N1',
   creer_commande: 'N2', modifier_commande: 'N2', planifier: 'N2', deplacer: 'N2', changer_statut: 'N2',
   sav: 'N2', gls_etiquette: 'N2', gls_retour: 'N2', litige: 'N2',
   stock_entree: 'N2', stock_chargement: 'N2', stock_retour_depot: 'N2',
@@ -109,7 +111,7 @@ export type Demande = {
 /** Contrôle de forme d'une demande (avant toute lecture). Renvoie un message d'erreur ou null. */
 export function controlerDemande(d: Demande, maintenant = Date.now()): string | null {
   if (!ACTIONS.includes(d.action)) return 'action non autorisée pour JARVIS';
-  const aCmd = !['lister_commandes', 'compter_commandes', 'lire_stock', 'creer_commande', 'stock_entree', 'stock_chargement', 'stock_retour_depot', 'stock_correction'].includes(d.action);
+  const aCmd = !['lister_commandes', 'compter_commandes', 'lire_stock', 'credits_sms', 'creer_commande', 'stock_entree', 'stock_chargement', 'stock_retour_depot', 'stock_correction'].includes(d.action);
   if (aCmd && !ID_CMD.test(String(d.cmdId || ''))) return 'numéro de commande invalide (ex. #1588)';
   switch (d.action) {
     case 'gls_retour':
@@ -233,7 +235,7 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
 
 /** Contrôle de la commande trouvée en base, selon l'action. */
 export function controlerCommande(d: Demande, c: Record<string, unknown> | null): string | null {
-  if (!['lister_commandes', 'compter_commandes', 'lire_stock', 'creer_commande', 'stock_entree', 'stock_chargement', 'stock_retour_depot', 'stock_correction'].includes(d.action) && !c) return 'commande introuvable';
+  if (!['lister_commandes', 'compter_commandes', 'lire_stock', 'credits_sms', 'creer_commande', 'stock_entree', 'stock_chargement', 'stock_retour_depot', 'stock_correction'].includes(d.action) && !c) return 'commande introuvable';
   if (!c) return null;
   const statut = String(c.statut || ''); const suivi = String(c.tracking_transporteur || '').trim(); const termine = STATUTS_TERMINES.includes(statut);
   const cp5 = /\b\d{5}\b/.test(String(c.adresse || ''));
@@ -660,4 +662,31 @@ export function resumeSms(commande: Record<string, unknown> | null, lignes: unkn
   if (generalIndisponible) sortie.note_journal_general = 'journal général indisponible (seul le journal de la commande est lu)';
   if (!sms.length) sortie.message = 'aucune trace enregistrée' + (generalIndisponible ? ' dans le journal de la commande' : ' dans les journaux') + ' — cela ne prouve pas qu’aucun SMS n’est parti (un envoi hors de ces journaux n’y laisse pas de trace)';
   return sortie;
+}
+
+/** v2.14 : seuil sous lequel le solde de crédits SMS est jugé « bas » (à confirmer par Borhen ; une seule constante à changer). */
+export const SEUIL_CREDITS_SMS_BAS = 100;
+/** Compte OVH qui porte l'expéditeur MAXICONFORT : c'est LUI qu'il faut recharger (les comptes -2 et -3 n'ont pas d'expéditeur). */
+export const COMPTE_SMS_PRINCIPAL = 'sms-rw88345-1';
+
+/**
+ * v2.14 : résumé du solde de crédits SMS à partir de la réponse brute d'OVH (GET /sms/{service}). Fonction pure, lecture seule.
+ * `brut` = { http, data, service } ou null (appel impossible / exception). Ne garde que le nombre de crédits, le nom du service
+ * (jamais l'expéditeur, jamais un secret) et l'état. Tout doute (statut ≠ 200, creditsLeft absent / non numérique / négatif)
+ * = « indisponible » : jamais un faux « ok ».
+ */
+export function resumeCredits(brut: { http?: number | null; data?: unknown; service?: string } | null | undefined, seuil: number = SEUIL_CREDITS_SMS_BAS): Record<string, unknown> {
+  const s = Number.isFinite(seuil) && seuil > 0 ? seuil : SEUIL_CREDITS_SMS_BAS;
+  const service = typeof brut?.service === 'string' && /^sms-[a-z0-9]+-\d{1,3}$/i.test(brut.service) ? brut.service : null;
+  const compte = service ? { compte: service } : {};
+  const indispo = (raison: string) => ({ etat: 'indisponible', ...compte, seuil: s, message: 'solde indisponible (' + raison + ') — ne pas en conclure que le compte est suffisant ; à vérifier sur le compte OVH' });
+  if (!brut || brut.http !== 200) return indispo(brut && typeof brut.http === 'number' ? 'OVH a répondu en erreur' : 'OVH ne répond pas');
+  const data = brut.data as { creditsLeft?: unknown } | null;
+  const c = data && typeof data === 'object' ? data.creditsLeft : undefined;
+  if (typeof c !== 'number' || !Number.isFinite(c) || c < 0) return indispo('réponse OVH illisible');
+  const credits = Math.floor(c);
+  const recharge = 'recharger le compte portant l’expéditeur MAXICONFORT (' + COMPTE_SMS_PRINCIPAL + '), pas les comptes -2 ni -3';
+  if (credits === 0) return { etat: 'zero', credits, ...compte, seuil: s, message: 'plus aucun crédit SMS : les SMS clients ne partent plus — ' + recharge };
+  if (credits < s) return { etat: 'bas', credits, ...compte, seuil: s, message: 'crédits SMS bas (' + credits + ', seuil ' + s + ') — ' + recharge };
+  return { etat: 'ok', credits, ...compte, seuil: s, message: credits + ' crédits SMS restants (seuil d’alerte ' + s + ')' };
 }

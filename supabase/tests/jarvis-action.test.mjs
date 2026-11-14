@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
-  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, resumeSuivi, resumeSms, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, resumeSuivi, resumeSms, resumeCredits, SEUIL_CREDITS_SMS_BAS, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -78,7 +78,7 @@ test('aperçu litige (réserve Codex #5) : description existante, absente, vide,
 
 test('v2 : liste fermée avec niveau ; créer une commande dictée = N3, depuis un mail = N2', () => {
   assert.equal(VERSION, 'v2');
-  assert.equal(ACTIONS.length, 25); for (const a of ACTIONS) assert.ok(['N1', 'N2', 'N3'].includes(NIVEAUX[a]), a);
+  assert.equal(ACTIONS.length, 26); for (const a of ACTIONS) assert.ok(['N1', 'N2', 'N3'].includes(NIVEAUX[a]), a);
   assert.equal(niveauDe({ action: 'lire_stock' }), 'N1'); assert.equal(niveauDe({ action: 'planifier' }), 'N2'); assert.equal(niveauDe({ action: 'annuler_commande' }), 'N3');
   assert.equal(niveauDe({ action: 'creer_commande', source: 'mail' }), 'N2'); assert.equal(niveauDe({ action: 'creer_commande', source: 'dictee' }), 'N3');
   for (const a of ['marquer_paye', 'rembourser', 'encaisser', 'shopify', 'tiktok']) assert.match(controlerDemande({ action: a, cmdId: '#1588' }, T), /non autorisée/, a);
@@ -488,4 +488,37 @@ test('v2.13 sms_statut : lecture seule, deux journaux, jamais texte / téléphon
   const bloc = src.slice(src.indexOf("d.action === 'sms_statut'"), src.indexOf("d.action === 'lien_facture'"));
   assert.match(bloc, /select\('type_sms, statut, date_sms, heure'\)/);
   assert.equal(/\.(insert|update|upsert|delete)\(|interne\(|ovh|brevo|fetch\(/i.test(bloc), false, 'aucune écriture ni appel externe');
+});
+
+test('v2.14 credits_sms : N1, sans cmdId, état ok / bas / zéro / indisponible, jamais un faux « ok », rien de sensible, lecture seule', () => {
+  assert.equal(NIVEAUX.credits_sms, 'N1'); assert.equal(niveauDe({ action: 'credits_sms' }), 'N1');
+  assert.equal(controlerDemande({ action: 'credits_sms' }, T), null, 'cmdId non requis');
+  assert.equal(controlerCommande({ action: 'credits_sms' }, null), null, 'pas de commande à trouver');
+  assert.ok(ACTIONS.includes('credits_sms'));
+  const ok = (data, http = 200) => ({ http, data, service: 'sms-rw88345-1' });
+  const a = resumeCredits(ok({ creditsLeft: 540 })); assert.equal(a.etat, 'ok'); assert.equal(a.credits, 540); assert.equal(a.compte, 'sms-rw88345-1'); assert.equal(a.seuil, SEUIL_CREDITS_SMS_BAS);
+  const b = resumeCredits(ok({ creditsLeft: 42 })); assert.equal(b.etat, 'bas'); assert.match(b.message, /sms-rw88345-1/); assert.match(b.message, /MAXICONFORT/); assert.match(b.message, /-2 ni -3/);
+  assert.equal(resumeCredits(ok({ creditsLeft: SEUIL_CREDITS_SMS_BAS })).etat, 'ok', 'le seuil lui-même est encore ok');
+  assert.equal(resumeCredits(ok({ creditsLeft: SEUIL_CREDITS_SMS_BAS - 1 })).etat, 'bas');
+  const z = resumeCredits(ok({ creditsLeft: 0 })); assert.equal(z.etat, 'zero'); assert.equal(z.credits, 0); assert.match(z.message, /ne partent plus/);
+  assert.equal(resumeCredits(ok({ creditsLeft: 7 }), 5).etat, 'ok', 'seuil paramétrable');
+  assert.equal(resumeCredits(ok({ creditsLeft: 7 }), -3).seuil, SEUIL_CREDITS_SMS_BAS, 'seuil invalide : défaut');
+  // indisponible : jamais « ok », jamais de crédits inventés
+  for (const brut of [null, undefined, { http: null, data: null, service: 'sms-rw88345-1' }, ok({ creditsLeft: 540 }, 403), ok({ creditsLeft: 540 }, 500), ok(null), ok({}), ok('x'), ok({ creditsLeft: '540' }), ok({ creditsLeft: NaN }), ok({ creditsLeft: -4 }), ok({ creditsLeft: null })]) {
+    const r = resumeCredits(brut); assert.equal(r.etat, 'indisponible', JSON.stringify(brut)); assert.equal(r.credits, undefined); assert.match(r.message, /solde indisponible/); assert.match(r.message, /ne pas en conclure/);
+  }
+  // nom de service douteux : omis ; rien de sensible ne ressort d'une réponse OVH riche
+  assert.equal(resumeCredits({ http: 200, data: { creditsLeft: 300 }, service: 'x; secret' }).compte, undefined);
+  const riche = resumeCredits(ok({ creditsLeft: 300, name: 'sms-rw88345-1', description: 'DESC SECRETE', senders: ['MAXICONFORT'], smsResponse: { cgiUrl: 'https://SECRET' }, userQuantityWithQuota: 9, creditThresholdForAutomaticRecredit: 5 }));
+  const brut = JSON.stringify(riche);
+  for (const interdit of ['DESC SECRETE', 'SECRET', 'senders', 'cgiUrl', 'creditThreshold']) assert.equal(brut.includes(interdit), false, interdit);
+  assert.deepEqual(Object.keys(riche).sort(), ['compte', 'credits', 'etat', 'message', 'seuil']);
+  // sources : branche N1 en lecture seule (GET OVH via lireCompteSmsOVH), aucun envoi ni écriture
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  const bloc = src.slice(src.indexOf("d.action === 'credits_sms'"), src.indexOf("d.action === 'sms_statut'"));
+  assert.match(bloc, /lireCompteSmsOVH\(\)/); assert.match(bloc, /resumeCredits\(r\)/);
+  assert.equal(/\.(insert|update|upsert|delete)\(|envoyerSMS|\/jobs|interne\(|brevo|fetch\(|Deno\.env/i.test(bloc), false, 'aucune écriture, aucun envoi');
+  const ovh = fs.readFileSync(new URL('../functions/_shared/ovh-sms.ts', import.meta.url), 'utf8');
+  const fn = ovh.slice(ovh.indexOf('export async function lireCompteSmsOVH'), ovh.indexOf('// Normalisation téléphone FR'));
+  assert.match(fn, /ovh\('GET', `\/sms\/\$\{OVH_SERVICE\}`\)/); assert.equal(/'(POST|PUT|DELETE)'|\/jobs/.test(fn), false, 'GET seulement');
 });

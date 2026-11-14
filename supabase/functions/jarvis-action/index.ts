@@ -2,13 +2,14 @@
 // Edge Function : jarvis-action (v2 — 30/10/2026 ; v2.1 04/11/2026 : lister_commandes { client } = recherche par nom / téléphone / e-mail ;
 // v2.2 04/11/2026 : recherche approchée par nom quand rien d'exact — « approchee: true » + score ;
 // v2.4 09/11/2026 : compter_commandes par origine et date de prise de commande (date_commande), + montant hors annulées et hors SAV
+// v2.14 15/11/2026 : credits_sms (N1, lecture seule) = solde de crédits SMS du compte OVH (GET /sms/{service}) : crédits, état ok / bas / zéro / indisponible ; jamais de secret ni d'envoi
 // v2.13 14/11/2026 : sms_statut (N1, lecture seule) = SMS parti ou non pour une commande : commandes.sms_envoyes + sms_historique (échecs, envois manuels) ; jamais texte, téléphone ni nom
 // v2.11 10/11/2026 : nom complet du client (client_nom) dans chaque commande renvoyée (colonne client lue aussi pour la liste d'un jour) ;
 // v2.3 06/11/2026 : « total » = nombre EXACT compté par la base (plus la longueur de la liste coupée) + action compter_commandes)
 // ════════════════════════════════════════════════════════════════════
 // Porte d'entrée RÉSERVÉE À JARVIS (MAXI BRAIN, mini-PC de Borhen). Décision de Borhen du 30/10 : « autorisation totale sur
 // commandes et stock », confirmation vocale en deux temps, graduée par NIVEAU (logique dans _shared/jarvis-action-logique.ts) :
-//   N1 lecture    : lire_commande, lister_commandes, compter_commandes, lire_stock, lien_facture (v2.5), suivi_gls (v2.10), sms_statut (v2.13) — exécutées directement ;
+//   N1 lecture    : lire_commande, lister_commandes, compter_commandes, lire_stock, lien_facture (v2.5), suivi_gls (v2.10), sms_statut (v2.13), credits_sms (v2.14) — exécutées directement ;
 //   N2 réversible : creer_commande (depuis un mail), modifier_commande, planifier, deplacer, changer_statut, sav, gls_etiquette,
 //                   gls_retour, litige, stock_entree, stock_chargement, stock_retour_depot — aperçu puis exécution ;
 //   N3 critique   : creer_commande (dictée), annuler_commande, supprimer_commande, modifier_prix, envoyer_sms, marquer_livre,
@@ -25,7 +26,8 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+import { lireCompteSmsOVH } from '../_shared/ovh-sms.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
 const SECRET_JARVIS = Deno.env.get('JARVIS_ACTION_SECRET') || '';
@@ -82,6 +84,10 @@ Deno.serve(async (req: Request) => {
       const r = await interne('gls-sync', { cmdIds: [String(c!.id)] });
       if (r.http !== 200 || !r.j?.ok || r.j?.lectureSeule !== true) return rep(502, { ok: false, erreur: 'suivi GLS indisponible pour l’instant' });
       const s = resumeSuivi((r.j.commandes || [])[0]); return 'erreur' in s ? rep(/ne répond pas/.test(String(s.erreur)) ? 502 : 404, { ok: false, erreur: s.erreur }) : rep(200, { ...base, suivi: s });
+    }
+    if (d.action === 'credits_sms') { // v2.14 : lecture seule (GET OVH), aucun envoi, aucune écriture ; seul le solde et le nom du service sortent
+      const r = await lireCompteSmsOVH();
+      return rep(200, { ok: true, action: d.action, niveau, confirme, ...resumeCredits(r) });
     }
     if (d.action === 'sms_statut') { // v2.13 : lecture seule, aucune écriture, aucun envoi ; ni texte (msg), ni téléphone, ni nom dans la réponse
       let lignes: unknown[] | null = null;
