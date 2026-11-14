@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
-  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, resumeSuivi, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, resumeSuivi, resumeSms, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -78,7 +78,7 @@ test('aperçu litige (réserve Codex #5) : description existante, absente, vide,
 
 test('v2 : liste fermée avec niveau ; créer une commande dictée = N3, depuis un mail = N2', () => {
   assert.equal(VERSION, 'v2');
-  assert.equal(ACTIONS.length, 24); for (const a of ACTIONS) assert.ok(['N1', 'N2', 'N3'].includes(NIVEAUX[a]), a);
+  assert.equal(ACTIONS.length, 25); for (const a of ACTIONS) assert.ok(['N1', 'N2', 'N3'].includes(NIVEAUX[a]), a);
   assert.equal(niveauDe({ action: 'lire_stock' }), 'N1'); assert.equal(niveauDe({ action: 'planifier' }), 'N2'); assert.equal(niveauDe({ action: 'annuler_commande' }), 'N3');
   assert.equal(niveauDe({ action: 'creer_commande', source: 'mail' }), 'N2'); assert.equal(niveauDe({ action: 'creer_commande', source: 'dictee' }), 'N3');
   for (const a of ['marquer_paye', 'rembourser', 'encaisser', 'shopify', 'tiktok']) assert.match(controlerDemande({ action: a, cmdId: '#1588' }, T), /non autorisée/, a);
@@ -454,4 +454,38 @@ test('v2.10 suivi_gls : lecture seule, colis par colis, heure de Paris, aucune d
   assert.equal(part.pris_en_charge, null); assert.equal(part.lecture_partielle, true); assert.equal(part.colis[1].pris_en_charge, null); assert.match(part.colis[1].detail, /lecture GLS impossible/);
   const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
   assert.match(src, /interne\('gls-sync', \{ cmdIds: \[String\(c!\.id\)\] \}\)/); assert.match(src, /r\.j\?\.lectureSeule !== true/);
+});
+
+test('v2.13 sms_statut : lecture seule, deux journaux, jamais texte / téléphone / nom, « aucune trace » ≠ « non envoyé »', () => {
+  assert.equal(NIVEAUX.sms_statut, 'N1'); assert.equal(niveauDe({ action: 'sms_statut', cmdId: '#1897' }), 'N1');
+  assert.equal(controlerDemande({ action: 'sms_statut', cmdId: '#1897' }, T), null);
+  assert.match(controlerDemande({ action: 'sms_statut' }, T), /numéro de commande/);
+  const c = cmd({ sms_envoyes: [{ type: 'confirmation', at: '2026-11-10T08:05:00Z' }, { type: 'veille', at: '2026-11-12T16:30:00Z' }, { type: '', at: 'x' }, { type: 'bidon', at: 'pas une date' }] });
+  const lignes = [
+    { type_sms: 'confirmation', statut: 'envoyé', date_sms: '2026-11-10', heure: '09:05', msg: 'TEXTE SECRET', tel: '0600000000', client: 'NOM SECRET' }, // doublon du journal de la commande
+    { type_sms: 'relance', statut: 'échec', date_sms: '2026-11-13', heure: '10:02', msg: 'TEXTE SECRET' },
+    { type_sms: 'manuel', statut: 'envoyé', date_sms: '2026-11-13', heure: '11:00:12' },
+  ];
+  const r = resumeSms(c, lignes);
+  assert.equal(r.sms.length, 4);
+  assert.deepEqual(r.sms[0], { type: 'veille', quand: '12/11/2026 17:30', statut: 'envoyé', source: 'journal de la commande' }, 'heure exacte convertie en Paris, plus récent d’abord');
+  assert.equal(r.sms[1].quand, '10/11/2026 09:05');
+  assert.deepEqual(r.sms[2], { type: 'relance', quand: '13/11/2026 10:02 (heure indicative)', statut: 'échec', source: 'journal par numéro de téléphone (peut mélanger plusieurs commandes du même client)' });
+  assert.equal(r.sms[3].quand, '13/11/2026 11:00 (heure indicative)'); assert.equal(r.sms[3].statut, 'envoyé');
+  const brut = JSON.stringify(r);
+  for (const interdit of ['TEXTE SECRET', 'NOM SECRET', '0600000000', 'Client Fictif']) assert.equal(brut.includes(interdit), false, interdit);
+  assert.equal(r.message, undefined); assert.equal(r.note_journal_general, undefined);
+  // rien : message prudent, jamais « non envoyé »
+  const v = resumeSms(cmd({}), []); assert.deepEqual(v.sms, []); assert.match(v.message, /aucune trace enregistrée/); assert.equal(/non envoy/i.test(v.message), false);
+  // journal général illisible : on ne plante pas, journal de la commande seul + mention
+  const p = resumeSms(c, null); assert.equal(p.sms.length, 2); assert.match(p.note_journal_general, /journal général indisponible/);
+  const p0 = resumeSms(cmd({}), null); assert.match(p0.message, /aucune trace/); assert.match(p0.note_journal_general, /indisponible/);
+  // entrées illisibles ignorées, statut inconnu conservé tel quel (court), pas de plantage sur null
+  assert.doesNotThrow(() => resumeSms(null, [null, {}, { type_sms: 'x' }]));
+  assert.equal(resumeSms(cmd({}), [{ type_sms: 'x', statut: 'Échec', date_sms: '2026-11-01' }]).sms[0].statut, 'échec');
+  // sources : lecture seule, colonnes limitées (ni msg, ni tel, ni client), aucun envoi
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  const bloc = src.slice(src.indexOf("d.action === 'sms_statut'"), src.indexOf("d.action === 'lien_facture'"));
+  assert.match(bloc, /select\('type_sms, statut, date_sms, heure'\)/);
+  assert.equal(/\.(insert|update|upsert|delete)\(|interne\(|ovh|brevo|fetch\(/i.test(bloc), false, 'aucune écriture ni appel externe');
 });

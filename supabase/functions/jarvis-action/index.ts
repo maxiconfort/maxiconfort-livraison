@@ -2,12 +2,13 @@
 // Edge Function : jarvis-action (v2 — 30/10/2026 ; v2.1 04/11/2026 : lister_commandes { client } = recherche par nom / téléphone / e-mail ;
 // v2.2 04/11/2026 : recherche approchée par nom quand rien d'exact — « approchee: true » + score ;
 // v2.4 09/11/2026 : compter_commandes par origine et date de prise de commande (date_commande), + montant hors annulées et hors SAV
+// v2.13 14/11/2026 : sms_statut (N1, lecture seule) = SMS parti ou non pour une commande : commandes.sms_envoyes + sms_historique (échecs, envois manuels) ; jamais texte, téléphone ni nom
 // v2.11 10/11/2026 : nom complet du client (client_nom) dans chaque commande renvoyée (colonne client lue aussi pour la liste d'un jour) ;
 // v2.3 06/11/2026 : « total » = nombre EXACT compté par la base (plus la longueur de la liste coupée) + action compter_commandes)
 // ════════════════════════════════════════════════════════════════════
 // Porte d'entrée RÉSERVÉE À JARVIS (MAXI BRAIN, mini-PC de Borhen). Décision de Borhen du 30/10 : « autorisation totale sur
 // commandes et stock », confirmation vocale en deux temps, graduée par NIVEAU (logique dans _shared/jarvis-action-logique.ts) :
-//   N1 lecture    : lire_commande, lister_commandes, compter_commandes, lire_stock, lien_facture (v2.5), suivi_gls (v2.10) — exécutées directement ;
+//   N1 lecture    : lire_commande, lister_commandes, compter_commandes, lire_stock, lien_facture (v2.5), suivi_gls (v2.10), sms_statut (v2.13) — exécutées directement ;
 //   N2 réversible : creer_commande (depuis un mail), modifier_commande, planifier, deplacer, changer_statut, sav, gls_etiquette,
 //                   gls_retour, litige, stock_entree, stock_chargement, stock_retour_depot — aperçu puis exécution ;
 //   N3 critique   : creer_commande (dictée), annuler_commande, supprimer_commande, modifier_prix, envoyer_sms, marquer_livre,
@@ -24,7 +25,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
 const SECRET_JARVIS = Deno.env.get('JARVIS_ACTION_SECRET') || '';
@@ -81,6 +82,20 @@ Deno.serve(async (req: Request) => {
       const r = await interne('gls-sync', { cmdIds: [String(c!.id)] });
       if (r.http !== 200 || !r.j?.ok || r.j?.lectureSeule !== true) return rep(502, { ok: false, erreur: 'suivi GLS indisponible pour l’instant' });
       const s = resumeSuivi((r.j.commandes || [])[0]); return 'erreur' in s ? rep(/ne répond pas/.test(String(s.erreur)) ? 502 : 404, { ok: false, erreur: s.erreur }) : rep(200, { ...base, suivi: s });
+    }
+    if (d.action === 'sms_statut') { // v2.13 : lecture seule, aucune écriture, aucun envoi ; ni texte (msg), ni téléphone, ni nom dans la réponse
+      let lignes: unknown[] | null = null;
+      try {
+        const tel = String(c!.tel || '').trim(); const chiffres = tel.replace(/\D/g, '');
+        if (!chiffres) lignes = [];
+        else {
+          const depuis = /^\d{4}-\d{2}-\d{2}/.test(String(c!.created_at || '')) ? String(c!.created_at).slice(0, 10) : '2000-01-01';
+          const { data, error } = await sb.from('sms_historique').select('type_sms, statut, date_sms, heure').in('tel', [...new Set([tel, chiffres])])
+            .gte('date_sms', depuis).order('date_sms', { ascending: false }).order('heure', { ascending: false }).limit(20);
+          lignes = error ? null : (data as unknown[] | null) || [];
+        }
+      } catch { lignes = null; }
+      return rep(200, { ok: true, action: d.action, niveau, confirme, ...resumeSms(c, lignes) });
     }
     if (d.action === 'lien_facture') { const f = lienFacture(d, c!); return 'erreur' in f ? rep(422, { ok: false, erreur: f.erreur }) : rep(200, { ...base, facture: f }); }
     if (d.action === 'lister_commandes') {

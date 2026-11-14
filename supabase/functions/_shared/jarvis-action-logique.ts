@@ -18,6 +18,8 @@ export const VERSION = 'v2';
 //   statut « absent » (posé par le livreur sur l'arrêt de sa tournée) vers une AUTRE date la passe à « reporté » — sinon elle gardait
 //   « absent » dans la liste des commandes alors qu'elle est replanifiée, et serait relue le lendemain comme une absente du jour.
 // v2.4 (09/11/2026) : compter_commandes par origine et par jour de prise de commande, + montant hors annulées.
+// v2.13 (14/11/2026) : sms_statut (N1) — « un SMS est-il parti pour la commande N ? » : journal de la commande (envois réussis, heure exacte) + journal
+// général par numéro de téléphone (échecs, envois manuels, heure indicative). Lecture seule ; jamais le texte, le numéro ni le nom. resumeSms.
 // v2.10 (10/11/2026, vidéo 17:01 « comment faire pour voir si GLS a pris son colis ? ») : suivi_gls (N1) — suivi GLS EN DIRECT d'une
 //   commande (lecture seule, via gls-sync en mode audit) : prise en charge, dernier événement et son libellé, livraison, retour, par colis.
 // v2.9 (10/11/2026, « go recherche nom ») : recherche approchée par nom — voyelles mal entendues tolérées (« Myriam Zeroual » ≈ « Meryem zaroual »).
@@ -33,7 +35,7 @@ export const VERSION = 'v2';
 
 export type Niveau = 'N1' | 'N2' | 'N3';
 export const NIVEAUX: Record<string, Niveau> = {
-  lire_commande: 'N1', lister_commandes: 'N1', compter_commandes: 'N1', lire_stock: 'N1', lien_facture: 'N1', suivi_gls: 'N1',
+  lire_commande: 'N1', lister_commandes: 'N1', compter_commandes: 'N1', lire_stock: 'N1', lien_facture: 'N1', suivi_gls: 'N1', sms_statut: 'N1',
   creer_commande: 'N2', modifier_commande: 'N2', planifier: 'N2', deplacer: 'N2', changer_statut: 'N2',
   sav: 'N2', gls_etiquette: 'N2', gls_retour: 'N2', litige: 'N2',
   stock_entree: 'N2', stock_chargement: 'N2', stock_retour_depot: 'N2',
@@ -626,4 +628,36 @@ export function resumeSuivi(x: any): { erreur: string } | Record<string, unknown
   const inconnu = colis.some(enErreur);
   return { etat_gls: texte(x.etat_gls, 30), detail: texte(x.detail, 200), date_livraison_gls: x.date_livraison_gls || null,
     pris_en_charge: inconnu ? null : colis.length ? colis.every((c: any) => !!c.pris_en_charge) : false, ...(inconnu ? { lecture_partielle: true } : {}), colis };
+}
+
+/** v2.13 — « Un SMS est-il parti pour cette commande ? » (N1, lecture seule). Deux sources, jamais le texte du message, le numéro ni le nom :
+ *  (i) `commandes.sms_envoyes` [{type, at ISO UTC}] = envois RÉUSSIS, heure exacte (convertie en heure de Paris) ;
+ *  (ii) lignes de `sms_historique` (filtrées par téléphone côté appelant) : échecs et envois manuels. Leur heure est AMBIGUË (UTC ou Paris selon
+ *  l'écrivain) : donnée telle qu'enregistrée, « heure indicative », jamais convertie. `lignes === null` = journal général illisible.
+ *  Une ligne « envoyé » de l'historique qui double une entrée du journal de la commande (même type, même jour UTC ou Paris) est écartée.
+ *  Rien trouvé ≠ « non envoyé » : un SMS peut être parti hors de ces journaux. Pure. */
+export const SOURCE_SMS_COMMANDE = 'journal de la commande';
+export const SOURCE_SMS_TEL = 'journal par numéro de téléphone (peut mélanger plusieurs commandes du même client)';
+export function resumeSms(commande: Record<string, unknown> | null, lignes: unknown[] | null): Record<string, unknown> {
+  const jourFr = (iso: string) => { const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}/${m[2]}/${m[1]}` : ''; };
+  const parisJour = (t: number) => new Date(t).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
+  const journal = (Array.isArray(commande?.sms_envoyes) ? commande!.sms_envoyes as any[] : []).map((e) => ({ type: texte(e?.type, 40), t: Date.parse(String(e?.at ?? '')) }))
+    .filter((e) => e.type && !Number.isNaN(e.t)).sort((a, b) => b.t - a.t).slice(0, 20);
+  const sms: Record<string, unknown>[] = journal.map((e) => ({ type: e.type, quand: enParis(new Date(e.t).toISOString()), statut: 'envoyé', source: SOURCE_SMS_COMMANDE }));
+  const doublon = (type: string, jour: string) => journal.some((e) => e.type === type && (new Date(e.t).toISOString().slice(0, 10) === jour || parisJour(e.t) === jour));
+  let generalIndisponible = false;
+  if (lignes === null) generalIndisponible = true;
+  else for (const l of (Array.isArray(lignes) ? lignes : []).slice(0, 20) as any[]) {
+    const type = texte(l?.type_sms, 40); if (!type) continue;
+    const brut = texte(l?.statut, 20).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const statut = /^(echec|erreur|fail)/.test(brut) ? 'échec' : /^envoy/.test(brut) ? 'envoyé' : (brut || 'inconnu');
+    const jour = /^\d{4}-\d{2}-\d{2}/.test(String(l?.date_sms ?? '')) ? String(l.date_sms).slice(0, 10) : '';
+    if (statut === 'envoyé' && jour && doublon(type, jour)) continue;
+    const h = String(l?.heure ?? '').match(/^\d{1,2}:\d{2}/);
+    sms.push({ type, quand: (jour ? jourFr(jour) : 'date inconnue') + (h ? ' ' + h[0] : '') + ' (heure indicative)', statut, source: SOURCE_SMS_TEL });
+  }
+  const sortie: Record<string, unknown> = { sms };
+  if (generalIndisponible) sortie.note_journal_general = 'journal général indisponible (seul le journal de la commande est lu)';
+  if (!sms.length) sortie.message = 'aucune trace enregistrée' + (generalIndisponible ? ' dans le journal de la commande' : ' dans les journaux') + ' — cela ne prouve pas qu’aucun SMS n’est parti (un envoi hors de ces journaux n’y laisse pas de trace)';
+  return sortie;
 }
