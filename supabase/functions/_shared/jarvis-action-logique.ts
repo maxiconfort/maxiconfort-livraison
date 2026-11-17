@@ -18,6 +18,10 @@ export const VERSION = 'v2';
 //   statut « absent » (posé par le livreur sur l'arrêt de sa tournée) vers une AUTRE date la passe à « reporté » — sinon elle gardait
 //   « absent » dans la liste des commandes alors qu'elle est replanifiée, et serait relue le lendemain comme une absente du jour.
 // v2.4 (09/11/2026) : compter_commandes par origine et par jour de prise de commande, + montant hors annulées.
+// v2.16 (17/11/2026, vidéo Borhen 15:47 « envoie-lui sa facture par SMS ») : envoyer_facture_sms { cmdId } (N3) — la facture de la commande
+//   par SMS, pour les clients sans e-mail. JARVIS n'envoie QUE le numéro de commande : le SERVEUR construit le lien (même page que
+//   lien_facture) et compose un texte FIXE (aucun texte libre, ni prix ni promesse), vers le portable de CETTE commande seulement.
+//   L'aperçu montre le destinataire masqué et « [lien de la facture] » à la place du lien : le lien réel ne sort jamais vers JARVIS. factureSms.
 // v2.14 (15/11/2026) : credits_sms (N1) — « combien de crédits SMS reste-t-il ? » : lecture seule du solde du compte OVH (GET /sms/{service}),
 //   état ok / bas / zéro / indisponible, seuil SEUIL_CREDITS_SMS_BAS ; jamais de secret, jamais d'envoi ; OVH muet = « solde indisponible », jamais un faux « ok ». resumeCredits.
 // v2.13 (14/11/2026) : sms_statut (N1) — « un SMS est-il parti pour la commande N ? » : journal de la commande (envois réussis, heure exacte) + journal
@@ -41,7 +45,7 @@ export const NIVEAUX: Record<string, Niveau> = {
   creer_commande: 'N2', modifier_commande: 'N2', planifier: 'N2', deplacer: 'N2', changer_statut: 'N2',
   sav: 'N2', gls_etiquette: 'N2', gls_retour: 'N2', litige: 'N2',
   stock_entree: 'N2', stock_chargement: 'N2', stock_retour_depot: 'N2',
-  annuler_commande: 'N3', supprimer_commande: 'N3', modifier_prix: 'N3', envoyer_sms: 'N3', marquer_livre: 'N3', stock_correction: 'N3',
+  annuler_commande: 'N3', supprimer_commande: 'N3', modifier_prix: 'N3', envoyer_sms: 'N3', envoyer_facture_sms: 'N3', marquer_livre: 'N3', stock_correction: 'N3',
 };
 export const ACTIONS = Object.keys(NIVEAUX);
 /** Niveau effectif : créer une commande dont les coordonnées sont DICTÉES à la voix = N3 (décision Borhen 30/10 16:47). */
@@ -79,6 +83,7 @@ const ID_CMD = /^#(?:SAV)?\d{1,9}$/;
 const EMAIL_SIMPLE = /^[^\s@<>"]{1,64}@[^\s@<>"]{1,190}\.[a-z]{2,24}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const TEL = /^(?:\+33\s?[1-9]|0[1-9])(?:[\s.-]?\d{2}){4}$/;
+const PORTABLE = /^(?:\+33\s?[67]|0[67])(?:[\s.-]?\d{2}){4}$/; // v2.16 : seuls les 06 / 07 reçoivent un SMS (un fixe ou une ligne VoIP 09 ne le reçoit pas)
 
 export function jourParis(t: number): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(t));
@@ -106,6 +111,7 @@ export type Demande = {
   statut?: string; livreur?: string; champs?: Record<string, unknown>; prix?: number; texte?: string; commentaire?: string;
   client?: string; tel?: string; email?: string; adresse?: string; cp?: string; ville?: string; etage?: string; code?: string; instr?: string;
   lignes?: Ligne[]; origine?: string; source?: 'mail' | 'dictee' | 'commande'; depuis?: string; nom_annonce?: string; produit?: string; qte?: number; limite?: number;
+  autorisation?: string; // v2.16 (6e série Codex #389) : autorisation à usage unique de l'aperçu de envoyer_facture_sms, renvoyée à la confirmation
 };
 
 /** Contrôle de forme d'une demande (avant toute lecture). Renvoie un message d'erreur ou null. */
@@ -209,6 +215,12 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
       if (!(typeof d.prix === 'number' && Number.isFinite(d.prix) && d.prix >= 0 && d.prix <= 20000)) return 'prix invalide (0 à 20 000 €)';
       if (texte(d.motif, 200).length < 3) return 'motif du changement de prix obligatoire';
       break;
+    case 'envoyer_facture_sms': // v2.16 : aucun champ libre — le texte, le lien et le destinataire viennent de la commande, côté serveur
+      for (const k of ['texte', 'tel', 'email', 'lien', 'message', 'client', 'adresse']) if ((d as any)[k] !== undefined) return 'envoyer_facture_sms prend seulement le numéro de commande (texte, lien et téléphone sont construits par l’appli)';
+      // 6e série de réserves Codex #389 : autorisation à usage unique de l'aperçu — forme stricte « nonce.expiration.signature » ; l'ancienne
+      // « empreinte » déterministe est refusée ; absente à la confirmation = 409 ; signature, expiration et usage vérifiés dans jarvis-facture-sms.ts
+      if ((d as any).empreinte !== undefined || ((d as any).autorisation !== undefined && !(typeof (d as any).autorisation === 'string' && /^[0-9a-f]{32}\.\d{13}\.[0-9a-f]{64}$/.test((d as any).autorisation)))) return 'autorisation d’aperçu invalide : refais l’aperçu, rien n’est parti';
+      break;
     case 'envoyer_sms': {
       const t = texte(d.texte, 320); if (t.length < 10) return 'texte du SMS trop court (10 caractères au moins)'; if (t.length > 300) return 'texte du SMS trop long (300 caractères au plus)';
       if (/https?:\/\//i.test(t)) return 'pas de lien dans un SMS envoyé par JARVIS';
@@ -271,6 +283,7 @@ export function controlerCommande(d: Demande, c: Record<string, unknown> | null)
     case 'envoyer_sms':
       if (!TEL.test(String(c.tel || '').trim())) return 'téléphone du client absent ou invalide sur la commande';
       break;
+    case 'envoyer_facture_sms': { const f = factureSms(c); if ('erreur' in f) return f.erreur; break; }
   }
   return null;
 }
@@ -586,6 +599,48 @@ export function lienFacture(d: Demande, c: Record<string, unknown>): { erreur: s
   const jeton = String(c.tracking_token || '').trim();
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(jeton)) return { erreur: 'commande sans lien de facture (pas de jeton de suivi)' };
   return { lien: 'https://livraison.maxiconfort.fr/facture.html?t=' + encodeURIComponent(jeton), acquittee: c.stpaie === 'Payé', commande: String(c.id || '') };
+}
+
+/** v2.16 — Mesure d'un SMS selon son VRAI codage (3e série de réserves Codex #389) : alphabet SMS standard (GSM 7 bits) = 160 caractères,
+ *  puis 153 par morceau, les caractères d'extension (€ ^ { } [ ] ~ | \\) comptant double ; un seul caractère hors alphabet (ê, ç, emoji…)
+ *  fait passer tout le message en UCS-2 = 70 unités, puis 67 par morceau (un emoji = 2 unités). `caracteres` = unités facturées. Pure. */
+const GSM7 = '@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà';
+const GSM7_EXT = '^{}\\[~]|€';
+export function mesureSms(t: string): { codage: 'GSM-7' | 'UCS-2'; caracteres: number; sms: number } {
+  const s = String(t || ''); let n = 0; let gsm = true;
+  for (const ch of s) { if (GSM7.includes(ch)) n += 1; else if (GSM7_EXT.includes(ch)) n += 2; else { gsm = false; break; } }
+  if (!gsm) { const u = s.length; /* unités UTF-16 = unités UCS-2 facturées (emoji = 2) */ return { codage: 'UCS-2', caracteres: u, sms: u <= 70 ? 1 : Math.ceil(u / 67) }; }
+  return { codage: 'GSM-7', caracteres: n, sms: n <= 160 ? 1 : Math.ceil(n / 153) };
+}
+export function segmentsSms(t: string): number { return mesureSms(t).sms; }
+export const MARQUE_LIEN_FACTURE = '[lien de la facture]';
+const FACTURE_DEBUT = 'Bonjour, voici la facture de votre commande '; const FACTURE_SEP = ' : '; const FACTURE_FIN = '\nMaxiconfort';
+const FACTURE_LIEN = 'https://livraison.maxiconfort.fr/facture.html?t=';
+/** 3e série de réserves Codex #389 : longueur maximale du jeton pour que le SMS tienne TOUJOURS en UN seul SMS (160 caractères GSM 7 bits),
+ *  numéro de commande de 9 chiffres compris : 160 − (texte fixe + 9 chiffres + adresse de la page) = 44. Un jeton de l'appli est un UUID (36). */
+export const JETON_FACTURE_MAX = 160 - (FACTURE_DEBUT.length + 9 + FACTURE_SEP.length + FACTURE_LIEN.length + FACTURE_FIN.length);
+export const ERREUR_FACTURE_TROP_LONGUE = 'lien de la facture trop long pour tenir dans un seul SMS : rien n’est parti, envoie la facture par e-mail';
+/** v2.16 — SMS « facture » d'une commande, entièrement composé ICI (pure) : texte FIXE + lien facture.html de CETTE commande, vers SON
+ *  portable. Rien ne vient de JARVIS ni d'un champ libre de la base (le nom du client n'entre pas dans le texte). L'aperçu remplace le lien
+ *  par MARQUE_LIEN_FACTURE et masque le numéro : le lien réel ne sort jamais dans une réponse. Refus : annulée, SAV, sans jeton, jeton trop
+ *  long pour un seul SMS (3e série Codex), sans portable (fixe, VoIP 09, numéro incomplet : un SMS partirait dans le vide).
+ *  `caracteres` et `sms` de l'aperçu = mesure RÉELLE du texte envoyé (mesureSms), toujours 1 SMS. */
+export function factureSms(c: Record<string, unknown> | null): { erreur: string } | { tel: string; lien: string; texte: string; apercu: { destinataire: string; texte: string; caracteres: number; sms: number; acquittee: boolean } } {
+  if (!c) return { erreur: 'commande introuvable' };
+  const id = String(c.id || '');
+  if (String(c.statut || '') === 'annulé') return { erreur: 'commande annulée : pas de facture à envoyer' };
+  if (!/^#\d{1,9}$/.test(id)) return { erreur: /^#SAV/i.test(id) ? 'un SAV n’a pas de facture propre : envoyer celle de la commande d’origine' : 'numéro de commande invalide' };
+  const jeton = String(c.tracking_token || '').trim();
+  if (!/^[A-Za-z0-9_-]{8,}$/.test(jeton)) return { erreur: 'commande sans lien de facture (pas de jeton de suivi)' };
+  if (jeton.length > JETON_FACTURE_MAX) return { erreur: ERREUR_FACTURE_TROP_LONGUE };
+  const tel = String(c.tel || '').trim();
+  if (!tel) return { erreur: 'pas de numéro de téléphone sur cette commande : impossible d’envoyer la facture par SMS' };
+  if (!PORTABLE.test(tel)) return { erreur: 'le numéro de cette commande n’est pas un portable (06 / 07) ou il est invalide : un fixe ne reçoit pas les SMS, la facture ne partirait pas' };
+  const debut = FACTURE_DEBUT + id.slice(1) + FACTURE_SEP;
+  const lien = FACTURE_LIEN + encodeURIComponent(jeton);
+  const t = debut + lien + FACTURE_FIN;
+  const m = mesureSms(t); if (m.sms !== 1) return { erreur: ERREUR_FACTURE_TROP_LONGUE }; // second verrou : jamais plus d'un SMS
+  return { tel, lien, texte: t, apercu: { destinataire: telMasque(tel), texte: debut + MARQUE_LIEN_FACTURE + FACTURE_FIN, caracteres: m.caracteres, sms: m.sms, acquittee: c.stpaie === 'Payé' } };
 }
 
 /** v2.7 — Coordonnées reprises d'une commande existante (pure) : nom, téléphone, e-mail, adresse complète, étage, ascenseur, code,

@@ -3,8 +3,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { actionFactureSms } from '../functions/_shared/jarvis-facture-sms.ts';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
-  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, resumeSuivi, resumeSms, resumeCredits, SEUIL_CREDITS_SMS_BAS, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, resumeSuivi, resumeSms, resumeCredits, SEUIL_CREDITS_SMS_BAS, factureSms, MARQUE_LIEN_FACTURE, segmentsSms, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -78,7 +79,7 @@ test('aperçu litige (réserve Codex #5) : description existante, absente, vide,
 
 test('v2 : liste fermée avec niveau ; créer une commande dictée = N3, depuis un mail = N2', () => {
   assert.equal(VERSION, 'v2');
-  assert.equal(ACTIONS.length, 26); for (const a of ACTIONS) assert.ok(['N1', 'N2', 'N3'].includes(NIVEAUX[a]), a);
+  assert.equal(ACTIONS.length, 27); for (const a of ACTIONS) assert.ok(['N1', 'N2', 'N3'].includes(NIVEAUX[a]), a);
   assert.equal(niveauDe({ action: 'lire_stock' }), 'N1'); assert.equal(niveauDe({ action: 'planifier' }), 'N2'); assert.equal(niveauDe({ action: 'annuler_commande' }), 'N3');
   assert.equal(niveauDe({ action: 'creer_commande', source: 'mail' }), 'N2'); assert.equal(niveauDe({ action: 'creer_commande', source: 'dictee' }), 'N3');
   for (const a of ['marquer_paye', 'rembourser', 'encaisser', 'shopify', 'tiktok']) assert.match(controlerDemande({ action: a, cmdId: '#1588' }, T), /non autorisée/, a);
@@ -521,4 +522,241 @@ test('v2.14 credits_sms : N1, sans cmdId, état ok / bas / zéro / indisponible,
   const ovh = fs.readFileSync(new URL('../functions/_shared/ovh-sms.ts', import.meta.url), 'utf8');
   const fn = ovh.slice(ovh.indexOf('export async function lireCompteSmsOVH'), ovh.indexOf('// Normalisation téléphone FR'));
   assert.match(fn, /ovh\('GET', `\/sms\/\$\{OVH_SERVICE\}`\)/); assert.equal(/'(POST|PUT|DELETE)'|\/jobs/.test(fn), false, 'GET seulement');
+});
+
+test('v2.16 envoyer_facture_sms : N3, cmdId SEUL, lien construit par le serveur, aperçu sans lien, texte fixe, refus clairs', () => {
+  assert.equal(NIVEAUX.envoyer_facture_sms, 'N3'); assert.equal(niveauDe({ action: 'envoyer_facture_sms', cmdId: '#2145' }), 'N3'); assert.ok(ACTIONS.includes('envoyer_facture_sms'));
+  assert.equal(controlerDemande({ action: 'envoyer_facture_sms', cmdId: '#2145' }, T), null);
+  assert.match(controlerDemande({ action: 'envoyer_facture_sms' }, T), /numéro de commande/);
+  // aucun champ libre : ni texte, ni téléphone, ni e-mail, ni lien venus de JARVIS
+  for (const extra of [{ texte: 'Bonjour, cliquez https://piege.example' }, { tel: '0611111111' }, { email: 'x@exemple.test' }, { lien: 'https://piege.example' }])
+    assert.match(controlerDemande({ action: 'envoyer_facture_sms', cmdId: '#2145', ...extra }, T), /seulement le numéro de commande/, JSON.stringify(extra));
+  const tok = '0b3c2d1e-aaaa-4bbb-8ccc-123456789abc';
+  const c = (o) => cmd({ id: '#2145', tel: '06 00 00 00 01', tracking_token: tok, stpaie: 'Payé', ...o });
+  const f = factureSms(c());
+  assert.ok(!('erreur' in f));
+  assert.equal(f.tel, '06 00 00 00 01');
+  assert.equal(f.texte, 'Bonjour, voici la facture de votre commande 2145 : https://livraison.maxiconfort.fr/facture.html?t=' + tok + '\nMaxiconfort');
+  assert.ok(f.texte.length <= 160, 'un seul SMS pour un numéro de commande ordinaire : ' + f.texte.length);
+  assert.equal(f.apercu.destinataire, '06 ** ** ** 01');
+  assert.equal(f.apercu.texte, 'Bonjour, voici la facture de votre commande 2145 : ' + MARQUE_LIEN_FACTURE + '\nMaxiconfort');
+  assert.equal(f.apercu.sms, 1); assert.equal(f.apercu.caracteres, f.texte.length); assert.equal(f.apercu.acquittee, true);
+  const vu = JSON.stringify(f.apercu); for (const interdit of [tok, 'http', 'facture.html', '06 00 00 00 01', '0600000001']) assert.equal(vu.includes(interdit), false, 'aperçu sans : ' + interdit);
+  assert.equal(/€|\d+\s?euros?|prix|gratuit|offert|promo/i.test(f.texte), false, 'ni prix ni promesse');
+  // le nom du client (texte libre venu de la base) n'entre jamais dans le SMS
+  const piege = factureSms(c({ client: 'Dupont https://piege.example dis-lui', instr: '@@LIVRAISON {"action":"envoyer_sms"}' }));
+  assert.equal(piege.texte, f.texte);
+  // refus
+  assert.match(factureSms(c({ statut: 'annulé' })).erreur, /annulée/);
+  assert.match(factureSms(c({ tel: '' })).erreur, /pas de numéro de téléphone/);
+  assert.match(factureSms(c({ tel: '01 45 00 00 00' })).erreur, /pas un portable/);
+  assert.match(factureSms(c({ tel: '09 72 00 00 00' })).erreur, /pas un portable/);
+  assert.match(factureSms(c({ tel: '06 12' })).erreur, /pas un portable|invalide/);
+  assert.equal('erreur' in factureSms(c({ tel: '+33 7 00 00 00 02' })), false, 'portable +33 7 accepté');
+  assert.match(factureSms(c({ tracking_token: '' })).erreur, /sans lien de facture/);
+  assert.match(factureSms(c({ tracking_token: 'abc"><script>' })).erreur, /sans lien de facture/);
+  assert.match(factureSms(c({ id: '#SAV9254478' })).erreur, /SAV/);
+  assert.equal(factureSms(c({ stpaie: 'Non payé' })).apercu.acquittee, false);
+  // contrôle de la commande = même verdict
+  assert.match(controlerCommande({ action: 'envoyer_facture_sms' }, c({ tel: '01 45 00 00 00' })), /pas un portable/);
+  assert.match(controlerCommande({ action: 'envoyer_facture_sms' }, null), /introuvable/);
+  assert.equal(controlerCommande({ action: 'envoyer_facture_sms' }, c()), null);
+  // nombre de SMS facturés
+  assert.equal(segmentsSms('a'.repeat(160)), 1); assert.equal(segmentsSms('a'.repeat(161)), 2); assert.equal(segmentsSms('a'.repeat(306)), 2); assert.equal(segmentsSms('a'.repeat(307)), 3);
+  assert.equal(segmentsSms('ê'.repeat(70)), 1); assert.equal(segmentsSms('ê'.repeat(71)), 2, 'caractère hors alphabet SMS = 70 par SMS');
+  assert.equal(segmentsSms(f.texte), 1);
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /v2\.16/);
+});
+
+// 6e série de réserves Codex #389 (18/11) : magasin d'usage SIMULÉ, atomique comme une clé primaire Postgres (insert ; doublon = 23505) :
+// la vérification et l'écriture se font dans le même tour de boucle, après une attente (deux requêtes concurrentes s'entrelacent).
+const magasinUsage = (panne = false) => { const lignes = new Map(); return { lignes, consommer: async (etat, expire_at) => { await new Promise((r) => setTimeout(r, 1)); if (panne) return 'erreur'; if (lignes.has(etat)) return 'deja'; lignes.set(etat, expire_at); return 'ok'; } }; };
+const AUTORISATION_FORME = /^[0-9a-f]{32}\.\d{13}\.[0-9a-f]{64}$/;
+
+// Réserve Codex #389 (17/11) : la branche d'envoi n'était testée que par recherche de texte. Elle est extraite dans
+// _shared/jarvis-facture-sms.ts (actionFactureSms) et testée ici avec des dépendances simulées : aucun réseau, aucun SMS réel.
+test('v2.16 actionFactureSms : aperçu = zéro envoi ; refus = zéro envoi ; confirmé = un seul send-sms ; échec = 502 ; jamais de lien', async () => {
+  const tok = '0b3c2d1e-aaaa-4bbb-8ccc-123456789abc';
+  const c = (o) => cmd({ id: '#2145', tel: '06 00 00 00 01', tracking_token: tok, stpaie: 'Payé', ...o });
+  const deps = (succes = true) => { const appels = []; return { appels, cle: 'cle-de-test-fictive', ...magasinUsage(), interne: async (nom, corps) => { appels.push({ nom, corps }); return succes ? { http: 200, j: { success: true } } : { http: 500, j: { success: false } }; }, rep: (code, o) => ({ code, o: { version: VERSION, ...o } }) }; };
+  const base = (cc, confirme) => ({ ok: true, action: 'envoyer_facture_sms', niveau: 'N3', confirme, commande: apercuCommande(cc) });
+  const sansLien = (r) => { const t = JSON.stringify(r); assert.equal(/http|facture\.html/.test(t), false, t); assert.equal(t.includes(tok), false, t); assert.equal(t.includes('06 00 00 00 01'), false, t); };
+  // aperçu : aucun envoi
+  let d = deps(); let r = await actionFactureSms(c(), false, base(c(), false), d);
+  assert.equal(r.code, 200); assert.equal(d.appels.length, 0); assert.equal(r.o.sms.destinataire, '06 ** ** ** 01'); assert.equal(r.o.fait, undefined); sansLien(r);
+  assert.equal(r.o.empreinte, undefined, '6e série : plus d’empreinte déterministe');
+  const autorisation = r.o.autorisation; assert.match(autorisation, AUTORISATION_FORME, 'l’aperçu porte l’autorisation à usage unique à renvoyer');
+  // refus (commande sans téléphone, annulée, fixe) : 422, aucun envoi, même avec confirme:true
+  for (const [o, motif] of [[{ tel: '' }, /pas de numéro de téléphone/], [{ statut: 'annulé' }, /annulée/], [{ tel: '01 45 00 00 00' }, /pas un portable/]]) {
+    for (const conf of [false, true]) { d = deps(); r = await actionFactureSms(c(o), conf, base(c(o), conf), d); assert.equal(r.code, 422); assert.equal(r.o.ok, false); assert.match(r.o.erreur, motif); assert.equal(d.appels.length, 0, JSON.stringify(o)); sansLien(r); }
+  }
+  // confirmé : UN seul appel send-sms, destinataire et message issus de la commande
+  d = deps(); r = await actionFactureSms(c(), true, base(c(), true), d, autorisation);
+  assert.equal(r.code, 200); assert.equal(r.o.fait, true); assert.equal(d.appels.length, 1);
+  assert.equal(d.appels[0].nom, 'send-sms');
+  assert.deepEqual(Object.keys(d.appels[0].corps).sort(), ['client', 'message', 'tel', 'type']);
+  assert.equal(d.appels[0].corps.tel, '06 00 00 00 01'); assert.equal(d.appels[0].corps.type, 'jarvis'); assert.equal(d.appels[0].corps.client, 'Client Fictif');
+  assert.ok(d.appels[0].corps.message.startsWith('Bonjour, voici la facture de votre commande 2145 : '), d.appels[0].corps.message);
+  assert.ok(d.appels[0].corps.message.includes('facture.html?t=' + tok), 'le lien réel part seulement vers send-sms');
+  sansLien(r);
+  // send-sms en échec : 502, un seul appel, pas de « fait »
+  d = deps(false); r = await actionFactureSms(c(), true, base(c(), true), d, autorisation);
+  assert.equal(r.code, 502); assert.equal(r.o.ok, false); assert.match(r.o.erreur, /SMS non envoyé \(HTTP 500\)/); assert.equal(r.o.fait, undefined); assert.equal(d.appels.length, 1); sansLien(r);
+  // index.ts délègue bien à ce gestionnaire (même logique, rien d'autre dans la branche)
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /if \(d\.action === 'envoyer_facture_sms'\) return actionFactureSms\(c!, confirme, base, \{ interne, rep, cle: SECRET_JARVIS, consommer: consommerUsageFacture \}, d\.autorisation\);/);
+});
+
+// Réserve Codex #389 (2e série, 17/11) : l'aperçu et la confirmation sont LIÉS ; 6e série (18/11) : le lien est une AUTORISATION signée
+// (HMAC-SHA256, clé JARVIS_ACTION_SECRET) de nonce aléatoire + expiration + téléphone + lien + texte. Commande changée = 409, zéro envoi.
+test('v2.16 autorisation : aperçu ↔ confirmation liés ; téléphone ou jeton changé, autorisation absente, falsifiée ou d’une autre clé = 409 et zéro envoi', async () => {
+  const { autorisationFacture, ERREUR_EMPREINTE, ERREUR_AUTORISATION } = await import('../functions/_shared/jarvis-facture-sms.ts');
+  const CLE = 'cle-de-test-fictive'; const tok = '0b3c2d1e-aaaa-4bbb-8ccc-123456789abc';
+  const c = (o) => cmd({ id: '#2145', tel: '06 00 00 00 01', tracking_token: tok, stpaie: 'Payé', ...o });
+  const deps = () => { const appels = []; return { appels, cle: CLE, ...magasinUsage(), interne: async (nom, corps) => { appels.push({ nom, corps }); return { http: 200, j: { success: true } }; }, rep: (code, o) => ({ code, o: { version: VERSION, ...o } }) }; };
+  const base = (cc, confirme) => ({ ok: true, action: 'envoyer_facture_sms', niveau: 'N3', confirme, commande: apercuCommande(cc) });
+  const A = 'a'.repeat(32) + '.1795000000000.' + 'b'.repeat(64);
+  // forme stricte dans controlerDemande ; l'ancien champ « empreinte » est refusé
+  assert.equal(controlerDemande({ action: 'envoyer_facture_sms', cmdId: '#2145', autorisation: A }, T), null);
+  for (const e of [A.toUpperCase(), A.slice(1), A + '0', A.replace('.', ''), 'a'.repeat(32) + '.179500000000.' + 'b'.repeat(64), 123, [A], ''])
+    assert.match(controlerDemande({ action: 'envoyer_facture_sms', cmdId: '#2145', autorisation: e }, T), /autorisation/, JSON.stringify(e));
+  assert.match(controlerDemande({ action: 'envoyer_facture_sms', cmdId: '#2145', empreinte: '0123456789abcdef' }, T), /autorisation/);
+  // aperçu : l'autorisation est renvoyée, aucun envoi, AUCUNE écriture (rien n'est consommé à l'aperçu)
+  let d = deps(); const ap = await actionFactureSms(c(), false, base(c(), false), d);
+  assert.equal(ap.code, 200); assert.match(ap.o.autorisation, AUTORISATION_FORME); assert.equal(d.appels.length, 0); assert.equal(d.lignes.size, 0);
+  // deux aperçus de la même commande : deux autorisations DIFFÉRENTES (nonce aléatoire)
+  assert.notEqual((await actionFactureSms(c(), false, base(c(), false), deps())).o.autorisation, ap.o.autorisation);
+  // signature dépendante de la clé
+  const [n, x] = ap.o.autorisation.split('.'); const f = factureSms(c());
+  assert.equal(ap.o.autorisation.split('.')[2], await autorisationFacture(CLE, n, Number(x), f.tel, f.lien, f.texte));
+  assert.notEqual(ap.o.autorisation.split('.')[2], await autorisationFacture('autre-cle', n, Number(x), f.tel, f.lien, f.texte));
+  // téléphone changé (06 → 07) entre l'aperçu et la confirmation : 409, zéro send-sms, rien consommé
+  d = deps(); let r = await actionFactureSms(c({ tel: '07 00 00 00 01' }), true, base(c({ tel: '07 00 00 00 01' }), true), d, ap.o.autorisation);
+  assert.equal(r.code, 409); assert.equal(r.o.ok, false); assert.equal(r.o.erreur, ERREUR_EMPREINTE); assert.equal(d.appels.length, 0); assert.equal(d.lignes.size, 0);
+  assert.equal(ERREUR_EMPREINTE, 'la commande a changé depuis l’aperçu (numéro ou lien) : refais l’aperçu, rien n’est parti');
+  // jeton changé : 409, zéro envoi
+  d = deps(); r = await actionFactureSms(c({ tracking_token: 'ffffffff-aaaa-4bbb-8ccc-123456789abc' }), true, base(c(), true), d, ap.o.autorisation);
+  assert.equal(r.code, 409); assert.equal(d.appels.length, 0);
+  // absente / falsifiée (bonne forme) / signée d'une autre clé / expiration prolongée à la main : 409, zéro envoi, rien consommé
+  const autreCle = n + '.' + x + '.' + await autorisationFacture('autre-cle', n, Number(x), f.tel, f.lien, f.texte);
+  const prolongee = n + '.' + String(Number(x) + 3600000) + '.' + ap.o.autorisation.split('.')[2];
+  for (const e of [undefined, null, '', A, autreCle, prolongee]) {
+    d = deps(); r = await actionFactureSms(c(), true, base(c(), true), d, e); assert.equal(r.code, 409, String(e)); assert.ok([ERREUR_EMPREINTE, ERREUR_AUTORISATION].includes(r.o.erreur), String(e)); assert.equal(d.appels.length, 0, String(e)); assert.equal(d.lignes.size, 0, String(e));
+  }
+  // sans changement : UN seul send-sms, au bon numéro ; la réponse d'exécution ne renvoie pas l'autorisation
+  d = deps(); r = await actionFactureSms(c(), true, base(c(), true), d, ap.o.autorisation);
+  assert.equal(r.code, 200); assert.equal(r.o.fait, true); assert.equal(d.appels.length, 1); assert.equal(d.appels[0].corps.tel, '06 00 00 00 01'); assert.equal(r.o.autorisation, undefined);
+  // index.ts : la clé est JARVIS_ACTION_SECRET et l'autorisation vient de la demande
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /if \(d\.action === 'envoyer_facture_sms'\) return actionFactureSms\(c!, confirme, base, \{ interne, rep, cle: SECRET_JARVIS, consommer: consommerUsageFacture \}, d\.autorisation\);/);
+});
+
+// 6e série de réserves Codex #389 (18/11) : une confirmation REJOUÉE (même autorisation) ne doit jamais renvoyer de SMS. L'autorisation
+// expire 10 min après l'aperçu et elle est CONSOMMÉE atomiquement côté serveur (clé primaire de oauth_etats) AVANT send-sms.
+test('v2.16 (6e série Codex) : autorisation à usage unique — rejeu = 409 et zéro send-sms ; expirée = 409 ; concurrence = un seul envoi ; verrou en panne = 503 sans envoi', async () => {
+  const { ERREUR_AUTORISATION, ERREUR_VERROU, DUREE_AUTORISATION_MS, FOURNISSEUR_USAGE } = await import('../functions/_shared/jarvis-facture-sms.ts');
+  assert.equal(DUREE_AUTORISATION_MS, 10 * 60 * 1000); assert.equal(FOURNISSEUR_USAGE, 'jarvis-facture-sms');
+  assert.equal(ERREUR_AUTORISATION, 'autorisation déjà utilisée ou expirée : refais l’aperçu, rien n’est parti');
+  const tok = '0b3c2d1e-aaaa-4bbb-8ccc-123456789abc'; const c = cmd({ id: '#2145', tel: '06 00 00 00 01', tracking_token: tok });
+  const base = (confirme) => ({ ok: true, action: 'envoyer_facture_sms', niveau: 'N3', confirme, commande: apercuCommande(c) });
+  let horloge = T;
+  const mag = magasinUsage(); const appels = [];
+  let compteurNonce = 0; const deps = { cle: 'cle-fictive', consommer: mag.consommer, maintenant: () => horloge, aleatoire: () => (++compteurNonce).toString(16).padStart(32, 'a'), rep: (code, o) => ({ code, o }),
+    interne: async (nom, corps) => { appels.push({ nom, corps, deja: mag.lignes.size }); return { http: 200, j: { success: true } }; } };
+  const ap = await actionFactureSms(c, false, base(false), deps); const A = ap.o.autorisation;
+  assert.equal(Number(A.split('.')[1]), T + DUREE_AUTORISATION_MS, 'expiration = aperçu + 10 min');
+  // 1re confirmation : un envoi, l'usage est enregistré AVANT send-sms
+  let r = await actionFactureSms(c, true, base(true), deps, A);
+  assert.equal(r.code, 200); assert.equal(appels.length, 1); assert.equal(appels[0].deja, 1, 'consommée avant l’envoi');
+  assert.deepEqual([...mag.lignes.keys()], [FOURNISSEUR_USAGE + ':' + A.split('.')[0]], 'clé = fournisseur + nonce, jamais le lien ni le numéro');
+  assert.equal(mag.lignes.get(FOURNISSEUR_USAGE + ':' + A.split('.')[0]), new Date(T + DUREE_AUTORISATION_MS).toISOString());
+  // rejeu identique (même requête confirmée) : 409, ZÉRO nouveau send-sms — et encore après 1, 5 min
+  for (const dt of [0, 60000, 5 * 60000]) { horloge = T + dt; r = await actionFactureSms(c, true, base(true), deps, A); assert.equal(r.code, 409, String(dt)); assert.equal(r.o.erreur, ERREUR_AUTORISATION); assert.equal(appels.length, 1, String(dt)); }
+  // expirée (aperçu + 10 min + 1 ms), jamais utilisée : 409, zéro envoi, rien consommé
+  horloge = T; const ap2 = await actionFactureSms(c, false, base(false), deps); const avant = mag.lignes.size;
+  horloge = T + DUREE_AUTORISATION_MS + 1; r = await actionFactureSms(c, true, base(true), deps, ap2.o.autorisation);
+  assert.equal(r.code, 409); assert.equal(r.o.erreur, ERREUR_AUTORISATION); assert.equal(appels.length, 1); assert.equal(mag.lignes.size, avant);
+  // limite exacte : à aperçu + 10 min pile, encore valable
+  horloge = T; const ap3 = await actionFactureSms(c, false, base(false), deps); horloge = T + DUREE_AUTORISATION_MS;
+  r = await actionFactureSms(c, true, base(true), deps, ap3.o.autorisation); assert.equal(r.code, 200); assert.equal(appels.length, 2);
+  // CONCURRENCE : 5 confirmations simultanées de la même autorisation → UN seul send-sms, 4 refus 409
+  horloge = T; const ap4 = await actionFactureSms(c, false, base(false), deps); const n0 = appels.length;
+  const rs = await Promise.all(Array.from({ length: 5 }, () => actionFactureSms(c, true, base(true), deps, ap4.o.autorisation)));
+  assert.deepEqual(rs.map((x) => x.code).sort(), [200, 409, 409, 409, 409]); assert.equal(appels.length - n0, 1, 'un seul SMS en concurrence');
+  // send-sms en échec APRÈS consommation : 502 ; la même autorisation ne peut pas être rejouée (refaire l'aperçu)
+  const mag2 = magasinUsage(); let n = 0;
+  const depsKo = { ...deps, consommer: mag2.consommer, interne: async () => { n++; return { http: 500, j: { success: false } }; } };
+  const ap5 = await actionFactureSms(c, false, base(false), depsKo);
+  assert.equal((await actionFactureSms(c, true, base(true), depsKo, ap5.o.autorisation)).code, 502); assert.equal(n, 1);
+  r = await actionFactureSms(c, true, base(true), depsKo, ap5.o.autorisation); assert.equal(r.code, 409); assert.equal(n, 1);
+  // verrou indisponible (base en panne) : 503, ZÉRO send-sms (jamais d'envoi sans usage enregistré)
+  const mag3 = magasinUsage(true); let m = 0;
+  const depsPanne = { ...deps, consommer: mag3.consommer, interne: async () => { m++; return { http: 200, j: { success: true } }; } };
+  const ap6 = await actionFactureSms(c, false, base(false), depsPanne);
+  r = await actionFactureSms(c, true, base(true), depsPanne, ap6.o.autorisation); assert.equal(r.code, 503); assert.equal(r.o.erreur, ERREUR_VERROU); assert.equal(m, 0);
+  // consommer absent (mauvais câblage) : 503 sans envoi
+  r = await actionFactureSms(c, true, base(true), { ...deps, consommer: undefined }, (await actionFactureSms(c, false, base(false), deps)).o.autorisation); assert.equal(r.code, 503); assert.equal(appels.length - n0, 1);
+  // l'autorisation n'apparaît dans aucune réponse d'exécution ni de refus ; ni lien ni numéro dans l'autorisation
+  assert.equal(JSON.stringify(rs).includes(ap4.o.autorisation), false); assert.match(A, AUTORISATION_FORME, 'forme stricte : 32 hex . 13 chiffres . 64 hex, donc aucun mot (http, facture) possible'); // seule la forme stricte est vérifiée : aucune assertion « ne contient pas <court> » sur du hasard (nonce injecté, 7e/8e séries Codex)
+  // index.ts : consommation par INSERTION dans oauth_etats (clé primaire « etat », table existante, aucune migration), doublon 23505 = déjà utilisée
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /async function consommerUsageFacture\(etat: string, expire_at: string\)/);
+  assert.match(src, /sb\.from\('oauth_etats'\)\.insert\(\{ etat, fournisseur: FOURNISSEUR_USAGE, expire_at, utilise_at: /);
+  assert.match(src, /code === '23505' \? 'deja' : 'erreur'/);
+});
+
+// Réserve Codex #389 (3e série, 17/11) : le jeton accepté allait jusqu'à 128 caractères, l'aperçu annonçait « 147 caractères, 1 SMS »
+// alors que le SMS pouvait en faire 2 ou 3. Le jeton est plafonné pour que le SMS tienne TOUJOURS en un seul SMS (160 caractères de
+// l'alphabet SMS standard, numéro de commande de 9 chiffres compris) ; au-delà : refus 422, aucun envoi. Le comptage suit le vrai codage.
+test('v2.16 (3e série Codex) : jeton plafonné — limite = 1 SMS, trop long = 422 et zéro envoi ; comptage de segments réel (GSM 7 bits / UCS-2)', async () => {
+  const { JETON_FACTURE_MAX, mesureSms } = await import('../functions/_shared/jarvis-action-logique.ts');
+  assert.equal(typeof JETON_FACTURE_MAX, 'number');
+  // la limite se déduit du texte fixe : 9 chiffres de commande + jeton maximal = 160 caractères exactement
+  const fixe = factureSms(cmd({ id: '#123456789', tel: '06 00 00 00 01', tracking_token: 'a'.repeat(8) }));
+  assert.equal(JETON_FACTURE_MAX, 160 - (fixe.texte.length - 8), 'plafond calculé, pas choisi au hasard');
+  assert.ok(JETON_FACTURE_MAX >= 36, 'un jeton UUID (36) passe toujours');
+  for (const id of ['#1', '#2145', '#123456789']) {
+    const lim = factureSms(cmd({ id, tel: '06 00 00 00 01', tracking_token: 'A1-_'.repeat(20).slice(0, JETON_FACTURE_MAX) }));
+    assert.ok(!('erreur' in lim), id); assert.ok(lim.texte.length <= 160, id + ' : ' + lim.texte.length);
+    assert.equal(lim.apercu.sms, 1, id); assert.equal(lim.apercu.caracteres, lim.texte.length, id);
+  }
+  const TROP = 'refus : lien de la facture trop long pour tenir dans un seul SMS : rien n’est parti, envoie la facture par e-mail';
+  for (const n of [JETON_FACTURE_MAX + 1, 64, 128, 500]) {
+    const r = factureSms(cmd({ id: '#2145', tel: '06 00 00 00 01', tracking_token: 'b'.repeat(n) }));
+    assert.equal(r.erreur, TROP.replace(/^refus : /, ''), String(n));
+    for (const conf of [false, true]) {
+      const appels = []; const c = cmd({ id: '#2145', tel: '06 00 00 00 01', tracking_token: 'b'.repeat(n) });
+      const x = await actionFactureSms(c, conf, { ok: true, action: 'envoyer_facture_sms', niveau: 'N3', confirme: conf, commande: apercuCommande(c) },
+        { cle: 'cle-fictive', interne: async (nom, corps) => { appels.push({ nom, corps }); return { http: 200, j: { success: true } }; }, rep: (code, o) => ({ code, o }), ...magasinUsage() }, 'a'.repeat(32) + '.1795000000000.' + 'b'.repeat(64));
+      assert.equal(x.code, 422, n + ' ' + conf); assert.equal(x.o.erreur, TROP.replace(/^refus : /, '')); assert.equal(appels.length, 0, 'aucun envoi : ' + n);
+      assert.equal(JSON.stringify(x).includes('b'.repeat(20)), false, 'jeton jamais renvoyé');
+    }
+    assert.match(controlerCommande({ action: 'envoyer_facture_sms' }, cmd({ id: '#2145', tel: '06 00 00 00 01', tracking_token: 'b'.repeat(n) })), /trop long/);
+  }
+  assert.match(factureSms(cmd({ id: '#2145', tel: '06 00 00 00 01', tracking_token: 'b'.repeat(7) })).erreur, /sans lien de facture/, 'trop court : refus inchangé');
+  // comptage réel : GSM 7 bits (160 puis 153), extension € ^ { } [ ] ~ | \ = 2 caractères ; hors alphabet = UCS-2 (70 puis 67), emoji = 2
+  assert.deepEqual(mesureSms('a'.repeat(160)), { codage: 'GSM-7', caracteres: 160, sms: 1 });
+  assert.deepEqual(mesureSms('a'.repeat(161)), { codage: 'GSM-7', caracteres: 161, sms: 2 });
+  assert.deepEqual(mesureSms('é'.repeat(160)), { codage: 'GSM-7', caracteres: 160, sms: 1 }, 'é est dans l’alphabet SMS');
+  assert.deepEqual(mesureSms('€'.repeat(80)), { codage: 'GSM-7', caracteres: 160, sms: 1 }, '€ compte double');
+  assert.deepEqual(mesureSms('€'.repeat(81)), { codage: 'GSM-7', caracteres: 162, sms: 2 });
+  assert.deepEqual(mesureSms('Bonjour, votre commande est prête'), { codage: 'UCS-2', caracteres: 33, sms: 1 }, 'ê force l’UCS-2');
+  assert.deepEqual(mesureSms('ç'.repeat(70)), { codage: 'UCS-2', caracteres: 70, sms: 1 });
+  assert.deepEqual(mesureSms('a'.repeat(70) + 'ê'), { codage: 'UCS-2', caracteres: 71, sms: 2 });
+  assert.deepEqual(mesureSms('😀'.repeat(35)), { codage: 'UCS-2', caracteres: 70, sms: 1 }, 'emoji = 2 unités');
+  assert.deepEqual(mesureSms('a'.repeat(134) + 'ê'), { codage: 'UCS-2', caracteres: 135, sms: 3 }, '135 > 134 = 2 × 67');
+  assert.equal(segmentsSms('€'.repeat(81)), 2); assert.equal(segmentsSms('a'.repeat(70) + 'ê'), 2);
+  // l'aperçu annonce le vrai compte du texte RÉEL envoyé (pas de l'aperçu masqué)
+  const f = factureSms(cmd({ id: '#2145', tel: '06 00 00 00 01', tracking_token: '0b3c2d1e-aaaa-4bbb-8ccc-123456789abc' }));
+  assert.deepEqual([f.apercu.caracteres, f.apercu.sms], [mesureSms(f.texte).caracteres, 1]); assert.equal(mesureSms(f.texte).codage, 'GSM-7');
+  // 3e série Codex, point 1 : la réponse de envoyer_facture_sms ne porte AUCUN champ libre de la commande (produit, nom, ville, transporteur)
+  const c = cmd({ id: '#2145', tel: '06 00 00 00 01', tracking_token: '0b3c2d1e-aaaa-4bbb-8ccc-123456789abc', client: 'Ab3dEf9h', produit: 'abcdefgh', adresse: '1 rue X 93160 Ab3dEf9hXyZ', transporteur: 'abcdefghijkl' });
+  for (const conf of [false, true]) {
+    const dd = { cle: 'cle-fictive', ...magasinUsage(), interne: async () => ({ http: 200, j: { success: true } }), rep: (code, o) => ({ code, o }) };
+    const ap = await actionFactureSms(c, false, { ok: true, action: 'envoyer_facture_sms', niveau: 'N3', confirme: false, commande: apercuCommande(c) }, dd);
+    const x = conf ? await actionFactureSms(c, true, { ok: true, action: 'envoyer_facture_sms', niveau: 'N3', confirme: true, commande: apercuCommande(c) }, dd, ap.o.autorisation) : ap;
+    assert.equal(x.code, 200); assert.deepEqual(Object.keys(x.o.commande).sort(), ['cmd', 'colis_suivis', 'cp', 'date_livraison', 'statut'], String(conf));
+    for (const libre of ['Ab3dEf9h', 'abcdefgh', 'abcdefghijkl']) assert.equal(JSON.stringify(x).includes(libre), false, libre);
+  }
 });

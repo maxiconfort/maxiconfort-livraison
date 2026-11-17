@@ -2,6 +2,12 @@
 // Edge Function : jarvis-action (v2 — 30/10/2026 ; v2.1 04/11/2026 : lister_commandes { client } = recherche par nom / téléphone / e-mail ;
 // v2.2 04/11/2026 : recherche approchée par nom quand rien d'exact — « approchee: true » + score ;
 // v2.4 09/11/2026 : compter_commandes par origine et date de prise de commande (date_commande), + montant hors annulées et hors SAV
+// v2.16 17/11/2026 : envoyer_facture_sms { cmdId } (N3) = facture par SMS : lien et texte FIXE construits ici (factureSms), envoi par send-sms
+//   (type jarvis) au portable de la commande ; aperçu = destinataire masqué + « [lien de la facture] » ; le lien ne sort jamais dans une réponse ;
+//   aperçu et confirmation liés par une empreinte HMAC (JARVIS_ACTION_SECRET) de tel + lien + texte : commande changée entre-temps = 409, rien n'est parti
+//   6e série Codex #389 (18/11) : l'empreinte devient une AUTORISATION À USAGE UNIQUE (nonce aléatoire + expiration 10 min, signée) ; la confirmation
+//   la CONSOMME atomiquement (insertion dans oauth_etats, clé primaire : une seule requête gagne) AVANT send-sms ; rejeu ou expirée = 409, zéro SMS
+//   toujours 1 SMS : jeton ≤ JETON_FACTURE_MAX (44) sinon 422 sans envoi ; réponse sans champ libre de la commande (ni produit, nom, ville, transporteur)
 // v2.14 15/11/2026 : credits_sms (N1, lecture seule) = solde de crédits SMS du compte OVH (GET /sms/{service}) : crédits, état ok / bas / zéro / indisponible ; jamais de secret ni d'envoi
 // v2.13 14/11/2026 : sms_statut (N1, lecture seule) = SMS parti ou non pour une commande : commandes.sms_envoyes + sms_historique (échecs, envois manuels) ; jamais texte, téléphone ni nom
 // v2.11 10/11/2026 : nom complet du client (client_nom) dans chaque commande renvoyée (colonne client lue aussi pour la liste d'un jour) ;
@@ -12,8 +18,8 @@
 //   N1 lecture    : lire_commande, lister_commandes, compter_commandes, lire_stock, lien_facture (v2.5), suivi_gls (v2.10), sms_statut (v2.13), credits_sms (v2.14) — exécutées directement ;
 //   N2 réversible : creer_commande (depuis un mail), modifier_commande, planifier, deplacer, changer_statut, sav, gls_etiquette,
 //                   gls_retour, litige, stock_entree, stock_chargement, stock_retour_depot — aperçu puis exécution ;
-//   N3 critique   : creer_commande (dictée), annuler_commande, supprimer_commande, modifier_prix, envoyer_sms, marquer_livre,
-//                   stock_correction — aperçu puis exécution, confirmation à chaque fois côté JARVIS.
+//   N3 critique   : creer_commande (dictée), annuler_commande, supprimer_commande, modifier_prix, envoyer_sms, envoyer_facture_sms (v2.16),
+//                   marquer_livre, stock_correction — aperçu puis exécution, confirmation à chaque fois côté JARVIS.
 // Toujours en 2 temps pour N2/N3 : { ..., confirme:false } → APERÇU (rien n'est écrit) ; { ..., confirme:true } → exécution.
 // Hors liste, toujours : encaissement (marquer payé, montant encaissé, remboursement), Shopify, TikTok, tables secrètes.
 // Appelant : en-tête x-jarvis-secret = secret JARVIS_ACTION_SECRET (dédié, révocable en le changeant). Aucun autre accès.
@@ -28,6 +34,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
   controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 import { lireCompteSmsOVH } from '../_shared/ovh-sms.ts';
+import { actionFactureSms, FOURNISSEUR_USAGE } from '../_shared/jarvis-facture-sms.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
 const SECRET_JARVIS = Deno.env.get('JARVIS_ACTION_SECRET') || '';
@@ -43,6 +50,16 @@ const H = { 'Content-Type': 'application/json' };
 const rep = (code: number, o: unknown) => new Response(JSON.stringify({ version: VERSION, ...(o as object) }), { status: code, headers: H });
 
 /** Appel interne d'une autre Edge Function (contrôle d'appelant : clé secrète du projet). */
+/** 6e série de réserves Codex #389 : consommation ATOMIQUE d'une autorisation de facture par SMS. Table EXISTANTE oauth_etats (migration 019 :
+ *  « etat » clé primaire, RLS forcée, aucun droit anon / authenticated — seule la clé serveur y écrit) : une ligne
+ *  « jarvis-facture-sms:<nonce> » est INSÉRÉE ; une seconde insertion du même nonce (rejeu, double clic, requêtes simultanées) est refusée
+ *  par la base (23505) = 'deja'. Toute autre erreur = 'erreur' (aucun envoi). Aucune migration. Les lignes expirées sont purgées par le
+ *  ménage de tiktok-oauth-callback (expirées depuis 24 h) ; le fournisseur différent les rend inutilisables comme état OAuth TikTok. */
+async function consommerUsageFacture(etat: string, expire_at: string): Promise<'ok' | 'deja' | 'erreur'> {
+  const { error } = await sb.from('oauth_etats').insert({ etat, fournisseur: FOURNISSEUR_USAGE, expire_at, utilise_at: new Date().toISOString() });
+  if (!error) return 'ok';
+  return (error as any).code === '23505' ? 'deja' : 'erreur';
+}
 async function interne(nom: string, corps: Record<string, unknown>) {
   const r = await fetch(`${SB_URL}/functions/v1/${nom}`, { method: 'POST', headers: { ...H, Authorization: 'Bearer ' + CLE, apikey: CLE }, body: JSON.stringify(corps) });
   let j: any = null; try { j = await r.json(); } catch { /* */ }
@@ -271,6 +288,8 @@ Deno.serve(async (req: Request) => {
       if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' });
       return rep(200, { ...base, sms: apercu, fait: true });
     }
+    // v2.16 : rien de JARVIS dans le SMS ; le texte réel (avec le lien) ne part que vers send-sms (gestionnaire testé : _shared/jarvis-facture-sms.ts)
+    if (d.action === 'envoyer_facture_sms') return actionFactureSms(c!, confirme, base, { interne, rep, cle: SECRET_JARVIS, consommer: consommerUsageFacture }, d.autorisation);
     if (d.action === 'sav') {
       const sav = construireSav(d, c!);
       const visible = { id: sav.id, produit: sav.produit, origine: sav.origine, date_livraison: sav.date_livraison, instr: sav.instr };
