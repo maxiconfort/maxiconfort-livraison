@@ -3,7 +3,7 @@
 // Lancer : node --test supabase/tests/   (aucune connexion, aucune donnée client)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { jourParis, reserverPrevenir, libererPrevenir, peutEnvoyer, echecCertain } from '../functions/_shared/sms-prevenir.ts';
+import { jourParis, reserverPrevenir, libererPrevenir, peutEnvoyer, echecCertain, envoyerAvecReservation } from '../functions/_shared/sms-prevenir.ts';
 import { controlerDemande as validerDemande } from '../functions/_shared/jarvis-action-logique.ts';
 
 // Fausse base : même contrat que les fonctions SQL (clé primaire (commande, jour), libération par le même canal seulement).
@@ -79,4 +79,41 @@ test('revue Codex #20 (P2) : la libération vise le JOUR RÉSERVÉ — un envoi 
 test('revue Codex #20 (P2) : échec CERTAIN (send-sms répond success:false) = libération ; échec INDÉTERMINÉ (exception, passerelle, réponse illisible) = réservation GARDÉE', () => {
   assert.equal(echecCertain({ http: 502, j: { success: false, error: 'OVH' } }), true);
   for (const flou of [null, undefined, {}, { http: 502 }, { http: 504, j: null }, { http: 502, j: 'Bad Gateway' }, { http: 200, j: {} }, { http: 502, j: { error: 'x' } }, { http: 200, j: { success: true } }]) assert.equal(echecCertain(flou), false, JSON.stringify(flou));
+});
+
+// ---- parcours d'envoi COMPLETS (revue Codex #20, points 3 et 4) ----
+const envoi = (sb, canal, envoyer, extra = {}) => envoyerAvecReservation({ sb, cmdId: '#8001', canal, maintenant: M, envoyer, ...extra });
+
+test('parcours : succès = envoyé, réservation gardée ; un second canal le même jour n\'envoie RIEN (l\'envoi n\'est même pas tenté)', async () => {
+  const sb = fausseBase(); let appels = 0;
+  assert.deepEqual(await envoi(sb, 'veille', async () => { appels++; return { ok: true, certain: true }; }), { issue: 'envoye', jour: '2026-11-22' });
+  const j = await envoi(sb, 'jarvis', async () => { appels++; return { ok: true, certain: true }; });
+  assert.equal(j.issue, 'deja'); assert.equal(j.canal, 'veille'); assert.equal(appels, 1, 'JARVIS n\'a PAS envoyé');
+});
+test('parcours : base indisponible — la veille ENVOIE comme avant (fail-open, choix assumé), JARVIS ne tente PAS l\'envoi (503)', async () => {
+  const sb = fausseBase({ panne: 'function does not exist' }); let appels = 0;
+  assert.equal((await envoi(sb, 'veille', async () => { appels++; return { ok: true, certain: true }; })).issue, 'envoye'); assert.equal(appels, 1);
+  const j = await envoi(sb, 'jarvis', async () => { appels++; return { ok: true, certain: true }; }); assert.equal(j.issue, 'bloque_indisponible'); assert.equal(j.code, 503); assert.equal(appels, 1, 'rien envoyé');
+});
+test('parcours : échec CERTAIN = réservation libérée AVANT la journalisation, même si la journalisation lève une erreur ; l\'autre canal peut alors envoyer', async () => {
+  const sb = fausseBase(); const ordre = [];
+  const r = await envoi(sb, 'veille', async () => ({ ok: false, certain: true }), { journaliser: async () => { ordre.push(sb.t.size === 0 ? 'libere' : 'encore-reserve'); throw new Error('journal HS'); } });
+  assert.equal(r.issue, 'echec_certain'); assert.deepEqual(ordre, ['libere'], 'libérée avant la journalisation');
+  assert.equal(sb.t.size, 0); assert.equal((await envoi(sb, 'jarvis', async () => ({ ok: true, certain: true }))).issue, 'envoye');
+});
+test('parcours : échec INDÉTERMINÉ (exception pendant l\'envoi, ou certain:false) = réservation GARDÉE, aucun second SMS possible', async () => {
+  for (const envoyer of [async () => { throw new Error('connexion coupée'); }, async () => ({ ok: false, certain: false })]) {
+    const sb = fausseBase(); const r = await envoi(sb, 'jarvis', envoyer); assert.equal(r.issue, 'echec_indetermine'); assert.equal(sb.t.size, 1, 'réservation gardée');
+    assert.equal((await envoi(sb, 'veille', async () => ({ ok: true, certain: true }))).issue, 'deja');
+  }
+});
+test('parcours : une erreur de journalisation après un envoi RÉUSSI ne change pas l\'issue', async () => {
+  const sb = fausseBase(); assert.equal((await envoi(sb, 'jarvis', async () => ({ ok: true, certain: true }), { journaliser: async () => { throw new Error('journal HS'); } })).issue, 'envoye');
+});
+test('parcours PASSAGE DE MINUIT : envoi réservé à 22 h 59 UTC (23 h 59 Paris), échec certain après minuit, autre requête déjà réservée pour le lendemain : seule la réservation du 22 est libérée', async () => {
+  const sb = fausseBase(); const avant = new Date('2026-11-22T22:59:30Z'); const apres = new Date('2026-11-22T23:00:30Z');
+  const r = await envoyerAvecReservation({ sb, cmdId: '#8100', canal: 'jarvis', maintenant: avant, envoyer: async () => {
+    await reserverPrevenir(sb, '#8100', 'jarvis', apres);   // pendant l'envoi, minuit passe et une autre requête réserve le 23
+    return { ok: false, certain: true }; } });
+  assert.equal(r.issue, 'echec_certain'); assert.equal(sb.t.has('#8100|2026-11-22'), false); assert.equal(sb.t.has('#8100|2026-11-23'), true, 'la réservation valide du 23 est intacte');
 });

@@ -27,7 +27,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { envoyerSMSOVH } from '../_shared/ovh-sms.ts';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 import { texteConfirmation, expeditionAutorisee } from '../_shared/sms-garde.ts';
-import { reserverPrevenir, libererPrevenir, peutEnvoyer } from '../_shared/sms-prevenir.ts';
+import { envoyerAvecReservation } from '../_shared/sms-prevenir.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
@@ -200,23 +200,25 @@ Deno.serve(async (req: Request) => {
     transporteur: cmd.transporteur || 'RANOU',
   });
 
-  // 22/11/2026 : « un client n'est prévenu qu'UNE fois par jour », tous canaux. Le SMS « veille » RÉSERVE (commande, jour) de façon atomique AVANT l'envoi ;
-  // si le SMS « prévenir les clients » de JARVIS est déjà parti, rien ne part. Base injoignable : le SMS veille part comme avant (fail-open).
-  let reserveVeille: string | null = null;   // jour réservé (conservé pour la libération)
+  // 22/11/2026 : « un client n'est prévenu qu'UNE fois par jour », tous canaux. Le SMS « veille » passe par envoyerAvecReservation (parcours testé de bout en bout) :
+  // réservation atomique AVANT l'envoi, libération (sur le jour réservé, avant la journalisation) si OVH refuse. Base injoignable : le SMS veille part comme avant (fail-open).
+  let ok = false;
   if (type === 'veille') {
-    const r = await reserverPrevenir(sb, String(cmd.id), 'veille');
-    const p = peutEnvoyer(r, 'veille');
-    if (!p.ok) {
-      return new Response(JSON.stringify({ skipped: true, reason: 'deja_prevenu_aujourdhui', type, detail: p.raison }),
+    const issue = await envoyerAvecReservation({
+      sb, cmdId: String(cmd.id), canal: 'veille',
+      envoyer: async () => ({ ok: await envoyerSMSOVH(cmd.tel, contenu), certain: true }),
+      journaliser: async (reussi) => { await logHistorique(cmd, type, contenu, reussi ? 'envoyé' : 'échec'); },
+    });
+    if (issue.issue === 'deja') {
+      return new Response(JSON.stringify({ skipped: true, reason: 'deja_prevenu_aujourdhui', type, detail: issue.raison }),
         { headers: { 'Content-Type': 'application/json' } });
     }
-    reserveVeille = r.etat === 'reserve' ? r.jour : null;
+    ok = issue.issue === 'envoye';
+  } else {
+    // Envoi OVH (transactionnel — pas de clause STOP)
+    ok = await envoyerSMSOVH(cmd.tel, contenu);
+    await logHistorique(cmd, type, contenu, ok ? 'envoyé' : 'échec');
   }
-
-  // Envoi OVH (transactionnel — pas de clause STOP)
-  const ok = await envoyerSMSOVH(cmd.tel, contenu);
-  await logHistorique(cmd, type, contenu, ok ? 'envoyé' : 'échec');
-  if (!ok && reserveVeille) await libererPrevenir(sb, String(cmd.id), 'veille', reserveVeille); // envoi refusé par OVH (échec certain) : le client reste atteignable
 
   if (!ok) {
     return new Response(JSON.stringify({ error: 'envoi OVH échoué', contenu }),

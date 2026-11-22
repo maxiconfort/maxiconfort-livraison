@@ -34,7 +34,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
   controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 import { lireCompteSmsOVH } from '../_shared/ovh-sms.ts';
-import { reserverPrevenir, libererPrevenir, peutEnvoyer, echecCertain } from '../_shared/sms-prevenir.ts';
+import { envoyerAvecReservation, echecCertain } from '../_shared/sms-prevenir.ts';
 import { actionFactureSms, FOURNISSEUR_USAGE } from '../_shared/jarvis-facture-sms.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
@@ -285,23 +285,23 @@ Deno.serve(async (req: Request) => {
     if (d.action === 'envoyer_sms') {
       const tel = String(c!.tel || '').trim(); const apercu = { destinataire: telMasque(tel), texte: String(d.texte).trim() };
       if (!confirme) return rep(200, { ...base, sms: apercu });
-      // 22/11/2026 : SMS « prévenir les clients de demain » (d.prevenir === true) : réservation ATOMIQUE (commande, jour) tous canaux AVANT l'envoi ; déjà prévenu = 409 ;
-      // base injoignable = 503 (on ne sait pas : rien ne part). Envoi échoué = réservation libérée.
-      let reserve: string | null = null;   // jour réservé (conservé pour la libération)
+      // 22/11/2026 : SMS « prévenir les clients de demain » (d.prevenir === true) : parcours testé de bout en bout (envoyerAvecReservation) : réservation ATOMIQUE tous canaux
+      // AVANT l'envoi ; déjà prévenu = 409 ; base injoignable = 503 (rien ne part) ; échec CERTAIN (send-sms répond success:false) = réservation libérée sur le jour réservé ;
+      // échec INDÉTERMINÉ (exception, passerelle illisible) = réservation GARDÉE (aucun doublon) et l'appelant est prévenu de vérifier l'historique SMS.
       if ((d as any).prevenir === true) {
-        const rv = await reserverPrevenir(sb, String(c!.id), 'jarvis'); const pe = peutEnvoyer(rv, 'jarvis');
-        if (!pe.ok) return rep(pe.code, { ok: false, erreur: pe.raison });
-        reserve = rv.etat === 'reserve' ? rv.jour : null;
+        let dernier: { http: number; j: any } | null = null;
+        const issue = await envoyerAvecReservation({
+          sb, cmdId: String(c!.id), canal: 'jarvis',
+          envoyer: async () => { const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || '') }); dernier = r; return { ok: !!r.j?.success, certain: echecCertain(r) }; },
+        });
+        if (issue.issue === 'deja') return rep(409, { ok: false, erreur: issue.raison });
+        if (issue.issue === 'bloque_indisponible') return rep(issue.code, { ok: false, erreur: issue.raison });
+        if (issue.issue === 'echec_certain') return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + (dernier as any)?.http + ')' });
+        if (issue.issue === 'echec_indetermine') return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS de la commande ; la réservation du jour est gardée (aucun doublon)' });
+        return rep(200, { ...base, sms: apercu, fait: true });
       }
-      // revue Codex #20 : échec CERTAIN (send-sms a répondu « success: false ») = réservation libérée ; échec INDÉTERMINÉ (exception réseau, passerelle sans réponse lisible)
-      // = le SMS est peut-être parti : la réservation est GARDÉE (aucun doublon) et l'appelant est prévenu de vérifier l'historique SMS.
-      let r: { http: number; j: any };
-      try { r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || '') }); }
-      catch { return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ (connexion interrompue) : le SMS est peut-être parti, vérifie l’historique SMS de la commande ; la réservation du jour est gardée (aucun doublon)' }); }
-      if (!r.j?.success) {
-        if (reserve && echecCertain(r)) { await libererPrevenir(sb, String(c!.id), 'jarvis', reserve); return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' }); }
-        return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' + (reserve ? ' ; résultat INDÉTERMINÉ : vérifie l’historique SMS, la réservation du jour est gardée (aucun doublon)' : '') });
-      }
+      const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || '') });
+      if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' });
       return rep(200, { ...base, sms: apercu, fait: true });
     }
     // v2.16 : rien de JARVIS dans le SMS ; le texte réel (avec le lien) ne part que vers send-sms (gestionnaire testé : _shared/jarvis-facture-sms.ts)

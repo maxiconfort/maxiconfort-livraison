@@ -47,3 +47,35 @@ export function peutEnvoyer(r: Reservation, canal: Canal): { ok: true } | { ok: 
   if (r.etat === 'deja') return { ok: false, code: 409, raison: 'client déjà prévenu aujourd’hui (canal ' + r.canal + ') : rien n’est envoyé' };
   return canal === 'veille' ? { ok: true } : { ok: false, code: 503, raison: 'impossible de vérifier si le client est déjà prévenu (' + r.raison + ') : rien n’est envoyé' };
 }
+
+export type IssueEnvoi =
+  | { issue: 'envoye'; jour: string | null }
+  | { issue: 'deja'; canal: string; raison: string }
+  | { issue: 'bloque_indisponible'; code: number; raison: string }
+  | { issue: 'echec_certain'; jour: string | null }
+  | { issue: 'echec_indetermine'; jour: string | null };
+
+/** Parcours COMPLET d'un envoi avec réservation, testé de bout en bout (revue Codex #20, points 3 et 4) : réserver → envoyer → journaliser.
+ *  - déjà réservé par un autre canal : rien n'est envoyé ;
+ *  - base indisponible : veille = envoi comme avant (fail-open, choix assumé : la migration peut ne pas être appliquée), JARVIS = rien n'est envoyé (fail-closed) ;
+ *  - échec CERTAIN : la réservation est libérée AVANT toute journalisation, sur le JOUR RÉSERVÉ, et une erreur de journalisation ou de libération n'empêche rien ;
+ *  - échec INDÉTERMINÉ (exception pendant l'envoi) : réservation GARDÉE (le SMS est peut-être parti, aucun doublon possible).
+ *  `envoyer` renvoie { ok, certain } : ok=false et certain=true = refus explicite (rien n'est parti) ; une exception = indéterminé. */
+export async function envoyerAvecReservation(o: {
+  sb: any; cmdId: string; canal: Canal; maintenant?: Date;
+  envoyer: () => Promise<{ ok: boolean; certain?: boolean }>;
+  journaliser?: (ok: boolean) => Promise<void>;
+}): Promise<IssueEnvoi> {
+  const r = await reserverPrevenir(o.sb, o.cmdId, o.canal, o.maintenant);
+  const p = peutEnvoyer(r, o.canal);
+  if (!p.ok) return r.etat === 'deja' ? { issue: 'deja', canal: r.canal, raison: p.raison } : { issue: 'bloque_indisponible', code: p.code, raison: p.raison };
+  const jour = r.etat === 'reserve' ? r.jour : null;
+  const noter = async (ok: boolean) => { try { if (o.journaliser) await o.journaliser(ok); } catch { /* une erreur de journalisation ne change jamais l'issue */ } };
+  let res: { ok: boolean; certain?: boolean };
+  try { res = await o.envoyer(); } catch { await noter(false); return { issue: 'echec_indetermine', jour }; }
+  if (res.ok) { await noter(true); return { issue: 'envoye', jour }; }
+  if (res.certain === false) { await noter(false); return { issue: 'echec_indetermine', jour }; }
+  if (jour) await libererPrevenir(o.sb, o.cmdId, o.canal, jour);   // libération AVANT la journalisation
+  await noter(false);
+  return { issue: 'echec_certain', jour };
+}
