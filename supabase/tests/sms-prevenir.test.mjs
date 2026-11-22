@@ -3,7 +3,7 @@
 // Lancer : node --test supabase/tests/   (aucune connexion, aucune donnée client)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classerReponseOvh, RESULTAT_EXCEPTION, statutSms, STATUT_INDETERMINE } from '../functions/_shared/ovh-resultat.ts';
+import { classerReponseOvh, RESULTAT_EXCEPTION, statutSms, STATUT_INDETERMINE, reponseSendSms } from '../functions/_shared/ovh-resultat.ts';
 import { jourParis, reserverPrevenir, libererPrevenir, peutEnvoyer, echecCertain, envoyerAvecReservation } from '../functions/_shared/sms-prevenir.ts';
 import { resumeSms, controlerDemande as validerDemande } from '../functions/_shared/jarvis-action-logique.ts';
 
@@ -166,4 +166,30 @@ test('revue Codex #20 (P2) : le statut INDÉTERMINÉ écrit par send-sms / send-
   const lignes = [{ type_sms: 'jarvis', statut: ecrit, date_sms: '2026-11-22', heure: '10:30' }, { type_sms: 'veille', statut: 'échec', date_sms: '2026-11-22', heure: '10:31' }, { type_sms: 'jarvis', statut: 'envoyé', date_sms: '2026-11-22', heure: '10:32' }];
   const r = resumeSms({ sms_envoyes: [] }, lignes); const st = r.sms.map((s) => s.statut);
   assert.deepEqual(st, ['indéterminé (peut-être parti)', 'échec', 'envoyé']);
+});
+
+test('revue Codex #20 (points 2, 3, 4) : libération confirmée seulement par TRUE ; échec de journalisation SIGNALÉ ; send-sms compatible avec les appelants manuels', async () => {
+  // 2 : la RPC renvoie false (rien supprimé) ou null = libération NON confirmée
+  const rpc = (data, error = null) => ({ rpc: async () => ({ data, error }) });
+  assert.equal(await libererPrevenir(rpc(true), '#9701', 'jarvis', '2026-11-22'), true);
+  for (const d of [false, null, undefined, 'true', 1]) assert.equal(await libererPrevenir(rpc(d), '#9701', 'jarvis', '2026-11-22'), false, 'data=' + JSON.stringify(d));
+  const sbFaux = { t: new Map(), async rpc(nom) { return nom === 'reserver_prevenir' ? { data: { reserve: true }, error: null } : { data: false, error: null }; } };
+  const r2 = await envoyerAvecReservation({ sb: sbFaux, cmdId: '#9702', canal: 'jarvis', maintenant: M, envoyer: async () => ({ ok: false, certain: true }) }); assert.equal(r2.liberation_echouee, true, 'RPC = false : signalé');
+  // 3 : journal en panne signalé pour les trois issues
+  for (const [res, issue] of [[{ ok: true, certain: true }, 'envoye'], [{ ok: false, certain: false }, 'echec_indetermine'], [{ ok: false, certain: true }, 'echec_certain']]) {
+    const r = await envoyerAvecReservation({ sb: fausseBase(), cmdId: '#9703', canal: 'veille', maintenant: M, envoyer: async () => res, journaliser: async () => { throw new Error('journal HS'); } });
+    assert.equal(r.issue, issue); assert.equal(r.journal_echoue, true, issue + ' : journal en panne signalé');
+  }
+  assert.equal('journal_echoue' in await envoyerAvecReservation({ sb: fausseBase(), cmdId: '#9704', canal: 'veille', maintenant: M, envoyer: async () => ({ ok: true, certain: true }), journaliser: async () => {} }), false);
+  // 4 : compatibilité des appelants manuels / historiques de send-sms
+  assert.deepEqual(reponseSendSms({ ok: true, certain: true }), { status: 200, corps: { success: true } });
+  const illisible = reponseSendSms(classerReponseOvh(200, null, '+33')); assert.equal(illisible.status, 200); assert.equal(illisible.corps.success, true, 'HTTP 200 illisible : success reste TRUE pour les appelants historiques (aucune nouvelle tentative aveugle)'); assert.equal(illisible.corps.indetermine, true, 'le drapeau est ajouté pour JARVIS et la veille');
+  assert.deepEqual(reponseSendSms(classerReponseOvh(422, {}, '+33')), { status: 502, corps: { success: false } });
+  assert.deepEqual(reponseSendSms(classerReponseOvh(503, {}, '+33')), { status: 502, corps: { success: false, indetermine: true } });
+  assert.deepEqual(reponseSendSms(RESULTAT_EXCEPTION), { status: 502, corps: { success: false, indetermine: true } });
+  // JARVIS lit le drapeau : un « succès » indéterminé n'est PAS un succès (réservation gardée)
+  const sb = fausseBase(); const lire = (corps) => ({ ok: !!corps.success && corps.indetermine !== true, certain: echecCertain({ http: 200, j: corps }) });
+  const i1 = await envoyerAvecReservation({ sb, cmdId: '#9705', canal: 'jarvis', maintenant: M, envoyer: async () => lire(illisible.corps) });
+  assert.equal(i1.issue, 'echec_indetermine'); assert.equal(sb.t.size, 1);
+  assert.equal((await envoyerAvecReservation({ sb: fausseBase(), cmdId: '#9706', canal: 'jarvis', maintenant: M, envoyer: async () => lire({ success: true }) })).issue, 'envoye');
 });

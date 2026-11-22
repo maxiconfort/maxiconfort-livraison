@@ -292,7 +292,7 @@ Deno.serve(async (req: Request) => {
         let dernier: { http: number; j: any } | null = null;
         const issue = await envoyerAvecReservation({
           sb, cmdId: String(c!.id), canal: 'jarvis',
-          envoyer: async () => { const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || '') }); dernier = r; return { ok: !!r.j?.success, certain: echecCertain(r) }; },
+          envoyer: async () => { const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || '') }); dernier = r; return { ok: !!r.j?.success && r.j?.indetermine !== true, certain: echecCertain(r) }; },   // revue Codex #20 : un « succès » marqué indéterminé (200 OVH illisible) n'est PAS un succès : réservation gardée
         });
         if (issue.issue === 'deja') return rep(409, { ok: false, erreur: issue.raison });
         if (issue.issue === 'bloque_indisponible') return rep(issue.code, { ok: false, erreur: issue.raison });

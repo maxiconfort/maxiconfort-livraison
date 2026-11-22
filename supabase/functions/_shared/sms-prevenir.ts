@@ -31,7 +31,8 @@ export async function reserverPrevenir(sb: any, cmdId: string, canal: Canal, mai
 export async function libererPrevenir(sb: any, cmdId: string, canal: Canal, jour: string): Promise<boolean> {
   // revue Codex #20 : l'échec de libération est SIGNALÉ (false), jamais ignoré : un échec certain ne doit pas laisser le client bloqué sans que personne le sache
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(jour))) return false;
-  try { const { error } = await sb.rpc('liberer_prevenir', { p_cmd: String(cmdId), p_jour: jour, p_canal: canal }); return !error; } catch { return false; }
+  // revue Codex #20 : la RPC renvoie TRUE seulement si une réservation de CE canal a bien été supprimée ; erreur OU false (rien supprimé) = libération non confirmée
+  try { const { data, error } = await sb.rpc('liberer_prevenir', { p_cmd: String(cmdId), p_jour: jour, p_canal: canal }); return !error && data === true; } catch { return false; }
 }
 
 /** Échec CERTAIN d'un envoi = la fonction d'envoi a répondu elle-même « success: false » sans `indetermine` (refus explicite d'OVH : rien n'est parti) : la réservation est libérée.
@@ -51,11 +52,11 @@ export function peutEnvoyer(r: Reservation, canal: Canal): { ok: true } | { ok: 
 }
 
 export type IssueEnvoi =
-  | { issue: 'envoye'; jour: string | null }
+  | { issue: 'envoye'; jour: string | null; journal_echoue?: boolean }
   | { issue: 'deja'; canal: string; raison: string }
   | { issue: 'bloque_indisponible'; code: number; raison: string }
-  | { issue: 'echec_certain'; jour: string | null; liberation_echouee?: boolean }
-  | { issue: 'echec_indetermine'; jour: string | null };
+  | { issue: 'echec_certain'; jour: string | null; liberation_echouee?: boolean; journal_echoue?: boolean }
+  | { issue: 'echec_indetermine'; jour: string | null; journal_echoue?: boolean };
 
 /** Parcours COMPLET d'un envoi avec réservation, testé de bout en bout (revue Codex #20, points 3 et 4) : réserver → envoyer → journaliser.
  *  - déjà réservé par un autre canal : rien n'est envoyé ;
@@ -72,12 +73,14 @@ export async function envoyerAvecReservation(o: {
   const p = peutEnvoyer(r, o.canal);
   if (!p.ok) return r.etat === 'deja' ? { issue: 'deja', canal: r.canal, raison: p.raison } : { issue: 'bloque_indisponible', code: p.code, raison: p.raison };
   const jour = r.etat === 'reserve' ? r.jour : null;
-  const noter = async (i: 'envoye' | 'echec_certain' | 'echec_indetermine') => { try { if (o.journaliser) await o.journaliser(i); } catch { /* une erreur de journalisation ne change jamais l'issue */ } };
+  // revue Codex #20 : une erreur de journalisation ne change jamais l'issue, mais elle est SIGNALÉE (journal_echoue) : l'appelant le dit et garde une trace exploitable ailleurs
+  let journalEchoue = false; const drapeau = () => (journalEchoue ? { journal_echoue: true as const } : {});
+  const noter = async (i: 'envoye' | 'echec_certain' | 'echec_indetermine') => { try { if (o.journaliser) await o.journaliser(i); } catch { journalEchoue = true; } };
   let res: { ok: boolean; certain?: boolean };
-  try { res = await o.envoyer(); } catch { await noter('echec_indetermine'); return { issue: 'echec_indetermine', jour }; }
-  if (res.ok) { await noter('envoye'); return { issue: 'envoye', jour }; }
-  if (res.certain === false) { await noter('echec_indetermine'); return { issue: 'echec_indetermine', jour }; }
+  try { res = await o.envoyer(); } catch { await noter('echec_indetermine'); return { issue: 'echec_indetermine', jour, ...drapeau() }; }
+  if (res.ok) { await noter('envoye'); return { issue: 'envoye', jour, ...drapeau() }; }
+  if (res.certain === false) { await noter('echec_indetermine'); return { issue: 'echec_indetermine', jour, ...drapeau() }; }
   const liberee = jour ? await libererPrevenir(o.sb, o.cmdId, o.canal, jour) : true;   // libération AVANT la journalisation ; son échec est signalé
   await noter('echec_certain');
-  return { issue: 'echec_certain', jour, ...(liberee ? {} : { liberation_echouee: true }) };
+  return { issue: 'echec_certain', jour, ...(liberee ? {} : { liberation_echouee: true }), ...drapeau() };
 }

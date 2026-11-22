@@ -27,5 +27,14 @@ export const STATUT_ECHEC = 'échec';
 export const STATUT_INDETERMINE = 'indéterminé (peut-être parti)';
 export function statutSms(r: ResultatOvh): string { return r.ok ? STATUT_ENVOYE : r.certain ? STATUT_ECHEC : STATUT_INDETERMINE; }
 
+/** Réponse de `send-sms` (revue Codex #20, point 4) : COMPATIBLE avec tous les appelants historiques — `success` garde son sens d'avant (HTTP 200 d'OVH = true, même si le corps est illisible ;
+ *  refus, 5xx, exception = false) — et le drapeau `indetermine: true` s'ajoute SEULEMENT quand le SMS est peut-être parti (200 illisible, 5xx, exception) : les appelants qui l'ignorent
+ *  se comportent exactement comme avant (aucune nouvelle tentative aveugle de plus) ; JARVIS et la veille, qui lisent le drapeau, gardent leur réservation. Pur. */
+export function reponseSendSms(r: ResultatOvh): { status: number; corps: { success: boolean; indetermine?: true } } {
+  const success = r.ok || r.http200Illisible === true;
+  const indetermine = !r.ok && !r.certain;
+  return { status: success ? 200 : 502, corps: { success, ...(indetermine ? { indetermine: true as const } : {}) } };
+}
+
 /** Exception pendant l'appel OVH (coupure, délai) : on ne sait pas si l'envoi a été pris en compte. */
 export const RESULTAT_EXCEPTION: ResultatOvh = { ok: false, certain: false, raison: 'exception pendant l’appel OVH' };

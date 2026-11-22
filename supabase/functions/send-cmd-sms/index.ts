@@ -215,8 +215,9 @@ Deno.serve(async (req: Request) => {
         { headers: { 'Content-Type': 'application/json' } });
     }
     ok = issue.issue === 'envoye';
+    if (issue.journal_echoue) console.warn('send-cmd-sms: journalisation de l’envoi IMPOSSIBLE (cmd ' + cmd.id + ', issue ' + issue.issue + ') : aucune trace dans sms_historique, contrôler à la main');   // revue Codex #20 : signalé, trace dans les journaux de la fonction
     if (issue.issue === 'echec_indetermine') {
-      return new Response(JSON.stringify({ error: 'envoi OVH INDÉTERMINÉ : le SMS est peut-être parti, vérifier l’historique SMS ; la réservation du jour est gardée (aucun doublon)', indetermine: true, contenu }),
+      return new Response(JSON.stringify({ error: 'envoi OVH INDÉTERMINÉ : le SMS est peut-être parti, vérifier l’historique SMS' + (issue.journal_echoue ? ' (ATTENTION : l’historique n’a pas pu être écrit, il ne contient donc aucune trace de cet envoi)' : '') + ' ; la réservation du jour est gardée (aucun doublon)', indetermine: true, ...(issue.journal_echoue ? { journal_echoue: true } : {}), contenu }),
         { status: 502, headers: { 'Content-Type': 'application/json' } });
     }
     if (issue.issue === 'echec_certain' && issue.liberation_echouee) console.warn('send-cmd-sms: réservation NON libérée après un échec certain (cmd ' + cmd.id + ') : client bloqué jusqu’à minuit');
