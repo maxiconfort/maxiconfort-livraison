@@ -32,7 +32,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, variantesTel, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 import { lireCompteSmsOVH } from '../_shared/ovh-sms.ts';
 import { envoyerAvecReservation, echecCertain, phraseIndetermine } from '../_shared/sms-prevenir.ts';
 import { actionFactureSms, FOURNISSEUR_USAGE } from '../_shared/jarvis-facture-sms.ts';
@@ -114,7 +114,8 @@ Deno.serve(async (req: Request) => {
         if (!chiffres) lignes = [];
         else {
           const depuis = /^\d{4}-\d{2}-\d{2}/.test(String(c!.created_at || '')) ? String(c!.created_at).slice(0, 10) : '2000-01-01';
-          const lire = (colonnes: string) => sb.from('sms_historique').select(colonnes).in('tel', [...new Set([tel, chiffres])])
+          const lire = (colonnes: string) => sb.from('sms_historique').select(colonnes).in('tel', variantesTel(tel))   // revue Codex #21 : national, +33, 33, 0033 (l'appli envoie en +33)
+            
             .gte('date_sms', depuis).order('date_sms', { ascending: false }).order('heure', { ascending: false }).limit(20);
           let r = await lire('type_sms, statut, date_sms, heure, cmd_id');   // revue Codex #20 : la commande de chaque envoi (migration 038) ; colonne absente = on relit sans elle (comportement d'avant)
           if (r.error) r = await lire('type_sms, statut, date_sms, heure');

@@ -688,6 +688,21 @@ export function resumeSuivi(x: any): { erreur: string } | Record<string, unknown
     pris_en_charge: inconnu ? null : colis.length ? colis.every((c: any) => !!c.pris_en_charge) : false, ...(inconnu ? { lecture_partielle: true } : {}), colis };
 }
 
+/** revue Codex #21 (P2) : variantes d'écriture d'un même numéro dans `sms_historique.tel` (l'appli convertit en +33 avant send-sms, qui garde le numéro tel quel).
+ *  Numéro français (10 chiffres en 0X…, ou 33X… / 0033X… à 11-13 chiffres) → national, national espacé, +33, 33, 0033, +33 espacé ; autre format → saisie + chiffres seuls. Fonction pure. */
+export function variantesTel(tel: unknown): string[] {
+  const brut = String(tel ?? '').trim(); const ch = brut.replace(/\D/g, '');
+  const sortie = new Set<string>(); if (brut) sortie.add(brut); if (ch) sortie.add(ch);
+  const m = /^(?:0033|33|0)([1-9]\d{8})$/.exec(ch);
+  if (m) {
+    const n9 = m[1]; const nat = '0' + n9;
+    const paires = (x: string) => x.replace(/(\d{2})(?=\d)/g, '$1 ');
+    sortie.add(nat); sortie.add(paires(nat)); sortie.add('+33' + n9); sortie.add('33' + n9); sortie.add('0033' + n9);
+    sortie.add('+33 ' + n9[0] + ' ' + paires(n9.slice(1)));
+  }
+  return [...sortie];
+}
+
 /** v2.13 — « Un SMS est-il parti pour cette commande ? » (N1, lecture seule). Deux sources, jamais le texte du message, le numéro ni le nom :
  *  (i) `commandes.sms_envoyes` [{type, at ISO UTC}] = envois RÉUSSIS, heure exacte (convertie en heure de Paris) ;
  *  (ii) lignes de `sms_historique` (filtrées par téléphone côté appelant) : échecs et envois manuels. Leur heure est AMBIGUË (UTC ou Paris selon

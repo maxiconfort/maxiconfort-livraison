@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { actionFactureSms } from '../functions/_shared/jarvis-facture-sms.ts';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
-  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, resumeSuivi, resumeSms, resumeCredits, SEUIL_CREDITS_SMS_BAS, factureSms, MARQUE_LIEN_FACTURE, segmentsSms, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, resumeSuivi, resumeSms, variantesTel, resumeCredits, SEUIL_CREDITS_SMS_BAS, factureSms, MARQUE_LIEN_FACTURE, segmentsSms, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -595,7 +595,7 @@ test('v2.16 actionFactureSms : aperçu = zéro envoi ; refus = zéro envoi ; con
   d = deps(); r = await actionFactureSms(c(), true, base(c(), true), d, autorisation);
   assert.equal(r.code, 200); assert.equal(r.o.fait, true); assert.equal(d.appels.length, 1);
   assert.equal(d.appels[0].nom, 'send-sms');
-  assert.deepEqual(Object.keys(d.appels[0].corps).sort(), ['client', 'message', 'tel', 'type']);
+  assert.deepEqual(Object.keys(d.appels[0].corps).sort(), ['client', 'cmdId', 'message', 'tel', 'type']);
   assert.equal(d.appels[0].corps.tel, '06 00 00 00 01'); assert.equal(d.appels[0].corps.type, 'jarvis'); assert.equal(d.appels[0].corps.client, 'Client Fictif');
   assert.ok(d.appels[0].corps.message.startsWith('Bonjour, voici la facture de votre commande 2145 : '), d.appels[0].corps.message);
   assert.ok(d.appels[0].corps.message.includes('facture.html?t=' + tok), 'le lien réel part seulement vers send-sms');
@@ -793,4 +793,15 @@ test('revue Codex #20 (P2) : indetermine examiné AVANT le retour « non envoyé
   const iInd = src.indexOf("r.j?.indetermine === true) return rep(502");
   const iEchec = src.indexOf("if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' + nJ2");
   assert.ok(iInd > 0 && iEchec > 0 && iInd < iEchec, 'indéterminé avant échec générique');
+});
+
+test('revue Codex #21 (P2) : variantesTel couvre national, +33, 33, 0033 ; facture par SMS transmet cmdId', () => {
+  for (const t of ['0612345678', '06 12 34 56 78', '+33612345678', '+33 6 12 34 56 78', '0033612345678', '33612345678']) {
+    const v = variantesTel(t);
+    for (const attendu of ['0612345678', '06 12 34 56 78', '+33612345678', '33612345678', '0033612345678', '+33 6 12 34 56 78']) assert.ok(v.includes(attendu), t + ' → ' + attendu);
+  }
+  assert.deepEqual(variantesTel(''), []); assert.deepEqual(variantesTel('abc'), ['abc']);
+  const etr = variantesTel('+44 7700 900123'); assert.ok(etr.includes('+44 7700 900123') && etr.includes('447700900123') && etr.length === 2, 'numéro étranger : saisie + chiffres seuls');
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /\.in\('tel', variantesTel\(tel\)\)/);
 });
