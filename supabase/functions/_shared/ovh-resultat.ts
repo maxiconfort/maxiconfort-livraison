@@ -20,5 +20,12 @@ export function classerReponseOvh(status: number, data: any, numero: string): Re
   return { ok: false, certain: false, raison: 'réponse OVH indéterminée (HTTP ' + status + ')' };
 }
 
+/** Statut écrit dans l'historique SMS (colonne `statut`) — UN SEUL libellé par issue, partagé par send-sms et send-cmd-sms ; `resumeSms` (sms_statut) le relit.
+ *  Le libellé indéterminé COMMENCE par « indéterminé » (jamais par « échec ») pour que la relecture de l'historique ne le prenne pas pour un échec. Pur. */
+export const STATUT_ENVOYE = 'envoyé';
+export const STATUT_ECHEC = 'échec';
+export const STATUT_INDETERMINE = 'indéterminé (peut-être parti)';
+export function statutSms(r: ResultatOvh): string { return r.ok ? STATUT_ENVOYE : r.certain ? STATUT_ECHEC : STATUT_INDETERMINE; }
+
 /** Exception pendant l'appel OVH (coupure, délai) : on ne sait pas si l'envoi a été pris en compte. */
 export const RESULTAT_EXCEPTION: ResultatOvh = { ok: false, certain: false, raison: 'exception pendant l’appel OVH' };

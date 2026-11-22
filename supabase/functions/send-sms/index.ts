@@ -16,6 +16,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { envoyerSMSOVHDetail } from '../_shared/ovh-sms.ts';
+import { statutSms } from '../_shared/ovh-resultat.ts';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
@@ -63,7 +64,7 @@ Deno.serve(async (req: Request) => {
   // revue Codex #20 : le résultat INDÉTERMINÉ d'OVH (exception réseau, réponse 5xx) est transmis tel quel (`indetermine: true`) : le SMS est peut-être parti
   const res = await envoyerSMSOVHDetail(tel, message);
   const ok = res.ok;
-  await logHistorique(tel, type || 'manuel', message, ok ? 'envoyé' : (res.certain ? 'échec' : 'échec (indéterminé)'), client || '');
+  await logHistorique(tel, type || 'manuel', message, statutSms(res), client || '');   // revue Codex #20 : libellé partagé, « indéterminé » jamais confondu avec « échec »
 
   return new Response(JSON.stringify({ success: ok, ...(!ok && !res.certain ? { indetermine: true } : {}) }), { status: ok ? 200 : 502, headers: JSON_HEADERS });
 });

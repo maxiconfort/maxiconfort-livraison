@@ -28,6 +28,7 @@ import { envoyerSMSOVH, envoyerSMSOVHDetail } from '../_shared/ovh-sms.ts';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 import { texteConfirmation, expeditionAutorisee } from '../_shared/sms-garde.ts';
 import { envoyerAvecReservation } from '../_shared/sms-prevenir.ts';
+import { STATUT_ENVOYE, STATUT_ECHEC, STATUT_INDETERMINE } from '../_shared/ovh-resultat.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
@@ -207,7 +208,7 @@ Deno.serve(async (req: Request) => {
     const issue = await envoyerAvecReservation({
       sb, cmdId: String(cmd.id), canal: 'veille',
       envoyer: async () => { const r = await envoyerSMSOVHDetail(cmd.tel, contenu); return { ok: r.ok, certain: r.certain }; },   // revue Codex #20 : refus explicite d'OVH = certain ; exception / 5xx = INDÉTERMINÉ (réservation gardée)
-      journaliser: async (i) => { await logHistorique(cmd, type, contenu, i === 'envoye' ? 'envoyé' : i === 'echec_indetermine' ? 'indéterminé (peut-être parti)' : 'échec'); },   // revue Codex #20 : l'indéterminé n'est pas un « échec »
+      journaliser: async (i) => { await logHistorique(cmd, type, contenu, i === 'envoye' ? STATUT_ENVOYE : i === 'echec_indetermine' ? STATUT_INDETERMINE : STATUT_ECHEC); },   // revue Codex #20 : l'indéterminé n'est pas un « échec »
     });
     if (issue.issue === 'deja') {
       return new Response(JSON.stringify({ skipped: true, reason: 'deja_prevenu_aujourdhui', type, detail: issue.raison }),

@@ -3,9 +3,9 @@
 // Lancer : node --test supabase/tests/   (aucune connexion, aucune donnée client)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classerReponseOvh, RESULTAT_EXCEPTION } from '../functions/_shared/ovh-resultat.ts';
+import { classerReponseOvh, RESULTAT_EXCEPTION, statutSms, STATUT_INDETERMINE } from '../functions/_shared/ovh-resultat.ts';
 import { jourParis, reserverPrevenir, libererPrevenir, peutEnvoyer, echecCertain, envoyerAvecReservation } from '../functions/_shared/sms-prevenir.ts';
-import { controlerDemande as validerDemande } from '../functions/_shared/jarvis-action-logique.ts';
+import { resumeSms, controlerDemande as validerDemande } from '../functions/_shared/jarvis-action-logique.ts';
 
 // Fausse base : même contrat que les fonctions SQL (clé primaire (commande, jour), libération par le même canal seulement).
 function fausseBase({ panne } = {}) {
@@ -157,4 +157,13 @@ test('revue Codex #20 (points 2, 3, 4) : HTTP 200 illisible = INDÉTERMINÉ ; l\
   assert.equal(r4.issue, 'echec_certain'); assert.equal(r4.liberation_echouee, true, 'libération impossible : signalée');
   assert.equal(await libererPrevenir(sbErreur, '#9601', 'jarvis', '2026-11-22'), false); assert.equal(await libererPrevenir({ rpc: async () => { throw new Error('x'); } }, '#9601', 'jarvis', '2026-11-22'), false); assert.equal(await libererPrevenir(fausseBase(), '#9601', 'jarvis', 'pas un jour'), false);
   const r5 = await envoyerAvecReservation({ sb: fausseBase(), cmdId: '#9602', canal: 'jarvis', maintenant: M, envoyer: async () => ({ ok: false, certain: true }) }); assert.equal(r5.issue, 'echec_certain'); assert.equal('liberation_echouee' in r5, false);
+});
+
+test('revue Codex #20 (P2) : le statut INDÉTERMINÉ écrit par send-sms / send-cmd-sms est relu comme « indéterminé » par sms_statut, jamais comme « échec »', () => {
+  const ecrit = statutSms(RESULTAT_EXCEPTION); assert.equal(ecrit, STATUT_INDETERMINE); assert.equal(statutSms({ ok: true, certain: true }), 'envoyé'); assert.equal(statutSms({ ok: false, certain: true }), 'échec');
+  assert.equal(statutSms(classerReponseOvh(200, null, '+33')), STATUT_INDETERMINE, '200 illisible = indéterminé aussi');
+  assert.match(ecrit, /^indéterminé/, 'le libellé ne commence jamais par « échec »');
+  const lignes = [{ type_sms: 'jarvis', statut: ecrit, date_sms: '2026-11-22', heure: '10:30' }, { type_sms: 'veille', statut: 'échec', date_sms: '2026-11-22', heure: '10:31' }, { type_sms: 'jarvis', statut: 'envoyé', date_sms: '2026-11-22', heure: '10:32' }];
+  const r = resumeSms({ sms_envoyes: [] }, lignes); const st = r.sms.map((s) => s.statut);
+  assert.deepEqual(st, ['indéterminé (peut-être parti)', 'échec', 'envoyé']);
 });

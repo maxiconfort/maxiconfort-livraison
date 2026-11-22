@@ -708,7 +708,8 @@ export function resumeSms(commande: Record<string, unknown> | null, lignes: unkn
   else for (const l of (Array.isArray(lignes) ? lignes : []).slice(0, 20) as any[]) {
     const type = texte(l?.type_sms, 40); if (!type) continue;
     const brut = texte(l?.statut, 20).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    const statut = /^(echec|erreur|fail)/.test(brut) ? 'échec' : /^envoy/.test(brut) ? 'envoyé' : (brut || 'inconnu');
+    // revue Codex #20 (P2) : un envoi INDÉTERMINÉ (« indéterminé (peut-être parti) ») reste « indéterminé » à la relecture : jamais présenté comme un échec (le SMS est peut-être parti)
+    const statut = /^indetermin/.test(brut) ? 'indéterminé (peut-être parti)' : /^(echec|erreur|fail)/.test(brut) ? 'échec' : /^envoy/.test(brut) ? 'envoyé' : (brut || 'inconnu');
     const jour = /^\d{4}-\d{2}-\d{2}/.test(String(l?.date_sms ?? '')) ? String(l.date_sms).slice(0, 10) : '';
     if (statut === 'envoyé' && jour && doublon(type, jour)) continue;
     const h = String(l?.heure ?? '').match(/^\d{1,2}:\d{2}/);
