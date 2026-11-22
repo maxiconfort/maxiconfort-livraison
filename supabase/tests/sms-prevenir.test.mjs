@@ -244,6 +244,11 @@ test('revue Codex #20 (f26a291e, 67be5e77) : le SMS « veille » inscrit aussi l
   for (const erreur of [{ code: '42703', message: 'column "cmd_id" of relation "sms_historique" does not exist' }, { code: 'PGRST204', message: "Could not find the 'cmd_id' column of 'sms_historique' in the schema cache" }, { message: 'column cmd_id does not exist' }]) {
     sb = base(erreur); r = await insererHistorique(sb, ligne, '#2150'); assert.deepEqual(r, { erreur: null, sansCommande: true }, JSON.stringify(erreur)); assert.equal('cmd_id' in sb.ecrites[0], false);
   }
+  // revue native Codex #20 (04e4f618) : un code d'une AUTRE nature exclut le repli même si le message cite « column cmd_id » ; sans code, le message doit DÉCRIRE une colonne inexistante
+  for (const erreur of [{ code: '42501', message: 'permission denied for column cmd_id' }, { code: '23502', message: 'null value in column cmd_id violates not-null constraint' }, { code: '08006', message: 'connection failure on column cmd_id' }, { message: 'permission denied for column cmd_id' }, { message: 'value too long for column cmd_id' }, { message: 'cmd_id column is locked' }]) {
+    assert.equal(colonneCmdIdAbsente(erreur), false, JSON.stringify(erreur)); sb = base(erreur); r = await insererHistorique(sb, ligne, '#2150'); assert.equal(r.sansCommande, false, JSON.stringify(erreur)); assert.ok(r.erreur, 'erreur renvoyée'); assert.equal(sb.ecrites.length, 0);
+  }
+  for (const erreur of [{ message: 'column "cmd_id" of relation "sms_historique" does not exist' }, { message: 'column cmd_id does not exist' }, { message: "Could not find the 'cmd_id' column of 'sms_historique' in the schema cache" }, { message: "la colonne cmd_id n'existe pas" }]) assert.equal(colonneCmdIdAbsente(erreur), true, JSON.stringify(erreur));
   // toute AUTRE erreur : PAS de repli (il masquerait la panne), erreur renvoyée, rien d'écrit
   for (const erreur of [{ message: 'permission denied for table sms_historique', code: '42501' }, { message: 'base HS' }, { message: 'duplicate key value violates unique constraint', code: '23505' }, { message: 'timeout' }]) {
     sb = base(erreur); r = await insererHistorique(sb, ligne, '#2150'); assert.equal(r.sansCommande, false, JSON.stringify(erreur)); assert.ok(r.erreur && r.erreur.message, 'erreur renvoyée'); assert.equal(sb.ecrites.length, 0, 'aucun repli : rien n\'est écrit');

@@ -60,8 +60,11 @@ export function cmdIdHistorique(v: unknown): string | null {
 /** Erreur « colonne absente » AVÉRÉE (Postgres 42703 « undefined_column », ou PostgREST qui nomme la colonne cmd_id) — le SEUL cas où le repli sans cmd_id est permis (revue Codex #20). Pure. */
 export function colonneCmdIdAbsente(erreur: { message?: string; code?: string } | null | undefined): boolean {
   if (!erreur) return false;
-  const m = String(erreur.message || '').toLowerCase();
-  return String(erreur.code || '') === '42703' || String(erreur.code || '') === 'PGRST204' || (m.includes('cmd_id') && (m.includes('column') || m.includes('colonne') || m.includes('schema cache')));
+  const code = String(erreur.code || ''); const m = String(erreur.message || '').toLowerCase();
+  // revue native Codex #20 : un CODE d'une autre nature (42501 permission refusée, 23xxx contrainte, 08xxx connexion…) exclut TOUJOURS le repli, même si le message cite « column cmd_id »
+  if (code) return code === '42703' || code === 'PGRST204';
+  // sans code : le message doit DÉCRIRE une colonne inexistante, pas seulement la mentionner
+  return /column\s+"?[\w.]*cmd_id"?\s+(of relation\s+"?\w+"?\s+)?does not exist/.test(m) || /could not find the 'cmd_id' column/.test(m) || /cmd_id.*(n'existe pas|introuvable)/.test(m);
 }
 
 /** Insère une ligne dans sms_historique en y inscrivant la COMMANDE (colonne cmd_id, migration 038).
