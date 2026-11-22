@@ -294,11 +294,13 @@ Deno.serve(async (req: Request) => {
           sb, cmdId: String(c!.id), canal: 'jarvis',
           envoyer: async () => { const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || '') }); dernier = r; return { ok: !!r.j?.success && r.j?.indetermine !== true, certain: echecCertain(r) }; },   // revue Codex #20 : un « succès » marqué indéterminé (200 OVH illisible) n'est PAS un succès : réservation gardée
         });
+        // revue Codex #20 : send-sms signale `journal_echoue` quand l'historique n'a pas pu être écrit : JARVIS le dit (aucune trace de cet envoi dans l'historique)
+        const jEch = (dernier as any)?.j?.journal_echoue === true; const noteJ = jEch ? ' ATTENTION : l’historique SMS n’a pas pu être écrit, il ne contient aucune trace de cet envoi.' : '';
         if (issue.issue === 'deja') return rep(409, { ok: false, erreur: issue.raison });
         if (issue.issue === 'bloque_indisponible') return rep(issue.code, { ok: false, erreur: issue.raison });
-        if (issue.issue === 'echec_certain') return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + (dernier as any)?.http + ')' + (issue.liberation_echouee ? ' ; ATTENTION : la réservation du jour n’a pas pu être libérée, ce client restera bloqué jusqu’à minuit (prévenir à la main ou réessayer demain)' : '') });
-        if (issue.issue === 'echec_indetermine') return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS de la commande ; ' + phraseIndetermine(issue.jour) });
-        return rep(200, { ...base, sms: apercu, fait: true });
+        if (issue.issue === 'echec_certain') return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + (dernier as any)?.http + ')' + (issue.liberation_echouee ? ' ; ATTENTION : la réservation du jour n’a pas pu être libérée, ce client restera bloqué jusqu’à minuit (prévenir à la main ou réessayer demain)' : '') + noteJ });
+        if (issue.issue === 'echec_indetermine') return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS de la commande ; ' + phraseIndetermine(issue.jour) + noteJ });
+        return rep(200, { ...base, sms: apercu, fait: true, ...(jEch ? { journal_echoue: true, avertissement: noteJ.trim() } : {}) });
       }
       const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || '') });
       if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' });

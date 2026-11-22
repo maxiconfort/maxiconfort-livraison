@@ -31,9 +31,10 @@ const CORS_HEADERS = {
 };
 const JSON_HEADERS = { 'Content-Type': 'application/json', ...CORS_HEADERS };
 
-async function logHistorique(tel: string, type: string, message: string, statut: string, client: string) {
+/** Renvoie TRUE si l'historique a été écrit, FALSE sinon (revue Codex #20 : l'échec est SIGNALÉ à l'appelant via `journal_echoue`, jamais ignoré ; le SMS part quand même, comme avant). */
+async function logHistorique(tel: string, type: string, message: string, statut: string, client: string): Promise<boolean> {
   try {
-    await sb.from('sms_historique').insert({
+    const { error } = await sb.from('sms_historique').insert({
       id: 'sms_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
       client: client || '',
       tel: tel || '',
@@ -43,7 +44,9 @@ async function logHistorique(tel: string, type: string, message: string, statut:
       date_sms: new Date().toISOString().split('T')[0],
       heure: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris' }),
     });
-  } catch (_e) { /* silent */ }
+    if (error) { console.warn('send-sms: historique NON écrit (' + (error.message || error.code || '?') + ')'); return false; }
+    return true;
+  } catch (_e) { console.warn('send-sms: historique NON écrit (exception)'); return false; }
 }
 
 Deno.serve(async (req: Request) => {
@@ -63,8 +66,8 @@ Deno.serve(async (req: Request) => {
 
   // revue Codex #20 : le résultat INDÉTERMINÉ d'OVH (exception réseau, réponse 5xx) est transmis tel quel (`indetermine: true`) : le SMS est peut-être parti
   const res = await envoyerSMSOVHDetail(tel, message);
-  const rep = reponseSendSms(res);
-  await logHistorique(tel, type || 'manuel', message, statutSms(res), client || '');   // revue Codex #20 : libellé partagé, « indéterminé » jamais confondu avec « échec »
+  const journalOk = await logHistorique(tel, type || 'manuel', message, statutSms(res), client || '');
+  const rep = reponseSendSms(res, !journalOk);   // revue Codex #20 : libellé partagé, « indéterminé » jamais confondu avec « échec »
 
   return new Response(JSON.stringify(rep.corps), { status: rep.status, headers: JSON_HEADERS });
 });

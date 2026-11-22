@@ -211,3 +211,14 @@ test('revue Codex #20 (a67563bf) : libération SEULEMENT si certain === true ; t
     const r = await envoyerAvecReservation({ sb: fausseBase(), cmdId: '#9804', canal: 'veille', maintenant: M, envoyer: async () => res, journaliser: journalStrict }); assert.equal(r.issue, issue); assert.equal(r.journal_echoue, true, issue);
   }
 });
+
+test('revue Codex #20 (5797644b) : validReceivers doit contenir LE numéro demandé ; send-sms signale journal_echoue à ses appelants', () => {
+  const num = '+33600000000';
+  // 3 : un tableau non vide d'AUTRES numéros n'est pas une preuve
+  for (const corps of [{ validReceivers: ['+33611111111'] }, { validReceivers: [''] }, { validReceivers: [null] }, { validReceivers: 'x' }, { validReceivers: { 0: num } }]) { const r = classerReponseOvh(200, corps, num); assert.equal(r.ok, false, JSON.stringify(corps)); assert.equal(r.certain, false); assert.equal(r.http200Illisible, true); }
+  for (const corps of [{ validReceivers: [num] }, { validReceivers: ['+33611111111', num] }, { ids: [1], validReceivers: ['+33611111111'] }]) assert.deepEqual(classerReponseOvh(200, corps, num), { ok: true, certain: true }, JSON.stringify(corps));
+  // 2 : le drapeau de journalisation de send-sms
+  assert.deepEqual(reponseSendSms({ ok: true, certain: true }, true), { status: 200, corps: { success: true, journal_echoue: true } });
+  assert.deepEqual(reponseSendSms({ ok: true, certain: true }, false), { status: 200, corps: { success: true } });
+  assert.deepEqual(reponseSendSms(RESULTAT_EXCEPTION, true), { status: 502, corps: { success: false, indetermine: true, journal_echoue: true } });
+});
