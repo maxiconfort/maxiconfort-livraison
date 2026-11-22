@@ -153,5 +153,6 @@ export async function envoyerSMSOVH(
   message: string,
   opts: { noStop?: boolean; sender?: string; forceNumeroCourt?: boolean } = {},
 ): Promise<boolean> {
-  return (await envoyerSMSOVHDetail(tel, message, opts)).ok;
+  const r = await envoyerSMSOVHDetail(tel, message, opts);
+  return r.ok || r.http200Illisible === true;   // comportement historique inchangé pour les autres appelants : HTTP 200 = accepté
 }

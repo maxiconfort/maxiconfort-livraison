@@ -296,7 +296,7 @@ Deno.serve(async (req: Request) => {
         });
         if (issue.issue === 'deja') return rep(409, { ok: false, erreur: issue.raison });
         if (issue.issue === 'bloque_indisponible') return rep(issue.code, { ok: false, erreur: issue.raison });
-        if (issue.issue === 'echec_certain') return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + (dernier as any)?.http + ')' });
+        if (issue.issue === 'echec_certain') return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + (dernier as any)?.http + ')' + (issue.liberation_echouee ? ' ; ATTENTION : la réservation du jour n’a pas pu être libérée, ce client restera bloqué jusqu’à minuit (prévenir à la main ou réessayer demain)' : '') });
         if (issue.issue === 'echec_indetermine') return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS de la commande ; la réservation du jour est gardée (aucun doublon)' });
         return rep(200, { ...base, sms: apercu, fait: true });
       }

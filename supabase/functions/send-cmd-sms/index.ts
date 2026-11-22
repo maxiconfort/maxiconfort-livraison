@@ -207,13 +207,18 @@ Deno.serve(async (req: Request) => {
     const issue = await envoyerAvecReservation({
       sb, cmdId: String(cmd.id), canal: 'veille',
       envoyer: async () => { const r = await envoyerSMSOVHDetail(cmd.tel, contenu); return { ok: r.ok, certain: r.certain }; },   // revue Codex #20 : refus explicite d'OVH = certain ; exception / 5xx = INDÉTERMINÉ (réservation gardée)
-      journaliser: async (reussi) => { await logHistorique(cmd, type, contenu, reussi ? 'envoyé' : 'échec'); },
+      journaliser: async (i) => { await logHistorique(cmd, type, contenu, i === 'envoye' ? 'envoyé' : i === 'echec_indetermine' ? 'indéterminé (peut-être parti)' : 'échec'); },   // revue Codex #20 : l'indéterminé n'est pas un « échec »
     });
     if (issue.issue === 'deja') {
       return new Response(JSON.stringify({ skipped: true, reason: 'deja_prevenu_aujourdhui', type, detail: issue.raison }),
         { headers: { 'Content-Type': 'application/json' } });
     }
     ok = issue.issue === 'envoye';
+    if (issue.issue === 'echec_indetermine') {
+      return new Response(JSON.stringify({ error: 'envoi OVH INDÉTERMINÉ : le SMS est peut-être parti, vérifier l’historique SMS ; la réservation du jour est gardée (aucun doublon)', indetermine: true, contenu }),
+        { status: 502, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (issue.issue === 'echec_certain' && issue.liberation_echouee) console.warn('send-cmd-sms: réservation NON libérée après un échec certain (cmd ' + cmd.id + ') : client bloqué jusqu’à minuit');
   } else {
     // Envoi OVH (transactionnel — pas de clause STOP)
     ok = await envoyerSMSOVH(cmd.tel, contenu);

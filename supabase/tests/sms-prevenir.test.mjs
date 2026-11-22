@@ -98,7 +98,7 @@ test('parcours : base indisponible — la veille ENVOIE comme avant (fail-open, 
 });
 test('parcours : échec CERTAIN = réservation libérée AVANT la journalisation, même si la journalisation lève une erreur ; l\'autre canal peut alors envoyer', async () => {
   const sb = fausseBase(); const ordre = [];
-  const r = await envoi(sb, 'veille', async () => ({ ok: false, certain: true }), { journaliser: async () => { ordre.push(sb.t.size === 0 ? 'libere' : 'encore-reserve'); throw new Error('journal HS'); } });
+  const r = await envoi(sb, 'veille', async () => ({ ok: false, certain: true }), { journaliser: async (i) => { ordre.push(sb.t.size === 0 ? 'libere' : 'encore-reserve'); assert.equal(i, 'echec_certain'); throw new Error('journal HS'); } });
   assert.equal(r.issue, 'echec_certain'); assert.deepEqual(ordre, ['libere'], 'libérée avant la journalisation');
   assert.equal(sb.t.size, 0); assert.equal((await envoi(sb, 'jarvis', async () => ({ ok: true, certain: true }))).issue, 'envoye');
 });
@@ -121,8 +121,8 @@ test('parcours PASSAGE DE MINUIT : envoi réservé à 22 h 59 UTC (23 h 59 Paris
 
 test('revue Codex #20 (P2) : le résultat OVH INDÉTERMINÉ (exception réseau, 5xx) n\'est JAMAIS pris pour un échec certain, de OVH jusqu\'aux deux appelants', async () => {
   // classement pur de la réponse OVH
-  assert.deepEqual(classerReponseOvh(200, { invalidReceivers: [] }, '+33600000000'), { ok: true, certain: true });
-  assert.equal(classerReponseOvh(200, { invalidReceivers: ['+33600000000'] }, '+33600000000').certain, true, 'destinataire invalide : refus explicite');
+  assert.deepEqual(classerReponseOvh(200, { ids: [1], invalidReceivers: [] }, '+33600000000'), { ok: true, certain: true });
+  assert.equal(classerReponseOvh(200, { ids: [1], invalidReceivers: ['+33600000000'] }, '+33600000000').certain, true, 'destinataire invalide : refus explicite');
   for (const s of [400, 401, 403, 404, 409, 422, 429]) { const r = classerReponseOvh(s, {}, '+33'); assert.equal(r.ok, false); assert.equal(r.certain, true, 'HTTP ' + s + ' = refus explicite'); }
   for (const s of [500, 502, 503, 504, 0, 302]) { const r = classerReponseOvh(s, null, '+33'); assert.equal(r.ok, false); assert.equal(r.certain, false, 'HTTP ' + s + ' = INDÉTERMINÉ'); }
   assert.equal(RESULTAT_EXCEPTION.ok, false); assert.equal(RESULTAT_EXCEPTION.certain, false, 'exception réseau = INDÉTERMINÉ (le helper réel l\'absorbe : c\'est ce cas que Codex a relevé)');
@@ -137,4 +137,24 @@ test('revue Codex #20 (P2) : le résultat OVH INDÉTERMINÉ (exception réseau, 
   // veille : même chaîne, résultat du helper OVH → {ok, certain}
   const sb3 = fausseBase(); const exc = await envoyerAvecReservation({ sb: sb3, cmdId: '#9003', canal: 'veille', maintenant: M, envoyer: async () => ({ ok: RESULTAT_EXCEPTION.ok, certain: RESULTAT_EXCEPTION.certain }) });
   assert.equal(exc.issue, 'echec_indetermine'); assert.equal(sb3.t.size, 1);
+});
+
+test('revue Codex #20 (points 2, 3, 4) : HTTP 200 illisible = INDÉTERMINÉ ; l\'indéterminé est distingué dans le journal ; un échec de libération est SIGNALÉ', async () => {
+  const num = '+33600000000';
+  // 2 : 200 sans preuve lisible
+  for (const corps of [null, undefined, '', 'OK', 42, [], {}, { ids: [] }, { validReceivers: [] }, { totalCreditsRemoved: 1 }, { ids: 'x' }]) { const r = classerReponseOvh(200, corps, num); assert.equal(r.ok, false, JSON.stringify(corps)); assert.equal(r.certain, false); assert.equal(r.http200Illisible, true, 'le booléen historique reste vrai pour les autres appelants'); }
+  for (const corps of [{ ids: [123], validReceivers: [num] }, { ids: [123] }, { validReceivers: [num], invalidReceivers: [] }]) assert.deepEqual(classerReponseOvh(200, corps, num), { ok: true, certain: true }, JSON.stringify(corps));
+  assert.equal(classerReponseOvh(200, { ids: [1], invalidReceivers: [num] }, num).certain, true, 'destinataire invalide = refus explicite, même avec des ids');
+  // 3 : le journal reçoit l'issue exacte
+  const vus = []; const sb = fausseBase();
+  await envoyerAvecReservation({ sb, cmdId: '#9501', canal: 'veille', maintenant: M, envoyer: async () => ({ ok: false, certain: false }), journaliser: async (i) => { vus.push(i); } });
+  await envoyerAvecReservation({ sb, cmdId: '#9502', canal: 'veille', maintenant: M, envoyer: async () => ({ ok: false, certain: true }), journaliser: async (i) => { vus.push(i); } });
+  await envoyerAvecReservation({ sb, cmdId: '#9503', canal: 'veille', maintenant: M, envoyer: async () => ({ ok: true, certain: true }), journaliser: async (i) => { vus.push(i); } });
+  assert.deepEqual(vus, ['echec_indetermine', 'echec_certain', 'envoye']);
+  // 4 : échec de libération signalé (RPC en erreur, exception, jour invalide) ; succès = pas de drapeau
+  const sbErreur = { t: new Map(), async rpc(nom, p) { if (nom === 'reserver_prevenir') return { data: { reserve: true }, error: null }; return { data: null, error: { message: 'base HS' } }; } };
+  const r4 = await envoyerAvecReservation({ sb: sbErreur, cmdId: '#9601', canal: 'jarvis', maintenant: M, envoyer: async () => ({ ok: false, certain: true }) });
+  assert.equal(r4.issue, 'echec_certain'); assert.equal(r4.liberation_echouee, true, 'libération impossible : signalée');
+  assert.equal(await libererPrevenir(sbErreur, '#9601', 'jarvis', '2026-11-22'), false); assert.equal(await libererPrevenir({ rpc: async () => { throw new Error('x'); } }, '#9601', 'jarvis', '2026-11-22'), false); assert.equal(await libererPrevenir(fausseBase(), '#9601', 'jarvis', 'pas un jour'), false);
+  const r5 = await envoyerAvecReservation({ sb: fausseBase(), cmdId: '#9602', canal: 'jarvis', maintenant: M, envoyer: async () => ({ ok: false, certain: true }) }); assert.equal(r5.issue, 'echec_certain'); assert.equal('liberation_echouee' in r5, false);
 });
