@@ -777,3 +777,10 @@ test('revue Codex #20 : sans prevenir, indetermine et journal_echoue ne sont pas
   assert.match(src, /r\.j\?\.indetermine === true\) return rep\(502/);
   assert.match(src, /jE2 \? \{ journal_echoue: true/);
 });
+
+test('revue Codex #20 (P2) : indetermine examiné AVANT le retour « non envoyé » (success:false + indetermine:true)', () => {
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  const iInd = src.indexOf("r.j?.indetermine === true) return rep(502");
+  const iEchec = src.indexOf("if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' + nJ2");
+  assert.ok(iInd > 0 && iEchec > 0 && iInd < iEchec, 'indéterminé avant échec générique');
+});
