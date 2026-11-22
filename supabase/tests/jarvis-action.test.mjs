@@ -760,3 +760,20 @@ test('v2.16 (3e série Codex) : jeton plafonné — limite = 1 SMS, trop long = 
     for (const libre of ['Ab3dEf9h', 'abcdefgh', 'abcdefghijkl']) assert.equal(JSON.stringify(x).includes(libre), false, libre);
   }
 });
+
+test('revue Codex #20 : deux commandes du même client, même type, même jour → aucune ligne ne disparaît', () => {
+  const c = cmd({ id: '#100', sms_envoyes: [{ type: 'veille', at: '2026-11-12T16:30:00Z' }] });
+  const lignes = [
+    { type_sms: 'veille', statut: 'envoyé', date_sms: '2026-11-12', heure: '17:31', cmd_id: '#101' }, // AUTRE commande : à garder
+    { type_sms: 'veille', statut: 'envoyé', date_sms: '2026-11-12', heure: '17:30', cmd_id: '#100' }, // doublon du journal de la commande : écarté
+  ];
+  const r = resumeSms(c, lignes);
+  assert.equal(r.sms.length, 2);
+  assert.equal(r.sms.filter((s) => s.autre_commande === true && s.commande === '#101').length, 1);
+});
+
+test('revue Codex #20 : sans prevenir, indetermine et journal_echoue ne sont pas ignorés (source)', () => {
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /r\.j\?\.indetermine === true\) return rep\(502/);
+  assert.match(src, /jE2 \? \{ journal_echoue: true/);
+});

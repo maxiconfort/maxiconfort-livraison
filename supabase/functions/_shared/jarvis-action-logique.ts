@@ -702,7 +702,8 @@ export function resumeSms(commande: Record<string, unknown> | null, lignes: unkn
   const journal = (Array.isArray(commande?.sms_envoyes) ? commande!.sms_envoyes as any[] : []).map((e) => ({ type: texte(e?.type, 40), t: Date.parse(String(e?.at ?? '')) }))
     .filter((e) => e.type && !Number.isNaN(e.t)).sort((a, b) => b.t - a.t).slice(0, 20);
   const sms: Record<string, unknown>[] = journal.map((e) => ({ type: e.type, quand: enParis(new Date(e.t).toISOString()), statut: 'envoyé', source: SOURCE_SMS_COMMANDE }));
-  const doublon = (type: string, jour: string) => journal.some((e) => e.type === type && (new Date(e.t).toISOString().slice(0, 10) === jour || parisJour(e.t) === jour));
+  // revue Codex #20 (2e point) : le journal de la commande ne concerne QUE cette commande ; une ligne du journal général d'une AUTRE commande du même client n'est jamais confondue avec lui
+  const doublon = (type: string, jour: string, cmdLigne: string, monId: string) => (!cmdLigne || cmdLigne === monId) && journal.some((e) => e.type === type && (new Date(e.t).toISOString().slice(0, 10) === jour || parisJour(e.t) === jour));
   let generalIndisponible = false;
   if (lignes === null) generalIndisponible = true;
   else for (const l of (Array.isArray(lignes) ? lignes : []).slice(0, 20) as any[]) {
@@ -711,11 +712,11 @@ export function resumeSms(commande: Record<string, unknown> | null, lignes: unkn
     // revue Codex #20 (P2) : un envoi INDÉTERMINÉ (« indéterminé (peut-être parti) ») reste « indéterminé » à la relecture : jamais présenté comme un échec (le SMS est peut-être parti)
     const statut = /^indetermin/.test(brut) ? 'indéterminé (peut-être parti)' : /^(echec|erreur|fail)/.test(brut) ? 'échec' : /^envoy/.test(brut) ? 'envoyé' : (brut || 'inconnu');
     const jour = /^\d{4}-\d{2}-\d{2}/.test(String(l?.date_sms ?? '')) ? String(l.date_sms).slice(0, 10) : '';
-    if (statut === 'envoyé' && jour && doublon(type, jour)) continue;
-    const h = String(l?.heure ?? '').match(/^\d{1,2}:\d{2}/);
-    // revue Codex #20 : la commande de l'envoi (colonne cmd_id, migration 038) ; « autre_commande » = envoi d'une AUTRE commande du même client (même téléphone)
     const cmdLigne = /^#?[A-Za-z0-9\-]{1,24}$/.test(String(l?.cmd_id ?? '').trim()) ? String(l.cmd_id).trim() : '';
     const monId = String((commande as any)?.id ?? '');
+    if (statut === 'envoyé' && jour && doublon(type, jour, cmdLigne, monId)) continue;
+    const h = String(l?.heure ?? '').match(/^\d{1,2}:\d{2}/);
+    // revue Codex #20 : la commande de l'envoi (colonne cmd_id, migration 038) ; « autre_commande » = envoi d'une AUTRE commande du même client (même téléphone)
     sms.push({ type, quand: (jour ? jourFr(jour) : 'date inconnue') + (h ? ' ' + h[0] : '') + ' (heure indicative)', statut, source: SOURCE_SMS_TEL, ...(cmdLigne ? { commande: cmdLigne, ...(monId && cmdLigne !== monId ? { autre_commande: true } : {}) } : {}) });
   }
   const sortie: Record<string, unknown> = { sms };

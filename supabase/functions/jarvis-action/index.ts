@@ -306,7 +306,10 @@ Deno.serve(async (req: Request) => {
       }
       const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || ''), cmdId: String(c!.id) });
       if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' });
-      return rep(200, { ...base, sms: apercu, fait: true });
+      // revue Codex #20 (3e point) : même sans `prevenir`, un succès INDÉTERMINÉ (200 OVH illisible) n'est pas présenté comme certain, et un historique non écrit est dit
+      const jE2 = r.j?.journal_echoue === true; const nJ2 = jE2 ? ' ATTENTION : l’historique SMS n’a pas pu être écrit, il ne contient aucune trace de cet envoi.' : '';
+      if (r.j?.indetermine === true) return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS (commande ' + String(c!.id) + ')' + nJ2 });
+      return rep(200, { ...base, sms: apercu, fait: true, ...(jE2 ? { journal_echoue: true, avertissement: nJ2.trim() } : {}) });
     }
     // v2.16 : rien de JARVIS dans le SMS ; le texte réel (avec le lien) ne part que vers send-sms (gestionnaire testé : _shared/jarvis-facture-sms.ts)
     if (d.action === 'envoyer_facture_sms') return actionFactureSms(c!, confirme, base, { interne, rep, cle: SECRET_JARVIS, consommer: consommerUsageFacture }, d.autorisation);
