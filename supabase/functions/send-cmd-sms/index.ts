@@ -120,7 +120,7 @@ async function logHistorique(c: any, type: string, contenu: string, statut: stri
  *  envoyerAvecReservation positionne `journal_echoue` en production. Les autres types gardent `logHistorique` (silencieux) inchangé. */
 async function logHistoriqueStrict(c: any, type: string, contenu: string, statut: string) {
   // revue Codex #20 : la COMMANDE est inscrite (cmd_id, migration 038) avec repli sans la colonne ; l'erreur finale est propagée (journal_echoue)
-  const error = await insererHistorique(sb, {
+  const { erreur: error, sansCommande } = await insererHistorique(sb, {
     id: 'sms_' + Date.now() + '_' + Math.random().toString(36).slice(2,8),
     client: c.client || '',
     tel: c.tel || '',
@@ -130,6 +130,7 @@ async function logHistoriqueStrict(c: any, type: string, contenu: string, statut
     date_sms: new Date().toISOString().split('T')[0],
     heure: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
   }, cmdIdHistorique(c.id));
+  if (sansCommande) console.warn('send-cmd-sms: historique écrit SANS la commande (colonne cmd_id absente : appliquer la migration 038)');
   if (error) throw new Error(error.message);
 }
 

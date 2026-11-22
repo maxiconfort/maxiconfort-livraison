@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classerReponseOvh, RESULTAT_EXCEPTION, statutSms, STATUT_INDETERMINE, reponseSendSms } from '../functions/_shared/ovh-resultat.ts';
-import { jourParis, reserverPrevenir, libererPrevenir, peutEnvoyer, echecCertain, envoyerAvecReservation, phraseIndetermine, cmdIdHistorique, insererHistorique } from '../functions/_shared/sms-prevenir.ts';
+import { jourParis, reserverPrevenir, libererPrevenir, peutEnvoyer, echecCertain, envoyerAvecReservation, phraseIndetermine, cmdIdHistorique, insererHistorique, colonneCmdIdAbsente } from '../functions/_shared/sms-prevenir.ts';
 import { resumeSms, controlerDemande as validerDemande } from '../functions/_shared/jarvis-action-logique.ts';
 
 // Fausse base : même contrat que les fonctions SQL (clé primaire (commande, jour), libération par le même canal seulement).
@@ -234,21 +234,26 @@ test('revue Codex #20 (6c935209) : l\'historique retient la COMMANDE de chaque e
   const r2 = resumeSms({ id: '#2151', sms_envoyes: [] }, lignes); assert.equal('autre_commande' in r2.sms[1], false); assert.equal(r2.sms[0].autre_commande, true);
 });
 
-test('revue Codex #20 (f26a291e) : le SMS « veille » inscrit aussi la COMMANDE dans l\'historique, avec repli compatible si la colonne cmd_id n\'existe pas encore', async () => {
+test('revue Codex #20 (f26a291e, 67be5e77) : le SMS « veille » inscrit aussi la COMMANDE ; le repli sans cmd_id est limité à l\'absence AVÉRÉE de la colonne et la perte est SIGNALÉE', async () => {
   const ligne = { id: 'sms_1', client: 'Client Fictif', tel: '0600000000', type_sms: 'veille', msg: 'texte', statut: 'indéterminé (peut-être parti)', date_sms: '2026-11-22', heure: '10:30' };
-  const base = (refuseCmd, panneTotale = false) => { const ecrites = []; return { ecrites, from() { return { insert: async (l) => { if (panneTotale || (refuseCmd && 'cmd_id' in l)) return { error: { message: panneTotale ? 'base HS' : 'column "cmd_id" does not exist' } }; ecrites.push(l); return { error: null }; } }; } }; };
-  // migration 038 appliquée : la commande est écrite
-  let sb = base(false); assert.equal(await insererHistorique(sb, ligne, '#2150'), null); assert.equal(sb.ecrites.length, 1); assert.equal(sb.ecrites[0].cmd_id, '#2150');
-  // deux commandes du même client (même téléphone) : chaque ligne porte SA commande
-  sb = base(false); await insererHistorique(sb, ligne, '#2150'); await insererHistorique(sb, { ...ligne, id: 'sms_2' }, '#2151'); assert.deepEqual(sb.ecrites.map((l) => l.cmd_id), ['#2150', '#2151']);
-  // migration 038 NON appliquée : repli sans la colonne, rien ne casse, l'historique est quand même écrit
-  sb = base(true); assert.equal(await insererHistorique(sb, ligne, '#2150'), null); assert.equal(sb.ecrites.length, 1); assert.equal('cmd_id' in sb.ecrites[0], false);
-  // sans commande : écriture ordinaire
-  sb = base(false); assert.equal(await insererHistorique(sb, ligne, null), null); assert.equal('cmd_id' in sb.ecrites[0], false);
-  // base HS : l'erreur finale est RENVOYÉE (journal_echoue), jamais absorbée ; une exception aussi
-  sb = base(false, true); const e = await insererHistorique(sb, ligne, '#2150'); assert.ok(e && /base HS/.test(e.message));
-  const exc = await insererHistorique({ from() { return { insert: async () => { throw new Error('réseau coupé'); } }; } }, ligne, '#2150'); assert.ok(exc && /réseau coupé/.test(exc.message));
-  // chaîne complète avec envoyerAvecReservation : journal veille en panne → journal_echoue
-  const sbRes = fausseBase(); const r = await envoyerAvecReservation({ sb: sbRes, cmdId: '#2150', canal: 'veille', maintenant: M, envoyer: async () => ({ ok: false, certain: false }), journaliser: async (i) => { const er = await insererHistorique(base(false, true), { ...ligne, statut: i }, cmdIdHistorique('#2150')); if (er) throw new Error(er.message); } });
-  assert.equal(r.issue, 'echec_indetermine'); assert.equal(r.journal_echoue, true);
+  const base = (refus) => { const ecrites = []; return { ecrites, from() { return { insert: async (l) => { if (refus && 'cmd_id' in l) { if (typeof refus === 'function') throw refus(); return { error: refus }; } if (refus === 'tout') return { error: { message: 'base HS' } }; ecrites.push(l); return { error: null }; } }; } }; };
+  // migration 038 appliquée : la commande est écrite, pas de perte
+  let sb = base(null); let r = await insererHistorique(sb, ligne, '#2150'); assert.deepEqual(r, { erreur: null, sansCommande: false }); assert.equal(sb.ecrites[0].cmd_id, '#2150');
+  sb = base(null); await insererHistorique(sb, ligne, '#2150'); await insererHistorique(sb, { ...ligne, id: 'sms_2' }, '#2151'); assert.deepEqual(sb.ecrites.map((l) => l.cmd_id), ['#2150', '#2151'], 'deux commandes du même client');
+  // colonne ABSENTE avérée (Postgres 42703, PostgREST PGRST204, ou message nommant cmd_id) : repli SANS la colonne et perte SIGNALÉE
+  for (const erreur of [{ code: '42703', message: 'column "cmd_id" of relation "sms_historique" does not exist' }, { code: 'PGRST204', message: "Could not find the 'cmd_id' column of 'sms_historique' in the schema cache" }, { message: 'column cmd_id does not exist' }]) {
+    sb = base(erreur); r = await insererHistorique(sb, ligne, '#2150'); assert.deepEqual(r, { erreur: null, sansCommande: true }, JSON.stringify(erreur)); assert.equal('cmd_id' in sb.ecrites[0], false);
+  }
+  // toute AUTRE erreur : PAS de repli (il masquerait la panne), erreur renvoyée, rien d'écrit
+  for (const erreur of [{ message: 'permission denied for table sms_historique', code: '42501' }, { message: 'base HS' }, { message: 'duplicate key value violates unique constraint', code: '23505' }, { message: 'timeout' }]) {
+    sb = base(erreur); r = await insererHistorique(sb, ligne, '#2150'); assert.equal(r.sansCommande, false, JSON.stringify(erreur)); assert.ok(r.erreur && r.erreur.message, 'erreur renvoyée'); assert.equal(sb.ecrites.length, 0, 'aucun repli : rien n\'est écrit');
+  }
+  const exc = await insererHistorique(base(() => new Error('réseau coupé')), ligne, '#2150'); assert.ok(exc.erreur && /réseau coupé/.test(exc.erreur.message)); assert.equal(exc.sansCommande, false);
+  // sans commande : écriture ordinaire ; base HS totale : erreur renvoyée
+  sb = base(null); assert.deepEqual(await insererHistorique(sb, ligne, null), { erreur: null, sansCommande: false }); assert.equal('cmd_id' in sb.ecrites[0], false);
+  r = await insererHistorique(base('tout'), ligne, null); assert.ok(r.erreur && /base HS/.test(r.erreur.message));
+  assert.equal(colonneCmdIdAbsente(null), false); assert.equal(colonneCmdIdAbsente({ message: 'autre colonne introuvable' }), false, 'une AUTRE colonne n\'autorise pas le repli');
+  // chaîne complète : veille indéterminée + historique en panne = journal_echoue
+  const sbRes = fausseBase(); const rr = await envoyerAvecReservation({ sb: sbRes, cmdId: '#2150', canal: 'veille', maintenant: M, envoyer: async () => ({ ok: false, certain: false }), journaliser: async (i) => { const { erreur } = await insererHistorique(base('tout'), { ...ligne, statut: i }, null); if (erreur) throw new Error(erreur.message); } });
+  assert.equal(rr.issue, 'echec_indetermine'); assert.equal(rr.journal_echoue, true);
 });

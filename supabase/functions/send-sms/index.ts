@@ -46,7 +46,8 @@ async function logHistorique(tel: string, type: string, message: string, statut:
       heure: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris' }),
     };
     // revue Codex #20 : la commande est inscrite (colonne cmd_id, migration 038) ; si la colonne n'existe pas encore, on réécrit SANS elle (comportement d'avant, rien ne casse)
-    const error = await insererHistorique(sb, ligne, cmdId);
+    const { erreur: error, sansCommande } = await insererHistorique(sb, ligne, cmdId);
+    if (sansCommande) console.warn('send-sms: historique écrit SANS la commande (colonne cmd_id absente : appliquer la migration 038) — les commandes d’un même client ne seront pas distinguées');
     if (error) { console.warn('send-sms: historique NON écrit (' + (error.message || error.code || '?') + ')'); return false; }
     return true;
   } catch (_e) { console.warn('send-sms: historique NON écrit (exception)'); return false; }
