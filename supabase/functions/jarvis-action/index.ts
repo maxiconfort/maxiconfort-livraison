@@ -305,9 +305,9 @@ Deno.serve(async (req: Request) => {
         if (issue.issue === 'echec_indetermine') return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS (commande ' + String(c!.id) + ') ; ' + phraseIndetermine(issue.jour) + noteJ });
         return rep(200, { ...base, sms: apercu, fait: true, ...(jEch ? { journal_echoue: true, avertissement: noteJ.trim() } : {}) });
       }
-      const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || ''), cmdId: String(c!.id) });
+      let r: { http: number; j: any }; try { r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || ''), cmdId: String(c!.id) }); } catch { r = { http: 0, j: null }; }   // revue Codex #21 : exception ou réponse absente = INDÉTERMINÉ
       const jE2 = r.j?.journal_echoue === true; const nJ2 = jE2 ? ' ATTENTION : l’historique SMS n’a pas pu être écrit, il ne contient aucune trace de cet envoi.' : '';
-      if (r.j?.indetermine === true) return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS (commande ' + String(c!.id) + ')' + nJ2 });
+      if (r.j?.indetermine === true || (r.j?.success !== true && !echecCertain(r))) return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS (commande ' + String(c!.id) + ')' + nJ2 });
       if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' + nJ2 });
       return rep(200, { ...base, sms: apercu, fait: true, ...(jE2 ? { journal_echoue: true, avertissement: nJ2.trim() } : {}) });
     }

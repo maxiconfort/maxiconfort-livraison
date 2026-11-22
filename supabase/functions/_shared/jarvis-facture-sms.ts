@@ -16,6 +16,7 @@
 //   expirée ») → PUIS un seul send-sms. Verrou indisponible = 503, aucun envoi. Aucune migration de schéma.
 // deno-lint-ignore-file no-explicit-any
 import { egal, factureSms } from './jarvis-action-logique.ts';
+import { echecCertain } from './sms-prevenir.ts';
 
 export const ERREUR_EMPREINTE = 'la commande a changé depuis l’aperçu (numéro ou lien) : refais l’aperçu, rien n’est parti';
 export const ERREUR_AUTORISATION = 'autorisation déjà utilisée ou expirée : refais l’aperçu, rien n’est parti';
@@ -72,10 +73,11 @@ export async function actionFactureSms<R>(c: Record<string, unknown>, confirme: 
   let u: 'ok' | 'deja' | 'erreur'; try { u = await consommer(FOURNISSEUR_USAGE + ':' + nonce, new Date(expire).toISOString()); } catch { u = 'erreur'; }
   if (u === 'deja') return rep(409, { ok: false, erreur: ERREUR_AUTORISATION }); // rejeu : une seule requête gagne
   if (u !== 'ok') return rep(503, { ok: false, erreur: ERREUR_VERROU }); // jamais d'envoi sans usage enregistré
-  const r = await interne('send-sms', { tel: f.tel, message: f.texte, type: 'jarvis', client: String(c.client || ''), cmdId: String(c.id) });
+  // revue Codex #21 (P2) : une exception (réseau, délai) ou une réponse absente / illisible (`j: null`, 504) = INDÉTERMINÉ ; « non envoyé » seulement sur un refus EXPLICITE (`success:false` sans `indetermine`)
+  let r: { http: number; j: any }; try { r = await interne('send-sms', { tel: f.tel, message: f.texte, type: 'jarvis', client: String(c.client || ''), cmdId: String(c.id) }); } catch { r = { http: 0, j: null }; }
   // revue Codex #21 (P2) : `indetermine` examiné AVANT `success` (200 OVH illisible, 5xx ou coupure après acceptation = le SMS est peut-être parti : jamais « non envoyé », sinon un nouvel aperçu enverrait la facture en double) ; `journal_echoue` dit aussi
   const nJ = r.j?.journal_echoue === true ? ' ATTENTION : l’historique SMS n’a pas pu être écrit, il ne contient aucune trace de cet envoi.' : '';
-  if (r.j?.indetermine === true) return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS (commande ' + String(c.id) + ') avant de recommencer' + nJ });
+  if (r.j?.indetermine === true || (r.j?.success !== true && !echecCertain(r))) return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS (commande ' + String(c.id) + ') avant de recommencer' + nJ });
   if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' + nJ });
   return rep(200, { ...base, sms: f.apercu, fait: true, ...(nJ ? { journal_echoue: true, avertissement: nJ.trim() } : {}) });
 }

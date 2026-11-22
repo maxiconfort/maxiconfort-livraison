@@ -784,13 +784,13 @@ test('revue Codex #20 : deux commandes du même client, même type, même jour �
 
 test('revue Codex #20 : sans prevenir, indetermine et journal_echoue ne sont pas ignorés (source)', () => {
   const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
-  assert.match(src, /r\.j\?\.indetermine === true\) return rep\(502/);
+  assert.match(src, /r\.j\?\.indetermine === true \|\| \(r\.j\?\.success !== true && !echecCertain\(r\)\)\) return rep\(502/);
   assert.match(src, /jE2 \? \{ journal_echoue: true/);
 });
 
 test('revue Codex #20 (P2) : indetermine examiné AVANT le retour « non envoyé » (success:false + indetermine:true)', () => {
   const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
-  const iInd = src.indexOf("r.j?.indetermine === true) return rep(502");
+  const iInd = src.indexOf("r.j?.indetermine === true || (r.j?.success !== true && !echecCertain(r))) return rep(502");
   const iEchec = src.indexOf("if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' + nJ2");
   assert.ok(iInd > 0 && iEchec > 0 && iInd < iEchec, 'indéterminé avant échec générique');
 });
@@ -804,4 +804,29 @@ test('revue Codex #21 (P2) : variantesTel couvre national, +33, 33, 0033 ; factu
   const etr = variantesTel('+44 7700 900123'); assert.ok(etr.includes('+44 7700 900123') && etr.includes('447700900123') && etr.length === 2, 'numéro étranger : saisie + chiffres seuls');
   const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
   assert.match(src, /\.in\('tel', variantesTel\(tel\)\)/);
+});
+
+test('revue Codex #21 (P2) : facture par SMS — réponse absente (j:null, 504) ou exception = INDÉTERMINÉ ; seul success:false explicite = non envoyé', async () => {
+  const tok = '0b3c2d1e-aaaa-4bbb-8ccc-123456789abc';
+  const c = () => cmd({ id: '#2145', tel: '06 00 00 00 01', tracking_token: tok, stpaie: 'Payé' });
+  const base = (cc, confirme) => ({ ok: true, action: 'envoyer_facture_sms', niveau: 'N3', confirme, commande: apercuCommande(cc) });
+  const mk = (interne) => ({ cle: 'cle-de-test-fictive', ...magasinUsage(), interne, rep: (code, o) => ({ code, o: { version: VERSION, ...o } }) });
+  const ap = await actionFactureSms(c(), false, base(c(), false), mk(async () => ({ http: 200, j: { success: true } })));
+  const aut = ap.o.autorisation; assert.match(aut, AUTORISATION_FORME);
+  const cas = [
+    ['504 sans réponse lisible', async () => ({ http: 504, j: null }), true],
+    ['exception réseau', async () => { throw new Error('réseau'); }, true],
+    ['indetermine explicite', async () => ({ http: 200, j: { success: false, indetermine: true } }), true],
+    ['refus explicite success:false', async () => ({ http: 200, j: { success: false } }), false],
+  ];
+  for (const [nom, rep, indet] of cas) {
+    const r = await actionFactureSms(c(), true, base(c(), true), mk(rep), aut);
+    assert.equal(r.code, 502, nom); assert.equal(r.o.fait, undefined, nom);
+    if (indet) { assert.match(r.o.erreur, /INDÉTERMINÉ/, nom); assert.doesNotMatch(r.o.erreur, /non envoyé/, nom); }
+    else assert.match(r.o.erreur, /SMS non envoyé/, nom);
+  }
+  const src = fs.readFileSync(new URL('../functions/_shared/jarvis-facture-sms.ts', import.meta.url), 'utf8');
+  assert.match(src, /catch \{ r = \{ http: 0, j: null \}; \}/);
+  const idx = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(idx, /r\.j\?\.success !== true && !echecCertain\(r\)/); assert.match(idx, /catch \{ r = \{ http: 0, j: null \}; \}/);
 });
