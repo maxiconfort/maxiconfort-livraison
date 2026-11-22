@@ -224,6 +224,7 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
     case 'envoyer_sms': {
       const t = texte(d.texte, 320); if (t.length < 10) return 'texte du SMS trop court (10 caractères au moins)'; if (t.length > 300) return 'texte du SMS trop long (300 caractères au plus)';
       if (/https?:\/\//i.test(t)) return 'pas de lien dans un SMS envoyé par JARVIS';
+      if ((d as any).prevenir !== undefined && typeof (d as any).prevenir !== 'boolean') return 'prevenir : vrai ou faux'; // 22/11 : SMS « prévenir les clients de demain » = réservation atomique (une fois par jour, tous canaux)
       break;
     }
     case 'stock_entree':

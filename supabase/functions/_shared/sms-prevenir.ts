@@ -1,0 +1,39 @@
+// « Un client n'est prévenu qu'UNE fois par jour » — réservation atomique côté base (migration 037), tous canaux (22/11/2026).
+// Module à logique pure + deux appels RPC ; aucune donnée client (numéro de commande, jour, canal).
+// deno-lint-ignore-file no-explicit-any
+
+export type Canal = 'veille' | 'jarvis';
+export type Reservation =
+  | { etat: 'reserve' }
+  | { etat: 'deja'; canal: string }
+  | { etat: 'indisponible'; raison: string };
+
+/** Jour calendaire à Paris (AAAA-MM-JJ) : la réservation est par jour de Paris, comme le « aujourd'hui » de JARVIS. */
+export function jourParis(maintenant: Date = new Date()): string {
+  const p = new Intl.DateTimeFormat('fr-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(maintenant);
+  return p; // fr-CA => AAAA-MM-JJ
+}
+
+/** Réserve (commande, jour) pour un canal. Jamais d'exception : une base injoignable ou une fonction absente = « indisponible » (le canal décide : veille ouvre, JARVIS ferme). */
+export async function reserverPrevenir(sb: any, cmdId: string, canal: Canal, maintenant: Date = new Date()): Promise<Reservation> {
+  try {
+    const { data, error } = await sb.rpc('reserver_prevenir', { p_cmd: String(cmdId), p_jour: jourParis(maintenant), p_canal: canal });
+    if (error) return { etat: 'indisponible', raison: String(error.message || error.code || 'erreur base').slice(0, 120) };
+    if (data && data.reserve === true) return { etat: 'reserve' };
+    if (data && data.reserve === false && typeof data.canal === 'string') return { etat: 'deja', canal: data.canal };
+    return { etat: 'indisponible', raison: 'réponse inattendue de la base' };
+  } catch (e) { return { etat: 'indisponible', raison: String((e as Error).message || e).slice(0, 120) }; }
+}
+
+/** Libère la réservation du même canal après un envoi ÉCHOUÉ (le client reste atteignable). Silencieux en cas d'erreur. */
+export async function libererPrevenir(sb: any, cmdId: string, canal: Canal, maintenant: Date = new Date()): Promise<void> {
+  try { await sb.rpc('liberer_prevenir', { p_cmd: String(cmdId), p_jour: jourParis(maintenant), p_canal: canal }); } catch { /* ignoré */ }
+}
+
+/** Politique par canal quand la base ne répond pas : le SMS « veille » automatique part comme avant (fail-open, aucune régression) ;
+ *  JARVIS ne part PAS (fail-closed : on ne sait pas si le client est déjà prévenu). Pure. */
+export function peutEnvoyer(r: Reservation, canal: Canal): { ok: true } | { ok: false; code: number; raison: string } {
+  if (r.etat === 'reserve') return { ok: true };
+  if (r.etat === 'deja') return { ok: false, code: 409, raison: 'client déjà prévenu aujourd’hui (canal ' + r.canal + ') : rien n’est envoyé' };
+  return canal === 'veille' ? { ok: true } : { ok: false, code: 503, raison: 'impossible de vérifier si le client est déjà prévenu (' + r.raison + ') : rien n’est envoyé' };
+}
