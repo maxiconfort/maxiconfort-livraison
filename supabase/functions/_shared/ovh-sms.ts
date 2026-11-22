@@ -17,6 +17,9 @@
 
 // deno-lint-ignore-file no-explicit-any
 
+import { classerReponseOvh, RESULTAT_EXCEPTION, type ResultatOvh } from './ovh-resultat.ts';
+export type { ResultatOvh };
+
 const OVH_AK      = Deno.env.get('OVH_APP_KEY') || '';
 const OVH_AS      = Deno.env.get('OVH_APP_SECRET') || '';
 const OVH_CK      = Deno.env.get('OVH_CONSUMER_KEY') || '';
@@ -71,6 +74,16 @@ export async function creditsOVH(): Promise<number | null> {
   } catch { return null; }
 }
 
+// v2.14 (jarvis-action credits_sms) : lecture seule du compte SMS (GET /sms/{service}). Renvoie la réponse brute d'OVH ; l'appelant
+// (resumeCredits) n'en garde que le solde et le nom du service. null = secrets absents ou appel impossible. Aucun envoi.
+export async function lireCompteSmsOVH(): Promise<{ http: number; data: any; service: string } | null> {
+  if (!OVH_AK || !OVH_AS || !OVH_CK) return null;
+  try {
+    const r = await ovh('GET', `/sms/${OVH_SERVICE}`);
+    return { http: r.status, data: r.data, service: OVH_SERVICE };
+  } catch { return null; }
+}
+
 // Normalisation téléphone FR → +336/+337 (mobiles uniquement)
 export function telIntl(tel: string): string {
   if (!tel) return '';
@@ -99,16 +112,16 @@ export function sansAccents(s: string): string {
  * @param opts.sender  override d'expéditeur (défaut = OVH_SMS_SENDER)
  * @param opts.forceNumeroCourt  true = envoi par numéro court (ignore le sender alpha)
  */
-export async function envoyerSMSOVH(
+export async function envoyerSMSOVHDetail(
   tel: string,
   message: string,
   opts: { noStop?: boolean; sender?: string; forceNumeroCourt?: boolean } = {},
-): Promise<boolean> {
-  if (!OVH_AK || !OVH_AS || !OVH_CK) { console.warn('OVH: secrets manquants'); return false; }
+): Promise<ResultatOvh> {
+  if (!OVH_AK || !OVH_AS || !OVH_CK) { console.warn('OVH: secrets manquants'); return { ok: false, certain: true, raison: 'secrets OVH absents' }; }
   const num = telIntl(tel);
-  if (!num) { console.warn('OVH: tel invalide', tel); return false; }
+  if (!num) { console.warn('OVH: tel invalide', tel); return { ok: false, certain: true, raison: 'numéro invalide' }; }
   const contenu = sansAccents(message).trim();
-  if (!contenu) { console.warn('OVH: message vide'); return false; }
+  if (!contenu) { console.warn('OVH: message vide'); return { ok: false, certain: true, raison: 'message vide' }; }
 
   const payload: any = {
     message: contenu,
@@ -125,12 +138,21 @@ export async function envoyerSMSOVH(
 
   try {
     const r = await ovh('POST', `/sms/${OVH_SERVICE}/jobs`, payload);
-    if (r.status !== 200) { console.warn('OVH HTTP', r.status, JSON.stringify(r.data)); return false; }
-    const invalides: string[] = r.data?.invalidReceivers || [];
-    if (invalides.includes(num)) { console.warn('OVH: destinataire invalide/blacklist', num); return false; }
-    return true;
+    const res = classerReponseOvh(r.status, r.data, num);
+    if (!res.ok) console.warn('OVH', r.status, res.raison, JSON.stringify(r.data));
+    return res;
   } catch (e: any) {
     console.warn('OVH exception:', e?.message || e);
-    return false;
+    return RESULTAT_EXCEPTION;   // indéterminé : le SMS est peut-être parti
   }
+}
+
+/** Compatibilité : renvoie true si OVH a accepté l'envoi (comportement historique inchangé). */
+export async function envoyerSMSOVH(
+  tel: string,
+  message: string,
+  opts: { noStop?: boolean; sender?: string; forceNumeroCourt?: boolean } = {},
+): Promise<boolean> {
+  const r = await envoyerSMSOVHDetail(tel, message, opts);
+  return r.ok || r.http200Illisible === true;   // comportement historique inchangé pour les autres appelants : HTTP 200 = accepté
 }

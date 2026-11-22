@@ -2,16 +2,24 @@
 // Edge Function : jarvis-action (v2 — 30/10/2026 ; v2.1 04/11/2026 : lister_commandes { client } = recherche par nom / téléphone / e-mail ;
 // v2.2 04/11/2026 : recherche approchée par nom quand rien d'exact — « approchee: true » + score ;
 // v2.4 09/11/2026 : compter_commandes par origine et date de prise de commande (date_commande), + montant hors annulées et hors SAV
+// v2.16 17/11/2026 : envoyer_facture_sms { cmdId } (N3) = facture par SMS : lien et texte FIXE construits ici (factureSms), envoi par send-sms
+//   (type jarvis) au portable de la commande ; aperçu = destinataire masqué + « [lien de la facture] » ; le lien ne sort jamais dans une réponse ;
+//   aperçu et confirmation liés par une empreinte HMAC (JARVIS_ACTION_SECRET) de tel + lien + texte : commande changée entre-temps = 409, rien n'est parti
+//   6e série Codex #389 (18/11) : l'empreinte devient une AUTORISATION À USAGE UNIQUE (nonce aléatoire + expiration 10 min, signée) ; la confirmation
+//   la CONSOMME atomiquement (insertion dans oauth_etats, clé primaire : une seule requête gagne) AVANT send-sms ; rejeu ou expirée = 409, zéro SMS
+//   toujours 1 SMS : jeton ≤ JETON_FACTURE_MAX (44) sinon 422 sans envoi ; réponse sans champ libre de la commande (ni produit, nom, ville, transporteur)
+// v2.14 15/11/2026 : credits_sms (N1, lecture seule) = solde de crédits SMS du compte OVH (GET /sms/{service}) : crédits, état ok / bas / zéro / indisponible ; jamais de secret ni d'envoi
+// v2.13 14/11/2026 : sms_statut (N1, lecture seule) = SMS parti ou non pour une commande : commandes.sms_envoyes + sms_historique (échecs, envois manuels) ; jamais texte, téléphone ni nom
 // v2.11 10/11/2026 : nom complet du client (client_nom) dans chaque commande renvoyée (colonne client lue aussi pour la liste d'un jour) ;
 // v2.3 06/11/2026 : « total » = nombre EXACT compté par la base (plus la longueur de la liste coupée) + action compter_commandes)
 // ════════════════════════════════════════════════════════════════════
 // Porte d'entrée RÉSERVÉE À JARVIS (MAXI BRAIN, mini-PC de Borhen). Décision de Borhen du 30/10 : « autorisation totale sur
 // commandes et stock », confirmation vocale en deux temps, graduée par NIVEAU (logique dans _shared/jarvis-action-logique.ts) :
-//   N1 lecture    : lire_commande, lister_commandes, compter_commandes, lire_stock, lien_facture (v2.5), suivi_gls (v2.10) — exécutées directement ;
+//   N1 lecture    : lire_commande, lister_commandes, compter_commandes, lire_stock, lien_facture (v2.5), suivi_gls (v2.10), sms_statut (v2.13), credits_sms (v2.14) — exécutées directement ;
 //   N2 réversible : creer_commande (depuis un mail), modifier_commande, planifier, deplacer, changer_statut, sav, gls_etiquette,
 //                   gls_retour, litige, stock_entree, stock_chargement, stock_retour_depot — aperçu puis exécution ;
-//   N3 critique   : creer_commande (dictée), annuler_commande, supprimer_commande, modifier_prix, envoyer_sms, marquer_livre,
-//                   stock_correction — aperçu puis exécution, confirmation à chaque fois côté JARVIS.
+//   N3 critique   : creer_commande (dictée), annuler_commande, supprimer_commande, modifier_prix, envoyer_sms, envoyer_facture_sms (v2.16),
+//                   marquer_livre, stock_correction — aperçu puis exécution, confirmation à chaque fois côté JARVIS.
 // Toujours en 2 temps pour N2/N3 : { ..., confirme:false } → APERÇU (rien n'est écrit) ; { ..., confirme:true } → exécution.
 // Hors liste, toujours : encaissement (marquer payé, montant encaissé, remboursement), Shopify, TikTok, tables secrètes.
 // Appelant : en-tête x-jarvis-secret = secret JARVIS_ACTION_SECRET (dédié, révocable en le changeant). Aucun autre accès.
@@ -24,7 +32,10 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, variantesTel, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+import { lireCompteSmsOVH } from '../_shared/ovh-sms.ts';
+import { envoyerAvecReservation, echecCertain, phraseIndetermine } from '../_shared/sms-prevenir.ts';
+import { actionFactureSms, FOURNISSEUR_USAGE } from '../_shared/jarvis-facture-sms.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
 const SECRET_JARVIS = Deno.env.get('JARVIS_ACTION_SECRET') || '';
@@ -40,6 +51,16 @@ const H = { 'Content-Type': 'application/json' };
 const rep = (code: number, o: unknown) => new Response(JSON.stringify({ version: VERSION, ...(o as object) }), { status: code, headers: H });
 
 /** Appel interne d'une autre Edge Function (contrôle d'appelant : clé secrète du projet). */
+/** 6e série de réserves Codex #389 : consommation ATOMIQUE d'une autorisation de facture par SMS. Table EXISTANTE oauth_etats (migration 019 :
+ *  « etat » clé primaire, RLS forcée, aucun droit anon / authenticated — seule la clé serveur y écrit) : une ligne
+ *  « jarvis-facture-sms:<nonce> » est INSÉRÉE ; une seconde insertion du même nonce (rejeu, double clic, requêtes simultanées) est refusée
+ *  par la base (23505) = 'deja'. Toute autre erreur = 'erreur' (aucun envoi). Aucune migration. Les lignes expirées sont purgées par le
+ *  ménage de tiktok-oauth-callback (expirées depuis 24 h) ; le fournisseur différent les rend inutilisables comme état OAuth TikTok. */
+async function consommerUsageFacture(etat: string, expire_at: string): Promise<'ok' | 'deja' | 'erreur'> {
+  const { error } = await sb.from('oauth_etats').insert({ etat, fournisseur: FOURNISSEUR_USAGE, expire_at, utilise_at: new Date().toISOString() });
+  if (!error) return 'ok';
+  return (error as any).code === '23505' ? 'deja' : 'erreur';
+}
 async function interne(nom: string, corps: Record<string, unknown>) {
   const r = await fetch(`${SB_URL}/functions/v1/${nom}`, { method: 'POST', headers: { ...H, Authorization: 'Bearer ' + CLE, apikey: CLE }, body: JSON.stringify(corps) });
   let j: any = null; try { j = await r.json(); } catch { /* */ }
@@ -81,6 +102,27 @@ Deno.serve(async (req: Request) => {
       const r = await interne('gls-sync', { cmdIds: [String(c!.id)] });
       if (r.http !== 200 || !r.j?.ok || r.j?.lectureSeule !== true) return rep(502, { ok: false, erreur: 'suivi GLS indisponible pour l’instant' });
       const s = resumeSuivi((r.j.commandes || [])[0]); return 'erreur' in s ? rep(/ne répond pas/.test(String(s.erreur)) ? 502 : 404, { ok: false, erreur: s.erreur }) : rep(200, { ...base, suivi: s });
+    }
+    if (d.action === 'credits_sms') { // v2.14 : lecture seule (GET OVH), aucun envoi, aucune écriture ; seul le solde et le nom du service sortent
+      const r = await lireCompteSmsOVH();
+      return rep(200, { ok: true, action: d.action, niveau, confirme, ...resumeCredits(r) });
+    }
+    if (d.action === 'sms_statut') { // v2.13 : lecture seule, aucune écriture, aucun envoi ; ni texte (msg), ni téléphone, ni nom dans la réponse
+      let lignes: unknown[] | null = null;
+      try {
+        const tel = String(c!.tel || '').trim(); const chiffres = tel.replace(/\D/g, '');
+        if (!chiffres) lignes = [];
+        else {
+          const depuis = /^\d{4}-\d{2}-\d{2}/.test(String(c!.created_at || '')) ? String(c!.created_at).slice(0, 10) : '2000-01-01';
+          const lire = (colonnes: string) => sb.from('sms_historique').select(colonnes).in('tel', variantesTel(tel))   // revue Codex #21 : national, +33, 33, 0033 (l'appli envoie en +33)
+            
+            .gte('date_sms', depuis).order('date_sms', { ascending: false }).order('heure', { ascending: false }).limit(20);
+          let r = await lire('type_sms, statut, date_sms, heure, cmd_id');   // revue Codex #20 : la commande de chaque envoi (migration 038) ; colonne absente = on relit sans elle (comportement d'avant)
+          if (r.error) r = await lire('type_sms, statut, date_sms, heure');
+          lignes = r.error ? null : (r.data as unknown[] | null) || [];
+        }
+      } catch { lignes = null; }
+      return rep(200, { ok: true, action: d.action, niveau, confirme, ...resumeSms(c, lignes) });
     }
     if (d.action === 'lien_facture') { const f = lienFacture(d, c!); return 'erreur' in f ? rep(422, { ok: false, erreur: f.erreur }) : rep(200, { ...base, facture: f }); }
     if (d.action === 'lister_commandes') {
@@ -246,10 +288,31 @@ Deno.serve(async (req: Request) => {
     if (d.action === 'envoyer_sms') {
       const tel = String(c!.tel || '').trim(); const apercu = { destinataire: telMasque(tel), texte: String(d.texte).trim() };
       if (!confirme) return rep(200, { ...base, sms: apercu });
-      const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || '') });
-      if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' });
-      return rep(200, { ...base, sms: apercu, fait: true });
+      // 22/11/2026 : SMS « prévenir les clients de demain » (d.prevenir === true) : parcours testé de bout en bout (envoyerAvecReservation) : réservation ATOMIQUE tous canaux
+      // AVANT l'envoi ; déjà prévenu = 409 ; base injoignable = 503 (rien ne part) ; échec CERTAIN (send-sms répond success:false) = réservation libérée sur le jour réservé ;
+      // échec INDÉTERMINÉ (exception, passerelle illisible) = réservation GARDÉE (aucun doublon) et l'appelant est prévenu de vérifier l'historique SMS.
+      if ((d as any).prevenir === true) {
+        let dernier: { http: number; j: any } | null = null;
+        const issue = await envoyerAvecReservation({
+          sb, cmdId: String(c!.id), canal: 'jarvis',
+          envoyer: async () => { const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || ''), cmdId: String(c!.id) }); dernier = r; return { ok: !!r.j?.success && r.j?.indetermine !== true, certain: echecCertain(r) }; },   // revue Codex #20 : un « succès » marqué indéterminé (200 OVH illisible) n'est PAS un succès : réservation gardée
+        });
+        // revue Codex #20 : send-sms signale `journal_echoue` quand l'historique n'a pas pu être écrit : JARVIS le dit (aucune trace de cet envoi dans l'historique)
+        const jEch = (dernier as any)?.j?.journal_echoue === true; const noteJ = jEch ? ' ATTENTION : l’historique SMS n’a pas pu être écrit, il ne contient aucune trace de cet envoi.' : '';
+        if (issue.issue === 'deja') return rep(409, { ok: false, erreur: issue.raison });
+        if (issue.issue === 'bloque_indisponible') return rep(issue.code, { ok: false, erreur: issue.raison });
+        if (issue.issue === 'echec_certain') return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + (dernier as any)?.http + ')' + (issue.liberation_echouee ? ' ; ATTENTION : la réservation du jour n’a pas pu être libérée, ce client restera bloqué jusqu’à minuit (prévenir à la main ou réessayer demain)' : '') + noteJ });
+        if (issue.issue === 'echec_indetermine') return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS (commande ' + String(c!.id) + ') ; ' + phraseIndetermine(issue.jour) + noteJ });
+        return rep(200, { ...base, sms: apercu, fait: true, ...(jEch ? { journal_echoue: true, avertissement: noteJ.trim() } : {}) });
+      }
+      let r: { http: number; j: any }; try { r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || ''), cmdId: String(c!.id) }); } catch { r = { http: 0, j: null }; }   // revue Codex #21 : exception ou réponse absente = INDÉTERMINÉ
+      const jE2 = r.j?.journal_echoue === true; const nJ2 = jE2 ? ' ATTENTION : l’historique SMS n’a pas pu être écrit, il ne contient aucune trace de cet envoi.' : '';
+      if (r.j?.indetermine === true || (r.j?.success !== true && !echecCertain(r))) return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS (commande ' + String(c!.id) + ')' + nJ2 });
+      if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' + nJ2 });
+      return rep(200, { ...base, sms: apercu, fait: true, ...(jE2 ? { journal_echoue: true, avertissement: nJ2.trim() } : {}) });
     }
+    // v2.16 : rien de JARVIS dans le SMS ; le texte réel (avec le lien) ne part que vers send-sms (gestionnaire testé : _shared/jarvis-facture-sms.ts)
+    if (d.action === 'envoyer_facture_sms') return actionFactureSms(c!, confirme, base, { interne, rep, cle: SECRET_JARVIS, consommer: consommerUsageFacture }, d.autorisation);
     if (d.action === 'sav') {
       const sav = construireSav(d, c!);
       const visible = { id: sav.id, produit: sav.produit, origine: sav.origine, date_livraison: sav.date_livraison, instr: sav.instr };

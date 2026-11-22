@@ -24,9 +24,11 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { envoyerSMSOVH } from '../_shared/ovh-sms.ts';
+import { envoyerSMSOVH, envoyerSMSOVHDetail } from '../_shared/ovh-sms.ts';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 import { texteConfirmation, expeditionAutorisee } from '../_shared/sms-garde.ts';
+import { envoyerAvecReservation, phraseIndetermine, insererHistorique, cmdIdHistorique } from '../_shared/sms-prevenir.ts';
+import { STATUT_ENVOYE, STATUT_ECHEC, STATUT_INDETERMINE } from '../_shared/ovh-resultat.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
 const SB_SR_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
@@ -114,6 +116,24 @@ async function logHistorique(c: any, type: string, contenu: string, statut: stri
   } catch (_e) { /* silent */ }
 }
 
+/** Journal STRICT du parcours « veille » (revue native Codex #20) : propage l'erreur de l'insertion (champ `error` de Supabase ou exception) au lieu de l'absorber, pour que
+ *  envoyerAvecReservation positionne `journal_echoue` en production. Les autres types gardent `logHistorique` (silencieux) inchangé. */
+async function logHistoriqueStrict(c: any, type: string, contenu: string, statut: string) {
+  // revue Codex #20 : la COMMANDE est inscrite (cmd_id, migration 038) avec repli sans la colonne ; l'erreur finale est propagée (journal_echoue)
+  const { erreur: error, sansCommande } = await insererHistorique(sb, {
+    id: 'sms_' + Date.now() + '_' + Math.random().toString(36).slice(2,8),
+    client: c.client || '',
+    tel: c.tel || '',
+    type_sms: type,
+    msg: contenu,
+    statut: statut,
+    date_sms: new Date().toISOString().split('T')[0],
+    heure: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+  }, cmdIdHistorique(c.id));
+  if (sansCommande) console.warn('send-cmd-sms: historique écrit SANS la commande (colonne cmd_id absente : appliquer la migration 038)');
+  if (error) throw new Error(error.message);
+}
+
 Deno.serve(async (req: Request) => {
   // 27/09/2026 : controle d'appelant (crons/fonctions = x-cron-secret ou cle secrete ; app = x-app-secret + session PIN valide)
   if (req.method !== 'OPTIONS' && !appelInterne(req) && !(await appelApp(req, ['admin', 'collab', 'livreur']))) return refus();
@@ -199,12 +219,34 @@ Deno.serve(async (req: Request) => {
     transporteur: cmd.transporteur || 'RANOU',
   });
 
-  // Envoi OVH (transactionnel — pas de clause STOP)
-  const ok = await envoyerSMSOVH(cmd.tel, contenu);
-  await logHistorique(cmd, type, contenu, ok ? 'envoyé' : 'échec');
+  // 22/11/2026 : « un client n'est prévenu qu'UNE fois par jour », tous canaux. Le SMS « veille » passe par envoyerAvecReservation (parcours testé de bout en bout) :
+  // réservation atomique AVANT l'envoi, libération (sur le jour réservé, avant la journalisation) si OVH refuse. Base injoignable : le SMS veille part comme avant (fail-open).
+  let ok = false; let journalEchoue = false;
+  if (type === 'veille') {
+    const issue = await envoyerAvecReservation({
+      sb, cmdId: String(cmd.id), canal: 'veille',
+      envoyer: async () => { const r = await envoyerSMSOVHDetail(cmd.tel, contenu); return { ok: r.ok, certain: r.certain }; },   // revue Codex #20 : refus explicite d'OVH = certain ; exception / 5xx = INDÉTERMINÉ (réservation gardée)
+      journaliser: async (i) => { await logHistoriqueStrict(cmd, type, contenu, i === 'envoye' ? STATUT_ENVOYE : i === 'echec_indetermine' ? STATUT_INDETERMINE : STATUT_ECHEC); },   // revue Codex #20 : l'indéterminé n'est pas un « échec »
+    });
+    if (issue.issue === 'deja') {
+      return new Response(JSON.stringify({ skipped: true, reason: 'deja_prevenu_aujourdhui', type, detail: issue.raison }),
+        { headers: { 'Content-Type': 'application/json' } });
+    }
+    ok = issue.issue === 'envoye'; journalEchoue = issue.journal_echoue === true;
+    if (issue.journal_echoue) console.warn('send-cmd-sms: journalisation de l’envoi IMPOSSIBLE (cmd ' + cmd.id + ', issue ' + issue.issue + ') : aucune trace dans sms_historique, contrôler à la main');   // revue Codex #20 : signalé, trace dans les journaux de la fonction
+    if (issue.issue === 'echec_indetermine') {
+      return new Response(JSON.stringify({ error: 'envoi OVH INDÉTERMINÉ : le SMS est peut-être parti, vérifier l’historique SMS' + (issue.journal_echoue ? ' (ATTENTION : l’historique n’a pas pu être écrit, il ne contient donc aucune trace de cet envoi)' : '') + ' ; ' + phraseIndetermine(issue.jour), indetermine: true, ...(issue.journal_echoue ? { journal_echoue: true } : {}), contenu }),
+        { status: 502, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (issue.issue === 'echec_certain' && issue.liberation_echouee) console.warn('send-cmd-sms: réservation NON libérée après un échec certain (cmd ' + cmd.id + ') : client bloqué jusqu’à minuit');
+  } else {
+    // Envoi OVH (transactionnel — pas de clause STOP)
+    ok = await envoyerSMSOVH(cmd.tel, contenu);
+    await logHistorique(cmd, type, contenu, ok ? 'envoyé' : 'échec');
+  }
 
   if (!ok) {
-    return new Response(JSON.stringify({ error: 'envoi OVH échoué', contenu }),
+    return new Response(JSON.stringify({ error: 'envoi OVH échoué', contenu, ...(journalEchoue ? { journal_echoue: true } : {}) }),
       { status: 502, headers: { 'Content-Type': 'application/json' } });
   }
 
@@ -218,6 +260,6 @@ Deno.serve(async (req: Request) => {
     .eq('id', cmdId);
 
   return new Response(JSON.stringify({
-    sent: true, type, cmdId, to: cmd.tel, contenu,
+    sent: true, type, cmdId, to: cmd.tel, contenu, ...(journalEchoue ? { journal_echoue: true } : {}),
   }), { headers: { 'Content-Type': 'application/json' } });
 });

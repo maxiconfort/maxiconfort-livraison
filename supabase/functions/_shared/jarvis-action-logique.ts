@@ -18,6 +18,14 @@ export const VERSION = 'v2';
 //   statut « absent » (posé par le livreur sur l'arrêt de sa tournée) vers une AUTRE date la passe à « reporté » — sinon elle gardait
 //   « absent » dans la liste des commandes alors qu'elle est replanifiée, et serait relue le lendemain comme une absente du jour.
 // v2.4 (09/11/2026) : compter_commandes par origine et par jour de prise de commande, + montant hors annulées.
+// v2.16 (17/11/2026, vidéo Borhen 15:47 « envoie-lui sa facture par SMS ») : envoyer_facture_sms { cmdId } (N3) — la facture de la commande
+//   par SMS, pour les clients sans e-mail. JARVIS n'envoie QUE le numéro de commande : le SERVEUR construit le lien (même page que
+//   lien_facture) et compose un texte FIXE (aucun texte libre, ni prix ni promesse), vers le portable de CETTE commande seulement.
+//   L'aperçu montre le destinataire masqué et « [lien de la facture] » à la place du lien : le lien réel ne sort jamais vers JARVIS. factureSms.
+// v2.14 (15/11/2026) : credits_sms (N1) — « combien de crédits SMS reste-t-il ? » : lecture seule du solde du compte OVH (GET /sms/{service}),
+//   état ok / bas / zéro / indisponible, seuil SEUIL_CREDITS_SMS_BAS ; jamais de secret, jamais d'envoi ; OVH muet = « solde indisponible », jamais un faux « ok ». resumeCredits.
+// v2.13 (14/11/2026) : sms_statut (N1) — « un SMS est-il parti pour la commande N ? » : journal de la commande (envois réussis, heure exacte) + journal
+// général par numéro de téléphone (échecs, envois manuels, heure indicative). Lecture seule ; jamais le texte, le numéro ni le nom. resumeSms.
 // v2.10 (10/11/2026, vidéo 17:01 « comment faire pour voir si GLS a pris son colis ? ») : suivi_gls (N1) — suivi GLS EN DIRECT d'une
 //   commande (lecture seule, via gls-sync en mode audit) : prise en charge, dernier événement et son libellé, livraison, retour, par colis.
 // v2.9 (10/11/2026, « go recherche nom ») : recherche approchée par nom — voyelles mal entendues tolérées (« Myriam Zeroual » ≈ « Meryem zaroual »).
@@ -33,11 +41,11 @@ export const VERSION = 'v2';
 
 export type Niveau = 'N1' | 'N2' | 'N3';
 export const NIVEAUX: Record<string, Niveau> = {
-  lire_commande: 'N1', lister_commandes: 'N1', compter_commandes: 'N1', lire_stock: 'N1', lien_facture: 'N1', suivi_gls: 'N1',
+  lire_commande: 'N1', lister_commandes: 'N1', compter_commandes: 'N1', lire_stock: 'N1', lien_facture: 'N1', suivi_gls: 'N1', sms_statut: 'N1', credits_sms: 'N1',
   creer_commande: 'N2', modifier_commande: 'N2', planifier: 'N2', deplacer: 'N2', changer_statut: 'N2',
   sav: 'N2', gls_etiquette: 'N2', gls_retour: 'N2', litige: 'N2',
   stock_entree: 'N2', stock_chargement: 'N2', stock_retour_depot: 'N2',
-  annuler_commande: 'N3', supprimer_commande: 'N3', modifier_prix: 'N3', envoyer_sms: 'N3', marquer_livre: 'N3', stock_correction: 'N3',
+  annuler_commande: 'N3', supprimer_commande: 'N3', modifier_prix: 'N3', envoyer_sms: 'N3', envoyer_facture_sms: 'N3', marquer_livre: 'N3', stock_correction: 'N3',
 };
 export const ACTIONS = Object.keys(NIVEAUX);
 /** Niveau effectif : créer une commande dont les coordonnées sont DICTÉES à la voix = N3 (décision Borhen 30/10 16:47). */
@@ -75,6 +83,7 @@ const ID_CMD = /^#(?:SAV)?\d{1,9}$/;
 const EMAIL_SIMPLE = /^[^\s@<>"]{1,64}@[^\s@<>"]{1,190}\.[a-z]{2,24}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const TEL = /^(?:\+33\s?[1-9]|0[1-9])(?:[\s.-]?\d{2}){4}$/;
+const PORTABLE = /^(?:\+33\s?[67]|0[67])(?:[\s.-]?\d{2}){4}$/; // v2.16 : seuls les 06 / 07 reçoivent un SMS (un fixe ou une ligne VoIP 09 ne le reçoit pas)
 
 export function jourParis(t: number): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(t));
@@ -102,12 +111,13 @@ export type Demande = {
   statut?: string; livreur?: string; champs?: Record<string, unknown>; prix?: number; texte?: string; commentaire?: string;
   client?: string; tel?: string; email?: string; adresse?: string; cp?: string; ville?: string; etage?: string; code?: string; instr?: string;
   lignes?: Ligne[]; origine?: string; source?: 'mail' | 'dictee' | 'commande'; depuis?: string; nom_annonce?: string; produit?: string; qte?: number; limite?: number;
+  autorisation?: string; // v2.16 (6e série Codex #389) : autorisation à usage unique de l'aperçu de envoyer_facture_sms, renvoyée à la confirmation
 };
 
 /** Contrôle de forme d'une demande (avant toute lecture). Renvoie un message d'erreur ou null. */
 export function controlerDemande(d: Demande, maintenant = Date.now()): string | null {
   if (!ACTIONS.includes(d.action)) return 'action non autorisée pour JARVIS';
-  const aCmd = !['lister_commandes', 'compter_commandes', 'lire_stock', 'creer_commande', 'stock_entree', 'stock_chargement', 'stock_retour_depot', 'stock_correction'].includes(d.action);
+  const aCmd = !['lister_commandes', 'compter_commandes', 'lire_stock', 'credits_sms', 'creer_commande', 'stock_entree', 'stock_chargement', 'stock_retour_depot', 'stock_correction'].includes(d.action);
   if (aCmd && !ID_CMD.test(String(d.cmdId || ''))) return 'numéro de commande invalide (ex. #1588)';
   switch (d.action) {
     case 'gls_retour':
@@ -205,9 +215,16 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
       if (!(typeof d.prix === 'number' && Number.isFinite(d.prix) && d.prix >= 0 && d.prix <= 20000)) return 'prix invalide (0 à 20 000 €)';
       if (texte(d.motif, 200).length < 3) return 'motif du changement de prix obligatoire';
       break;
+    case 'envoyer_facture_sms': // v2.16 : aucun champ libre — le texte, le lien et le destinataire viennent de la commande, côté serveur
+      for (const k of ['texte', 'tel', 'email', 'lien', 'message', 'client', 'adresse']) if ((d as any)[k] !== undefined) return 'envoyer_facture_sms prend seulement le numéro de commande (texte, lien et téléphone sont construits par l’appli)';
+      // 6e série de réserves Codex #389 : autorisation à usage unique de l'aperçu — forme stricte « nonce.expiration.signature » ; l'ancienne
+      // « empreinte » déterministe est refusée ; absente à la confirmation = 409 ; signature, expiration et usage vérifiés dans jarvis-facture-sms.ts
+      if ((d as any).empreinte !== undefined || ((d as any).autorisation !== undefined && !(typeof (d as any).autorisation === 'string' && /^[0-9a-f]{32}\.\d{13}\.[0-9a-f]{64}$/.test((d as any).autorisation)))) return 'autorisation d’aperçu invalide : refais l’aperçu, rien n’est parti';
+      break;
     case 'envoyer_sms': {
       const t = texte(d.texte, 320); if (t.length < 10) return 'texte du SMS trop court (10 caractères au moins)'; if (t.length > 300) return 'texte du SMS trop long (300 caractères au plus)';
       if (/https?:\/\//i.test(t)) return 'pas de lien dans un SMS envoyé par JARVIS';
+      if ((d as any).prevenir !== undefined && typeof (d as any).prevenir !== 'boolean') return 'prevenir : vrai ou faux'; // 22/11 : SMS « prévenir les clients de demain » = réservation atomique (une fois par jour, tous canaux)
       break;
     }
     case 'stock_entree':
@@ -231,7 +248,7 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
 
 /** Contrôle de la commande trouvée en base, selon l'action. */
 export function controlerCommande(d: Demande, c: Record<string, unknown> | null): string | null {
-  if (!['lister_commandes', 'compter_commandes', 'lire_stock', 'creer_commande', 'stock_entree', 'stock_chargement', 'stock_retour_depot', 'stock_correction'].includes(d.action) && !c) return 'commande introuvable';
+  if (!['lister_commandes', 'compter_commandes', 'lire_stock', 'credits_sms', 'creer_commande', 'stock_entree', 'stock_chargement', 'stock_retour_depot', 'stock_correction'].includes(d.action) && !c) return 'commande introuvable';
   if (!c) return null;
   const statut = String(c.statut || ''); const suivi = String(c.tracking_transporteur || '').trim(); const termine = STATUTS_TERMINES.includes(statut);
   const cp5 = /\b\d{5}\b/.test(String(c.adresse || ''));
@@ -267,6 +284,7 @@ export function controlerCommande(d: Demande, c: Record<string, unknown> | null)
     case 'envoyer_sms':
       if (!TEL.test(String(c.tel || '').trim())) return 'téléphone du client absent ou invalide sur la commande';
       break;
+    case 'envoyer_facture_sms': { const f = factureSms(c); if ('erreur' in f) return f.erreur; break; }
   }
   return null;
 }
@@ -584,6 +602,48 @@ export function lienFacture(d: Demande, c: Record<string, unknown>): { erreur: s
   return { lien: 'https://livraison.maxiconfort.fr/facture.html?t=' + encodeURIComponent(jeton), acquittee: c.stpaie === 'Payé', commande: String(c.id || '') };
 }
 
+/** v2.16 — Mesure d'un SMS selon son VRAI codage (3e série de réserves Codex #389) : alphabet SMS standard (GSM 7 bits) = 160 caractères,
+ *  puis 153 par morceau, les caractères d'extension (€ ^ { } [ ] ~ | \\) comptant double ; un seul caractère hors alphabet (ê, ç, emoji…)
+ *  fait passer tout le message en UCS-2 = 70 unités, puis 67 par morceau (un emoji = 2 unités). `caracteres` = unités facturées. Pure. */
+const GSM7 = '@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà';
+const GSM7_EXT = '^{}\\[~]|€';
+export function mesureSms(t: string): { codage: 'GSM-7' | 'UCS-2'; caracteres: number; sms: number } {
+  const s = String(t || ''); let n = 0; let gsm = true;
+  for (const ch of s) { if (GSM7.includes(ch)) n += 1; else if (GSM7_EXT.includes(ch)) n += 2; else { gsm = false; break; } }
+  if (!gsm) { const u = s.length; /* unités UTF-16 = unités UCS-2 facturées (emoji = 2) */ return { codage: 'UCS-2', caracteres: u, sms: u <= 70 ? 1 : Math.ceil(u / 67) }; }
+  return { codage: 'GSM-7', caracteres: n, sms: n <= 160 ? 1 : Math.ceil(n / 153) };
+}
+export function segmentsSms(t: string): number { return mesureSms(t).sms; }
+export const MARQUE_LIEN_FACTURE = '[lien de la facture]';
+const FACTURE_DEBUT = 'Bonjour, voici la facture de votre commande '; const FACTURE_SEP = ' : '; const FACTURE_FIN = '\nMaxiconfort';
+const FACTURE_LIEN = 'https://livraison.maxiconfort.fr/facture.html?t=';
+/** 3e série de réserves Codex #389 : longueur maximale du jeton pour que le SMS tienne TOUJOURS en UN seul SMS (160 caractères GSM 7 bits),
+ *  numéro de commande de 9 chiffres compris : 160 − (texte fixe + 9 chiffres + adresse de la page) = 44. Un jeton de l'appli est un UUID (36). */
+export const JETON_FACTURE_MAX = 160 - (FACTURE_DEBUT.length + 9 + FACTURE_SEP.length + FACTURE_LIEN.length + FACTURE_FIN.length);
+export const ERREUR_FACTURE_TROP_LONGUE = 'lien de la facture trop long pour tenir dans un seul SMS : rien n’est parti, envoie la facture par e-mail';
+/** v2.16 — SMS « facture » d'une commande, entièrement composé ICI (pure) : texte FIXE + lien facture.html de CETTE commande, vers SON
+ *  portable. Rien ne vient de JARVIS ni d'un champ libre de la base (le nom du client n'entre pas dans le texte). L'aperçu remplace le lien
+ *  par MARQUE_LIEN_FACTURE et masque le numéro : le lien réel ne sort jamais dans une réponse. Refus : annulée, SAV, sans jeton, jeton trop
+ *  long pour un seul SMS (3e série Codex), sans portable (fixe, VoIP 09, numéro incomplet : un SMS partirait dans le vide).
+ *  `caracteres` et `sms` de l'aperçu = mesure RÉELLE du texte envoyé (mesureSms), toujours 1 SMS. */
+export function factureSms(c: Record<string, unknown> | null): { erreur: string } | { tel: string; lien: string; texte: string; apercu: { destinataire: string; texte: string; caracteres: number; sms: number; acquittee: boolean } } {
+  if (!c) return { erreur: 'commande introuvable' };
+  const id = String(c.id || '');
+  if (String(c.statut || '') === 'annulé') return { erreur: 'commande annulée : pas de facture à envoyer' };
+  if (!/^#\d{1,9}$/.test(id)) return { erreur: /^#SAV/i.test(id) ? 'un SAV n’a pas de facture propre : envoyer celle de la commande d’origine' : 'numéro de commande invalide' };
+  const jeton = String(c.tracking_token || '').trim();
+  if (!/^[A-Za-z0-9_-]{8,}$/.test(jeton)) return { erreur: 'commande sans lien de facture (pas de jeton de suivi)' };
+  if (jeton.length > JETON_FACTURE_MAX) return { erreur: ERREUR_FACTURE_TROP_LONGUE };
+  const tel = String(c.tel || '').trim();
+  if (!tel) return { erreur: 'pas de numéro de téléphone sur cette commande : impossible d’envoyer la facture par SMS' };
+  if (!PORTABLE.test(tel)) return { erreur: 'le numéro de cette commande n’est pas un portable (06 / 07) ou il est invalide : un fixe ne reçoit pas les SMS, la facture ne partirait pas' };
+  const debut = FACTURE_DEBUT + id.slice(1) + FACTURE_SEP;
+  const lien = FACTURE_LIEN + encodeURIComponent(jeton);
+  const t = debut + lien + FACTURE_FIN;
+  const m = mesureSms(t); if (m.sms !== 1) return { erreur: ERREUR_FACTURE_TROP_LONGUE }; // second verrou : jamais plus d'un SMS
+  return { tel, lien, texte: t, apercu: { destinataire: telMasque(tel), texte: debut + MARQUE_LIEN_FACTURE + FACTURE_FIN, caracteres: m.caracteres, sms: m.sms, acquittee: c.stpaie === 'Payé' } };
+}
+
 /** v2.7 — Coordonnées reprises d'une commande existante (pure) : nom, téléphone, e-mail, adresse complète, étage, ascenseur, code,
  *  + code postal et ville relus dans l'adresse (pour le transporteur). Refus si la source n'a ni téléphone ni code postal. */
 export function coordonneesDepuis(src: Record<string, unknown> | null): { erreur: string } | { champs: Record<string, string> } {
@@ -626,4 +686,83 @@ export function resumeSuivi(x: any): { erreur: string } | Record<string, unknown
   const inconnu = colis.some(enErreur);
   return { etat_gls: texte(x.etat_gls, 30), detail: texte(x.detail, 200), date_livraison_gls: x.date_livraison_gls || null,
     pris_en_charge: inconnu ? null : colis.length ? colis.every((c: any) => !!c.pris_en_charge) : false, ...(inconnu ? { lecture_partielle: true } : {}), colis };
+}
+
+/** revue Codex #21 (P2) : variantes d'écriture d'un même numéro dans `sms_historique.tel` (l'appli convertit en +33 avant send-sms, qui garde le numéro tel quel).
+ *  Numéro français (10 chiffres en 0X…, ou 33X… / 0033X… à 11-13 chiffres) → national, national espacé, +33, 33, 0033, +33 espacé ; autre format → saisie + chiffres seuls. Fonction pure. */
+export function variantesTel(tel: unknown): string[] {
+  const brut = String(tel ?? '').trim(); const ch = brut.replace(/\D/g, '');
+  const sortie = new Set<string>(); if (brut) sortie.add(brut); if (ch) sortie.add(ch);
+  const m = /^(?:0033|33|0)([1-9]\d{8})$/.exec(ch);
+  if (m) {
+    const n9 = m[1]; const nat = '0' + n9;
+    const paires = (x: string) => x.replace(/(\d{2})(?=\d)/g, '$1 ');
+    sortie.add(nat); sortie.add(paires(nat)); sortie.add('+33' + n9); sortie.add('33' + n9); sortie.add('0033' + n9);
+    sortie.add('+33 ' + n9[0] + ' ' + paires(n9.slice(1)));
+  }
+  return [...sortie];
+}
+
+/** v2.13 — « Un SMS est-il parti pour cette commande ? » (N1, lecture seule). Deux sources, jamais le texte du message, le numéro ni le nom :
+ *  (i) `commandes.sms_envoyes` [{type, at ISO UTC}] = envois RÉUSSIS, heure exacte (convertie en heure de Paris) ;
+ *  (ii) lignes de `sms_historique` (filtrées par téléphone côté appelant) : échecs et envois manuels. Leur heure est AMBIGUË (UTC ou Paris selon
+ *  l'écrivain) : donnée telle qu'enregistrée, « heure indicative », jamais convertie. `lignes === null` = journal général illisible.
+ *  Une ligne « envoyé » de l'historique qui double une entrée du journal de la commande (même type, même jour UTC ou Paris) est écartée.
+ *  Rien trouvé ≠ « non envoyé » : un SMS peut être parti hors de ces journaux. Pure. */
+export const SOURCE_SMS_COMMANDE = 'journal de la commande';
+export const SOURCE_SMS_TEL = 'journal par numéro de téléphone (peut mélanger plusieurs commandes du même client)';
+export function resumeSms(commande: Record<string, unknown> | null, lignes: unknown[] | null): Record<string, unknown> {
+  const jourFr = (iso: string) => { const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}/${m[2]}/${m[1]}` : ''; };
+  const parisJour = (t: number) => new Date(t).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
+  const journal = (Array.isArray(commande?.sms_envoyes) ? commande!.sms_envoyes as any[] : []).map((e) => ({ type: texte(e?.type, 40), t: Date.parse(String(e?.at ?? '')) }))
+    .filter((e) => e.type && !Number.isNaN(e.t)).sort((a, b) => b.t - a.t).slice(0, 20);
+  const sms: Record<string, unknown>[] = journal.map((e) => ({ type: e.type, quand: enParis(new Date(e.t).toISOString()), statut: 'envoyé', source: SOURCE_SMS_COMMANDE }));
+  // revue Codex #20 (2e point) : le journal de la commande ne concerne QUE cette commande ; une ligne du journal général d'une AUTRE commande du même client n'est jamais confondue avec lui
+  const doublon = (type: string, jour: string, cmdLigne: string, monId: string) => (!cmdLigne || cmdLigne === monId) && journal.some((e) => e.type === type && (new Date(e.t).toISOString().slice(0, 10) === jour || parisJour(e.t) === jour));
+  let generalIndisponible = false;
+  if (lignes === null) generalIndisponible = true;
+  else for (const l of (Array.isArray(lignes) ? lignes : []).slice(0, 20) as any[]) {
+    const type = texte(l?.type_sms, 40); if (!type) continue;
+    const brut = texte(l?.statut, 20).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    // revue Codex #20 (P2) : un envoi INDÉTERMINÉ (« indéterminé (peut-être parti) ») reste « indéterminé » à la relecture : jamais présenté comme un échec (le SMS est peut-être parti)
+    const statut = /^indetermin/.test(brut) ? 'indéterminé (peut-être parti)' : /^(echec|erreur|fail)/.test(brut) ? 'échec' : /^envoy/.test(brut) ? 'envoyé' : (brut || 'inconnu');
+    const jour = /^\d{4}-\d{2}-\d{2}/.test(String(l?.date_sms ?? '')) ? String(l.date_sms).slice(0, 10) : '';
+    const cmdLigne = /^#?[A-Za-z0-9\-]{1,24}$/.test(String(l?.cmd_id ?? '').trim()) ? String(l.cmd_id).trim() : '';
+    const monId = String((commande as any)?.id ?? '');
+    if (statut === 'envoyé' && jour && doublon(type, jour, cmdLigne, monId)) continue;
+    const h = String(l?.heure ?? '').match(/^\d{1,2}:\d{2}/);
+    // revue Codex #20 : la commande de l'envoi (colonne cmd_id, migration 038) ; « autre_commande » = envoi d'une AUTRE commande du même client (même téléphone)
+    sms.push({ type, quand: (jour ? jourFr(jour) : 'date inconnue') + (h ? ' ' + h[0] : '') + ' (heure indicative)', statut, source: SOURCE_SMS_TEL, ...(cmdLigne ? { commande: cmdLigne, ...(monId && cmdLigne !== monId ? { autre_commande: true } : {}) } : {}) });
+  }
+  const sortie: Record<string, unknown> = { sms };
+  if (generalIndisponible) sortie.note_journal_general = 'journal général indisponible (seul le journal de la commande est lu)';
+  if (!sms.length) sortie.message = 'aucune trace enregistrée' + (generalIndisponible ? ' dans le journal de la commande' : ' dans les journaux') + ' — cela ne prouve pas qu’aucun SMS n’est parti (un envoi hors de ces journaux n’y laisse pas de trace)';
+  return sortie;
+}
+
+/** v2.14 : seuil sous lequel le solde de crédits SMS est jugé « bas » (à confirmer par Borhen ; une seule constante à changer). */
+export const SEUIL_CREDITS_SMS_BAS = 100;
+/** Compte OVH qui porte l'expéditeur MAXICONFORT : c'est LUI qu'il faut recharger (les comptes -2 et -3 n'ont pas d'expéditeur). */
+export const COMPTE_SMS_PRINCIPAL = 'sms-rw88345-1';
+
+/**
+ * v2.14 : résumé du solde de crédits SMS à partir de la réponse brute d'OVH (GET /sms/{service}). Fonction pure, lecture seule.
+ * `brut` = { http, data, service } ou null (appel impossible / exception). Ne garde que le nombre de crédits, le nom du service
+ * (jamais l'expéditeur, jamais un secret) et l'état. Tout doute (statut ≠ 200, creditsLeft absent / non numérique / négatif)
+ * = « indisponible » : jamais un faux « ok ».
+ */
+export function resumeCredits(brut: { http?: number | null; data?: unknown; service?: string } | null | undefined, seuil: number = SEUIL_CREDITS_SMS_BAS): Record<string, unknown> {
+  const s = Number.isFinite(seuil) && seuil > 0 ? seuil : SEUIL_CREDITS_SMS_BAS;
+  const service = typeof brut?.service === 'string' && /^sms-[a-z0-9]+-\d{1,3}$/i.test(brut.service) ? brut.service : null;
+  const compte = service ? { compte: service } : {};
+  const indispo = (raison: string) => ({ etat: 'indisponible', ...compte, seuil: s, message: 'solde indisponible (' + raison + ') — ne pas en conclure que le compte est suffisant ; à vérifier sur le compte OVH' });
+  if (!brut || brut.http !== 200) return indispo(brut && typeof brut.http === 'number' ? 'OVH a répondu en erreur' : 'OVH ne répond pas');
+  const data = brut.data as { creditsLeft?: unknown } | null;
+  const c = data && typeof data === 'object' ? data.creditsLeft : undefined;
+  if (typeof c !== 'number' || !Number.isFinite(c) || c < 0) return indispo('réponse OVH illisible');
+  const credits = Math.floor(c);
+  const recharge = 'recharger le compte portant l’expéditeur MAXICONFORT (' + COMPTE_SMS_PRINCIPAL + '), pas les comptes -2 ni -3';
+  if (credits === 0) return { etat: 'zero', credits, ...compte, seuil: s, message: 'plus aucun crédit SMS : les SMS clients ne partent plus — ' + recharge };
+  if (credits < s) return { etat: 'bas', credits, ...compte, seuil: s, message: 'crédits SMS bas (' + credits + ', seuil ' + s + ') — ' + recharge };
+  return { etat: 'ok', credits, ...compte, seuil: s, message: credits + ' crédits SMS restants (seuil d’alerte ' + s + ')' };
 }
