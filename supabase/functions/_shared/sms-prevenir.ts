@@ -51,6 +51,11 @@ export function peutEnvoyer(r: Reservation, canal: Canal): { ok: true } | { ok: 
   return canal === 'veille' ? { ok: true } : { ok: false, code: 503, raison: 'impossible de vérifier si le client est déjà prévenu (' + r.raison + ') : rien n’est envoyé' };
 }
 
+/** Phrase d'avertissement après un envoi INDÉTERMINÉ — HONNÊTE sur la réservation : gardée (aucun doublon possible) ou ABSENTE (base indisponible : un doublon reste possible). Pure. */
+export function phraseIndetermine(jour: string | null): string {
+  return jour ? 'la réservation du jour est gardée (aucun doublon)' : 'aucune réservation n’a pu être posée (base indisponible) : un doublon reste possible, ne renvoie rien sans avoir vérifié l’historique SMS';
+}
+
 export type IssueEnvoi =
   | { issue: 'envoye'; jour: string | null; journal_echoue?: boolean }
   | { issue: 'deja'; canal: string; raison: string }
@@ -79,7 +84,8 @@ export async function envoyerAvecReservation(o: {
   let res: { ok: boolean; certain?: boolean };
   try { res = await o.envoyer(); } catch { await noter('echec_indetermine'); return { issue: 'echec_indetermine', jour, ...drapeau() }; }
   if (res.ok) { await noter('envoye'); return { issue: 'envoye', jour, ...drapeau() }; }
-  if (res.certain === false) { await noter('echec_indetermine'); return { issue: 'echec_indetermine', jour, ...drapeau() }; }
+  // revue Codex #20 : on ne libère QUE sur un échec explicitement certain (`certain === true`) ; un résultat sans champ `certain` est INDÉTERMINÉ (réservation gardée)
+  if (res.certain !== true) { await noter('echec_indetermine'); return { issue: 'echec_indetermine', jour, ...drapeau() }; }
   const liberee = jour ? await libererPrevenir(o.sb, o.cmdId, o.canal, jour) : true;   // libération AVANT la journalisation ; son échec est signalé
   await noter('echec_certain');
   return { issue: 'echec_certain', jour, ...(liberee ? {} : { liberation_echouee: true }), ...drapeau() };

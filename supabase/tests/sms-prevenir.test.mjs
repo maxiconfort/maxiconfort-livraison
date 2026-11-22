@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classerReponseOvh, RESULTAT_EXCEPTION, statutSms, STATUT_INDETERMINE, reponseSendSms } from '../functions/_shared/ovh-resultat.ts';
-import { jourParis, reserverPrevenir, libererPrevenir, peutEnvoyer, echecCertain, envoyerAvecReservation } from '../functions/_shared/sms-prevenir.ts';
+import { jourParis, reserverPrevenir, libererPrevenir, peutEnvoyer, echecCertain, envoyerAvecReservation, phraseIndetermine } from '../functions/_shared/sms-prevenir.ts';
 import { resumeSms, controlerDemande as validerDemande } from '../functions/_shared/jarvis-action-logique.ts';
 
 // Fausse base : même contrat que les fonctions SQL (clé primaire (commande, jour), libération par le même canal seulement).
@@ -192,4 +192,22 @@ test('revue Codex #20 (points 2, 3, 4) : libération confirmée seulement par TR
   const i1 = await envoyerAvecReservation({ sb, cmdId: '#9705', canal: 'jarvis', maintenant: M, envoyer: async () => lire(illisible.corps) });
   assert.equal(i1.issue, 'echec_indetermine'); assert.equal(sb.t.size, 1);
   assert.equal((await envoyerAvecReservation({ sb: fausseBase(), cmdId: '#9706', canal: 'jarvis', maintenant: M, envoyer: async () => lire({ success: true }) })).issue, 'envoye');
+});
+
+test('revue Codex #20 (a67563bf) : libération SEULEMENT si certain === true ; texte indéterminé honnête sur la réservation ; journal STRICT (erreur Supabase propagée) signalé de bout en bout', async () => {
+  // 3 : ok:false sans champ certain (ou certain non booléen) = INDÉTERMINÉ, réservation gardée
+  for (const res of [{ ok: false }, { ok: false, certain: undefined }, { ok: false, certain: null }, { ok: false, certain: 'oui' }, { ok: false, certain: 1 }]) {
+    const sb = fausseBase(); const r = await envoyerAvecReservation({ sb, cmdId: '#9801', canal: 'jarvis', maintenant: M, envoyer: async () => res });
+    assert.equal(r.issue, 'echec_indetermine', JSON.stringify(res)); assert.equal(sb.t.size, 1, 'réservation gardée : ' + JSON.stringify(res));
+  }
+  const sb = fausseBase(); assert.equal((await envoyerAvecReservation({ sb, cmdId: '#9802', canal: 'jarvis', maintenant: M, envoyer: async () => ({ ok: false, certain: true }) })).issue, 'echec_certain'); assert.equal(sb.t.size, 0);
+  // 1 (texte) : réservation gardée ou ABSENTE (veille fail-open, base indisponible) — jamais « aucun doublon » sans réservation
+  assert.match(phraseIndetermine('2026-11-22'), /gardée \(aucun doublon\)/); assert.match(phraseIndetermine(null), /aucune réservation n’a pu être posée.*un doublon reste possible/);
+  const sbHS = fausseBase({ panne: 'base HS' }); const veille = await envoyerAvecReservation({ sb: sbHS, cmdId: '#9803', canal: 'veille', maintenant: M, envoyer: async () => ({ ok: false, certain: false }) });
+  assert.equal(veille.issue, 'echec_indetermine'); assert.equal(veille.jour, null, 'aucune réservation posée'); assert.match(phraseIndetermine(veille.jour), /un doublon reste possible/);
+  // journal STRICT : un callback qui propage l'erreur de l'insertion (champ error de Supabase) positionne journal_echoue
+  const journalStrict = async () => { const { error } = { error: { message: 'insertion refusée' } }; if (error) throw new Error(error.message); };
+  for (const [res, issue] of [[{ ok: true, certain: true }, 'envoye'], [{ ok: false, certain: true }, 'echec_certain'], [{ ok: false, certain: false }, 'echec_indetermine']]) {
+    const r = await envoyerAvecReservation({ sb: fausseBase(), cmdId: '#9804', canal: 'veille', maintenant: M, envoyer: async () => res, journaliser: journalStrict }); assert.equal(r.issue, issue); assert.equal(r.journal_echoue, true, issue);
+  }
 });

@@ -34,7 +34,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
   controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 import { lireCompteSmsOVH } from '../_shared/ovh-sms.ts';
-import { envoyerAvecReservation, echecCertain } from '../_shared/sms-prevenir.ts';
+import { envoyerAvecReservation, echecCertain, phraseIndetermine } from '../_shared/sms-prevenir.ts';
 import { actionFactureSms, FOURNISSEUR_USAGE } from '../_shared/jarvis-facture-sms.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
@@ -297,7 +297,7 @@ Deno.serve(async (req: Request) => {
         if (issue.issue === 'deja') return rep(409, { ok: false, erreur: issue.raison });
         if (issue.issue === 'bloque_indisponible') return rep(issue.code, { ok: false, erreur: issue.raison });
         if (issue.issue === 'echec_certain') return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + (dernier as any)?.http + ')' + (issue.liberation_echouee ? ' ; ATTENTION : la réservation du jour n’a pas pu être libérée, ce client restera bloqué jusqu’à minuit (prévenir à la main ou réessayer demain)' : '') });
-        if (issue.issue === 'echec_indetermine') return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS de la commande ; la réservation du jour est gardée (aucun doublon)' });
+        if (issue.issue === 'echec_indetermine') return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS de la commande ; ' + phraseIndetermine(issue.jour) });
         return rep(200, { ...base, sms: apercu, fait: true });
       }
       const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || '') });
