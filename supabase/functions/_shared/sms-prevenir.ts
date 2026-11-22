@@ -33,11 +33,12 @@ export async function libererPrevenir(sb: any, cmdId: string, canal: Canal, jour
   try { await sb.rpc('liberer_prevenir', { p_cmd: String(cmdId), p_jour: jour, p_canal: canal }); } catch { /* ignoré */ }
 }
 
-/** Échec CERTAIN d'un envoi = la fonction d'envoi a répondu elle-même « success: false » (rien n'est parti) : la réservation est libérée.
+/** Échec CERTAIN d'un envoi = la fonction d'envoi a répondu elle-même « success: false » sans `indetermine` (refus explicite d'OVH : rien n'est parti) : la réservation est libérée.
  *  Tout le reste (exception réseau, passerelle sans réponse lisible, délai) est INDÉTERMINÉ : le SMS est peut-être parti, la réservation est GARDÉE
  *  (aucun doublon possible) et l'échec est dit à l'appelant. Pure. */
 export function echecCertain(reponse: { http?: number; j?: any } | null | undefined): boolean {
-  return !!reponse && !!reponse.j && typeof reponse.j === 'object' && reponse.j.success === false;
+  // revue Codex #20 : send-sms marque `indetermine: true` quand OVH n'a pas répondu clairement (exception réseau, 5xx) : le SMS est peut-être parti
+  return !!reponse && !!reponse.j && typeof reponse.j === 'object' && reponse.j.success === false && reponse.j.indetermine !== true;
 }
 
 /** Politique par canal quand la base ne répond pas : le SMS « veille » automatique part comme avant (fail-open, aucune régression) ;

@@ -24,7 +24,7 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { envoyerSMSOVH } from '../_shared/ovh-sms.ts';
+import { envoyerSMSOVH, envoyerSMSOVHDetail } from '../_shared/ovh-sms.ts';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 import { texteConfirmation, expeditionAutorisee } from '../_shared/sms-garde.ts';
 import { envoyerAvecReservation } from '../_shared/sms-prevenir.ts';
@@ -206,7 +206,7 @@ Deno.serve(async (req: Request) => {
   if (type === 'veille') {
     const issue = await envoyerAvecReservation({
       sb, cmdId: String(cmd.id), canal: 'veille',
-      envoyer: async () => ({ ok: await envoyerSMSOVH(cmd.tel, contenu), certain: true }),
+      envoyer: async () => { const r = await envoyerSMSOVHDetail(cmd.tel, contenu); return { ok: r.ok, certain: r.certain }; },   // revue Codex #20 : refus explicite d'OVH = certain ; exception / 5xx = INDÉTERMINÉ (réservation gardée)
       journaliser: async (reussi) => { await logHistorique(cmd, type, contenu, reussi ? 'envoyé' : 'échec'); },
     });
     if (issue.issue === 'deja') {

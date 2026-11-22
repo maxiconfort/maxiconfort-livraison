@@ -3,6 +3,7 @@
 // Lancer : node --test supabase/tests/   (aucune connexion, aucune donnée client)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { classerReponseOvh, RESULTAT_EXCEPTION } from '../functions/_shared/ovh-resultat.ts';
 import { jourParis, reserverPrevenir, libererPrevenir, peutEnvoyer, echecCertain, envoyerAvecReservation } from '../functions/_shared/sms-prevenir.ts';
 import { controlerDemande as validerDemande } from '../functions/_shared/jarvis-action-logique.ts';
 
@@ -78,7 +79,7 @@ test('revue Codex #20 (P2) : la libération vise le JOUR RÉSERVÉ — un envoi 
 });
 test('revue Codex #20 (P2) : échec CERTAIN (send-sms répond success:false) = libération ; échec INDÉTERMINÉ (exception, passerelle, réponse illisible) = réservation GARDÉE', () => {
   assert.equal(echecCertain({ http: 502, j: { success: false, error: 'OVH' } }), true);
-  for (const flou of [null, undefined, {}, { http: 502 }, { http: 504, j: null }, { http: 502, j: 'Bad Gateway' }, { http: 200, j: {} }, { http: 502, j: { error: 'x' } }, { http: 200, j: { success: true } }]) assert.equal(echecCertain(flou), false, JSON.stringify(flou));
+  for (const flou of [null, undefined, {}, { http: 502 }, { http: 504, j: null }, { http: 502, j: 'Bad Gateway' }, { http: 200, j: {} }, { http: 502, j: { error: 'x' } }, { http: 200, j: { success: true } }, { http: 502, j: { success: false, indetermine: true } }]) assert.equal(echecCertain(flou), false, JSON.stringify(flou));
 });
 
 // ---- parcours d'envoi COMPLETS (revue Codex #20, points 3 et 4) ----
@@ -116,4 +117,24 @@ test('parcours PASSAGE DE MINUIT : envoi réservé à 22 h 59 UTC (23 h 59 Paris
     await reserverPrevenir(sb, '#8100', 'jarvis', apres);   // pendant l'envoi, minuit passe et une autre requête réserve le 23
     return { ok: false, certain: true }; } });
   assert.equal(r.issue, 'echec_certain'); assert.equal(sb.t.has('#8100|2026-11-22'), false); assert.equal(sb.t.has('#8100|2026-11-23'), true, 'la réservation valide du 23 est intacte');
+});
+
+test('revue Codex #20 (P2) : le résultat OVH INDÉTERMINÉ (exception réseau, 5xx) n\'est JAMAIS pris pour un échec certain, de OVH jusqu\'aux deux appelants', async () => {
+  // classement pur de la réponse OVH
+  assert.deepEqual(classerReponseOvh(200, { invalidReceivers: [] }, '+33600000000'), { ok: true, certain: true });
+  assert.equal(classerReponseOvh(200, { invalidReceivers: ['+33600000000'] }, '+33600000000').certain, true, 'destinataire invalide : refus explicite');
+  for (const s of [400, 401, 403, 404, 409, 422, 429]) { const r = classerReponseOvh(s, {}, '+33'); assert.equal(r.ok, false); assert.equal(r.certain, true, 'HTTP ' + s + ' = refus explicite'); }
+  for (const s of [500, 502, 503, 504, 0, 302]) { const r = classerReponseOvh(s, null, '+33'); assert.equal(r.ok, false); assert.equal(r.certain, false, 'HTTP ' + s + ' = INDÉTERMINÉ'); }
+  assert.equal(RESULTAT_EXCEPTION.ok, false); assert.equal(RESULTAT_EXCEPTION.certain, false, 'exception réseau = INDÉTERMINÉ (le helper réel l\'absorbe : c\'est ce cas que Codex a relevé)');
+  // JARVIS : send-sms répond { success:false, indetermine:true } → l'appelant garde la réservation ; { success:false } seul → libérée
+  const sb = fausseBase();
+  const indet = await envoyerAvecReservation({ sb, cmdId: '#9001', canal: 'jarvis', maintenant: M, envoyer: async () => { const r = { http: 502, j: { success: false, indetermine: true } }; return { ok: !!r.j.success, certain: echecCertain(r) }; } });
+  assert.equal(indet.issue, 'echec_indetermine'); assert.equal(sb.t.size, 1, 'réservation gardée : aucun second SMS possible');
+  assert.equal((await envoyerAvecReservation({ sb, cmdId: '#9001', canal: 'veille', maintenant: M, envoyer: async () => ({ ok: true, certain: true }) })).issue, 'deja');
+  const sb2 = fausseBase();
+  const cert = await envoyerAvecReservation({ sb: sb2, cmdId: '#9002', canal: 'jarvis', maintenant: M, envoyer: async () => { const r = { http: 502, j: { success: false } }; return { ok: !!r.j.success, certain: echecCertain(r) }; } });
+  assert.equal(cert.issue, 'echec_certain'); assert.equal(sb2.t.size, 0, 'refus explicite : réservation libérée');
+  // veille : même chaîne, résultat du helper OVH → {ok, certain}
+  const sb3 = fausseBase(); const exc = await envoyerAvecReservation({ sb: sb3, cmdId: '#9003', canal: 'veille', maintenant: M, envoyer: async () => ({ ok: RESULTAT_EXCEPTION.ok, certain: RESULTAT_EXCEPTION.certain }) });
+  assert.equal(exc.issue, 'echec_indetermine'); assert.equal(sb3.t.size, 1);
 });

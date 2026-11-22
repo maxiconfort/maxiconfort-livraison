@@ -15,7 +15,7 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { envoyerSMSOVH } from '../_shared/ovh-sms.ts';
+import { envoyerSMSOVHDetail } from '../_shared/ovh-sms.ts';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
@@ -60,8 +60,10 @@ Deno.serve(async (req: Request) => {
     return new Response(JSON.stringify({ success: false, error: 'tel et message requis' }), { status: 400, headers: JSON_HEADERS });
   }
 
-  const ok = await envoyerSMSOVH(tel, message);
-  await logHistorique(tel, type || 'manuel', message, ok ? 'envoyé' : 'échec', client || '');
+  // revue Codex #20 : le résultat INDÉTERMINÉ d'OVH (exception réseau, réponse 5xx) est transmis tel quel (`indetermine: true`) : le SMS est peut-être parti
+  const res = await envoyerSMSOVHDetail(tel, message);
+  const ok = res.ok;
+  await logHistorique(tel, type || 'manuel', message, ok ? 'envoyé' : (res.certain ? 'échec' : 'échec (indéterminé)'), client || '');
 
-  return new Response(JSON.stringify({ success: ok }), { status: ok ? 200 : 502, headers: JSON_HEADERS });
+  return new Response(JSON.stringify({ success: ok, ...(!ok && !res.certain ? { indetermine: true } : {}) }), { status: ok ? 200 : 502, headers: JSON_HEADERS });
 });
