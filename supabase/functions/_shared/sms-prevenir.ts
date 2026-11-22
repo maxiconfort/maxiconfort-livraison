@@ -57,6 +57,16 @@ export function cmdIdHistorique(v: unknown): string | null {
   return /^#?[A-Za-z0-9\-]{1,24}$/.test(s) ? s : null;
 }
 
+/** Insère une ligne dans sms_historique en y inscrivant la COMMANDE (colonne cmd_id, migration 038) ; si la colonne n'existe pas encore, réécrit SANS elle (comportement d'avant). Renvoie l'erreur finale
+ *  éventuelle (null = écrit). Partagé par send-sms et send-cmd-sms (revue Codex #20) et testé avec une fausse base. */
+export async function insererHistorique(sb: any, ligne: Record<string, unknown>, cmdId: string | null): Promise<{ message: string } | null> {
+  const essai = async (l: Record<string, unknown>) => { try { const { error } = await sb.from('sms_historique').insert(l); return error ? { message: String(error.message || error.code || 'insertion refusée') } : null; } catch (e) { return { message: String((e as Error).message || e) }; } };
+  if (!cmdId) return await essai(ligne);
+  const avecCmd = await essai({ ...ligne, cmd_id: cmdId });
+  if (!avecCmd) return null;
+  return await essai(ligne);   // colonne absente (migration 038 non appliquée) : on réécrit sans elle
+}
+
 /** Phrase d'avertissement après un envoi INDÉTERMINÉ — HONNÊTE sur la réservation : gardée (aucun doublon possible) ou ABSENTE (base indisponible : un doublon reste possible). Pure. */
 export function phraseIndetermine(jour: string | null): string {
   return jour ? 'la réservation du jour est gardée (aucun doublon)' : 'aucune réservation n’a pu être posée (base indisponible) : un doublon reste possible, ne renvoie rien sans avoir vérifié l’historique SMS';

@@ -27,7 +27,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { envoyerSMSOVH, envoyerSMSOVHDetail } from '../_shared/ovh-sms.ts';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 import { texteConfirmation, expeditionAutorisee } from '../_shared/sms-garde.ts';
-import { envoyerAvecReservation, phraseIndetermine } from '../_shared/sms-prevenir.ts';
+import { envoyerAvecReservation, phraseIndetermine, insererHistorique, cmdIdHistorique } from '../_shared/sms-prevenir.ts';
 import { STATUT_ENVOYE, STATUT_ECHEC, STATUT_INDETERMINE } from '../_shared/ovh-resultat.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
@@ -119,7 +119,8 @@ async function logHistorique(c: any, type: string, contenu: string, statut: stri
 /** Journal STRICT du parcours « veille » (revue native Codex #20) : propage l'erreur de l'insertion (champ `error` de Supabase ou exception) au lieu de l'absorber, pour que
  *  envoyerAvecReservation positionne `journal_echoue` en production. Les autres types gardent `logHistorique` (silencieux) inchangé. */
 async function logHistoriqueStrict(c: any, type: string, contenu: string, statut: string) {
-  const { error } = await sb.from('sms_historique').insert({
+  // revue Codex #20 : la COMMANDE est inscrite (cmd_id, migration 038) avec repli sans la colonne ; l'erreur finale est propagée (journal_echoue)
+  const error = await insererHistorique(sb, {
     id: 'sms_' + Date.now() + '_' + Math.random().toString(36).slice(2,8),
     client: c.client || '',
     tel: c.tel || '',
@@ -128,8 +129,8 @@ async function logHistoriqueStrict(c: any, type: string, contenu: string, statut
     statut: statut,
     date_sms: new Date().toISOString().split('T')[0],
     heure: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-  });
-  if (error) throw new Error(String(error.message || error.code || 'insertion refusée'));
+  }, cmdIdHistorique(c.id));
+  if (error) throw new Error(error.message);
 }
 
 Deno.serve(async (req: Request) => {

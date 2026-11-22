@@ -17,7 +17,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { envoyerSMSOVHDetail } from '../_shared/ovh-sms.ts';
 import { statutSms, reponseSendSms } from '../_shared/ovh-resultat.ts';
-import { cmdIdHistorique } from '../_shared/sms-prevenir.ts';
+import { cmdIdHistorique, insererHistorique } from '../_shared/sms-prevenir.ts';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
@@ -46,8 +46,7 @@ async function logHistorique(tel: string, type: string, message: string, statut:
       heure: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris' }),
     };
     // revue Codex #20 : la commande est inscrite (colonne cmd_id, migration 038) ; si la colonne n'existe pas encore, on réécrit SANS elle (comportement d'avant, rien ne casse)
-    let { error } = await sb.from('sms_historique').insert(cmdId ? { ...ligne, cmd_id: cmdId } : ligne);
-    if (error && cmdId) ({ error } = await sb.from('sms_historique').insert(ligne));
+    const error = await insererHistorique(sb, ligne, cmdId);
     if (error) { console.warn('send-sms: historique NON écrit (' + (error.message || error.code || '?') + ')'); return false; }
     return true;
   } catch (_e) { console.warn('send-sms: historique NON écrit (exception)'); return false; }
