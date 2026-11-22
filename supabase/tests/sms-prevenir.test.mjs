@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classerReponseOvh, RESULTAT_EXCEPTION, statutSms, STATUT_INDETERMINE, reponseSendSms } from '../functions/_shared/ovh-resultat.ts';
-import { jourParis, reserverPrevenir, libererPrevenir, peutEnvoyer, echecCertain, envoyerAvecReservation, phraseIndetermine } from '../functions/_shared/sms-prevenir.ts';
+import { jourParis, reserverPrevenir, libererPrevenir, peutEnvoyer, echecCertain, envoyerAvecReservation, phraseIndetermine, cmdIdHistorique } from '../functions/_shared/sms-prevenir.ts';
 import { resumeSms, controlerDemande as validerDemande } from '../functions/_shared/jarvis-action-logique.ts';
 
 // Fausse base : même contrat que les fonctions SQL (clé primaire (commande, jour), libération par le même canal seulement).
@@ -221,4 +221,15 @@ test('revue Codex #20 (5797644b) : validReceivers doit contenir LE numéro deman
   assert.deepEqual(reponseSendSms({ ok: true, certain: true }, true), { status: 200, corps: { success: true, journal_echoue: true } });
   assert.deepEqual(reponseSendSms({ ok: true, certain: true }, false), { status: 200, corps: { success: true } });
   assert.deepEqual(reponseSendSms(RESULTAT_EXCEPTION, true), { status: 502, corps: { success: false, indetermine: true, journal_echoue: true } });
+});
+
+test('revue Codex #20 (6c935209) : l\'historique retient la COMMANDE de chaque envoi — deux commandes du même client sont distinguées à la relecture', () => {
+  assert.equal(cmdIdHistorique('#2150'), '#2150'); assert.equal(cmdIdHistorique(' SAV-12 '), 'SAV-12');
+  for (const mauvais of [null, undefined, '', '#', 'a b', "1'; drop table x;--", '#' + '9'.repeat(40), '<script>', {}]) assert.equal(cmdIdHistorique(mauvais), null, JSON.stringify(mauvais));
+  const lignes = [{ type_sms: 'jarvis', statut: 'indéterminé (peut-être parti)', date_sms: '2026-11-22', heure: '10:30', cmd_id: '#2150' }, { type_sms: 'jarvis', statut: 'envoyé', date_sms: '2026-11-22', heure: '10:31', cmd_id: '#2151' }, { type_sms: 'veille', statut: 'envoyé', date_sms: '2026-11-21', heure: '19:00' }, { type_sms: 'jarvis', statut: 'envoyé', date_sms: '2026-11-22', heure: '10:32', cmd_id: 'x y' }];
+  const r = resumeSms({ id: '#2150', sms_envoyes: [] }, lignes);
+  assert.equal(r.sms[0].commande, '#2150'); assert.equal('autre_commande' in r.sms[0], false, 'la commande consultée');
+  assert.equal(r.sms[1].commande, '#2151'); assert.equal(r.sms[1].autre_commande, true, 'AUTRE commande du même client');
+  assert.equal('commande' in r.sms[2], false, 'ligne ancienne sans commande'); assert.equal('commande' in r.sms[3], false, 'identifiant invalide ignoré');
+  const r2 = resumeSms({ id: '#2151', sms_envoyes: [] }, lignes); assert.equal('autre_commande' in r2.sms[1], false); assert.equal(r2.sms[0].autre_commande, true);
 });

@@ -713,7 +713,10 @@ export function resumeSms(commande: Record<string, unknown> | null, lignes: unkn
     const jour = /^\d{4}-\d{2}-\d{2}/.test(String(l?.date_sms ?? '')) ? String(l.date_sms).slice(0, 10) : '';
     if (statut === 'envoyé' && jour && doublon(type, jour)) continue;
     const h = String(l?.heure ?? '').match(/^\d{1,2}:\d{2}/);
-    sms.push({ type, quand: (jour ? jourFr(jour) : 'date inconnue') + (h ? ' ' + h[0] : '') + ' (heure indicative)', statut, source: SOURCE_SMS_TEL });
+    // revue Codex #20 : la commande de l'envoi (colonne cmd_id, migration 038) ; « autre_commande » = envoi d'une AUTRE commande du même client (même téléphone)
+    const cmdLigne = /^#?[A-Za-z0-9\-]{1,24}$/.test(String(l?.cmd_id ?? '').trim()) ? String(l.cmd_id).trim() : '';
+    const monId = String((commande as any)?.id ?? '');
+    sms.push({ type, quand: (jour ? jourFr(jour) : 'date inconnue') + (h ? ' ' + h[0] : '') + ' (heure indicative)', statut, source: SOURCE_SMS_TEL, ...(cmdLigne ? { commande: cmdLigne, ...(monId && cmdLigne !== monId ? { autre_commande: true } : {}) } : {}) });
   }
   const sortie: Record<string, unknown> = { sms };
   if (generalIndisponible) sortie.note_journal_general = 'journal général indisponible (seul le journal de la commande est lu)';

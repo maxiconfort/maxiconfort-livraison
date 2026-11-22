@@ -17,6 +17,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { envoyerSMSOVHDetail } from '../_shared/ovh-sms.ts';
 import { statutSms, reponseSendSms } from '../_shared/ovh-resultat.ts';
+import { cmdIdHistorique } from '../_shared/sms-prevenir.ts';
 import { appelInterne, appelApp, refus, EN_TETES_AUTORISES } from '../_shared/controle-appelant.ts';
 
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
@@ -32,9 +33,9 @@ const CORS_HEADERS = {
 const JSON_HEADERS = { 'Content-Type': 'application/json', ...CORS_HEADERS };
 
 /** Renvoie TRUE si l'historique a été écrit, FALSE sinon (revue Codex #20 : l'échec est SIGNALÉ à l'appelant via `journal_echoue`, jamais ignoré ; le SMS part quand même, comme avant). */
-async function logHistorique(tel: string, type: string, message: string, statut: string, client: string): Promise<boolean> {
+async function logHistorique(tel: string, type: string, message: string, statut: string, client: string, cmdId: string | null = null): Promise<boolean> {
   try {
-    const { error } = await sb.from('sms_historique').insert({
+    const ligne: Record<string, unknown> = {
       id: 'sms_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
       client: client || '',
       tel: tel || '',
@@ -43,7 +44,10 @@ async function logHistorique(tel: string, type: string, message: string, statut:
       statut,
       date_sms: new Date().toISOString().split('T')[0],
       heure: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris' }),
-    });
+    };
+    // revue Codex #20 : la commande est inscrite (colonne cmd_id, migration 038) ; si la colonne n'existe pas encore, on réécrit SANS elle (comportement d'avant, rien ne casse)
+    let { error } = await sb.from('sms_historique').insert(cmdId ? { ...ligne, cmd_id: cmdId } : ligne);
+    if (error && cmdId) ({ error } = await sb.from('sms_historique').insert(ligne));
     if (error) { console.warn('send-sms: historique NON écrit (' + (error.message || error.code || '?') + ')'); return false; }
     return true;
   } catch (_e) { console.warn('send-sms: historique NON écrit (exception)'); return false; }
@@ -59,14 +63,14 @@ Deno.serve(async (req: Request) => {
 
   let body: any = {};
   try { body = await req.json(); } catch {}
-  const { tel, message, type, client } = body;
+  const { tel, message, type, client } = body; const cmdIdSms = cmdIdHistorique(body.cmdId);
   if (!tel || !message) {
     return new Response(JSON.stringify({ success: false, error: 'tel et message requis' }), { status: 400, headers: JSON_HEADERS });
   }
 
   // revue Codex #20 : le résultat INDÉTERMINÉ d'OVH (exception réseau, réponse 5xx) est transmis tel quel (`indetermine: true`) : le SMS est peut-être parti
   const res = await envoyerSMSOVHDetail(tel, message);
-  const journalOk = await logHistorique(tel, type || 'manuel', message, statutSms(res), client || '');
+  const journalOk = await logHistorique(tel, type || 'manuel', message, statutSms(res), client || '', cmdIdSms);
   const rep = reponseSendSms(res, !journalOk);   // revue Codex #20 : libellé partagé, « indéterminé » jamais confondu avec « échec »
 
   return new Response(JSON.stringify(rep.corps), { status: rep.status, headers: JSON_HEADERS });

@@ -114,9 +114,11 @@ Deno.serve(async (req: Request) => {
         if (!chiffres) lignes = [];
         else {
           const depuis = /^\d{4}-\d{2}-\d{2}/.test(String(c!.created_at || '')) ? String(c!.created_at).slice(0, 10) : '2000-01-01';
-          const { data, error } = await sb.from('sms_historique').select('type_sms, statut, date_sms, heure').in('tel', [...new Set([tel, chiffres])])
+          const lire = (colonnes: string) => sb.from('sms_historique').select(colonnes).in('tel', [...new Set([tel, chiffres])])
             .gte('date_sms', depuis).order('date_sms', { ascending: false }).order('heure', { ascending: false }).limit(20);
-          lignes = error ? null : (data as unknown[] | null) || [];
+          let r = await lire('type_sms, statut, date_sms, heure, cmd_id');   // revue Codex #20 : la commande de chaque envoi (migration 038) ; colonne absente = on relit sans elle (comportement d'avant)
+          if (r.error) r = await lire('type_sms, statut, date_sms, heure');
+          lignes = r.error ? null : (r.data as unknown[] | null) || [];
         }
       } catch { lignes = null; }
       return rep(200, { ok: true, action: d.action, niveau, confirme, ...resumeSms(c, lignes) });
@@ -292,17 +294,17 @@ Deno.serve(async (req: Request) => {
         let dernier: { http: number; j: any } | null = null;
         const issue = await envoyerAvecReservation({
           sb, cmdId: String(c!.id), canal: 'jarvis',
-          envoyer: async () => { const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || '') }); dernier = r; return { ok: !!r.j?.success && r.j?.indetermine !== true, certain: echecCertain(r) }; },   // revue Codex #20 : un « succès » marqué indéterminé (200 OVH illisible) n'est PAS un succès : réservation gardée
+          envoyer: async () => { const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || ''), cmdId: String(c!.id) }); dernier = r; return { ok: !!r.j?.success && r.j?.indetermine !== true, certain: echecCertain(r) }; },   // revue Codex #20 : un « succès » marqué indéterminé (200 OVH illisible) n'est PAS un succès : réservation gardée
         });
         // revue Codex #20 : send-sms signale `journal_echoue` quand l'historique n'a pas pu être écrit : JARVIS le dit (aucune trace de cet envoi dans l'historique)
         const jEch = (dernier as any)?.j?.journal_echoue === true; const noteJ = jEch ? ' ATTENTION : l’historique SMS n’a pas pu être écrit, il ne contient aucune trace de cet envoi.' : '';
         if (issue.issue === 'deja') return rep(409, { ok: false, erreur: issue.raison });
         if (issue.issue === 'bloque_indisponible') return rep(issue.code, { ok: false, erreur: issue.raison });
         if (issue.issue === 'echec_certain') return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + (dernier as any)?.http + ')' + (issue.liberation_echouee ? ' ; ATTENTION : la réservation du jour n’a pas pu être libérée, ce client restera bloqué jusqu’à minuit (prévenir à la main ou réessayer demain)' : '') + noteJ });
-        if (issue.issue === 'echec_indetermine') return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS de la commande ; ' + phraseIndetermine(issue.jour) + noteJ });
+        if (issue.issue === 'echec_indetermine') return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS (commande ' + String(c!.id) + ') ; ' + phraseIndetermine(issue.jour) + noteJ });
         return rep(200, { ...base, sms: apercu, fait: true, ...(jEch ? { journal_echoue: true, avertissement: noteJ.trim() } : {}) });
       }
-      const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || '') });
+      const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || ''), cmdId: String(c!.id) });
       if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' });
       return rep(200, { ...base, sms: apercu, fait: true });
     }

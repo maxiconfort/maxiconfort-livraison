@@ -51,6 +51,12 @@ export function peutEnvoyer(r: Reservation, canal: Canal): { ok: true } | { ok: 
   return canal === 'veille' ? { ok: true } : { ok: false, code: 503, raison: 'impossible de vérifier si le client est déjà prévenu (' + r.raison + ') : rien n’est envoyé' };
 }
 
+/** Numéro de commande à inscrire dans l'historique SMS (revue Codex #20) : forme sûre « #1234 » / « SAV… » seulement, sinon null (rien n'est écrit). Pure. */
+export function cmdIdHistorique(v: unknown): string | null {
+  const s = String(v ?? '').trim();
+  return /^#?[A-Za-z0-9\-]{1,24}$/.test(s) ? s : null;
+}
+
 /** Phrase d'avertissement après un envoi INDÉTERMINÉ — HONNÊTE sur la réservation : gardée (aucun doublon possible) ou ABSENTE (base indisponible : un doublon reste possible). Pure. */
 export function phraseIndetermine(jour: string | null): string {
   return jour ? 'la réservation du jour est gardée (aucun doublon)' : 'aucune réservation n’a pu être posée (base indisponible) : un doublon reste possible, ne renvoie rien sans avoir vérifié l’historique SMS';

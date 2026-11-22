@@ -487,7 +487,7 @@ test('v2.13 sms_statut : lecture seule, deux journaux, jamais texte / téléphon
   // sources : lecture seule, colonnes limitées (ni msg, ni tel, ni client), aucun envoi
   const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
   const bloc = src.slice(src.indexOf("d.action === 'sms_statut'"), src.indexOf("d.action === 'lien_facture'"));
-  assert.match(bloc, /select\('type_sms, statut, date_sms, heure'\)/);
+  assert.match(bloc, /lire\('type_sms, statut, date_sms, heure, cmd_id'\)/); assert.match(bloc, /lire\('type_sms, statut, date_sms, heure'\)/, 'repli sans la colonne cmd_id (migration 038 non appliquée)');   // jamais msg, tel ni client
   assert.equal(/\.(insert|update|upsert|delete)\(|interne\(|ovh|brevo|fetch\(/i.test(bloc), false, 'aucune écriture ni appel externe');
 });
 
