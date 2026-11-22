@@ -603,6 +603,16 @@ test('v2.16 actionFactureSms : aperçu = zéro envoi ; refus = zéro envoi ; con
   // send-sms en échec : 502, un seul appel, pas de « fait »
   d = deps(false); r = await actionFactureSms(c(), true, base(c(), true), d, autorisation);
   assert.equal(r.code, 502); assert.equal(r.o.ok, false); assert.match(r.o.erreur, /SMS non envoyé \(HTTP 500\)/); assert.equal(r.o.fait, undefined); assert.equal(d.appels.length, 1); sansLien(r);
+  // revue Codex #21 (P2) : envoi INDÉTERMINÉ (success:false + indetermine:true, ou succès illisible marqué indetermine) : jamais « non envoyé » ni « fait »
+  for (const j of [{ success: false, indetermine: true }, { success: true, indetermine: true }]) {
+    d = deps(); d.interne = async (nom, corps) => { d.appels.push({ nom, corps }); return { http: 200, j }; };
+    r = await actionFactureSms(c(), true, base(c(), true), d, autorisation);
+    assert.equal(r.code, 502); assert.match(r.o.erreur, /INDÉTERMINÉ/); assert.doesNotMatch(r.o.erreur, /non envoyé/); assert.equal(r.o.fait, undefined); assert.equal(d.appels.length, 1); sansLien(r);
+  }
+  // historique non écrit : signalé, à l'échec comme au succès
+  d = deps(); d.interne = async (nom, corps) => { d.appels.push({ nom, corps }); return { http: 200, j: { success: true, journal_echoue: true } }; };
+  r = await actionFactureSms(c(), true, base(c(), true), d, autorisation);
+  assert.equal(r.code, 200); assert.equal(r.o.fait, true); assert.equal(r.o.journal_echoue, true); assert.match(r.o.avertissement, /historique SMS/);
   // index.ts délègue bien à ce gestionnaire (même logique, rien d'autre dans la branche)
   const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
   assert.match(src, /if \(d\.action === 'envoyer_facture_sms'\) return actionFactureSms\(c!, confirme, base, \{ interne, rep, cle: SECRET_JARVIS, consommer: consommerUsageFacture \}, d\.autorisation\);/);
