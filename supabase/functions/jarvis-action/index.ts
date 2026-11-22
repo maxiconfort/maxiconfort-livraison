@@ -34,6 +34,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
   controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 import { lireCompteSmsOVH } from '../_shared/ovh-sms.ts';
+import { envoyerAvecReservation, echecCertain, phraseIndetermine } from '../_shared/sms-prevenir.ts';
 import { actionFactureSms, FOURNISSEUR_USAGE } from '../_shared/jarvis-facture-sms.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL') || '';
@@ -113,9 +114,11 @@ Deno.serve(async (req: Request) => {
         if (!chiffres) lignes = [];
         else {
           const depuis = /^\d{4}-\d{2}-\d{2}/.test(String(c!.created_at || '')) ? String(c!.created_at).slice(0, 10) : '2000-01-01';
-          const { data, error } = await sb.from('sms_historique').select('type_sms, statut, date_sms, heure').in('tel', [...new Set([tel, chiffres])])
+          const lire = (colonnes: string) => sb.from('sms_historique').select(colonnes).in('tel', [...new Set([tel, chiffres])])
             .gte('date_sms', depuis).order('date_sms', { ascending: false }).order('heure', { ascending: false }).limit(20);
-          lignes = error ? null : (data as unknown[] | null) || [];
+          let r = await lire('type_sms, statut, date_sms, heure, cmd_id');   // revue Codex #20 : la commande de chaque envoi (migration 038) ; colonne absente = on relit sans elle (comportement d'avant)
+          if (r.error) r = await lire('type_sms, statut, date_sms, heure');
+          lignes = r.error ? null : (r.data as unknown[] | null) || [];
         }
       } catch { lignes = null; }
       return rep(200, { ok: true, action: d.action, niveau, confirme, ...resumeSms(c, lignes) });
@@ -284,9 +287,28 @@ Deno.serve(async (req: Request) => {
     if (d.action === 'envoyer_sms') {
       const tel = String(c!.tel || '').trim(); const apercu = { destinataire: telMasque(tel), texte: String(d.texte).trim() };
       if (!confirme) return rep(200, { ...base, sms: apercu });
-      const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || '') });
-      if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' });
-      return rep(200, { ...base, sms: apercu, fait: true });
+      // 22/11/2026 : SMS « prévenir les clients de demain » (d.prevenir === true) : parcours testé de bout en bout (envoyerAvecReservation) : réservation ATOMIQUE tous canaux
+      // AVANT l'envoi ; déjà prévenu = 409 ; base injoignable = 503 (rien ne part) ; échec CERTAIN (send-sms répond success:false) = réservation libérée sur le jour réservé ;
+      // échec INDÉTERMINÉ (exception, passerelle illisible) = réservation GARDÉE (aucun doublon) et l'appelant est prévenu de vérifier l'historique SMS.
+      if ((d as any).prevenir === true) {
+        let dernier: { http: number; j: any } | null = null;
+        const issue = await envoyerAvecReservation({
+          sb, cmdId: String(c!.id), canal: 'jarvis',
+          envoyer: async () => { const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || ''), cmdId: String(c!.id) }); dernier = r; return { ok: !!r.j?.success && r.j?.indetermine !== true, certain: echecCertain(r) }; },   // revue Codex #20 : un « succès » marqué indéterminé (200 OVH illisible) n'est PAS un succès : réservation gardée
+        });
+        // revue Codex #20 : send-sms signale `journal_echoue` quand l'historique n'a pas pu être écrit : JARVIS le dit (aucune trace de cet envoi dans l'historique)
+        const jEch = (dernier as any)?.j?.journal_echoue === true; const noteJ = jEch ? ' ATTENTION : l’historique SMS n’a pas pu être écrit, il ne contient aucune trace de cet envoi.' : '';
+        if (issue.issue === 'deja') return rep(409, { ok: false, erreur: issue.raison });
+        if (issue.issue === 'bloque_indisponible') return rep(issue.code, { ok: false, erreur: issue.raison });
+        if (issue.issue === 'echec_certain') return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + (dernier as any)?.http + ')' + (issue.liberation_echouee ? ' ; ATTENTION : la réservation du jour n’a pas pu être libérée, ce client restera bloqué jusqu’à minuit (prévenir à la main ou réessayer demain)' : '') + noteJ });
+        if (issue.issue === 'echec_indetermine') return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS (commande ' + String(c!.id) + ') ; ' + phraseIndetermine(issue.jour) + noteJ });
+        return rep(200, { ...base, sms: apercu, fait: true, ...(jEch ? { journal_echoue: true, avertissement: noteJ.trim() } : {}) });
+      }
+      const r = await interne('send-sms', { tel, message: apercu.texte, type: 'jarvis', client: String(c!.client || ''), cmdId: String(c!.id) });
+      const jE2 = r.j?.journal_echoue === true; const nJ2 = jE2 ? ' ATTENTION : l’historique SMS n’a pas pu être écrit, il ne contient aucune trace de cet envoi.' : '';
+      if (r.j?.indetermine === true) return rep(502, { ok: false, erreur: 'résultat de l’envoi INDÉTERMINÉ : le SMS est peut-être parti, vérifie l’historique SMS (commande ' + String(c!.id) + ')' + nJ2 });
+      if (!r.j?.success) return rep(502, { ok: false, erreur: 'SMS non envoyé (HTTP ' + r.http + ')' + nJ2 });
+      return rep(200, { ...base, sms: apercu, fait: true, ...(jE2 ? { journal_echoue: true, avertissement: nJ2.trim() } : {}) });
     }
     // v2.16 : rien de JARVIS dans le SMS ; le texte réel (avec le lien) ne part que vers send-sms (gestionnaire testé : _shared/jarvis-facture-sms.ts)
     if (d.action === 'envoyer_facture_sms') return actionFactureSms(c!, confirme, base, { interne, rep, cle: SECRET_JARVIS, consommer: consommerUsageFacture }, d.autorisation);
