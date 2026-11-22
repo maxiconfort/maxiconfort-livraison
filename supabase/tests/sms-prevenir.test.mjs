@@ -3,7 +3,7 @@
 // Lancer : node --test supabase/tests/   (aucune connexion, aucune donnée client)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { jourParis, reserverPrevenir, libererPrevenir, peutEnvoyer } from '../functions/_shared/sms-prevenir.ts';
+import { jourParis, reserverPrevenir, libererPrevenir, peutEnvoyer, echecCertain } from '../functions/_shared/sms-prevenir.ts';
 import { controlerDemande as validerDemande } from '../functions/_shared/jarvis-action-logique.ts';
 
 // Fausse base : même contrat que les fonctions SQL (clé primaire (commande, jour), libération par le même canal seulement).
@@ -30,10 +30,10 @@ test('jour de Paris : bascule à minuit HEURE DE PARIS (hiver UTC+1, été UTC+2
 
 test('veille puis JARVIS le même jour : JARVIS est refusé (409) et nomme le canal ; un autre jour : accepté', async () => {
   const sb = fausseBase();
-  assert.deepEqual(await reserverPrevenir(sb, '#1001', 'veille', M), { etat: 'reserve' });
+  assert.deepEqual(await reserverPrevenir(sb, '#1001', 'veille', M), { etat: 'reserve', jour: '2026-11-22' });
   const r = await reserverPrevenir(sb, '#1001', 'jarvis', M); assert.deepEqual(r, { etat: 'deja', canal: 'veille' });
   const p = peutEnvoyer(r, 'jarvis'); assert.equal(p.ok, false); assert.equal(p.code, 409); assert.match(p.raison, /déjà prévenu aujourd’hui \(canal veille\)/);
-  assert.deepEqual(await reserverPrevenir(sb, '#1001', 'jarvis', new Date('2026-11-23T12:00:00Z')), { etat: 'reserve' });
+  assert.deepEqual(await reserverPrevenir(sb, '#1001', 'jarvis', new Date('2026-11-23T12:00:00Z')), { etat: 'reserve', jour: '2026-11-23' });
 });
 
 test('CONCURRENCE : 30 envois simultanés (veille et JARVIS mélangés) sur la même commande et le même jour : UN seul est autorisé', async () => {
@@ -47,8 +47,8 @@ test('CONCURRENCE : 30 envois simultanés (veille et JARVIS mélangés) sur la m
 test('envoi ÉCHOUÉ : la réservation est libérée par le MÊME canal seulement ; l\'autre canal peut alors envoyer', async () => {
   const sb = fausseBase();
   await reserverPrevenir(sb, '#4001', 'jarvis', M);
-  await libererPrevenir(sb, '#4001', 'veille', M); assert.deepEqual(await reserverPrevenir(sb, '#4001', 'veille', M), { etat: 'deja', canal: 'jarvis' }, 'un autre canal ne libère jamais');
-  await libererPrevenir(sb, '#4001', 'jarvis', M); assert.deepEqual(await reserverPrevenir(sb, '#4001', 'veille', M), { etat: 'reserve' });
+  await libererPrevenir(sb, '#4001', 'veille', '2026-11-22'); assert.deepEqual(await reserverPrevenir(sb, '#4001', 'veille', M), { etat: 'deja', canal: 'jarvis' }, 'un autre canal ne libère jamais');
+  await libererPrevenir(sb, '#4001', 'jarvis', '2026-11-22'); assert.deepEqual(await reserverPrevenir(sb, '#4001', 'veille', M), { etat: 'reserve', jour: '2026-11-22' });
 });
 
 test('base INJOIGNABLE : le SMS veille part comme avant (fail-open), JARVIS ne part PAS (fail-closed, 503) ; aucune exception ne remonte', async () => {
@@ -57,7 +57,7 @@ test('base INJOIGNABLE : le SMS veille part comme avant (fail-open), JARVIS ne p
     assert.deepEqual(peutEnvoyer(r, 'veille'), { ok: true }, 'veille : comme avant');
     const j = peutEnvoyer(r, 'jarvis'); assert.equal(j.ok, false); assert.equal(j.code, 503); assert.match(j.raison, /impossible de vérifier/);
   }
-  await libererPrevenir({ rpc: async () => { throw new Error('x'); } }, '#5001', 'jarvis', M);   // silencieux
+  await libererPrevenir({ rpc: async () => { throw new Error('x'); } }, '#5001', 'jarvis', '2026-11-22');   // silencieux
 });
 
 test('jarvis-action : envoyer_sms accepte « prevenir » vrai/faux seulement ; le reste de la validation est inchangé', () => {
@@ -65,4 +65,18 @@ test('jarvis-action : envoyer_sms accepte « prevenir » vrai/faux seulement ; l
   assert.equal(validerDemande({ ...base }), null); assert.equal(validerDemande({ ...base, prevenir: true }), null); assert.equal(validerDemande({ ...base, prevenir: false }), null);
   assert.match(String(validerDemande({ ...base, prevenir: 'oui' })), /prevenir : vrai ou faux/); assert.match(String(validerDemande({ ...base, prevenir: 1 })), /prevenir : vrai ou faux/);
   assert.match(String(validerDemande({ ...base, texte: 'court' })), /trop court/); assert.match(String(validerDemande({ ...base, texte: 'Voir https://x.fr pour la livraison' })), /pas de lien/);
+});
+
+test('revue Codex #20 (P2) : la libération vise le JOUR RÉSERVÉ — un envoi qui échoue APRÈS minuit ne supprime jamais la réservation valide du jour suivant', async () => {
+  const sb = fausseBase();
+  const avantMinuit = new Date('2026-11-22T22:59:30Z'); const apresMinuit = new Date('2026-11-22T23:00:30Z');
+  const r1 = await reserverPrevenir(sb, '#7001', 'jarvis', avantMinuit); assert.deepEqual(r1, { etat: 'reserve', jour: '2026-11-22' });
+  const r2 = await reserverPrevenir(sb, '#7001', 'jarvis', apresMinuit); assert.deepEqual(r2, { etat: 'reserve', jour: '2026-11-23' }, 'une autre requête réserve le jour suivant');
+  await libererPrevenir(sb, '#7001', 'jarvis', r1.jour);   // l'envoi du 22 échoue après minuit : libère le 22, PAS le 23
+  assert.equal(sb.t.has('#7001|2026-11-22'), false); assert.equal(sb.t.has('#7001|2026-11-23'), true, 'la réservation valide du jour suivant est intacte');
+  await libererPrevenir(sb, '#7001', 'jarvis', 'pas un jour'); assert.equal(sb.t.has('#7001|2026-11-23'), true, 'jour invalide : rien n\'est libéré');
+});
+test('revue Codex #20 (P2) : échec CERTAIN (send-sms répond success:false) = libération ; échec INDÉTERMINÉ (exception, passerelle, réponse illisible) = réservation GARDÉE', () => {
+  assert.equal(echecCertain({ http: 502, j: { success: false, error: 'OVH' } }), true);
+  for (const flou of [null, undefined, {}, { http: 502 }, { http: 504, j: null }, { http: 502, j: 'Bad Gateway' }, { http: 200, j: {} }, { http: 502, j: { error: 'x' } }, { http: 200, j: { success: true } }]) assert.equal(echecCertain(flou), false, JSON.stringify(flou));
 });

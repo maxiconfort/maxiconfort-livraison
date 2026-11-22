@@ -202,7 +202,7 @@ Deno.serve(async (req: Request) => {
 
   // 22/11/2026 : « un client n'est prévenu qu'UNE fois par jour », tous canaux. Le SMS « veille » RÉSERVE (commande, jour) de façon atomique AVANT l'envoi ;
   // si le SMS « prévenir les clients » de JARVIS est déjà parti, rien ne part. Base injoignable : le SMS veille part comme avant (fail-open).
-  let reserveVeille = false;
+  let reserveVeille: string | null = null;   // jour réservé (conservé pour la libération)
   if (type === 'veille') {
     const r = await reserverPrevenir(sb, String(cmd.id), 'veille');
     const p = peutEnvoyer(r, 'veille');
@@ -210,13 +210,13 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ skipped: true, reason: 'deja_prevenu_aujourdhui', type, detail: p.raison }),
         { headers: { 'Content-Type': 'application/json' } });
     }
-    reserveVeille = r.etat === 'reserve';
+    reserveVeille = r.etat === 'reserve' ? r.jour : null;
   }
 
   // Envoi OVH (transactionnel — pas de clause STOP)
   const ok = await envoyerSMSOVH(cmd.tel, contenu);
   await logHistorique(cmd, type, contenu, ok ? 'envoyé' : 'échec');
-  if (!ok && reserveVeille) await libererPrevenir(sb, String(cmd.id), 'veille'); // envoi échoué : le client reste atteignable
+  if (!ok && reserveVeille) await libererPrevenir(sb, String(cmd.id), 'veille', reserveVeille); // envoi refusé par OVH (échec certain) : le client reste atteignable
 
   if (!ok) {
     return new Response(JSON.stringify({ error: 'envoi OVH échoué', contenu }),

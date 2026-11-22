@@ -4,7 +4,7 @@
 
 export type Canal = 'veille' | 'jarvis';
 export type Reservation =
-  | { etat: 'reserve' }
+  | { etat: 'reserve'; jour: string }   // le JOUR réservé est conservé avec la réservation : la libération vise CE jour, jamais « aujourd'hui » recalculé (minuit)
   | { etat: 'deja'; canal: string }
   | { etat: 'indisponible'; raison: string };
 
@@ -16,18 +16,28 @@ export function jourParis(maintenant: Date = new Date()): string {
 
 /** Réserve (commande, jour) pour un canal. Jamais d'exception : une base injoignable ou une fonction absente = « indisponible » (le canal décide : veille ouvre, JARVIS ferme). */
 export async function reserverPrevenir(sb: any, cmdId: string, canal: Canal, maintenant: Date = new Date()): Promise<Reservation> {
+  const jour = jourParis(maintenant);
   try {
-    const { data, error } = await sb.rpc('reserver_prevenir', { p_cmd: String(cmdId), p_jour: jourParis(maintenant), p_canal: canal });
+    const { data, error } = await sb.rpc('reserver_prevenir', { p_cmd: String(cmdId), p_jour: jour, p_canal: canal });
     if (error) return { etat: 'indisponible', raison: String(error.message || error.code || 'erreur base').slice(0, 120) };
-    if (data && data.reserve === true) return { etat: 'reserve' };
+    if (data && data.reserve === true) return { etat: 'reserve', jour };
     if (data && data.reserve === false && typeof data.canal === 'string') return { etat: 'deja', canal: data.canal };
     return { etat: 'indisponible', raison: 'réponse inattendue de la base' };
   } catch (e) { return { etat: 'indisponible', raison: String((e as Error).message || e).slice(0, 120) }; }
 }
 
-/** Libère la réservation du même canal après un envoi ÉCHOUÉ (le client reste atteignable). Silencieux en cas d'erreur. */
-export async function libererPrevenir(sb: any, cmdId: string, canal: Canal, maintenant: Date = new Date()): Promise<void> {
-  try { await sb.rpc('liberer_prevenir', { p_cmd: String(cmdId), p_jour: jourParis(maintenant), p_canal: canal }); } catch { /* ignoré */ }
+/** Libère la réservation du même canal après un envoi ÉCHOUÉ AVEC CERTITUDE (le client reste atteignable). `jour` = celui de la réservation (revue Codex #20 :
+ *  un envoi qui échoue après minuit ne doit ni viser le jour suivant ni supprimer la réservation valide d'une autre requête). Silencieux en cas d'erreur. */
+export async function libererPrevenir(sb: any, cmdId: string, canal: Canal, jour: string): Promise<void> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(jour))) return;
+  try { await sb.rpc('liberer_prevenir', { p_cmd: String(cmdId), p_jour: jour, p_canal: canal }); } catch { /* ignoré */ }
+}
+
+/** Échec CERTAIN d'un envoi = la fonction d'envoi a répondu elle-même « success: false » (rien n'est parti) : la réservation est libérée.
+ *  Tout le reste (exception réseau, passerelle sans réponse lisible, délai) est INDÉTERMINÉ : le SMS est peut-être parti, la réservation est GARDÉE
+ *  (aucun doublon possible) et l'échec est dit à l'appelant. Pure. */
+export function echecCertain(reponse: { http?: number; j?: any } | null | undefined): boolean {
+  return !!reponse && !!reponse.j && typeof reponse.j === 'object' && reponse.j.success === false;
 }
 
 /** Politique par canal quand la base ne répond pas : le SMS « veille » automatique part comme avant (fail-open, aucune régression) ;
