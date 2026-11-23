@@ -32,7 +32,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, variantesTel, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, variantesTel, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_COMPTES, STATUTS_COMPTES_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 import { lireCompteSmsOVH } from '../_shared/ovh-sms.ts';
 import { envoyerAvecReservation, echecCertain, phraseIndetermine } from '../_shared/sms-prevenir.ts';
 import { actionFactureSms, FOURNISSEUR_USAGE } from '../_shared/jarvis-facture-sms.ts';
@@ -187,13 +187,13 @@ Deno.serve(async (req: Request) => {
         q = filtresPrise(q);
         const { count, error } = await q; return error || typeof count !== 'number' ? null : count;
       };
-      const statuts = [...STATUTS_OUVERTS, ...STATUTS_TERMINES];
+      const statuts = STATUTS_COMPTES; // v2.17 : tous les statuts réels (en-route et arrivé compris)
       const nombres = await Promise.all([...statuts.map((st) => compter(st)), compter(null)]); // en parallèle ; le dernier = toutes
       if (nombres.some((n) => n === null)) return rep(502, { ok: false, erreur: 'comptage refusé par la base' });
       const par_statut: Record<string, number> = {}; statuts.forEach((st, i) => { par_statut[st] = nombres[i] as number; });
       const toutes = nombres[statuts.length] as number; const connus = statuts.reduce((a, st) => a + par_statut[st], 0);
       if (toutes > connus) par_statut['autre (statut vide ou ancien)'] = toutes - connus; // aucune contrainte en base sur statut
-      const ouvertes = STATUTS_OUVERTS.reduce((a, st) => a + par_statut[st], 0);
+      const ouvertes = STATUTS_COMPTES_OUVERTS.reduce((a, st) => a + par_statut[st], 0);
       // v2.4 : avec une origine ou une période de prise de commande, MONTANT des commandes non annulées (colonne prix seule,
       // aucune donnée client) — par tranches de 1 000 (limite Supabase), 5 000 commandes au plus, sinon « montant_partiel ».
       let montant: number | null = null; let montant_partiel = false;
