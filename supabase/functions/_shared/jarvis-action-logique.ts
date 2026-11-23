@@ -59,6 +59,11 @@ export const LITIGE_TYPES = ['perte', 'avarie', 'retour'];
 export const LITIGE_STATUTS = ['a_declarer', 'reclamation_ouverte', 'dossier_envoye', 'indemnise', 'refuse'];
 export const STATUTS_OUVERTS = ['en-attente', 'en-cours', 'reporté']; // changer_statut : seulement entre ceux-là
 export const STATUTS_TERMINES = ['livré', 'annulé'];
+/** v2.17 : statuts RÉELS d'une commande de l'appli (en-attente, en-route, arrivé, reporté, livré, annulé ; « en-cours » = statut de tournée,
+ *  gardé par prudence s'il existe en base). Sert au COMPTAGE et aux FILTRES DE LECTURE seulement. `changer_statut` reste sur STATUTS_OUVERTS
+ *  (jamais en-route ni arrivé depuis JARVIS). */
+export const STATUTS_COMPTES_OUVERTS = ['en-attente', 'en-route', 'arrivé', 'reporté', 'en-cours'];
+export const STATUTS_COMPTES = [...STATUTS_COMPTES_OUVERTS, ...STATUTS_TERMINES];
 export const LIVREURS = ['RANOU', 'GLS', 'KUNHGE ET NAGEL'];
 export const ORIGINES = ['Téléphone', 'Leboncoin', 'Mail', 'Boutique', 'Site Maxiconfort', 'Autre'];
 /** v2.4 (relecture) : origines telles que l'APPLI les enregistre (menu f-origine de maxiconfort-v7.html + synchro TikTok Shop),
@@ -147,7 +152,7 @@ export function controlerDemande(d: Demande, maintenant = Date.now()): string | 
       break;
     case 'lister_commandes':
       if (d.date !== undefined && !dateValide(String(d.date))) return 'date invalide (AAAA-MM-JJ)';
-      if (d.statut !== undefined && ![...STATUTS_OUVERTS, ...STATUTS_TERMINES].includes(String(d.statut))) return 'statut inconnu';
+      if (d.statut !== undefined && !STATUTS_COMPTES.includes(String(d.statut))) return 'statut inconnu';
       if (d.livreur !== undefined && !LIVREURS.includes(String(d.livreur))) return 'livreur inconnu';
       if (d.limite !== undefined && !entier(d.limite, 1, 100)) return 'limite : 1 à 100';
       if (d.client !== undefined && (typeof d.client !== 'string' || !critereClient(d.client))) return 'client : nom (2 lettres au moins), téléphone (6 chiffres au moins) ou e-mail';

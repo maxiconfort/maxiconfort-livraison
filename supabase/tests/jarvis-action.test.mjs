@@ -830,3 +830,25 @@ test('revue Codex #21 (P2) : facture par SMS — réponse absente (j:null, 504) 
   const idx = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
   assert.match(idx, /r\.j\?\.success !== true && !echecCertain\(r\)/); assert.match(idx, /catch \{ r = \{ http: 0, j: null \}; \}/);
 });
+
+test('v2.17 comptage : TOUS les statuts réels comptés (en-route et arrivé compris) ; changer_statut inchangé', async () => {
+  const L = await import('../functions/_shared/jarvis-action-logique.ts');
+  for (const st of ['en-attente', 'en-route', 'arrivé', 'reporté', 'livré', 'annulé']) assert.ok(L.STATUTS_COMPTES.includes(st), st + ' compté');
+  assert.ok(L.STATUTS_COMPTES_OUVERTS.includes('en-route') && L.STATUTS_COMPTES_OUVERTS.includes('arrivé'));
+  assert.ok(!L.STATUTS_COMPTES_OUVERTS.includes('livré') && !L.STATUTS_COMPTES_OUVERTS.includes('annulé'), 'terminées jamais « ouvertes »');
+  assert.equal(new Set(L.STATUTS_COMPTES).size, L.STATUTS_COMPTES.length, 'aucun doublon (sinon double comptage)');
+  assert.deepEqual(L.STATUTS_COMPTES, [...L.STATUTS_COMPTES_OUVERTS, ...L.STATUTS_TERMINES]);
+  // changer_statut : liste d'origine INCHANGÉE et toujours stricte
+  assert.deepEqual(L.STATUTS_OUVERTS, ['en-attente', 'en-cours', 'reporté']);
+  for (const st of ['en-route', 'arrivé', 'livré', 'annulé', '', 'inconnu']) assert.match(controlerDemande({ action: 'changer_statut', cmdId: '#1588', statut: st }, T), /statut autorisé/, st + ' refusé');
+  for (const st of ['en-attente', 'en-cours', 'reporté']) assert.equal(controlerDemande({ action: 'changer_statut', cmdId: '#1588', statut: st }, T), null, st + ' accepté');
+  // lecture : on peut FILTRER la liste sur en-route / arrivé, mais un statut inventé reste refusé
+  assert.equal(controlerDemande({ action: 'lister_commandes', statut: 'en-route' }, T), null);
+  assert.equal(controlerDemande({ action: 'lister_commandes', statut: 'arrivé' }, T), null);
+  assert.match(controlerDemande({ action: 'lister_commandes', statut: 'inconnu' }, T), /statut inconnu/);
+  // le comptage de la fonction utilise bien les constantes de comptage, plus STATUTS_OUVERTS
+  const fs = await import('node:fs'); const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  const bloc = src.slice(src.indexOf("d.action === 'compter_commandes'"), src.indexOf("d.action === 'lire_stock'"));
+  assert.match(bloc, /const statuts = STATUTS_COMPTES;/); assert.match(bloc, /STATUTS_COMPTES_OUVERTS\.reduce/);
+  assert.doesNotMatch(src, /STATUTS_OUVERTS/, 'index.ts n’utilise plus la liste de changer_statut');
+});
