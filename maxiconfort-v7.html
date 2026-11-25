@@ -6,7 +6,7 @@
 <title>Maxiconfort · Livraison Pro</title>
 <!-- v7.1.7 : PWA -->
 <link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#FF8800">
+<meta name="theme-color" content="#faf7f2">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Maxiconfort">
@@ -384,6 +384,344 @@ textarea{resize:vertical;min-height:65px}
 .sh{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
 .st{font-size:14px;font-weight:700}
 </style>
+<style id="style-d">
+/* ═══ STYLE-D-DEBUT — v7.5.132 : habillage « style D » (léger, chaleureux, esprit Apple) ═══
+   Couche de présentation SEULEMENT : couleurs par variables, cartes, listes, boutons. Aucun id, aucune classe,
+   aucune fonction modifiés. Le préfixe « html » passe devant les <style> des pages (livreur, tournées…) placés
+   plus loin dans le document ; « !important » seulement contre des styles écrits en ligne par le code.
+   Mode nuit : variables du style B (vert profond), classe .dark-mode ou préférence du système. */
+:root{
+  --fond:#faf7f2;--texte:#1c1a17;--gris:#7a7268;--carte:#ffffff;--sep:#f0ebe3;--seg:#eee8df;--doux:#f6f2ec;
+  --ombre:0 1px 2px rgba(28,26,23,.04),0 8px 24px rgba(28,26,23,.06);
+  --bg:var(--fond);--card:var(--carte);--bg2:var(--doux);
+  --text:var(--texte);--t1:var(--texte);--t2:var(--gris);--t3:#a39b90;
+  --brd:#ebe5dc;--brd2:#e2dbd0;
+  --blue:#0a5fd1;--bl:#e9f1fd;--bd:#084aa3;
+  --green:#2f9e6b;--gl:#e8f5ee;--gd:#1f6e49;
+  --orange:#c98a1e;--ol:#fbecd2;--od:#7a4a06;
+  --red:#c4452f;--rl:#f8e1dd;--rd:#8a2a1c;
+  --violet:#6a5fc4;--vl:#eeebfb;--vd:#43398f;
+  --teal:#2f9e6b;--tl:#e8f5ee;--td:#1f6e49;
+  --gray:#a39b90;--grl:#f1ece4;--grd:#5c554c;
+  --font:-apple-system,BlinkMacSystemFont,Inter,'Segoe UI',system-ui,sans-serif;
+  --r:12px;--rl2:18px;--sh:var(--ombre);--shm:0 2px 6px rgba(28,26,23,.06),0 18px 48px rgba(28,26,23,.14);
+  --vert-plein:#2f9e6b;--sur-vert:#ffffff;--bouton-fonce:#1c1a17;--sur-fonce:#ffffff;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not(.light-mode){
+    --fond:#0f1513;--texte:#eef3f1;--gris:#9fb0a9;--carte:#18211e;--sep:#263430;--seg:#1f2a26;--doux:#141c19;
+    --ombre:0 0 0 1px #223029;
+    --t3:#6f817a;--brd:#263430;--brd2:#33443e;
+    --blue:#7fb6ff;--bl:#16263a;--bd:#a9cdff;
+    --green:#3ccf94;--gl:#17352a;--gd:#7fd8b4;
+    --orange:#f0b357;--ol:#3a2c14;--od:#f6c97f;
+    --red:#ef7b7b;--rl:#3a1c1c;--rd:#f6a3a3;
+    --violet:#a99cf5;--vl:#25213d;--vd:#c8bffb;
+    --teal:#3ccf94;--tl:#17352a;--td:#7fd8b4;
+    --gray:#6f817a;--grl:#1f2a26;--grd:#c9d6d1;
+    --shm:0 0 0 1px #263430,0 18px 48px rgba(0,0,0,.5);
+    --vert-plein:#3ccf94;--sur-vert:#0b1f17;--bouton-fonce:#eef3f1;--sur-fonce:#0f1513;
+    color-scheme:dark;
+  }
+}
+:root.dark-mode{
+  --fond:#0f1513;--texte:#eef3f1;--gris:#9fb0a9;--carte:#18211e;--sep:#263430;--seg:#1f2a26;--doux:#141c19;
+  --ombre:0 0 0 1px #223029;
+  --t3:#6f817a;--brd:#263430;--brd2:#33443e;
+  --blue:#7fb6ff;--bl:#16263a;--bd:#a9cdff;
+  --green:#3ccf94;--gl:#17352a;--gd:#7fd8b4;
+  --orange:#f0b357;--ol:#3a2c14;--od:#f6c97f;
+  --red:#ef7b7b;--rl:#3a1c1c;--rd:#f6a3a3;
+  --violet:#a99cf5;--vl:#25213d;--vd:#c8bffb;
+  --teal:#3ccf94;--tl:#17352a;--td:#7fd8b4;
+  --gray:#6f817a;--grl:#1f2a26;--grd:#c9d6d1;
+  --shm:0 0 0 1px #263430,0 18px 48px rgba(0,0,0,.5);
+  --vert-plein:#3ccf94;--sur-vert:#0b1f17;--bouton-fonce:#eef3f1;--sur-fonce:#0f1513;
+  color-scheme:dark;
+}
+
+/* ── Icônes trait (masque CSS, couleur = texte) ── */
+.icd{display:inline-block;width:1.15em;height:1.15em;flex:0 0 auto;vertical-align:-.2em;background:currentColor;-webkit-mask:var(--i) center/contain no-repeat;mask:var(--i) center/contain no-repeat}
+.icd-tel{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M22%2016.9v3a2%202%200%200%201-2.2%202%2019.8%2019.8%200%200%201-8.6-3.1%2019.5%2019.5%200%200%201-6-6A19.8%2019.8%200%200%201%202.1%204.2%202%202%200%200%201%204.1%202h3a2%202%200%200%201%202%201.7c.1.9.4%201.8.7%202.7a2%202%200%200%201-.5%202.1L8%209.8a16%2016%200%200%200%206%206l1.3-1.3a2%202%200%200%201%202.1-.5c.9.3%201.8.6%202.7.7a2%202%200%200%201%201.7%202z%27%2F%3E%3C%2Fsvg%3E")}
+.icd-nav{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpolygon%20points%3D%273%2011%2022%202%2013%2021%2011%2013%203%2011%27%2F%3E%3C%2Fsvg%3E")}
+.icd-msg{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M21%2015a2%202%200%200%201-2%202H7l-4%204V5a2%202%200%200%201%202-2h14a2%202%200%200%201%202%202z%27%2F%3E%3C%2Fsvg%3E")}
+.icd-carte{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpolygon%20points%3D%271%206%201%2022%208%2018%2016%2022%2023%2018%2023%202%2016%206%208%202%201%206%27%2F%3E%3Cline%20x1%3D%278%27%20y1%3D%272%27%20x2%3D%278%27%20y2%3D%2718%27%2F%3E%3Cline%20x1%3D%2716%27%20y1%3D%276%27%20x2%3D%2716%27%20y2%3D%2722%27%2F%3E%3C%2Fsvg%3E")}
+.icd-note{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M12%2020h9%27%2F%3E%3Cpath%20d%3D%27M16.5%203.5a2.1%202.1%200%200%201%203%203L7%2019l-4%201%201-4z%27%2F%3E%3C%2Fsvg%3E")}
+.icd-ok{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpolyline%20points%3D%2720%206%209%2017%204%2012%27%2F%3E%3C%2Fsvg%3E")}
+.icd-cal{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%273%27%20y%3D%274%27%20width%3D%2718%27%20height%3D%2718%27%20rx%3D%272%27%2F%3E%3Cline%20x1%3D%2716%27%20y1%3D%272%27%20x2%3D%2716%27%20y2%3D%276%27%2F%3E%3Cline%20x1%3D%278%27%20y1%3D%272%27%20x2%3D%278%27%20y2%3D%276%27%2F%3E%3Cline%20x1%3D%273%27%20y1%3D%2710%27%20x2%3D%2721%27%20y2%3D%2710%27%2F%3E%3C%2Fsvg%3E")}
+.icd-absent{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M16%2021v-2a4%204%200%200%200-4-4H6a4%204%200%200%200-4%204v2%27%2F%3E%3Ccircle%20cx%3D%279%27%20cy%3D%277%27%20r%3D%274%27%2F%3E%3Cline%20x1%3D%2717%27%20y1%3D%278%27%20x2%3D%2722%27%20y2%3D%2713%27%2F%3E%3Cline%20x1%3D%2722%27%20y1%3D%278%27%20x2%3D%2717%27%20y2%3D%2713%27%2F%3E%3C%2Fsvg%3E")}
+.icd-especes{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%272%27%20y%3D%276%27%20width%3D%2720%27%20height%3D%2712%27%20rx%3D%272%27%2F%3E%3Ccircle%20cx%3D%2712%27%20cy%3D%2712%27%20r%3D%272.5%27%2F%3E%3Cpath%20d%3D%27M6%2012h.01M18%2012h.01%27%2F%3E%3C%2Fsvg%3E")}
+.icd-cb{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%272%27%20y%3D%275%27%20width%3D%2720%27%20height%3D%2714%27%20rx%3D%272%27%2F%3E%3Cline%20x1%3D%272%27%20y1%3D%2710%27%20x2%3D%2722%27%20y2%3D%2710%27%2F%3E%3C%2Fsvg%3E")}
+.icd-colis{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M21%208l-9-5-9%205v8l9%205%209-5z%27%2F%3E%3Cpath%20d%3D%27M3%208l9%205%209-5%27%2F%3E%3Cline%20x1%3D%2712%27%20y1%3D%2713%27%20x2%3D%2712%27%20y2%3D%2721%27%2F%3E%3C%2Fsvg%3E")}
+.icd-tableau{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%273%27%20y%3D%273%27%20width%3D%277%27%20height%3D%279%27%20rx%3D%271%27%2F%3E%3Crect%20x%3D%2714%27%20y%3D%273%27%20width%3D%277%27%20height%3D%275%27%20rx%3D%271%27%2F%3E%3Crect%20x%3D%2714%27%20y%3D%2712%27%20width%3D%277%27%20height%3D%279%27%20rx%3D%271%27%2F%3E%3Crect%20x%3D%273%27%20y%3D%2716%27%20width%3D%277%27%20height%3D%275%27%20rx%3D%271%27%2F%3E%3C%2Fsvg%3E")}
+.icd-sante{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpolyline%20points%3D%2722%2012%2018%2012%2015%2021%209%203%206%2012%202%2012%27%2F%3E%3C%2Fsvg%3E")}
+.icd-camion{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%271%27%20y%3D%273%27%20width%3D%2715%27%20height%3D%2713%27%20rx%3D%271%27%2F%3E%3Cpolygon%20points%3D%2716%208%2020%208%2023%2011%2023%2016%2016%2016%2016%208%27%2F%3E%3Ccircle%20cx%3D%275.5%27%20cy%3D%2718.5%27%20r%3D%272.5%27%2F%3E%3Ccircle%20cx%3D%2718.5%27%20cy%3D%2718.5%27%20r%3D%272.5%27%2F%3E%3C%2Fsvg%3E")}
+.icd-liste{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%278%27%20y%3D%272%27%20width%3D%278%27%20height%3D%274%27%20rx%3D%271%27%2F%3E%3Cpath%20d%3D%27M16%204h2a2%202%200%200%201%202%202v14a2%202%200%200%201-2%202H6a2%202%200%200%201-2-2V6a2%202%200%200%201%202-2h2%27%2F%3E%3Cline%20x1%3D%278%27%20y1%3D%2712%27%20x2%3D%2716%27%20y2%3D%2712%27%2F%3E%3Cline%20x1%3D%278%27%20y1%3D%2716%27%20x2%3D%2713%27%20y2%3D%2716%27%2F%3E%3C%2Fsvg%3E")}
+.icd-lieu{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M21%2010c0%207-9%2013-9%2013S3%2017%203%2010a9%209%200%200%201%2018%200z%27%2F%3E%3Ccircle%20cx%3D%2712%27%20cy%3D%2710%27%20r%3D%273%27%2F%3E%3C%2Fsvg%3E")}
+.icd-cloche{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M18%208A6%206%200%200%200%206%208c0%207-3%209-3%209h18s-3-2-3-9%27%2F%3E%3Cpath%20d%3D%27M13.7%2021a2%202%200%200%201-3.4%200%27%2F%3E%3C%2Fsvg%3E")}
+.icd-boussole{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2712%27%20cy%3D%2712%27%20r%3D%2710%27%2F%3E%3Cpolygon%20points%3D%2716.2%207.8%2014.1%2014.1%207.8%2016.2%209.9%209.9%2016.2%207.8%27%2F%3E%3C%2Fsvg%3E")}
+.icd-caisse{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M20%207H5a2%202%200%200%201%200-4h13v4%27%2F%3E%3Cpath%20d%3D%27M3%205v14a2%202%200%200%200%202%202h15V7%27%2F%3E%3Ccircle%20cx%3D%2716%27%20cy%3D%2714%27%20r%3D%271.5%27%2F%3E%3C%2Fsvg%3E")}
+.icd-reglages{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cline%20x1%3D%274%27%20y1%3D%2721%27%20x2%3D%274%27%20y2%3D%2714%27%2F%3E%3Cline%20x1%3D%274%27%20y1%3D%2710%27%20x2%3D%274%27%20y2%3D%273%27%2F%3E%3Cline%20x1%3D%2712%27%20y1%3D%2721%27%20x2%3D%2712%27%20y2%3D%2712%27%2F%3E%3Cline%20x1%3D%2712%27%20y1%3D%278%27%20x2%3D%2712%27%20y2%3D%273%27%2F%3E%3Cline%20x1%3D%2720%27%20y1%3D%2721%27%20x2%3D%2720%27%20y2%3D%2716%27%2F%3E%3Cline%20x1%3D%2720%27%20y1%3D%2712%27%20x2%3D%2720%27%20y2%3D%273%27%2F%3E%3Cline%20x1%3D%271%27%20y1%3D%2714%27%20x2%3D%277%27%20y2%3D%2714%27%2F%3E%3Cline%20x1%3D%279%27%20y1%3D%278%27%20x2%3D%2715%27%20y2%3D%278%27%2F%3E%3Cline%20x1%3D%2717%27%20y1%3D%2716%27%20x2%3D%2723%27%20y2%3D%2716%27%2F%3E%3C%2Fsvg%3E")}
+.icd-lune{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M21%2012.8A9%209%200%201%201%2011.2%203a7%207%200%200%200%209.8%209.8z%27%2F%3E%3C%2Fsvg%3E")}
+.icd-soleil{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2712%27%20cy%3D%2712%27%20r%3D%274%27%2F%3E%3Cpath%20d%3D%27M12%202v2M12%2020v2M4.9%204.9l1.4%201.4M17.7%2017.7l1.4%201.4M2%2012h2M20%2012h2M4.9%2019.1l1.4-1.4M17.7%206.3l1.4-1.4%27%2F%3E%3C%2Fsvg%3E")}
+.icd-menu{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cline%20x1%3D%273%27%20y1%3D%276%27%20x2%3D%2721%27%20y2%3D%276%27%2F%3E%3Cline%20x1%3D%273%27%20y1%3D%2712%27%20x2%3D%2721%27%20y2%3D%2712%27%2F%3E%3Cline%20x1%3D%273%27%20y1%3D%2718%27%20x2%3D%2721%27%20y2%3D%2718%27%2F%3E%3C%2Fsvg%3E")}
+.icd-attente{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2712%27%20cy%3D%2712%27%20r%3D%2710%27%2F%3E%3Cpolyline%20points%3D%2712%206%2012%2012%2016%2014%27%2F%3E%3C%2Fsvg%3E")}
+.icd-annule{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cline%20x1%3D%2718%27%20y1%3D%276%27%20x2%3D%276%27%20y2%3D%2718%27%2F%3E%3Cline%20x1%3D%276%27%20y1%3D%276%27%20x2%3D%2718%27%20y2%3D%2718%27%2F%3E%3C%2Fsvg%3E")}
+.icd-depense{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M4%202v20l3-2%203%202%203-2%203%202%203-2%203%202V2l-3%202-3-2-3%202-3-2-3%202z%27%2F%3E%3Cline%20x1%3D%278%27%20y1%3D%279%27%20x2%3D%2716%27%20y2%3D%279%27%2F%3E%3Cline%20x1%3D%278%27%20y1%3D%2713%27%20x2%3D%2714%27%20y2%3D%2713%27%2F%3E%3C%2Fsvg%3E")}
+.icd-drapeau{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M4%2015s1-1%204-1%205%202%208%202%204-1%204-1V3s-1%201-4%201-5-2-8-2-4%201-4%201z%27%2F%3E%3Cline%20x1%3D%274%27%20y1%3D%2722%27%20x2%3D%274%27%20y2%3D%2715%27%2F%3E%3C%2Fsvg%3E")}
+.icd-maison{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M3%2010.5L12%203l9%207.5%27%2F%3E%3Cpath%20d%3D%27M5%209.5V21h14V9.5%27%2F%3E%3C%2Fsvg%3E")}
+.icd-sortie{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M9%2021H5a2%202%200%200%201-2-2V5a2%202%200%200%201%202-2h4%27%2F%3E%3Cpolyline%20points%3D%2716%2017%2021%2012%2016%207%27%2F%3E%3Cline%20x1%3D%2721%27%20y1%3D%2712%27%20x2%3D%279%27%20y2%3D%2712%27%2F%3E%3C%2Fsvg%3E")}
+.icd-immeuble{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%274%27%20y%3D%272%27%20width%3D%2716%27%20height%3D%2720%27%20rx%3D%271%27%2F%3E%3Cpath%20d%3D%27M9%2022v-4h6v4%27%2F%3E%3Cpath%20d%3D%27M8%206h.01M12%206h.01M16%206h.01M8%2010h.01M12%2010h.01M16%2010h.01M8%2014h.01M12%2014h.01M16%2014h.01%27%2F%3E%3C%2Fsvg%3E")}
+.icd-info{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2712%27%20cy%3D%2712%27%20r%3D%2710%27%2F%3E%3Cline%20x1%3D%2712%27%20y1%3D%2716%27%20x2%3D%2712%27%20y2%3D%2712%27%2F%3E%3Cline%20x1%3D%2712%27%20y1%3D%278%27%20x2%3D%2712.01%27%20y2%3D%278%27%2F%3E%3C%2Fsvg%3E")}
+.icd-recherche{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2711%27%20cy%3D%2711%27%20r%3D%278%27%2F%3E%3Cline%20x1%3D%2721%27%20y1%3D%2721%27%20x2%3D%2716.65%27%20y2%3D%2716.65%27%2F%3E%3C%2Fsvg%3E")}
+.icd-route{--i:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%276%27%20cy%3D%2719%27%20r%3D%273%27%2F%3E%3Cpath%20d%3D%27M9%2019h8.5a3.5%203.5%200%200%200%200-7h-11a3.5%203.5%200%200%201%200-7H15%27%2F%3E%3Ccircle%20cx%3D%2718%27%20cy%3D%275%27%20r%3D%273%27%2F%3E%3C%2Fsvg%3E")}
+:root{--i-menu:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cline%20x1%3D%273%27%20y1%3D%276%27%20x2%3D%2721%27%20y2%3D%276%27%2F%3E%3Cline%20x1%3D%273%27%20y1%3D%2712%27%20x2%3D%2721%27%20y2%3D%2712%27%2F%3E%3Cline%20x1%3D%273%27%20y1%3D%2718%27%20x2%3D%2721%27%20y2%3D%2718%27%2F%3E%3C%2Fsvg%3E")}
+
+/* ── Base ── */
+html body{font-family:var(--font);background:var(--fond);color:var(--texte);font-size:15px;-webkit-font-smoothing:antialiased;letter-spacing:-.003em}
+html ::selection{background:var(--bl)}
+html a{color:var(--blue)}
+
+/* ── Connexion ── */
+html #login{background:var(--fond)}
+html .lbox{border-radius:24px;box-shadow:var(--ombre);padding:34px 26px}
+html .llogo-icon{background:var(--texte);color:var(--fond);border-radius:16px}
+html .llogo-name{font-size:26px;font-weight:700;letter-spacing:-.02em}
+html .role-btn{border:0;background:var(--doux);border-radius:16px;min-height:60px}
+html .role-btn:hover,html .role-btn.sel,html .role-btn.sel.cv,html .role-btn.sel.lv{background:var(--bl);box-shadow:inset 0 0 0 2px var(--blue)}
+html .ricon{border-radius:12px;background:var(--carte) !important}
+html .key{border:0;background:var(--doux);border-radius:16px;min-height:56px;font-weight:600;font-size:22px}
+html .pdot.on,html .pdot.on.cv,html .pdot.on.lv{background:var(--texte);border-color:var(--texte)}
+
+/* ── Cadre : menu latéral et barre du haut ── */
+html .sidebar{background:var(--doux);border-right:1px solid var(--sep);width:248px;padding-bottom:8px}
+html .sb-logo{border-bottom:0;padding:22px 20px 12px}
+html .sb-icon{background:var(--texte);color:var(--fond);border-radius:10px;font-size:0}
+html .sb-icon::before{content:'M';font:700 16px var(--font)}
+html .sb-name{font-size:17px;font-weight:700;letter-spacing:-.01em}
+html .sb-sub{font-size:13px;color:var(--gris)}
+html .nav-sec{font-size:12px;font-weight:600;color:var(--gris);text-transform:none;letter-spacing:0;padding:18px 22px 6px}
+html .ni{margin:1px 10px;padding:0 12px;min-height:40px;border-left:0;border-radius:10px;font-size:15px;color:var(--texte);gap:12px}
+html .ni:hover{background:rgba(127,120,110,.10);color:var(--texte)}
+html .ni.on,html .ni.on.cv,html .ni.on.lv{background:var(--carte);color:var(--texte);font-weight:600;box-shadow:var(--ombre)}
+html .ni-icon{width:20px;font-size:17px;color:var(--gris);display:inline-flex;align-items:center;justify-content:center}
+html .ni.on .ni-icon{color:var(--blue)}
+html .ni-badge{background:var(--red);border-radius:999px;padding:2px 7px;font-size:11px}
+html .sb-user{border-top:1px solid var(--sep);padding:14px 18px}
+html .avatar{background:var(--carte) !important;color:var(--texte) !important;box-shadow:var(--ombre);font-size:14px}
+html .uname{font-size:14px} html .urole{font-size:12px;color:var(--gris)}
+html .logout{border:0;background:var(--carte);border-radius:10px;min-height:38px;font-size:14px;color:var(--texte)}
+html .logout:hover{background:var(--rl);color:var(--rd)}
+html .main{background:var(--fond)}
+html .topbar{background:var(--fond);border-bottom:0;height:64px;padding:0 32px}
+html .topbar-title{font-size:28px;font-weight:700;letter-spacing:-.025em}
+html .clock{font-size:14px;color:var(--gris)}
+html .page{padding:8px 32px 40px}
+html .page.on{height:calc(100vh - 64px)}
+html #btn-dark-mode{min-width:40px;height:40px;border-radius:12px !important;border:0 !important;background:var(--carte) !important;color:var(--texte) !important;box-shadow:var(--ombre);font-size:18px !important;display:inline-flex;align-items:center;justify-content:center;padding:0 !important}
+html .sidebar-toggle{background:var(--carte);color:var(--texte);box-shadow:var(--ombre);border-radius:12px;width:44px;height:44px;padding:0;align-items:center;justify-content:center;font-size:0}
+html .sidebar-toggle::before{content:'';width:22px;height:22px;background:currentColor;-webkit-mask:var(--i-menu) center/contain no-repeat;mask:var(--i-menu) center/contain no-repeat}
+@media (max-width:768px){
+  html .topbar{height:60px;padding:0 14px 0 66px !important}
+  html .topbar-title{font-size:24px}
+  html .page{padding:6px 14px 90px !important}
+  html .page.on{height:calc(100vh - 60px)}
+  html .clock{display:none}
+}
+
+@media (max-width:768px){ html .topbar-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1 1 auto} html .topbar-right{flex:0 0 auto} }
+@media (max-width:480px){ html #top-btn{font-size:0 !important;width:44px;min-height:44px;padding:0 !important;justify-content:center} html #top-btn::before{content:"+";font-size:26px;font-weight:500;line-height:1} }
+
+/* ── Boutons ── */
+html .btn{border:0;background:var(--carte);color:var(--texte);border-radius:12px;min-height:40px;padding:9px 16px;font-size:14px;font-weight:600;box-shadow:var(--ombre)}
+html .btn:hover{background:var(--doux)}
+html .btn-p{background:var(--bl);color:var(--blue);box-shadow:none} html .btn-p:hover{background:var(--bl);filter:brightness(.97)}
+html .btn-g{background:var(--vert-plein);color:var(--sur-vert);box-shadow:none}
+html .btn-r{background:var(--rl);color:var(--rd);box-shadow:none}
+html .btn-v{background:var(--vl);color:var(--vd);box-shadow:none}
+html .btn-sm{min-height:34px;padding:6px 12px;font-size:13px}
+html .btn-ghost{background:transparent;box-shadow:none}
+html .btn-full{min-height:48px;border-radius:14px;font-size:16px}
+@media (max-width:768px){ html .btn{min-height:44px} html .btn-sm{min-height:38px} }
+
+/* ── Cartes, grilles, indicateurs ── */
+html .card{border:0;border-radius:18px;padding:20px 22px;box-shadow:var(--ombre)}
+html .card-t{font-size:15px;font-weight:600;color:var(--texte);text-transform:none;letter-spacing:-.005em;margin-bottom:14px}
+html .g4,html .g2,html .g3{gap:16px}
+html .kpi{border:0;border-radius:18px;box-shadow:var(--ombre);padding:18px 20px}
+html .kpi::after{display:none}
+html .kpi-ico{display:none}
+html .kpi-v{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--texte) !important}
+html .kpi-l{font-size:14px;color:var(--gris)}
+.kpi-d{background:var(--carte);border-radius:18px;padding:18px 20px;box-shadow:var(--ombre);display:flex;flex-direction:column;gap:4px;min-width:0}
+.kpi-d-l{font-size:14px;color:var(--gris);font-weight:500}
+.kpi-d-v{font-size:30px;font-weight:700;letter-spacing:-.03em;color:var(--texte);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi-d-s{font-size:13px;color:var(--t3);min-height:16px}
+.kpi-d:first-child .kpi-d-v{font-size:42px}
+@media (max-width:520px){ .kpi-d:first-child{grid-column:1/-1} }
+html #btn-gps-livreur{background:var(--bl) !important;color:var(--blue) !important;border-radius:18px !important;min-height:56px;font-weight:600 !important;font-size:17px !important}
+.lv-caisse-carte span[style*="font-weight:800"]{white-space:nowrap}
+html #dash-kpis{grid-template-columns:repeat(auto-fit,minmax(170px,1fr)) !important;gap:14px !important}
+
+/* ── Sélecteur segmenté (façon iPhone) ── */
+.seg-d{display:inline-grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);background:var(--seg);padding:3px;border-radius:11px;gap:0;max-width:100%}
+.seg-d button{min-height:34px;border:0;background:transparent;border-radius:9px;padding:0 14px;font:500 14px var(--font);color:var(--texte);cursor:pointer;white-space:nowrap}
+.seg-d button.on{background:var(--carte);font-weight:600;box-shadow:0 1px 3px rgba(28,26,23,.12)}
+.seg-d-cache{position:absolute !important;width:1px !important;height:1px !important;opacity:0 !important;pointer-events:none !important}
+.dash-periode-d{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 16px}
+.dash-periode-d .seg-d{flex:0 1 520px}
+@media (max-width:600px){ .dash-periode-d .seg-d{flex:1 1 100%} .seg-d button{padding:0 6px;min-height:36px} }
+html .cmd-quick{min-height:38px;padding:0 16px;border-radius:999px !important;border:0 !important;background:var(--carte) !important;color:var(--texte) !important;font:500 14px var(--font) !important;box-shadow:var(--ombre);cursor:pointer}
+html .cmd-quick.active,html .cmd-quick.on,html .cmd-quick[style*="var(--blue)"]{background:var(--texte) !important;color:var(--fond) !important}
+
+/* ── Pastilles ── */
+html .bdg{border-radius:999px;padding:4px 10px;font-size:12px;font-weight:600}
+html .b-green{background:var(--gl);color:var(--gd)} html .b-orange{background:var(--ol);color:var(--od)}
+html .b-red{background:var(--rl);color:var(--rd)} html .b-blue{background:var(--bl);color:var(--bd)}
+html .b-violet{background:var(--ol);color:var(--od)}
+
+/* ── Tableaux (ordinateur : lisibles et aérés) ── */
+html .tw{border:0;border-radius:18px;box-shadow:var(--ombre);background:var(--carte)}
+html table{font-size:14px;background:var(--carte)}
+html thead{background:var(--carte)}
+html th{font-size:12px;font-weight:600;color:var(--gris);text-transform:none;letter-spacing:0;padding:12px 14px;border-bottom:1px solid var(--sep)}
+html td{padding:13px 14px;border-bottom:1px solid var(--sep)}
+html tbody tr:hover{background:var(--doux)}
+html .td-s{font-size:12px;color:var(--gris)}
+@media (min-width:1200px){ html td{padding:14px 16px} html th{padding:12px 16px} }
+
+/* ── Formulaires ── */
+html label{font-size:13px;font-weight:500;color:var(--gris)}
+html input:not([type=checkbox]):not([type=radio]):not([type=range]),html select,html textarea{border-radius:12px;border-color:var(--brd2);background-color:var(--carte);color:var(--texte);font-size:15px;min-height:42px}
+html textarea{min-height:80px}
+html input:focus,html select:focus,html textarea:focus{border-color:var(--blue);box-shadow:0 0 0 4px var(--bl)}
+html input[type=checkbox],html input[type=radio]{accent-color:var(--vert-plein)}
+html .srch{background:var(--carte);border:0;border-radius:12px;box-shadow:var(--ombre);min-height:42px}
+html .srch input{min-height:0;box-shadow:none !important}
+html .fa{border-top:1px solid var(--sep)}
+@media (max-width:768px){ html input:not([type=checkbox]):not([type=radio]):not([type=range]),html select{min-height:44px;font-size:16px} }
+
+/* ── Fenêtres, panneau latéral, feuille de signature, message ── */
+html .mbd,html .sigbd{background:rgba(28,26,23,.38)}
+html .modal{border-radius:24px;padding:24px;box-shadow:var(--shm)}
+html .mh{border-bottom:1px solid var(--sep);padding:20px 24px;margin:-24px -24px 18px -24px;top:-24px}
+html .mt{font-size:20px;font-weight:700;letter-spacing:-.015em}
+html .mx{background:var(--doux);width:36px;height:36px}
+html .panel{border-left:0;box-shadow:-12px 0 40px rgba(28,26,23,.12)}
+html .ph,html .pf{border-color:var(--sep)}
+html .prow{border-bottom-color:var(--sep);font-size:14px;padding:10px 0}
+html .psec{font-size:13px;font-weight:600;text-transform:none;letter-spacing:0;color:var(--gris)}
+html .sigsheet{border-radius:24px 24px 0 0;padding:24px 20px 28px;max-width:640px;margin:0 auto}
+html .siginput{border-radius:14px;border:1px solid var(--brd2);min-height:48px;font-size:16px}
+html .sigwrap{border:2px dashed var(--brd2);border-radius:18px;background:var(--doux)}
+html .sigval{background:var(--vert-plein);color:var(--sur-vert);border-radius:16px;min-height:56px;font-size:18px;font-weight:700}
+html .sig-simple-btn{border:2px solid transparent;background:var(--doux);border-radius:16px;font-weight:600;font-size:15px;min-height:72px;color:var(--texte)}
+html .sig-simple-btn .icd{width:24px;height:24px;margin-bottom:4px}
+html .toast{background:var(--bouton-fonce);color:var(--sur-fonce);border-radius:14px;font-size:14px;font-weight:500;box-shadow:var(--shm);padding:12px 18px}
+html .toast.ok{background:var(--vert-plein);color:var(--sur-vert)} html .toast.info{background:var(--blue);color:#fff} html .toast.err{background:var(--red);color:#fff}
+@media (max-width:600px){ html .modal{border-radius:0} }
+
+/* ── Messages ── */
+html .alert{border:0 !important;border-radius:14px;font-size:14px;padding:12px 16px}
+
+/* ── Titres de section ── */
+html .sh{margin:6px 0 12px}
+html .st{font-size:20px;font-weight:700;letter-spacing:-.015em}
+
+/* ── Tournées (bureau) ── */
+html .trn-left-card,html .trn-right{border:0;border-radius:20px;box-shadow:var(--ombre)}
+html .trn-left-title{text-transform:none;letter-spacing:0;font-size:15px;font-weight:600}
+html .trn-card{border:0;background:var(--doux);border-radius:14px;padding:12px 14px}
+html .trn-card:hover{background:var(--bl)}
+html .trn-card.active{background:var(--bl);box-shadow:inset 0 0 0 2px var(--blue)}
+html .trn-card-prog-fill{background:var(--vert-plein)}
+html .trn-right-head{border-bottom-color:var(--sep)}
+html .trn-right-title{font-size:18px;font-weight:700}
+html .trn-chip{border:0;background:var(--bl);color:var(--blue)}
+html .trn-mobile-tabs{background:var(--seg);border:0;border-radius:11px;padding:3px}
+html .trn-mobile-tab.active{background:var(--carte);color:var(--texte);box-shadow:0 1px 3px rgba(28,26,23,.12)}
+html .trn-cmd-list{border:0;background:var(--carte)}
+html .trn-cmd-row{border-bottom-color:var(--sep)}
+html .stop-card{border:0;border-radius:18px;box-shadow:var(--ombre)}
+
+/* ── LIVREUR (téléphone) ── */
+html .lv-header{background:transparent !important;color:var(--texte);padding:4px 4px 6px;margin-bottom:8px;border-radius:0;overflow:visible}
+html .lv-header::before,html .lv-header::after{display:none}
+html #lv-bar-label{font-size:15px !important;color:var(--gris);opacity:1 !important;text-transform:none !important;letter-spacing:0 !important;font-weight:500}
+html #lv-bar-restants{font-size:34px !important;font-weight:700 !important;letter-spacing:-.025em;line-height:1.1;margin-top:4px}
+html .lv-stat-grid{gap:10px;margin-top:14px}
+html .lv-stat{background:var(--carte);box-shadow:var(--ombre);border-radius:16px;padding:12px 14px;text-align:left;backdrop-filter:none}
+html .lv-stat-val{font-size:26px;font-weight:700;letter-spacing:-.02em}
+html .lv-stat-lbl{font-size:13px;color:var(--gris);opacity:1;text-transform:none;letter-spacing:0;margin-top:4px}
+html #lv-progress-global{border:0 !important;border-radius:18px !important;box-shadow:var(--ombre)}
+html .lv-progress-track{height:6px;background:var(--sep);border-radius:6px}
+html .lv-progress-fill{background:var(--vert-plein)}
+html #lv-pct{color:var(--gd) !important}
+html .lv-sel-wrap{border:0;border-radius:18px;box-shadow:var(--ombre)}
+html #lv-nav-prec,html #lv-nav-suiv{border:0 !important;background:var(--carte) !important;box-shadow:var(--ombre);border-radius:14px !important;width:48px;height:48px !important}
+html .lv-card{border:0;border-radius:24px;box-shadow:var(--ombre);margin-bottom:16px}
+html .lv-card.lv-active{box-shadow:0 0 0 2px var(--blue),var(--ombre)}
+html .lv-card.lv-done{opacity:.72}
+html .lv-card-top{padding:20px 20px 14px}
+html .lv-card-num{background:var(--doux) !important;color:var(--gris);font-weight:700;font-size:14px;width:34px;height:34px}
+html .lv-card.lv-done .lv-card-num{background:var(--vert-plein) !important;color:var(--sur-vert)}
+html .lv-card.lv-active .lv-card-num{background:var(--bl) !important;color:var(--blue)}
+html .lv-card-name{font-size:22px;font-weight:700;letter-spacing:-.01em}
+html .lv-info-row{font-size:16px;color:var(--gris);gap:12px}
+html .lv-info-row strong{color:var(--texte);font-weight:600}
+html .lv-info-icon{font-size:16px;color:var(--t3);width:20px;display:inline-flex;justify-content:center;margin-top:2px}
+html .lv-checklist{border:0 !important;background:var(--doux) !important;border-radius:16px !important;padding:6px 14px !important}
+html .lv-check-row{border-bottom-color:var(--sep) !important;min-height:44px;font-size:15px !important}
+html .lv-amount-band{background:var(--doux);border-radius:16px;padding:14px 16px;margin-top:14px}
+html .lv-amount-val{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--texte)}
+html .lv-contact-grid{gap:10px;padding:0 20px 16px}
+html .lv-cbtn,html .lv-cbtn-waze,html .lv-cbtn-nav{min-height:48px;border-radius:14px;background:var(--bl) !important;color:var(--blue) !important;font-size:16px;font-weight:600 !important;gap:8px}
+html .lv-cbtn-note{grid-column:1/-1;background:var(--doux) !important;color:var(--texte) !important}
+html .lv-statuts-wrap{padding:4px 20px 20px}
+html .lv-statuts-lbl{font-size:14px;font-weight:500;color:var(--gris);text-transform:none;letter-spacing:0}
+html .lv-resultats-grid{grid-template-columns:1fr 1fr;gap:10px}
+html .lv-resbtn{border:0;border-radius:16px;min-height:56px;font-size:17px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px;padding:0 10px}
+html .lv-resbtn .sticon{display:inline-flex;font-size:20px;margin:0}
+html .lv-resbtn.lv-res-livre{grid-column:1/-1;min-height:60px;border-radius:18px;background:var(--vert-plein);color:var(--sur-vert);font-weight:700;font-size:19px}
+html .lv-resbtn.lv-res-reporte{background:var(--ol);color:var(--od)}
+html .lv-resbtn.lv-res-absent{background:var(--rl);color:var(--rd)}
+html .lv-resbtn.lv-res-livre.actif,html .lv-resbtn.lv-res-reporte.actif,html .lv-resbtn.lv-res-absent.actif{box-shadow:inset 0 0 0 3px currentColor}
+html .lv-resbtn.lv-res-reporte.actif{background:var(--ol)} html .lv-resbtn.lv-res-absent.actif{background:var(--rl)}
+html .lv-resultat-bandeau{border:0 !important;border-radius:14px;font-weight:600;font-size:15px}
+html .lv-resultat-bandeau.lv-res-reporte{background:var(--ol);color:var(--od)}
+html .lv-stbtn{border:0;background:var(--doux);border-radius:14px;min-height:56px;font-weight:600;font-size:13px}
+html .lv-autres-statuts summary{font-size:14px;font-weight:500;color:var(--gris);padding:10px 0;min-height:44px;display:flex;align-items:center}
+html .lv-cloture{border:0;border-radius:24px;box-shadow:var(--ombre);padding:20px}
+html .lv-cloture-ok{background:var(--gl);color:var(--gd);box-shadow:none}
+html .lv-cloture-btn{background:var(--bouton-fonce);color:var(--sur-fonce);border-radius:18px;min-height:56px;font-size:17px;font-weight:600}
+html .lv-cloture-btn:disabled{background:var(--seg);color:var(--gris);opacity:1}
+html .lv-done-banner{border:0;border-radius:14px;background:var(--gl);color:var(--gd);font-weight:600;font-size:14px;margin:0 20px 18px}
+.lv-caisse-carte{background:var(--carte) !important;border:0 !important;border-radius:24px !important;box-shadow:var(--ombre);padding:20px !important}
+.lv-caisse-carte > div:first-child{font-size:20px !important;font-weight:700 !important;letter-spacing:-.01em}
+.lv-caisse-carte > div:nth-child(2){background:var(--doux) !important;border-radius:16px !important;padding:4px 14px !important}
+.lv-caisse-carte > div:nth-child(2) > div{border-bottom-color:var(--sep) !important;min-height:44px}
+.lv-caisse-carte > div:nth-child(2) > div:last-child{border-bottom:0 !important}
+html .lv-dep-btn{border:0 !important;background:var(--bl) !important;color:var(--blue) !important;border-radius:14px !important;min-height:48px;font-weight:600 !important;font-size:16px !important;display:flex;align-items:center;justify-content:center;gap:8px}
+@media (max-width:768px){
+  html .lv-bottom-nav{background:var(--carte);border-top:1px solid var(--sep);padding:6px 0 calc(10px + env(safe-area-inset-bottom))}
+  html .lv-bnav-item{font-size:11px;font-weight:500;color:var(--gris) !important;min-height:48px;justify-content:center}
+  html .lv-bnav-item.active{color:var(--blue) !important}
+  html .lv-bnav-icon{font-size:22px;display:inline-flex}
+}
+
+/* ── Encaissements : Retour de tournée ── */
+.rt-tete-d{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin:4px 2px 16px}
+.rt-tete-d .rt-titre-d{font-size:28px;font-weight:700;letter-spacing:-.025em}
+.rt-tete-d .rt-sous-d{font-size:14px;color:var(--gris);margin-top:2px}
+.rt-tete-d .rt-total-d{font-size:30px;font-weight:700;letter-spacing:-.03em;text-align:right}
+.rt-carte{border:0 !important;border-radius:24px !important;box-shadow:var(--ombre);padding:22px !important;margin-bottom:16px !important}
+.rt-carte > div:first-child > div{font-size:18px !important;font-weight:700 !important}
+.rt-reste{font-size:34px !important;font-weight:700 !important;letter-spacing:-.03em;color:var(--texte) !important}
+.rt-valider{background:var(--bouton-fonce) !important;color:var(--sur-fonce) !important;border-radius:16px !important;min-height:54px;font-size:16px !important;font-weight:600 !important}
+@media (min-width:1100px){ #fin-caisse .rt-carte{max-width:760px} }
+/* ═══ STYLE-D-FIN ═══ */
+</style>
   <!-- Leaflet.js — carte OpenStreetMap gratuite et précise -->
   <!-- Supabase -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -468,9 +806,9 @@ textarea{resize:vertical;min-height:65px}
     <!-- v7.5.8 : Alerte colis GLS en attente de validation -->
     <div id="dash-gls-retard" style="display:none;margin-bottom:18px"></div>
     <!-- v7.5.9 : Selecteur de periode pour KPIs Dashboard -->
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap;background:var(--card);border:1px solid var(--brd);border-radius:12px;padding:10px 14px">
-      <div style="font-size:12px;color:var(--t2);font-weight:700;text-transform:uppercase;letter-spacing:.4px">📅 Période d'analyse</div>
-      <select id="dash-periode" onchange="renderDash()" style="padding:7px 14px;border:1.5px solid var(--brd);border-radius:8px;background:var(--bg);font-size:13px;font-weight:700;font-family:var(--font);color:var(--text);cursor:pointer">
+    <div class="dash-periode-d">
+      <div class="seg-d" id="dash-periode-seg" role="group" aria-label="Période d'analyse"><button type="button" data-v="jour" onclick="segDashPeriode('jour')">Jour</button><button type="button" data-v="semaine" onclick="segDashPeriode('semaine')">Semaine</button><button type="button" data-v="mois" class="on" onclick="segDashPeriode('mois')">Mois</button><button type="button" data-v="annee" onclick="segDashPeriode('annee')">Année</button><button type="button" data-v="all" onclick="segDashPeriode('all')">Tout</button></div>
+      <select id="dash-periode" class="seg-d-cache" aria-hidden="true" tabindex="-1" onchange="renderDash()" style="padding:7px 14px;border:1.5px solid var(--brd);border-radius:8px;background:var(--bg);font-size:13px;font-weight:700;font-family:var(--font);color:var(--text);cursor:pointer">
         <option value="jour">Aujourd'hui</option>
         <option value="semaine">Cette semaine</option>
         <option value="mois" selected>Ce mois</option>
@@ -574,7 +912,7 @@ textarea{resize:vertical;min-height:65px}
     <!-- v7.4.3 : Barre de filtres enrichie -->
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
       <div style="display:flex;gap:8px;align-items:center;flex:1;min-width:280px">
-        <div class="srch" style="flex:1;min-width:340px"><span style="color:var(--t3)">🔍</span><input type="text" placeholder="Rechercher client, ID, ville, tel..." oninput="cmdAppliquerFiltres()" id="cmd-search"></div>
+        <div class="srch" style="flex:1;min-width:340px"><span style="color:var(--t3);display:inline-flex"><i class="icd icd-recherche"></i></span><input type="text" placeholder="Rechercher client, ID, ville, tel..." oninput="cmdAppliquerFiltres()" id="cmd-search"></div>
         <select id="cmd-filter-statut" style="width:auto;flex:0 0 auto;padding:7px 10px;border:1px solid var(--brd);border-radius:var(--r);background:var(--bg);font-size:13px;font-family:var(--font);color:var(--t2)" onchange="cmdAppliquerFiltres()">
           <option value="">📊 Tous statuts</option>
           <option value="en-attente">⏳ En attente</option>
@@ -590,11 +928,11 @@ textarea{resize:vertical;min-height:65px}
 
     <!-- Filtres rapides date (one-click) -->
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-      <button class="cmd-quick" data-preset="today"    onclick="cmdFiltreRapide('today')">📅 Aujourd'hui</button>
-      <button class="cmd-quick" data-preset="tomorrow" onclick="cmdFiltreRapide('tomorrow')">⏭ Demain</button>
-      <button class="cmd-quick" data-preset="week"     onclick="cmdFiltreRapide('week')">🗓 Cette semaine</button>
-      <button class="cmd-quick" data-preset="late"     onclick="cmdFiltreRapide('late')">⚠ En retard</button>
-      <button class="cmd-quick" data-preset="all"      onclick="cmdFiltreRapide('all')">🌐 Tout</button>
+      <button class="cmd-quick" data-preset="today"    onclick="cmdFiltreRapide('today')">Aujourd'hui</button>
+      <button class="cmd-quick" data-preset="tomorrow" onclick="cmdFiltreRapide('tomorrow')">Demain</button>
+      <button class="cmd-quick" data-preset="week"     onclick="cmdFiltreRapide('week')">Cette semaine</button>
+      <button class="cmd-quick" data-preset="late"     onclick="cmdFiltreRapide('late')">En retard</button>
+      <button class="cmd-quick" data-preset="all"      onclick="cmdFiltreRapide('all')">Tout</button>
       <button onclick="cmdResetFiltres()" style="padding:9px 14px;border-radius:10px;border:1px solid var(--brd);background:var(--card);color:var(--t2);font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font);margin-left:auto">🗑 Effacer</button>
     </div>
 
@@ -674,7 +1012,7 @@ textarea{resize:vertical;min-height:65px}
       .trn-card-st { font-size:9px; font-weight:800; padding:2px 6px; border-radius:8px; text-transform:uppercase; letter-spacing:.4px; }
       .trn-card-meta { font-size:11px; color:var(--t2); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
       .trn-card-prog { background:var(--bg2); height:4px; border-radius:2px; overflow:hidden; margin-top:5px; }
-      .trn-card-prog-fill { height:100%; background:linear-gradient(90deg,var(--blue),var(--green)); border-radius:2px; }
+      .trn-card-prog-fill { height:100%; background:var(--green); border-radius:2px; }
       .trn-card-money { font-size:11px; color:var(--green); font-weight:800; }
       /* Colonne droite : zone création/détail */
       .trn-right { background:var(--card); border:1px solid var(--brd); border-radius:var(--rl2); overflow:hidden; }
@@ -924,7 +1262,7 @@ textarea{resize:vertical;min-height:65px}
       /* Progress bar steps */
       .lv-progress { padding:0 18px 14px; }
       .lv-progress-track { height:6px;background:var(--bg2);border-radius:3px;overflow:hidden; }
-      .lv-progress-fill { height:100%;border-radius:3px;transition:width .5s ease;background:linear-gradient(90deg,var(--blue),var(--green)); }
+      .lv-progress-fill { height:100%;border-radius:3px;transition:width .5s ease;background:var(--green); }
       .lv-progress-lbl { display:flex;justify-content:space-between;font-size:11px;color:var(--t3);margin-top:4px; }
 
       /* Nav livreur bas d'écran (mobile) */
@@ -981,7 +1319,7 @@ textarea{resize:vertical;min-height:65px}
     </div>
 
     <!-- Header dynamique -->
-    <div class="lv-header" id="lv-header" style="background:linear-gradient(135deg,var(--teal) 0%,#0a5c46 100%)">
+    <div class="lv-header" id="lv-header">
       <div style="position:relative;z-index:1">
         <div style="font-size:11px;opacity:.8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px" id="lv-bar-label">Tournée</div>
         <div style="font-size:20px;font-weight:900" id="lv-bar-restants">—</div>
@@ -1008,7 +1346,7 @@ textarea{resize:vertical;min-height:65px}
     <div id="lv-sas-chargement" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:var(--bg);z-index:9990;overflow-y:auto;padding:0">
       <div style="max-width:600px;margin:0 auto;padding:20px 18px 100px">
         <!-- Header SAS -->
-        <div style="background:linear-gradient(135deg,#FF8800 0%,#E55A00 100%);color:#fff;border-radius:16px;padding:24px 20px;margin-bottom:16px;text-align:center;box-shadow:0 4px 16px rgba(229,90,0,0.3)">
+        <div style="background:var(--ol);color:var(--od);border-radius:24px;padding:24px 20px;margin-bottom:16px;text-align:center">
           <div style="font-size:48px;margin-bottom:8px">🛡️</div>
           <div style="font-size:22px;font-weight:900;margin-bottom:6px">CHARGEMENT OBLIGATOIRE</div>
           <div style="font-size:13px;opacity:0.95;line-height:1.5">Avant de démarrer ta tournée, tu dois cocher TOUS les produits que tu as chargés dans le camion.</div>
@@ -1027,7 +1365,7 @@ textarea{resize:vertical;min-height:65px}
         <div id="sas-liste-produits"></div>
 
         <!-- Bouton démarrer (sticky bas) -->
-        <div style="position:fixed;bottom:0;left:0;right:0;padding:14px 18px;background:linear-gradient(to top, var(--bg) 60%, transparent);z-index:1">
+        <div style="position:fixed;bottom:0;left:0;right:0;padding:14px 18px;background:var(--bg);border-top:1px solid var(--brd);z-index:1">
           <div style="max-width:564px;margin:0 auto">
             <button id="sas-btn-demarrer" disabled style="width:100%;padding:18px;border-radius:14px;border:none;background:var(--t3);color:#fff;font-size:17px;font-weight:900;cursor:not-allowed;font-family:var(--font);box-shadow:0 4px 12px rgba(0,0,0,0.15);transition:all 0.2s">
               🔒 Charge tous les produits pour continuer
@@ -1068,16 +1406,16 @@ textarea{resize:vertical;min-height:65px}
     <div id="sidebar-overlay" onclick="closeSidebarMobile()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:98"></div>
     <div class="lv-bottom-nav" id="lv-bottom-nav">
       <div class="lv-bnav-item active" onclick="lvScrollTop()">
-        <span class="lv-bnav-icon">🏠</span>Ma tournée
+        <span class="lv-bnav-icon"><i class="icd icd-maison"></i></span>Ma tournée
       </div>
       <div class="lv-bnav-item" onclick="ouvrirDepenseLivreur()" style="color:var(--red)">
-        <span class="lv-bnav-icon">💸</span>Dépense
+        <span class="lv-bnav-icon"><i class="icd icd-depense"></i></span>Dépense
       </div>
       <div class="lv-bnav-item" onclick="goTo('notifs', document.querySelector('[data-p=\"notifs\"]'))">
-        <span class="lv-bnav-icon">🔔</span>Alertes
+        <span class="lv-bnav-icon"><i class="icd icd-cloche"></i></span>Alertes
       </div>
       <div class="lv-bnav-item" onclick="doLogout()">
-        <span class="lv-bnav-icon">🚪</span>Quitter
+        <span class="lv-bnav-icon"><i class="icd icd-sortie"></i></span>Quitter
       </div>
     </div>
   </div>
@@ -2805,9 +3143,9 @@ Maxiconfort — {TEL_CONTACT}</textarea>
       <div id="sig-paie-question">
         <div style="font-size:14px;font-weight:800;margin-bottom:10px;color:var(--text)">💰 Comment le client a-t-il payé ?</div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
-          <button id="sig-lv-esp" class="sig-simple-btn" onclick="sigChoixSimple('esp')">💵<br>Espèces</button>
-          <button id="sig-lv-cb" class="sig-simple-btn" onclick="sigChoixSimple('cb')">💳<br>Carte bleue</button>
-          <button id="sig-paie-deja" class="sig-simple-btn" onclick="sigChoixSimple('deja')">📦<br>Déjà payé</button>
+          <button id="sig-lv-esp" class="sig-simple-btn" onclick="sigChoixSimple('esp')"><i class="icd icd-especes"></i><br>Espèces</button>
+          <button id="sig-lv-cb" class="sig-simple-btn" onclick="sigChoixSimple('cb')"><i class="icd icd-cb"></i><br>Carte bleue</button>
+          <button id="sig-paie-deja" class="sig-simple-btn" onclick="sigChoixSimple('deja')"><i class="icd icd-ok"></i><br>Déjà payé</button>
         </div>
         <div id="sig-montant-wrap" style="display:none;margin-bottom:10px">
           <label for="sig-montant" style="font-size:12px;font-weight:700;color:var(--t2);display:block;margin-bottom:4px">Montant encaissé (€)</label>
@@ -5417,12 +5755,12 @@ function buildUI(r) {
   var _gurole=document.getElementById('urole'); if(_gurole) _gurole.textContent=cfg.label;
 
   const av=document.getElementById('av');
-  av.textContent=cfg.ico; av.style.background=cfg.ibg; av.style.color=cfg.icl;
+  av.textContent=(String(cfg.name||cfg.label||'?').trim().charAt(0)||'?').toUpperCase(); av.style.background=cfg.ibg; av.style.color=cfg.icl;
 
   // nav
   document.getElementById('sb-nav').innerHTML = cfg.nav.map(n=>{
     if(n.s) return `<div class="nav-sec">${n.s}</div>`;
-    return `<div class="ni" data-p="${n.p}" onclick="goTo('${n.p}',this)"><span class="ni-icon">${n.i}</span>${n.l}${n.badge?'<span class="ni-badge" id="notif-nav-badge" style="display:none">0</span>':''}</div>`;
+    return `<div class="ni" data-p="${n.p}" onclick="goTo('${n.p}',this)"><span class="ni-icon">${icdNav(n)}</span>${n.l}${n.badge?'<span class="ni-badge" id="notif-nav-badge" style="display:none">0</span>':''}</div>`;
   }).join('');
 
   // top btn
@@ -5952,13 +6290,13 @@ function _renderDashCore() {
            : 'Total cumulé';
 
   // ── Injection KPIs dans dash-kpis ──
+  // v7.5.132 : style D — libellé, grand chiffre, période ; l'emoji (ico) n'est plus affiché
   var _kpi = function(ico, val, label, sublabel, trendHtml) {
-    return '<div style="background:var(--card);border:1px solid var(--brd);border-radius:14px;padding:16px;text-align:center">' +
-      '<div style="font-size:22px;margin-bottom:4px">' + ico + '</div>' +
-      '<div style="font-size:20px;font-weight:900;color:var(--text);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + val + '</div>' +
-      '<div style="font-size:12px;color:var(--t2);font-weight:700;margin-bottom:2px">' + label + '</div>' +
-      (sublabel ? '<div style="font-size:10px;color:var(--t3);margin-bottom:4px">' + sublabel + '</div>' : '<div style="height:14px"></div>') +
-      '<div style="min-height:18px">' + (trendHtml||'') + '</div>' +
+    return '<div class="kpi-d">' +
+      '<div class="kpi-d-l">' + label + '</div>' +
+      '<div class="kpi-d-v">' + val + '</div>' +
+      '<div class="kpi-d-s">' + (sublabel || '') + '</div>' +
+      '<div style="min-height:18px;font-size:13px">' + (trendHtml||'') + '</div>' +
     '</div>';
   };
   var kpisEl = document.getElementById('dash-kpis');
@@ -6628,6 +6966,7 @@ function cmdPeuplerFiltresSelects() {
 function cmdUpdateQuickBtns(active) {
   document.querySelectorAll('.cmd-quick').forEach(function(b){
     var isAct = b.dataset.preset === active;
+    b.classList.toggle('on', isAct); // v7.5.132 : style D
     b.style.cssText = 'padding:9px 14px;border-radius:10px;border:1.5px solid '+(isAct?'var(--blue)':'var(--brd)')+';background:'+(isAct?'var(--blue)':'var(--card)')+';color:'+(isAct?'#fff':'var(--text)')+';font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .15s';
   });
 }
@@ -9647,17 +9986,17 @@ function lvClotureHtml(t) {
   var p = rtPointCaisse(t, getCmdsLivresParTournee(t), rtDepensesEspecesTournee(t, depenses), rtOutilsPage());
   var resume = p.livres + ' livré' + (p.livres > 1 ? 's' : '') + ' · ' + p.reportes.length + ' reporté' + (p.reportes.length > 1 ? 's' : '') + ' · ' + p.absents.length + ' absent' + (p.absents.length > 1 ? 's' : '');
   if (t.statut === 'terminée') {
-    return '<div class="lv-cloture lv-cloture-ok"><div style="font-size:16px;font-weight:900">✅ Tournée clôturée</div>' +
+    return '<div class="lv-cloture lv-cloture-ok"><div style="font-size:20px;font-weight:700">Tournée clôturée</div>' +
       '<div style="font-size:13px;margin-top:4px">' + resume + '</div>' +
-      '<div style="font-size:18px;font-weight:900;margin-top:8px">💵 Espèces à remettre : ' + paiEur(p.aRemettre) + '</div></div>';
+      '<div style="font-size:22px;font-weight:700;margin-top:8px">Espèces à remettre : ' + paiEur(p.aRemettre) + '</div></div>';
   }
   var c = rtPeutCloturer(t);
   var liste = c.restants.slice(0, 6).map(function(r){ return '<li>' + (r.idx + 1) + '. ' + String(r.client).replace(/</g, '&lt;') + '</li>'; }).join('');
   return '<div class="lv-cloture">' +
-    '<div style="font-size:15px;font-weight:900;margin-bottom:6px">🏁 Fin de tournée</div>' +
+    '<div style="font-size:20px;font-weight:700;margin-bottom:6px">Fin de tournée</div>' +
     '<div style="font-size:13px;color:var(--t2);margin-bottom:10px">' + resume + '</div>' +
-    (c.ok ? '' : '<div style="font-size:13px;color:var(--rd);font-weight:700;margin-bottom:8px">⚠️ ' + c.raison + '</div>' + (liste ? '<ul style="margin:0 0 10px 18px;padding:0;font-size:13px;color:var(--rd)">' + liste + '</ul>' : '')) +
-    '<button class="lv-cloture-btn" ' + (c.ok ? '' : 'disabled ') + 'onclick="lvCloturerTournee(\'' + t.id + '\')">' + (c.ok ? '🏁 Clôturer ma tournée' : '🔒 Clôture impossible : un résultat par arrêt') + '</button></div>';
+    (c.ok ? '' : '<div style="font-size:14px;color:var(--rd);font-weight:600;margin-bottom:8px">' + c.raison + '</div>' + (liste ? '<ul style="margin:0 0 10px 18px;padding:0;font-size:13px;color:var(--rd)">' + liste + '</ul>' : '')) +
+    '<button class="lv-cloture-btn" ' + (c.ok ? '' : 'disabled ') + 'onclick="lvCloturerTournee(\'' + t.id + '\')">' + (c.ok ? '<i class="icd icd-drapeau"></i> Clôturer ma tournée' : 'Clôture impossible : un résultat par arrêt') + '</button></div>';
 }
 function lvCloturerTournee(tid) {
   var t = tournees.find(function(x){ return x.id === tid; });
@@ -9757,14 +10096,14 @@ function renderLivreurCaisse(t) {
 
 
   var lignes = [];
-  if (caisseEsp     > 0) lignes.push({icon:'💵', label:'Espèces',   val:'+'+caisseEsp+' €',     color:'var(--od)'});
-  if (caisseCB      > 0) lignes.push({icon:'💳', label:'CB (TPE)',  val:'+'+caisseCB+' €',      color:'var(--bd)'});
-  if (caisseVir     > 0) lignes.push({icon:'🏦', label:'Virement',  val:'+'+caisseVir+' €',     color:'var(--gd)'});
-  if (caissePrepaye > 0) lignes.push({icon:'🌐', label:'Pré-payé',  val:'+'+caissePrepaye+' €', color:'#5344A7'});
+  if (caisseEsp     > 0) lignes.push({icon:'<i class="icd icd-especes"></i>', label:'Espèces',   val:'+'+caisseEsp+' €',     color:'var(--od)'});
+  if (caisseCB      > 0) lignes.push({icon:'<i class="icd icd-cb"></i>', label:'CB (TPE)',  val:'+'+caisseCB+' €',      color:'var(--bd)'});
+  if (caisseVir     > 0) lignes.push({icon:'<i class="icd icd-caisse"></i>', label:'Virement',  val:'+'+caisseVir+' €',     color:'var(--gd)'});
+  if (caissePrepaye > 0) lignes.push({icon:'<i class="icd icd-ok"></i>', label:'Pré-payé',  val:'+'+caissePrepaye+' €', color:'#5344A7'});
   depJour.forEach(function(d){
-    var modeLabel = d.modePaie === 'CB' ? ' 💳' : ' 💵';
+    var modeLabel = d.modePaie === 'CB' ? ' (CB)' : ' (espèces)';
     lignes.push({
-      icon:'💸',
+      icon:'<i class="icd icd-depense"></i>',
       label: d.cat + modeLabel + (d.comment ? ' — '+d.comment : ''),
       val: '-' + d.montant + ' €',
       color: d.modePaie === 'CB' ? 'var(--bd)' : 'var(--rd)',
@@ -9776,8 +10115,8 @@ function renderLivreurCaisse(t) {
   var _rrLv = rtResteARemettre(caisseEsp, totalDepEsp); // v7.5.130
   var netARemettre = _rrLv.reste;
 
-  caisseDiv.innerHTML = '<div style="background:var(--card);border:1.5px solid var(--brd);border-radius:16px;padding:16px;margin:0 0 4px">' +
-    '<div style="font-size:15px;font-weight:800;margin-bottom:14px">💼 Ma caisse du jour</div>' +
+  caisseDiv.innerHTML = '<div class="lv-caisse-carte" style="background:var(--card);border:1.5px solid var(--brd);border-radius:16px;padding:16px;margin:0 0 4px">' +
+    '<div style="font-size:15px;font-weight:800;margin-bottom:14px">Ma caisse du jour</div>' +
     '<div style="background:var(--bg);border-radius:12px;padding:12px;margin-bottom:12px">' +
       lignes.map(function(l){
         var editBtn = l.depId ? '<button onclick="lvModifierDepense(\'' + l.depId + '\')" style="background:none;border:none;cursor:pointer;font-size:14px;padding:2px 6px">✏️</button>' : '';
@@ -9788,13 +10127,13 @@ function renderLivreurCaisse(t) {
       }).join('') +
     '</div>' +
     '<div style="background:' + (netARemettre > 0 ? 'var(--green)' : 'var(--rl)') + ';border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center">' +
-      '<div style="color:' + (netARemettre > 0 ? '#fff' : 'var(--rd)') + ';font-size:14px;font-weight:700">💵 Espèces à remettre</div>' +
+      '<div style="color:' + (netARemettre > 0 ? '#fff' : 'var(--rd)') + ';font-size:15px;font-weight:600">Espèces à remettre</div>' +
       '<div style="color:' + (netARemettre > 0 ? '#fff' : 'var(--rd)') + ';font-size:22px;font-weight:900">' + paiEur(netARemettre) + '</div>' +
     '</div>' +
     // v7.5.130 : le calcul est écrit, et les dépenses se saisissent ici
     '<div style="font-size:12px;color:var(--t2);margin-top:8px;text-align:center">Espèces encaissées ' + paiEur(caisseEsp) + ' − dépenses payées en espèces ' + paiEur(totalDepEsp) + '</div>' +
     (_rrLv.aRembourser > 0 ? '<div style="font-size:13px;font-weight:800;color:var(--rd);margin-top:6px;text-align:center">Dépenses plus élevées que les espèces : ' + paiEur(_rrLv.aRembourser) + ' à vous rembourser</div>' : '') +
-    (LV_APERCU_ACTIF ? '' : '<button onclick="ouvrirDepenseLivreur()" style="width:100%;margin-top:10px;padding:12px;border-radius:12px;border:1.5px dashed var(--red);background:var(--rl);color:var(--rd);font-size:14px;font-weight:800;cursor:pointer;font-family:var(--font)">💸 Ajouter une dépense (carburant, péage, parking, fournisseur…)</button>') +
+    (LV_APERCU_ACTIF ? '' : '<button class="lv-dep-btn" onclick="ouvrirDepenseLivreur()" style="width:100%;margin-top:10px;padding:12px;border-radius:12px;border:1.5px dashed var(--red);background:var(--rl);color:var(--rd);font-size:14px;font-weight:800;cursor:pointer;font-family:var(--font)"><i class="icd icd-depense"></i>Ajouter une dépense (carburant, péage, parking, fournisseur…)</button>') +
   '</div>';
 }
 
@@ -9972,9 +10311,7 @@ function renderLivreur() {
 
   // Couleur header selon avancement
   var hdr = document.getElementById('lv-header');
-  if (pct === 100) hdr.style.background = 'linear-gradient(135deg,#3B6D11 0%,#27500A 100%)';
-  else if (pct >= 50) hdr.style.background = 'linear-gradient(135deg,#185FA5 0%,#0C447C 100%)';
-  else hdr.style.background = 'linear-gradient(135deg,var(--teal) 0%,#0a5c46 100%)';
+  hdr.dataset.avancement = pct === 100 ? 'fini' : (pct >= 50 ? 'moitie' : 'debut'); // v7.5.132 : style D, plus de dégradé (couleur portée par la barre de progression)
 
   // ── Progress bar ──
   var pg = document.getElementById('lv-progress-global');
@@ -10003,13 +10340,13 @@ function renderLivreur() {
     'annulé':     {bg:'#5F5E5A', bdg:'b-gray', btn:'a-gray'},
   };
   var stDefs = [
-    {k:'en-attente', ico:'⏳', lbl:'En attente'},
-    {k:'en-route',   ico:'🚚', lbl:'En route'},
-    {k:'arrivé',     ico:'📍', lbl:'Arrivé'},
-    {k:'livré',      ico:'✅', lbl:'Livré'},
-    {k:'reporté',    ico:'📅', lbl:'Reporté'},
-    {k:'absent',     ico:'🔔', lbl:'Absent'},
-    {k:'annulé',     ico:'❌', lbl:'Annulé'},
+    {k:'en-attente', ico:'<i class="icd icd-attente"></i>', lbl:'En attente'},
+    {k:'en-route',   ico:'<i class="icd icd-camion"></i>', lbl:'En route'},
+    {k:'arrivé',     ico:'<i class="icd icd-lieu"></i>', lbl:'Arrivé'},
+    {k:'livré',      ico:'<i class="icd icd-ok"></i>', lbl:'Livré'},
+    {k:'reporté',    ico:'<i class="icd icd-cal"></i>', lbl:'Reporté'},
+    {k:'absent',     ico:'<i class="icd icd-absent"></i>', lbl:'Absent'},
+    {k:'annulé',     ico:'<i class="icd icd-annule"></i>', lbl:'Annulé'},
   ];
 
   document.getElementById('lv-list').innerHTML = t.stops.map(function(s, i) {
@@ -10028,10 +10365,10 @@ function renderLivreur() {
       : '';
 
     // Statut badge label
-    var stLbl = {'en-attente':'En attente','en-route':'🚚 En route','arrivé':'📍 Arrivé','livré':'✅ Livré','reporté':'📅 Reporté','absent':'🔔 Absent','problème':'⚠️ Problème'}[st] || st;
+    var stLbl = {'en-attente':'En attente','en-route':'En route','arrivé':'Arrivé','livré':'Livré','reporté':'Reporté','absent':'Absent','problème':'Problème'}[st] || st;
 
     // v7.5.129 : trois gros boutons de résultat ; les autres statuts sont repliés sous « Autres statuts »
-    var resBtns = [{k:'livré',ico:'✅',lbl:'Livré',cls:'lv-res-livre',act:'lv-st-action'},{k:'reporté',ico:'📅',lbl:'Reporté',cls:'lv-res-reporte',act:'lv-report-action'},{k:'absent',ico:'🔔',lbl:'Client absent',cls:'lv-res-absent',act:'lv-absent-action'}].map(function(r){
+    var resBtns = [{k:'livré',ico:'<i class="icd icd-ok"></i>',lbl:'Livré',cls:'lv-res-livre',act:'lv-st-action'},{k:'reporté',ico:'<i class="icd icd-cal"></i>',lbl:'Reporté',cls:'lv-res-reporte',act:'lv-report-action'},{k:'absent',ico:'<i class="icd icd-absent"></i>',lbl:'Client absent',cls:'lv-res-absent',act:'lv-absent-action'}].map(function(r){
       return '<button class="lv-resbtn '+r.cls+(st===r.k?' actif':'')+' '+r.act+'" data-tid="'+t.id+'" data-idx="'+i+'" data-statut="'+r.k+'"><span class="sticon">'+r.ico+'</span>'+r.lbl+'</button>';
     }).join('');
     var stBtns = stDefs.filter(function(sd){ return RT_RESULTATS.indexOf(sd.k) < 0; }).map(function(sd) {
@@ -10053,9 +10390,9 @@ function renderLivreur() {
             (s.etaDebut?'<div style="font-size:12px;color:var(--t3);margin-top:2px">Créneau prévu : <strong>'+s.etaDebut+'</strong> – <strong>'+s.etaFin+'</strong></div>':'')+'</div>'+
           '<span class="bdg '+(cfg.bdg)+'">'+stLbl+'</span>'+
         '</div>'+
-        '<div class="lv-info-row"><span class="lv-info-icon">📍</span><span>'+s.adresse+'</span></div>'+
-        (s.etage?'<div class="lv-info-row"><span class="lv-info-icon">🏢</span><span>'+s.etage+(s.asc==='Oui'?' <strong style="color:var(--green)">· Asc. ✓</strong>':'')+(s.code?' · Code : <strong>'+s.code+'</strong>':'')+'</span></div>':'')+
-        '<div class="lv-info-row"><span class="lv-info-icon">📦</span><span><strong>'+s.produit+'</strong></span></div>'+
+        '<div class="lv-info-row"><span class="lv-info-icon"><i class="icd icd-lieu"></i></span><span>'+s.adresse+'</span></div>'+
+        (s.etage?'<div class="lv-info-row"><span class="lv-info-icon"><i class="icd icd-immeuble"></i></span><span>'+s.etage+(s.asc==='Oui'?' <strong style="color:var(--green)">· Asc. ✓</strong>':'')+(s.code?' · Code : <strong>'+s.code+'</strong>':'')+'</span></div>':'')+
+        '<div class="lv-info-row"><span class="lv-info-icon"><i class="icd icd-colis"></i></span><span><strong>'+s.produit+'</strong></span></div>'+
         // ── v7.1 : CHECKLIST CHARGEMENT ──
         (function(){
           var linkedCmd = findCmdForStop(s); // v7.5.70 : repli homonyme sûr
@@ -10086,7 +10423,7 @@ function renderLivreur() {
           html += '</div>';
           return html;
         })()+
-        (s.instr?'<div style="background:var(--ol);border-radius:10px;padding:10px 12px;margin-top:8px;font-size:13px;color:var(--od);font-weight:600">ℹ️ '+s.instr+'</div>':'')+
+        (s.instr?'<div style="background:var(--ol);border-radius:14px;padding:12px 14px;margin-top:10px;font-size:15px;color:var(--od);font-weight:500;display:flex;gap:10px;align-items:flex-start"><i class="icd icd-info"></i><span>'+s.instr+'</span></div>':'')+
 
         // ── Montant + mode paiement ──
         // v7.5.113 : commande du site -> bandeau impossible à manquer (« déjà payé en ligne,
@@ -10119,11 +10456,11 @@ function renderLivreur() {
             (role === 'admin' ? '<button onclick="annulerLivraison(\''+t.id+'\','+i+')" style="margin-left:auto;padding:5px 10px;border-radius:8px;border:1.5px solid var(--rd);background:transparent;color:var(--rd);font-size:11px;font-weight:700;cursor:pointer;font-family:var(--font)">↩️ Annuler livraison</button>' : '') +
           '</div>'
         : '<div class="lv-contact-grid">'+
-            '<button class="lv-cbtn lv-cbtn-call lv-call-btn" data-tel="'+tel+'">📞 Appeler</button>'+
-            '<button class="lv-cbtn lv-cbtn-wa lv-wa-btn" data-wanum="'+waNum+'" data-client="'+s.client+'">💬 WhatsApp</button>'+
-            '<button class="lv-cbtn lv-cbtn-waze lv-waze-btn" data-adresse="'+adresseNav+'" data-cmd-id="'+(s.cmdId||'')+'" style="background:#1FCECA;color:#000;font-weight:900;">🚗 Waze</button>'+
-            '<button class="lv-cbtn lv-cbtn-nav lv-nav-btn" data-adresse="'+adresseNav+'" style="background:var(--ol);color:var(--od);">🗺 Maps</button>'+
-            '<button class="lv-cbtn lv-cbtn-note lv-note-btn" data-tid="'+t.id+'" data-idx="'+i+'">📝 Note</button>'+
+            '<button class="lv-cbtn lv-cbtn-call lv-call-btn" data-tel="'+tel+'"><i class="icd icd-tel"></i>Appeler</button>'+
+            '<button class="lv-cbtn lv-cbtn-wa lv-wa-btn" data-wanum="'+waNum+'" data-client="'+s.client+'"><i class="icd icd-msg"></i>WhatsApp</button>'+
+            '<button class="lv-cbtn lv-cbtn-waze lv-waze-btn" data-adresse="'+adresseNav+'" data-cmd-id="'+(s.cmdId||'')+'" style="background:#1FCECA;color:#000;font-weight:900;"><i class="icd icd-nav"></i>Waze</button>'+
+            '<button class="lv-cbtn lv-cbtn-nav lv-nav-btn" data-adresse="'+adresseNav+'" style="background:var(--ol);color:var(--od);"><i class="icd icd-carte"></i>Maps</button>'+
+            '<button class="lv-cbtn lv-cbtn-note lv-note-btn" data-tid="'+t.id+'" data-idx="'+i+'"><i class="icd icd-note"></i>Note</button>'+
           '</div>'+
 
           // ── v7.5.129 : résultat de l'arrêt (Livré / Reporté / Client absent) + autres statuts repliés ──
@@ -11167,7 +11504,7 @@ var sigCmdMarketplace = null;
 var sigChoixFait = null;
 var sigResteDu = 0;
 function sigSurligner(ch) {
-  var coul = { esp: ['#D6F0E0', '#2E9E5B', '#1F5A36'], cb: ['#DCEBFA', '#185FA5', '#0F3D6B'], deja: ['var(--bl)', 'var(--blue)', 'var(--bd)'] };
+  var coul = { esp: ['var(--gl)', 'var(--green)', 'var(--gd)'], cb: ['var(--bl)', 'var(--blue)', 'var(--bd)'], deja: ['var(--bl)', 'var(--blue)', 'var(--bd)'] }; // v7.5.132 : couleurs du thème (jour / nuit)
   [['esp', 'sig-lv-esp'], ['cb', 'sig-lv-cb'], ['deja', 'sig-paie-deja']].forEach(function(p) {
     var b = document.getElementById(p[1]); if (!b) return;
     if (p[0] === ch) { b.style.background = coul[ch][0]; b.style.borderColor = coul[ch][1]; b.style.color = coul[ch][2]; }
@@ -12090,11 +12427,11 @@ function finRender() {
       var html = '';
       // En-tête récap (seulement s'il y a des retours à traiter)
       if (aTraiter.length > 0) {
-        html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding:0 2px">' +
-          '<div><div style="font-size:16px;font-weight:800">🧾 Retour de tournée — point de caisse</div>' +
-          '<div style="font-size:12px;color:var(--t2)">Pour chaque tournée : compte les espèces remises, vérifie la carte bleue, puis valide le point de caisse.</div></div>' +
-          '<div style="text-align:right"><div style="font-size:24px;font-weight:900;color:var(--od)">' + eur(totalARem) + '</div>' +
-          '<div style="font-size:11px;color:var(--t2)">' + aTraiter.length + ' à remettre</div></div></div>';
+        html += '<div class="rt-tete-d">' +
+          '<div><div class="rt-titre-d">Retour de tournée</div>' +
+          '<div class="rt-sous-d">Pour chaque tournée : compte les espèces remises, vérifie la carte bleue, puis valide le point de caisse.</div></div>' +
+          '<div><div class="rt-total-d">' + eur(totalARem) + '</div>' +
+          '<div class="rt-sous-d" style="text-align:right">' + aTraiter.length + ' à remettre</div></div></div>';
       }
       // Cartes À TRAITER
       html += aTraiter.map(function(r){
@@ -12105,22 +12442,22 @@ function finRender() {
         if (r.cb>0)       dejaEnc.push('💳 ' + eur(r.cb) + ' CB');
         if (r.virement>0) dejaEnc.push('🏦 ' + eur(r.virement));
         if (r.prepaye>0)  dejaEnc.push('✅ ' + eur(r.prepaye) + ' prépayé');
-        return '<div style="background:var(--card);border:1.5px solid var(--orange);border-radius:16px;padding:16px;margin-bottom:12px">' +
+        return '<div class="rt-carte" style="background:var(--card);border:1.5px solid var(--orange);border-radius:16px;padding:16px;margin-bottom:12px">' +
           '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">' +
-            '<div style="font-size:15px;font-weight:800">📅 Tournée du ' + dFr(r.t.date) + ' · ' + r.lv + '</div>' +
+            '<div style="font-size:15px;font-weight:800">Tournée du ' + dFr(r.t.date) + ' · ' + r.lv + '</div>' +
             '<span style="background:var(--ol);color:var(--od);font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px">à traiter · ' + r.cmdsLv.length + ' livr.</span>' +
           '</div>' +
           '<div style="font-size:14px">' +
-            '<div style="display:flex;justify-content:space-between;padding:5px 0"><span style="color:var(--t2)">💰 Espèces encaissées</span><span style="color:var(--green);font-weight:700">+ ' + eur(r.especes) + '</span></div>' +
-            '<div style="display:flex;justify-content:space-between;padding:5px 0"><span style="color:var(--t2)">🧾 Dépenses du livreur (payées en espèces)</span><span style="color:' + (r.depEspLv>0?'var(--red)':'var(--t3)') + ';font-weight:700">' + (r.depEspLv>0?('− '+eur(r.depEspLv)):'0 €') + '</span></div>' +
+            '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--brd)"><span style="color:var(--t2)">Espèces encaissées</span><span style="color:var(--green);font-weight:700">+ ' + eur(r.especes) + '</span></div>' +
+            '<div style="display:flex;justify-content:space-between;padding:8px 0"><span style="color:var(--t2)">Dépenses du livreur (payées en espèces)</span><span style="color:' + (r.depEspLv>0?'var(--red)':'var(--t3)') + ';font-weight:700">' + (r.depEspLv>0?('− '+eur(r.depEspLv)):'0 €') + '</span></div>' +
             rtLignesDepenses(r) + // v7.5.130 : détail par dépense, correction et ajout avant validation
             '<div style="border-top:1px solid var(--brd);margin-top:4px;padding-top:10px;display:flex;align-items:center;justify-content:space-between">' +
               '<span style="font-weight:800">RESTE À REMETTRE<br><span style="font-size:11px;font-weight:600;color:var(--t3)">espèces − dépenses : à comparer à l\'argent remis</span></span>' +
-              '<span style="font-size:24px;font-weight:900;color:var(--gd)">' + eur(r.aRemettre) + '</span>' +
+              '<span class="rt-reste" style="font-size:24px;font-weight:900;color:var(--gd)">' + eur(r.aRemettre) + '</span>' +
             '</div>' +
             (dejaEnc.length ? '<div style="font-size:11px;color:var(--t3);margin:6px 0 12px">ℹ️ Déjà encaissé, rien à rendre : ' + dejaEnc.join(' · ') + '</div>' : '<div style="margin-bottom:12px"></div>') +
             rtLignesPoint(r.point, eur) + // v7.5.129 : CB encaissé livreur, déjà payés, reportés, absents, reste à encaisser
-            '<button onclick="validerRemiseCaisse(\'' + r.caisseKey + '\')" style="width:100%;padding:13px;border-radius:12px;border:none;background:var(--green);color:#fff;font-size:14px;font-weight:800;cursor:pointer;font-family:var(--font)">✅ Valider le point de caisse (espèces remises)</button>' +
+            '<button class="rt-valider" onclick="validerRemiseCaisse(\'' + r.caisseKey + '\')" style="width:100%;padding:13px;border-radius:12px;border:none;background:var(--green);color:#fff;font-size:14px;font-weight:800;cursor:pointer;font-family:var(--font)">✅ Valider le point de caisse (espèces remises)</button>' +
           '</div></div>';
       }).join('');
       // Tournées sans espèces à remettre (non validées) — lignes compactes discrètes
@@ -16614,56 +16951,59 @@ function onTypeEntretienChange() {
 // MODE SOMBRE
 // ════════════════════════════════════════
 
+// STYLE-D-DEBUT (JS) — v7.5.132 : mode nuit optionnel. Choix mémorisé sur l'appareil (mx_theme = dark / light) ;
+// sans choix, l'appli suit le réglage clair / sombre du téléphone ou de l'ordinateur (prefers-color-scheme).
+function themeSysteme() {
+  try { return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch (e) { return false; }
+}
+function themeEstSombre() {
+  var c = document.documentElement.classList;
+  if (c.contains('dark-mode')) return true;
+  if (c.contains('light-mode')) return false;
+  return themeSysteme();
+}
+function themeMajBouton() {
+  var sombre = themeEstSombre();
+  var btn = document.getElementById('btn-dark-mode');
+  if (btn) { btn.innerHTML = sombre ? '<i class="icd icd-soleil"></i>' : '<i class="icd icd-lune"></i>'; btn.title = sombre ? 'Passer en mode jour' : 'Passer en mode nuit'; btn.setAttribute('aria-label', btn.title); }
+  var meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', sombre ? '#0f1513' : '#faf7f2');
+}
+function themeLireChoix() { try { return localStorage.getItem('mx_theme'); } catch (e) { return null; } }
 function toggleDarkMode() {
-  var isDark = document.documentElement.classList.contains('dark-mode');
-  if (isDark) {
-    document.documentElement.classList.remove('dark-mode');
-    document.documentElement.classList.add('light-mode');
-    localStorage.setItem('mx_theme', 'light');
-    var btn = document.getElementById('btn-dark-mode');
-    if (btn) btn.innerHTML = '🌙 Mode sombre';
-  } else {
-    document.documentElement.classList.add('dark-mode');
-    document.documentElement.classList.remove('light-mode');
-    localStorage.setItem('mx_theme', 'dark');
-    var btn = document.getElementById('btn-dark-mode');
-    if (btn) btn.innerHTML = '☀️ Mode clair';
-  }
+  var versSombre = !themeEstSombre();
+  document.documentElement.classList.toggle('dark-mode', versSombre);
+  document.documentElement.classList.toggle('light-mode', !versSombre);
+  try { localStorage.setItem('mx_theme', versSombre ? 'dark' : 'light'); } catch (e) {}
+  themeMajBouton();
 }
-
 function initDarkMode() {
-  var saved = localStorage.getItem('mx_theme');
-  var hour = new Date().getHours();
-  var isNight = (hour >= 20 || hour < 7);
-
-  if (saved === 'dark' || (!saved && isNight)) {
-    document.documentElement.classList.add('dark-mode');
-    document.documentElement.classList.remove('light-mode');
-    var btn = document.getElementById('btn-dark-mode');
-    if (btn) btn.innerHTML = '☀️ Mode clair';
-  } else if (saved === 'light') {
-    document.documentElement.classList.add('light-mode');
-    document.documentElement.classList.remove('dark-mode');
-  }
+  var saved = themeLireChoix();
+  document.documentElement.classList.toggle('dark-mode', saved === 'dark');
+  document.documentElement.classList.toggle('light-mode', saved === 'light');
+  themeMajBouton();
+  try {
+    var mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+    if (mq && !initDarkMode._ecoute) { initDarkMode._ecoute = true; (mq.addEventListener ? mq.addEventListener('change', themeMajBouton) : mq.addListener(themeMajBouton)); }
+  } catch (e) {}
 }
-
-// Vérifier toutes les heures si on doit passer en mode nuit
-setInterval(function() {
-  var saved = localStorage.getItem('mx_theme');
-  if (saved) return; // Préférence manuelle — ne pas changer
-  var hour = new Date().getHours();
-  var isDark = document.documentElement.classList.contains('dark-mode');
-  var isNight = (hour >= 20 || hour < 7);
-  if (isNight && !isDark) {
-    document.documentElement.classList.add('dark-mode');
-    var btn = document.getElementById('btn-dark-mode');
-    if (btn) btn.innerHTML = '☀️ Mode clair';
-  } else if (!isNight && isDark && !saved) {
-    document.documentElement.classList.remove('dark-mode');
-    var btn = document.getElementById('btn-dark-mode');
-    if (btn) btn.innerHTML = '🌙 Mode sombre';
-  }
-}, 60 * 60 * 1000);
+// Icônes trait du menu latéral (repli : l'emoji d'origine si la page n'a pas d'icône dédiée)
+var ICD_NAV = { dashboard:'tableau', sante:'sante', commandes:'colis', tournees:'route', livreur:'camion', suivi:'liste', gps:'lieu', notifs:'cloche', optim:'boussole', finance:'caisse', stock:'colis', camion:'camion', pins:'reglages' };
+function icdNav(n) { var k = n && ICD_NAV[n.p]; return k ? '<i class="icd icd-' + k + '"></i>' : ((n && n.i) || ''); }
+// Sélecteur segmenté de la période du tableau de bord : pilote le menu d'origine (#dash-periode), puis renderDash()
+function segDashPeriode(v) {
+  var sel = document.getElementById('dash-periode');
+  if (sel) sel.value = v;
+  segDashSynchro();
+  if (typeof renderDash === 'function') renderDash();
+}
+function segDashSynchro() {
+  var sel = document.getElementById('dash-periode'), seg = document.getElementById('dash-periode-seg');
+  if (!sel || !seg) return;
+  Array.prototype.forEach.call(seg.querySelectorAll('button'), function(b){ b.classList.toggle('on', b.getAttribute('data-v') === sel.value); });
+}
+document.addEventListener('DOMContentLoaded', segDashSynchro);
+// STYLE-D-FIN (JS)
 
 // ════════════════════════════════════════
 // SUPABASE — SYNC PINs ET PARAMÈTRES
