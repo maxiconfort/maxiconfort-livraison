@@ -323,7 +323,7 @@ declare
   v_methode text := interne.arrivage_methode_valorisation();
   v_rec integer; v_end integer; v_man integer;
   v_rev_avant numeric; v_prov_avant boolean; v_rev_apres numeric; v_prov_apres boolean; v_stock_avant integer;
-  v_nb integer; v_resultat jsonb := '[]'::jsonb; v_total_recu integer := 0; v_ordre bigint;
+  v_nb integer; v_resultat jsonb := '[]'::jsonb; v_total_recu integer := 0; v_ordre bigint; v_instant timestamptz;
 begin
   if (select public.session_role()) is distinct from 'admin' then
     return json_build_object('ok', false, 'erreur', 'session_admin_requise');
@@ -347,6 +347,10 @@ begin
   perform 1 from public.produits_revient where produit_id in (select produit_id from public.arrivage_lignes where arrivage_id = a.id) order by produit_id for update;
   -- ordre de réception tiré APRÈS les verrous : il suit l'ordre réel de valorisation (rejoué par recalculer_revient_arrivage)
   v_ordre := nextval('public.arrivages_ordre_reception_seq');
+  -- instant RÉEL de la réception, pris au même moment (après les verrous) : clock_timestamp() et non now() (début de
+  -- transaction), sinon une réception qui a attendu un verrou serait antidatée et une entrée finie après la fin d'un comptage
+  -- serait exclue du calcul de stock (date_entree > fin du comptage)
+  v_instant := clock_timestamp();
 
   for l in select * from public.arrivage_lignes where arrivage_id = a.id order by produit_id loop
     select e into s from jsonb_array_elements(p_lignes) e where e ->> 'ligne_id' = l.id::text;
@@ -379,7 +383,7 @@ begin
       insert into public.mouvements_stock (type, produit_libelle, quantite, source, destination, commande_id, tournee_id, livreur, par_user)
         values ('entree', p.nom, v_rec, 'arrivage:' || a.reference_interne, 'depot', null, null, null, 'admin');
       insert into public.stock_entrees (date_entree, app_produit_id, quantite, motif, cmd_id, saisi_par, remarque)
-        values (now(), l.produit_id, v_rec, 'arrivage:' || a.reference_interne, null, 'admin', 'Réception d''arrivage validée dans l''application');
+        values (v_instant, l.produit_id, v_rec, 'arrivage:' || a.reference_interne, null, 'admin', 'Réception d''arrivage validée dans l''application');
       v_rev_apres := interne.revient_apres(v_methode, v_stock_avant, v_rev_avant, v_rec, l.revient_unitaire_ht);
       -- un CUMP qui intègre un revient encore PROVISOIRE reste provisoire
       v_prov_apres := interne.revient_provisoire_apres(v_methode, v_stock_avant, v_rev_avant, v_rec, v_prov_avant, a.taux_provisoire);
@@ -398,7 +402,7 @@ begin
       'revient_provisoire', v_prov_apres);
   end loop;
 
-  update public.arrivages set statut = 'recu', recu_le = clock_timestamp(), ordre_reception = v_ordre, recu_par = 'admin', maj_at = now() where id = a.id;
+  update public.arrivages set statut = 'recu', recu_le = v_instant, ordre_reception = v_ordre, recu_par = 'admin', maj_at = now() where id = a.id;
   return json_build_object('ok', true, 'arrivage', a.reference_interne, 'methode', v_methode, 'total_recu', v_total_recu, 'lignes', v_resultat);
 end $$;
 
