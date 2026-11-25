@@ -305,6 +305,29 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     await bac.validerRemiseCaisse('t_T-Q'); const rem = envois.find((e) => /caisse_remises/.test(e.url));
     test('validation du point de caisse : caisse_remises reçoit le RESTE À REMETTRE (210 €), la somme remise et l\'écart', rem && rem.body.especes_attendues === 210 && rem.body.especes_remises === 200 && rem.body.ecart === -10 && rem.body.commentaire === 'Il manque 10 € : ticket perdu', rem && rem.body);
   }
+  { // v7.5.131 : nom du livreur de la remise (avant : « t » pour toute clé « t_<tournée> »)
+    const { bac: p } = nouveauBac('admin');
+    const T = [{ id: 'T-12', livreur: 'RANOU' }];
+    test('clé « t_T-12 » : livreur = celui de la tournée, période = id de la tournée', JSON.stringify(p.rtInfosRemise('t_T-12', null, T)) === JSON.stringify({ livreur: 'RANOU', periode: 'T-12' }));
+    test('clé « t_T-12 » : le livreur du montant attendu passe en premier', p.rtInfosRemise('t_T-12', { livreur: 'KARIM' }, T).livreur === 'KARIM');
+    test('clé « t_… » d\'une tournée inconnue : livreur vide (jamais « t »)', p.rtInfosRemise('t_T-99', null, T).livreur === '' && p.rtInfosRemise('t_T-99', null, T).periode === 'T-99');
+    test('id de tournée contenant « _ » : gardé entier', p.rtInfosRemise('t_T_2026_5', null, [{ id: 'T_2026_5', livreur: 'RANOU' }]).periode === 'T_2026_5');
+    test('ancienne clé « LIVREUR_période » : découpage d\'origine', JSON.stringify(p.rtInfosRemise('JEAN PIERRE_2026-05-01', null, [])) === JSON.stringify({ livreur: 'JEAN PIERRE', periode: '2026-05-01' }));
+    const { bac, envois } = nouveauBac('admin');
+    bac.tournees = [{ id: 'T-Q', livreur: 'RANOU', date: '2026-11-24', statut: 'terminée', stops: [] }];
+    bac.window = { _paiRemisesAttendu: { 't_T-Q': { especes: 210, cb: 0, tournee: 'T-Q', livreur: 'RANOU' } } }; bac.caissesRemises = {};
+    const rep = ['210']; bac.prompt = () => rep.shift();
+    vm.runInContext(extraireFonction('function paiCalculRemise(attendu, saisie)'), bac);
+    vm.runInContext(extraireFonction('async function validerRemiseCaisse(key)'), bac);
+    await bac.validerRemiseCaisse('t_T-Q'); const rem = envois.find((e) => /caisse_remises/.test(e.url));
+    test('validation : caisse_remises.livreur = « RANOU » et periode = « T-Q » (plus de « t »)', rem && rem.body.livreur === 'RANOU' && rem.body.periode === 'T-Q' && rem.body.ecart === 0, rem && rem.body);
+  }
+  { // v7.5.131 : centimes dans la carte Retour de tournée
+    const k = html.indexOf('var eur = function(n){', html.indexOf('window._paiRemisesAttendu = {};'));
+    test('carte Retour de tournée : montants avec centimes (paiEur, plus d\'arrondi à l\'euro)', k > 0 && /var eur = function\(n\)\{ return paiEur\(n\); \};/.test(html.slice(k, k + 60)));
+    const { bac: p } = nouveauBac('admin');
+    test('paiEur : 231,60 € et − 58,40 € (et non 232 € / 58 €)', p.paiEur(231.6) === '231,60 €' && p.paiEur(58.4) === '58,40 €' && p.paiEur(-31.6) === '-31,60 €');
+  }
   test('la page transmet bien le reste à remettre (après dépenses) à la validation', /_paiRemisesAttendu\[r\.caisseKey\] = \{ especes: r\.aRemettre/.test(html) && /var aRemettre = Math\.max\(0, especes - depEspLv\);/.test(html));
 
   // ══════════ 5. Clôture de la tournée ══════════
@@ -340,7 +363,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
   test('Retour de tournée : bouton « Valider le point de caisse » branché sur validerRemiseCaisse (caisse_remises)', /validerRemiseCaisse\(\\'' \+ r\.caisseKey \+ '\\'\)"[^>]*>✅ Valider le point de caisse/.test(html));
   test('validerRemiseCaisse écrit toujours dans caisse_remises (mécanisme existant)', /rest\/v1\/caisse_remises', \{\s*method: 'POST'/.test(extraireFonction('async function validerRemiseCaisse(key)')));
   test('ancre JARVIS (bloc JVUE) présente', html.indexOf('// JVUE-DEBUT') > 0 && html.indexOf('// JVUE-FIN') > html.indexOf('// JVUE-DEBUT'));
-  test('CACHE_VERSION augmentée (v7-5-130 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1([3-9]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
+  test('CACHE_VERSION augmentée (v7-5-131 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(3[1-9]|[4-9]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

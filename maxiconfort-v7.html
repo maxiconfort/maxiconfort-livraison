@@ -9618,6 +9618,19 @@ function rtTourneePourDepense(liste, livreur, idAffichee, apercu, aujourdhui) {
   if (ouvertes.length) return ouvertes[0];
   return siennes.slice().sort(function(a, b) { return String(b.date || '').localeCompare(String(a.date || '')); })[0];
 }
+// v7.5.131 : livreur et période d'une remise de caisse. Clé actuelle « t_<id de tournée> » : livreur = celui de la
+// tournée (montant attendu, sinon liste des tournées), période = id de la tournée. Ancienne clé « <livreur>_<période> » :
+// découpage d'origine. Avant ce correctif, une clé « t_T-12 » donnait livreur = « t ».
+function rtInfosRemise(cle, attendu, listeTournees) {
+  var k = String(cle || '');
+  if (k.indexOf('t_') === 0) {
+    var tid = k.slice(2);
+    var t = (listeTournees || []).find(function(x) { return x && x.id === tid; });
+    return { livreur: String((attendu && attendu.livreur) || (t && t.livreur) || ''), periode: tid };
+  }
+  var parts = k.split('_');
+  return { livreur: parts.slice(0, -1).join(' '), periode: parts[parts.length - 1] };
+}
 // RT-FIN
 
 // v7.5.129 : outils de calcul de la page pour rtPointCaisse (mêmes fonctions que les retours de caisse)
@@ -12072,7 +12085,7 @@ function finRender() {
                              .sort(function(a,b){ return (b.t.date||'').localeCompare(a.t.date||''); });
       var totalARem = aTraiter.reduce(function(s,r){ return s + r.aRemettre; }, 0);
       function dFr(d){ return d ? new Date(d).toLocaleDateString('fr-FR') : '—'; }
-      var eur = function(n){ return Math.round(n).toLocaleString('fr-FR') + ' €'; };
+      var eur = function(n){ return paiEur(n); }; // v7.5.131 : centimes affichés (avant : arrondi à l'euro, « 232 € » pour 231,60 €)
 
       var html = '';
       // En-tête récap (seulement s'il y a des retours à traiter)
@@ -12303,9 +12316,10 @@ async function validerRemiseCaisse(key) {
   try { localStorage.setItem('caissesRemises', JSON.stringify(caissesRemises)); } catch(e){}
   // 2. Supabase — upsert dans table caisse_remises
   try {
-    var parts = key.split('_');
-    var livreur = parts.slice(0, -1).join(' ');
-    var periode = parts[parts.length - 1];
+    // v7.5.131 : livreur et période tirés de la clé « t_<tournée> » (avant : découpage au « _ » -> livreur = « t »)
+    var _infosCle = rtInfosRemise(key, att, tournees);
+    var livreur = _infosCle.livreur;
+    var periode = _infosCle.periode;
     await fetch(SUPABASE_URL + '/rest/v1/caisse_remises', {
       method: 'POST',
       headers: {
