@@ -276,6 +276,31 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
   }
   test('autres chemins qui réécrivent le cumul : signature (acompte compris), admin = montant saisi (cumul explicite, motif + journal)', /cmd\.montantEnc = Math\.round\(\(_avantEnc \+ sigPaieEsp \+ sigPaieCb\) \* 100\) \/ 100;/.test(html) && /c\.paie = nMode; c\.stpaie = nStatut; c\.montantEnc = rawMontant;/.test(html));
 
+  // ══════════ 3 quinquies. Récapitulatif Mixte de la SIGNATURE avec acompte (revue Codex sur 34ec6d5, v7.5.134) ══════════
+  console.log('\n3 quinquies. RÉCAPITULATIF MIXTE DE LA SIGNATURE (vraie fonction sigMixteRecap) ET ACOMPTE');
+  const recapSig = (cmdPlus, esp, cb) => {
+    const cmd = LBC(cmdPlus); const x = preparer(cmd); const { bac } = x;
+    vm.runInContext(extraireFonction('function sigMixteRecap()'), bac); // la VRAIE fonction de la page (le banc la remplaçait par un faux)
+    bac.document.getElementById('sig-paie-esp').value = String(esp); bac.document.getElementById('sig-paie-cb').value = String(cb);
+    bac.sigMixteRecap();
+    return Object.assign(x, { texte: bac.document.getElementById('sig-mixte-recap').textContent });
+  };
+  { const r = recapSig({ stpaie: 'Partiel', montantEnc: 50 }, 60, 70);
+    test('signature Mixte, acompte 50 € + 60 € + 70 € : « MATCH parfait » (plus de « manque 50.00 € »)', /Total : 180\.00 €/.test(r.texte) && /MATCH parfait/.test(r.texte) && /acompte 50\.00 €/.test(r.texte) && !/manque/.test(r.texte), r.texte);
+    r.bac.document.getElementById('sig-ticket').value = 'TK-R'; r.bac.sigAutreCas('Mixte'); r.bac.document.getElementById('sig-paie-esp').value = '60'; r.bac.document.getElementById('sig-paie-cb').value = '70'; r.bac.document.getElementById('sig-ticket').value = 'TK-R';
+    r.bac.validerSig(); await attendre(); const b = r.envois[0] && r.envois[0].body;
+    test('signature Mixte avec acompte : le récapitulatif et l\'enregistrement disent la même chose (Payé, 180 €)', b && b.stpaie === 'Payé' && b.montant_enc === 180, b);
+  }
+  { const r = recapSig({ stpaie: 'Partiel', montantEnc: 50 }, 40, 40);
+    test('signature Mixte, acompte 50 € + 40 € + 40 € : « manque 50.00 € » (vrai reste)', /Total : 130\.00 €/.test(r.texte) && /manque 50\.00 €/.test(r.texte), r.texte);
+  }
+  { const r = recapSig({ stpaie: 'Partiel', montantEnc: 50 }, 0, 0);
+    test('signature Mixte, rien saisi : l\'acompte est signalé comme déjà compté', /Saisir les 2 montants/.test(r.texte) && /acompte de 50\.00 € déjà compté/.test(r.texte), r.texte);
+  }
+  { const r = recapSig({ stpaie: 'Non payé', montantEnc: 0 }, 100, 80);
+    test('signature Mixte sans acompte : 180.00 € « MATCH parfait » (comme avant)', /Total : 180\.00 €/.test(r.texte) && /MATCH parfait/.test(r.texte) && !/acompte/.test(r.texte), r.texte);
+  }
+
   // ══════════ 3 ter. Tournée clôturée gardée à l'écran (revue Codex P2, v7.5.132) ══════════
   console.log('\n3 ter. TOURNÉE CLÔTURÉE GARDÉE À L\'ÉCRAN (revue Codex P2)');
   { const { bac: p } = nouveauBac();
@@ -462,7 +487,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
   test('Retour de tournée : bouton « Valider le point de caisse » branché sur validerRemiseCaisse (caisse_remises)', /validerRemiseCaisse\(\\'' \+ r\.caisseKey \+ '\\'\)"[^>]*>✅ Valider le point de caisse/.test(html));
   test('validerRemiseCaisse écrit toujours dans caisse_remises (mécanisme existant)', /rest\/v1\/caisse_remises', \{\s*method: 'POST'/.test(extraireFonction('async function validerRemiseCaisse(key)')));
   test('ancre JARVIS (bloc JVUE) présente', html.indexOf('// JVUE-DEBUT') > 0 && html.indexOf('// JVUE-FIN') > html.indexOf('// JVUE-DEBUT'));
-  test('CACHE_VERSION augmentée (v7-5-134 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(3[4-9]|[4-9]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
+  test('CACHE_VERSION augmentée (v7-5-136 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(3[6-9]|[4-9]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

@@ -11635,24 +11635,31 @@ function sigSelectMode(mode) {
 function sigMixteRecap() {
   var esp = parseFloat(document.getElementById('sig-paie-esp')?.value) || 0;
   var cb  = parseFloat(document.getElementById('sig-paie-cb')?.value)  || 0;
-  var total = esp + cb;
+  // v7.5.134 (revue Codex) : l'acompte déjà payé avant la livraison compte dans le total, comme dans validerSig
+  // (même règle : acompte = montant encaissé d'une commande « Partiel »).
+  var acompte = 0;
   var prix = sigStopId ? (function(){
     var t = tournees.find(function(x){ return x.id === sigStopId.tid; });
     if (!t || !t.stops[sigStopId.idx]) return 0;
-    return parseFloat(t.stops[sigStopId.idx].prix) || 0;
+    var st = t.stops[sigStopId.idx];
+    var c = st.cmdId ? commandes.find(function(x){ return x.id === st.cmdId; }) : null;
+    if (c && c.stpaie === 'Partiel') acompte = Math.round((parseFloat(c.montantEnc) || 0) * 100) / 100;
+    return parseFloat(st.prix) || 0;
   })() : 0;
+  var total = acompte + esp + cb;
   var diff = total - prix;
   var recap = document.getElementById('sig-mixte-recap');
   if (!recap) return;
   var msg, bg, fg;
-  if (total === 0) {
-    msg = 'Saisir les 2 montants ci-dessus'; bg = 'var(--bg)'; fg = 'var(--t2)';
+  var avecAcompte = acompte > 0 ? ' (dont acompte ' + acompte.toFixed(2) + ' €)' : '';
+  if (esp + cb === 0) {
+    msg = 'Saisir les 2 montants ci-dessus' + (acompte > 0 ? ' — acompte de ' + acompte.toFixed(2) + ' € déjà compté' : ''); bg = 'var(--bg)'; fg = 'var(--t2)';
   } else if (Math.abs(diff) < 0.01) {
-    msg = '✅ Total : ' + total.toFixed(2) + ' € · MATCH parfait'; bg = 'var(--gl)'; fg = 'var(--gd)';
+    msg = '✅ Total : ' + total.toFixed(2) + ' €' + avecAcompte + ' · MATCH parfait'; bg = 'var(--gl)'; fg = 'var(--gd)';
   } else if (diff > 0) {
-    msg = '⚠️ Total : ' + total.toFixed(2) + ' € · +' + diff.toFixed(2) + ' € de trop'; bg = 'var(--ol)'; fg = 'var(--od)';
+    msg = '⚠️ Total : ' + total.toFixed(2) + ' €' + avecAcompte + ' · +' + diff.toFixed(2) + ' € de trop'; bg = 'var(--ol)'; fg = 'var(--od)';
   } else {
-    msg = '⏳ Total : ' + total.toFixed(2) + ' € · manque ' + Math.abs(diff).toFixed(2) + ' €'; bg = '#FFE9E2'; fg = '#A32D2D';
+    msg = '⏳ Total : ' + total.toFixed(2) + ' €' + avecAcompte + ' · manque ' + Math.abs(diff).toFixed(2) + ' €'; bg = '#FFE9E2'; fg = '#A32D2D';
   }
   recap.textContent = msg;
   recap.style.background = bg;
