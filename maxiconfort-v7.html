@@ -720,6 +720,58 @@ html .lv-dep-btn{border:0 !important;background:var(--bl) !important;color:var(-
 .rt-reste{font-size:34px !important;font-weight:700 !important;letter-spacing:-.03em;color:var(--texte) !important}
 .rt-valider{background:var(--bouton-fonce) !important;color:var(--sur-fonce) !important;border-radius:16px !important;min-height:54px;font-size:16px !important;font-weight:600 !important}
 @media (min-width:1100px){ #fin-caisse .rt-carte{max-width:760px} }
+/* v7.5.137 — tableau de bord (maquette D-Tableau) : ordinateur = grille 12 colonnes, téléphone = une colonne */
+.tdb-tete{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:6px 0 18px}
+.tdb-date{font-size:15px;color:var(--gris);font-weight:500}
+.tdb-titre{margin:2px 0 0;font-size:34px;font-weight:700;letter-spacing:-.025em;color:var(--texte);line-height:1.15}
+.tdb-tete .seg-d{flex:0 1 440px}
+.tdb-grille{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:14px}
+.tdb-heros{grid-column:span 6;background:var(--carte);border-radius:24px;padding:22px 24px;box-shadow:var(--ombre);display:flex;flex-direction:column;gap:6px;min-width:0}
+.tdb-l{font-size:15px;color:var(--gris);font-weight:500}
+.tdb-v{font-size:46px;font-weight:700;letter-spacing:-.03em;color:var(--texte);line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tdb-ecart{font-size:15px;font-weight:600;color:var(--gris)}
+.tdb-ecart span{font-weight:500;color:var(--gris)}
+.tdb-ecart.hausse,.tdb-ecart.nouveau{color:var(--green)}
+.tdb-ecart.baisse{color:var(--red)}
+.tdb-pris{margin-top:10px;padding-top:12px;border-top:1px solid var(--sep);font-size:15px;color:var(--texte);display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
+.tdb-pris .tdb-ecart{font-size:14px}
+.tdb-note{font-size:12.5px;color:var(--t3);margin-top:6px;line-height:1.4}
+.tdb-petites{grid-column:span 6;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.tdb-carte{background:var(--carte);border-radius:18px;padding:16px 18px;box-shadow:var(--ombre);display:flex;flex-direction:column;gap:4px;min-width:0}
+.tdb-carte-l{font-size:14px;color:var(--gris)}
+.tdb-carte-v{font-size:26px;font-weight:700;color:var(--texte);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tdb-carte-s{font-size:12.5px;color:var(--t3)}
+.tdb-carte.marge{background:var(--gl);box-shadow:none}
+.tdb-carte.marge .tdb-carte-l,.tdb-carte.marge .tdb-carte-s{color:var(--gd)}
+.tdb-carte.marge .tdb-carte-v{color:var(--gd)}
+.tdb-liste{grid-column:span 4;background:var(--carte);border-radius:18px;box-shadow:var(--ombre);overflow:hidden;min-width:0}
+.tdb-ligne{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--sep);font-size:15px;color:var(--texte)}
+.tdb-ligne:last-child{border-bottom:0}
+.tdb-ligne b{font-weight:600;white-space:nowrap;text-align:right}
+.tdb-ligne small{display:block;font-size:12px;color:var(--t3);font-weight:400}
+.tdb-ligne b small{display:inline}
+.tdb-ligne-t span{font-weight:600}
+.tdb-ligne-t a{color:var(--blue);text-decoration:none;font-size:15px}
+.tdb-ligne.rouge,.tdb-ligne.rouge b{color:var(--rd)}
+.tdb-ligne.orange,.tdb-ligne.orange b{color:var(--od)}
+.tdb-ligne.vide span{color:var(--t3)}
+.tdb-zone span{position:relative;flex:1;min-width:0;padding-bottom:7px}
+.tdb-zone em{font-style:normal;color:var(--t3);margin-right:8px;font-weight:600}
+.tdb-zone i{position:absolute;left:0;bottom:0;height:4px;border-radius:2px;opacity:.75}
+.tdb-source{margin-top:10px;font-size:13px;color:var(--od)}
+.tdb-canaux{margin-top:22px;background:var(--carte);border-radius:18px;box-shadow:var(--ombre);padding:6px 18px 14px}
+.tdb-canaux summary{cursor:pointer;font-size:16px;font-weight:600;padding:12px 0;color:var(--texte)}
+@media (max-width:1180px){ .tdb-heros,.tdb-petites{grid-column:1/-1} .tdb-liste{grid-column:span 6} }
+@media (max-width:760px){ .tdb-liste{grid-column:1/-1} .tdb-titre{font-size:30px} .tdb-v{font-size:40px} .tdb-tete .seg-d{flex:1 1 100%} .tdb-heros{padding:20px} .tdb-carte-v{font-size:22px} }
+/* menu « Plus » */
+html .ni-plus{color:var(--gris);margin-top:8px}
+html .ni-plus .ni-chev{margin-left:auto;font-size:20px;line-height:1;transition:transform .15s;color:var(--t3)}
+html .ni-plus[aria-expanded="true"] .ni-chev{transform:rotate(90deg)}
+html .ni-plus .ni-badge{margin-left:8px}
+html .ni-points{font-size:11px;letter-spacing:1px;color:var(--gris)}
+html .nav-plus[hidden]{display:none}
+html .nav-plus .ni{font-size:14.5px}
+.stk-arr-seg{max-width:360px}
 /* ═══ STYLE-D-FIN ═══ */
 </style>
   <!-- Leaflet.js — carte OpenStreetMap gratuite et précise -->
@@ -801,40 +853,28 @@ html .lv-dep-btn{border:0 !important;background:var(--bl) !important;color:var(-
     </div>
   </div>
 
-  <!-- ─── PAGE DASHBOARD ─── -->
+  <!-- ─── PAGE TABLEAU DE BORD (v7.5.137 : CA par période, comparaison, ventes, encaissé, livraisons, stock, marge, top zones) ─── -->
   <div class="page on" id="p-dashboard">
     <!-- v7.5.8 : Alerte colis GLS en attente de validation -->
     <div id="dash-gls-retard" style="display:none;margin-bottom:18px"></div>
-    <!-- v7.5.9 : Selecteur de periode pour KPIs Dashboard -->
-    <div class="dash-periode-d">
-      <div class="seg-d" id="dash-periode-seg" role="group" aria-label="Période d'analyse"><button type="button" data-v="jour" onclick="segDashPeriode('jour')">Jour</button><button type="button" data-v="semaine" onclick="segDashPeriode('semaine')">Semaine</button><button type="button" data-v="mois" class="on" onclick="segDashPeriode('mois')">Mois</button><button type="button" data-v="annee" onclick="segDashPeriode('annee')">Année</button><button type="button" data-v="all" onclick="segDashPeriode('all')">Tout</button></div>
-      <select id="dash-periode" class="seg-d-cache" aria-hidden="true" tabindex="-1" onchange="renderDash()" style="padding:7px 14px;border:1.5px solid var(--brd);border-radius:8px;background:var(--bg);font-size:13px;font-weight:700;font-family:var(--font);color:var(--text);cursor:pointer">
-        <option value="jour">Aujourd'hui</option>
+    <div class="tdb-tete">
+      <div><div class="tdb-date" id="tdb-date"></div><h1 class="tdb-titre" id="tdb-titre">Aujourd’hui</h1></div>
+      <div class="seg-d" id="dash-periode-seg" role="group" aria-label="Période"><button type="button" data-v="jour" class="on" onclick="segDashPeriode('jour')">Jour</button><button type="button" data-v="semaine" onclick="segDashPeriode('semaine')">Semaine</button><button type="button" data-v="mois" onclick="segDashPeriode('mois')">Mois</button><button type="button" data-v="annee" onclick="segDashPeriode('annee')">Année</button></div>
+      <select id="dash-periode" class="seg-d-cache" aria-hidden="true" tabindex="-1" onchange="renderDash()">
+        <option value="jour" selected>Aujourd'hui</option>
         <option value="semaine">Cette semaine</option>
-        <option value="mois" selected>Ce mois</option>
+        <option value="mois">Ce mois</option>
         <option value="annee">Cette année</option>
-        <option value="all">Total cumulé</option>
       </select>
     </div>
-    <div id="dash-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px"></div>
+    <div id="tdb-contenu"></div>
     <!-- v7.5.113 : situation des paiements du mois (administrateur) -->
-    <div id="dash-paiements" style="margin-bottom:18px"></div>
-    <div class="g2">
-      <div class="card">
-        <div class="card-t">Statuts du jour</div>
-        <div class="pr-row"><div class="pr-l"><span class="dot d-green"></span>Livrées</div><div class="pr-bg"><div class="pr-bar" style="width:58%;background:var(--green)"></div></div><div class="pr-v">7</div></div>
-        <div class="pr-row"><div class="pr-l"><span class="dot d-blue"></span>En route</div><div class="pr-bg"><div class="pr-bar" style="width:25%;background:var(--blue)"></div></div><div class="pr-v">3</div></div>
-        <div class="pr-row"><div class="pr-l"><span class="dot d-orange"></span>Arrivées</div><div class="pr-bg"><div class="pr-bar" style="width:8%;background:var(--orange)"></div></div><div class="pr-v">1</div></div>
-        <div class="pr-row"><div class="pr-l"><span class="dot d-gray"></span>Attente</div><div class="pr-bg"><div class="pr-bar" style="width:8%;background:var(--gray)"></div></div><div class="pr-v">1</div></div>
-        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--brd);display:flex;justify-content:space-between"><span style="font-size:12px;color:var(--t2)">Taux de livraison</span><span style="font-size:18px;font-weight:800;color:var(--green)">92%</span></div>
-      </div>
-      <div class="card">
-        <div class="card-t">Livreurs aujourd'hui</div>
-        <div style="display:flex;flex-direction:column;gap:7px" id="dash-livreurs"></div>
-      </div>
-    </div>
+    <div id="dash-paiements" style="margin:18px 0"></div>
     <div class="sh"><div class="st">Commandes récentes</div></div>
     <div class="tw" id="dash-recent"></div>
+    <!-- Analyse par canal de vente : administrateur, repliée -->
+    <details class="tdb-canaux" id="tdb-canaux" style="display:none">
+      <summary>Analyse par canal de vente</summary>
     <!-- ─── ANALYTICS CANAUX DE VENTE ─── -->
     <div class="sh" style="margin-top:20px;display:none" id="section-canaux-vente">
       <div class="st">📊 Performance par canal de vente</div>
@@ -905,6 +945,7 @@ html .lv-dep-btn{border:0 !important;background:var(--bl) !important;color:var(-
         <tbody id="canal-tbody"></tbody>
       </table>
     </div>
+    </details>
   </div><!-- end p-dashboard -->
 
   <!-- ─── PAGE COMMANDES ─── -->
@@ -2104,6 +2145,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
 
   <!-- ─── PAGE STOCK ─── -->
   <div class="page" id="p-stock">
+    <div class="seg-d stk-arr-seg" role="group" aria-label="Stock" style="display:none;margin-bottom:16px"><button type="button" class="on" onclick="goTo('stock', document.querySelector('.ni[data-p=&quot;stock&quot;]'))">Inventaire</button><button type="button" onclick="goTo('arrivages', document.querySelector('.ni[data-p=&quot;stock&quot;]'))">🚢 Arrivages</button></div>
 
     <!-- Header + actions -->
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;flex-wrap:wrap;gap:10px">
@@ -2152,6 +2194,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
 
   <!-- v7.5.136 : PAGE ARRIVAGES (administrateur) : réception d'un conteneur, prix de revient -->
   <div class="page" id="p-arrivages">
+    <div class="seg-d stk-arr-seg" role="group" aria-label="Stock" style="display:none;margin-bottom:16px"><button type="button" onclick="goTo('stock', document.querySelector('.ni[data-p=&quot;stock&quot;]'))">Inventaire</button><button type="button" class="on" onclick="goTo('arrivages', document.querySelector('.ni[data-p=&quot;stock&quot;]'))">🚢 Arrivages</button></div>
     <div class="sh">
       <div class="st">🚢 Arrivages</div>
       <div class="sd">Conteneurs attendus et réception (reçu / endommagé / manquant)</div>
@@ -5837,6 +5880,10 @@ function jvueDansJarvis() {
     return /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}$/.test(a[0]); // relecture 09/11 : JARVIS sur CET appareil seulement (jamais une adresse publique)
   } catch (e) { return false; }
 }
+/** v7.5.137 : page retirée du menu mais gardée pour ce rôle (ROLES[role].cachees, ex. Santé société pour l'administrateur). */
+function jvuePageCachee(r, page) {
+  try { return !!(typeof ROLES !== 'undefined' && ROLES[r] && (ROLES[r].cachees || []).indexOf(page) >= 0); } catch (e) { return false; }
+}
 /** Ancre → vue demandée, ou null (fonction pure). */
 function jvueLire(hash) {
   var m = /^#jarvis=([^&;]*)(?:;\d{1,12})?$/.exec(String(hash || '')); if (!m) return null; // « ;n » : numéro de demande (même vue redemandée)
@@ -5934,7 +5981,7 @@ function jvueAppliquer() {
         goTo('optim', nav);
         if (v.jour && lo.length !== 1 && typeof toast === 'function') toast(lo.length ? lo.length + ' tournées ce jour-là : choisis-la dans la liste' : 'Aucune tournée le ' + jvueJour(v.jour).split('-').reverse().join('/'));
       }
-      else if (v.vue === 'page') { var np = document.querySelector('.ni[data-p="' + v.page + '"]'); if (np) goTo(v.page, np); else if (typeof toast === 'function') toast('Rubrique non disponible pour ce compte'); }
+      else if (v.vue === 'page') { var np = document.querySelector('.ni[data-p="' + v.page + '"]'); if (np || jvuePageCachee(role, v.page)) goTo(v.page, np); else if (typeof toast === 'function') toast('Rubrique non disponible pour ce compte'); }
       else if (v.vue === 'parametres') { if (role === 'admin') goTo('pins', document.querySelector('[data-p="pins"]')); }
       else goTo('dashboard', document.querySelector('.ni[onclick*="\'dashboard\'"]'));
     } catch (e) { /* vue impossible : l'appli reste où elle est */ }
@@ -5980,26 +6027,26 @@ function doLogout() {
 const ROLES = {
   admin:{
     name:'Admin',label:'Accès total',ico:'🔑',ibg:'#E6F1FB',icl:'#0C447C',sub:'Administration',
+    // v7.5.137 : 6 entrées principales + « Plus » (pages peu utilisées, rangées mais toujours joignables, JARVIS compris).
     nav:[
-      {p:'dashboard',i:'📊',l:'Dashboard'},
-      {p:'sante',i:'🏥',l:'Santé société'},
+      {p:'dashboard',i:'📊',l:'Tableau de bord'},
       {p:'commandes',i:'📦',l:'Commandes'},
       {p:'tournees',i:'🗺',l:'Tournées'},
-      {p:'livreur',i:'🚚',l:'Vue livreur'},
-      {s:'Suivi'},
-      {p:'suivi',i:'📋',l:'Suivi logistique'},
-      {p:'gps',i:'📍',l:'Géolocalisation'},
-      {p:'notifs',i:'🔔',l:'Notifications',badge:true},
-      {p:'optim',i:'🧭',l:'Optimiser tournée'},
-      {s:'Finances'},
+      {p:'stock',i:'📦',l:'Stock / Arrivages'},
       {p:'finance',i:'💰',l:'Encaissements'},
-      {s:'Stock'},
-      {p:'stock',i:'📦',l:'Inventaire stock'},
-      {p:'arrivages',i:'🚢',l:'Arrivages'},
-      {p:'camion',i:'🚛',l:'Contenu camions'},
-      {s:'Paramètres'},
-      {p:'pins',i:'⚙️',l:'Paramètres'},
+      {p:'pins',i:'⚙️',l:'Réglages'},
     ],
+    plus:[
+      {p:'suivi',i:'📋',l:'Suivi logistique'},
+      {p:'optim',i:'🧭',l:'Optimiser tournée'},
+      {p:'notifs',i:'🔔',l:'Notifications',badge:true},
+      {p:'gps',i:'📍',l:'Géolocalisation'},
+      {p:'camion',i:'🚛',l:'Contenu camions'},
+      {p:'livreur',i:'🚚',l:'Vue livreur'},
+      {p:'zones',i:'🗺️',l:'Zones',vers:'finance'},
+    ],
+    // pages hors menu, ouvertes seulement par un lien de l'appli ou l'ancre JARVIS (Santé société : retirée du menu, décision du 25/11)
+    cachees:['sante','arrivages'],
     kpis:[
       {c:'bl',i:'📦',get:()=>commandes.length,l:'Commandes total'},
       {c:'gr',i:'💶',get:()=>commandes.filter(x=>x.statut==='livré').reduce((s,x)=>s+x.prix,0)+' €',l:'CA livré'},
@@ -6012,14 +6059,15 @@ const ROLES = {
   collab:{
     name:'Collaboratrice',label:'Commandes & planning',ico:'👩‍💼',ibg:'#EEEDFE',icl:'#3C3489',sub:'Assistante',
     nav:[
-      {p:'dashboard',i:'📊',l:'Dashboard'},
+      {p:'dashboard',i:'📊',l:'Tableau de bord'},
       {p:'commandes',i:'📦',l:'Commandes'},
       {p:'tournees',i:'🗺',l:'Tournées'},
+      {p:'stock',i:'📦',l:'Stock'},
+    ],
+    plus:[
       {p:'suivi',i:'📋',l:'Suivi logistique'},
       {p:'optim',i:'🧭',l:'Optimiser tournée'},
       {p:'notifs',i:'🔔',l:'Notifications'},
-      {s:'Stock'},
-      {p:'stock',i:'📦',l:'Inventaire stock'},
     ],
     kpis:[
       {c:'bl',i:'📦',get:()=>commandes.length,l:'Commandes total'},
@@ -6050,10 +6098,8 @@ function buildUI(r) {
   av.textContent=(String(cfg.name||cfg.label||'?').trim().charAt(0)||'?').toUpperCase(); av.style.background=cfg.ibg; av.style.color=cfg.icl;
 
   // nav
-  document.getElementById('sb-nav').innerHTML = cfg.nav.map(n=>{
-    if(n.s) return `<div class="nav-sec">${n.s}</div>`;
-    return `<div class="ni" data-p="${n.p}" onclick="goTo('${n.p}',this)"><span class="ni-icon">${icdNav(n)}</span>${n.l}${n.badge?'<span class="ni-badge" id="notif-nav-badge" style="display:none">0</span>':''}</div>`;
-  }).join('');
+  document.getElementById('sb-nav').innerHTML = navHtml(cfg);
+  navPlusOuvrir(navPlusMemo());
 
   // top btn
   const tb=document.getElementById('top-btn');
@@ -6146,6 +6192,37 @@ function buildUI(r) {
 // ════════════════════════════════════════
 // NAVIGATION
 // ════════════════════════════════════════
+// v7.5.137 : menu latéral = entrées principales + bloc « Plus » repliable. Les entrées de « Plus » restent de vrais
+// .ni[data-p] (même repliées) : l'ancre JARVIS et les liens internes les trouvent comme avant.
+function navItemHtml(n) {
+  if (n.s) return '<div class="nav-sec">' + n.s + '</div>';
+  var clic = n.vers ? "navVers('" + n.p + "',this)" : "goTo('" + n.p + "',this)";
+  return '<div class="ni" data-p="' + n.p + '" onclick="' + clic + '"><span class="ni-icon">' + icdNav(n) + '</span>' + n.l + (n.badge ? '<span class="ni-badge" id="notif-nav-badge" style="display:none">0</span>' : '') + '</div>';
+}
+function navHtml(cfg) {
+  var h = (cfg.nav || []).map(navItemHtml).join('');
+  if (cfg.plus && cfg.plus.length) h += '<div class="ni ni-plus" id="nav-plus-btn" role="button" tabindex="0" aria-expanded="false" aria-controls="nav-plus" onclick="navPlusOuvrir()" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();navPlusOuvrir();}"><span class="ni-icon"><span class="ni-points" aria-hidden="true">•••</span></span>Plus<span class="ni-badge" id="plus-nav-badge" style="display:none">0</span><span class="ni-chev" aria-hidden="true">›</span></div>' +
+    '<div class="nav-plus" id="nav-plus" hidden>' + cfg.plus.map(navItemHtml).join('') + '</div>';
+  return h;
+}
+function navPlusMemo() { try { return localStorage.getItem('mx_nav_plus') === '1'; } catch (e) { return false; } }
+/** Ouvre / ferme « Plus » (sans argument : bascule). */
+function navPlusOuvrir(ouvrir) {
+  var b = document.getElementById('nav-plus-btn'), z = document.getElementById('nav-plus'); if (!b || !z) return;
+  if (ouvrir === undefined) ouvrir = z.hidden;
+  z.hidden = !ouvrir; b.setAttribute('aria-expanded', ouvrir ? 'true' : 'false');
+  try { localStorage.setItem('mx_nav_plus', ouvrir ? '1' : '0'); } catch (e) {}
+}
+/** Entrée de menu qui ouvre un onglet d'une autre page (Zones = onglet de la page Encaissements). */
+function navVers(p, el) {
+  if (p === 'zones') {
+    goTo('finance', el);
+    showFinTab('zones', document.getElementById('fin-tab-zones'));
+    var t = document.getElementById('page-title'); if (t) t.textContent = 'Zones';
+  }
+}
+// Page hors menu (Arrivages, Santé) : l'entrée de menu « parente » reste surlignée.
+var NAV_PARENT = { arrivages: 'stock' };
 
 function showFinTab(tab, el) {
   ['enc','rent','zones'].forEach(function(t) {
@@ -6158,28 +6235,17 @@ function showFinTab(tab, el) {
   if (tab === 'zones') { renderZoneStats(); }
 }
 
-function showFinanceTab(tab) {
-  ['encaissements','rentabilite','zones'].forEach(function(t) {
-    var el = document.getElementById('finance-' + t);
-    if (el) el.style.display = (t === tab) ? '' : 'none';
-  });
-  if (tab === 'rentabilite') renderRentabiliteTournees();
-  if (tab === 'zones') {
-    if (!zones.length) {
-      sbLoadZones().then(function() { renderZoneStats(); });
-    } else {
-      renderZoneStats();
-    }
-  }
-}
-
 function goTo(p, el) {
   closeSidebarMobile(); // fermer sidebar mobile à chaque navigation
   document.querySelectorAll('.page').forEach(x=>x.classList.remove('on'));
   document.getElementById('p-'+p).classList.add('on');
   document.querySelectorAll('.ni').forEach(x=>x.classList.remove('on','cv','lv'));
+  if(!el && NAV_PARENT[p]) el = document.querySelector('.ni[data-p="'+NAV_PARENT[p]+'"]'); // v7.5.137
   if(el){el.classList.add('on');if(role==='collab')el.classList.add('cv');if(role==='livreur')el.classList.add('lv');}
-  const titles={dashboard:'Tableau de bord',commandes:'Commandes',tournees:'Tournées',livreur:'Ma tournée',finance:'Encaissements',pins:'Gestion des PINs',camion:'Contenu camion',suivi:'Suivi logistique',sante:'Santé société',arrivages:'Arrivages'};
+  if(el && el.closest && el.closest('#nav-plus')) navPlusOuvrir(true); // v7.5.137 : page rangée dans « Plus » → bloc ouvert
+  if(p==='finance' && el && el.getAttribute && el.getAttribute('data-p')==='finance') showFinTab('enc', document.getElementById('fin-tab-enc'));
+  document.querySelectorAll('.stk-arr-seg').forEach(function(s){ s.style.display = role==='admin' ? '' : 'none'; });
+  const titles={dashboard:'Tableau de bord',commandes:'Commandes',tournees:'Tournées',livreur:'Ma tournée',finance:'Encaissements',pins:'Réglages',camion:'Contenu camion',suivi:'Suivi logistique',sante:'Santé société',arrivages:'Arrivages',stock:'Stock',notifs:'Notifications',optim:'Optimiser tournée',gps:'Géolocalisation'};
   var _gpage_title=document.getElementById('page-title'); if(_gpage_title) _gpage_title.textContent=titles[p]||p;
 
   if(p==='commandes') {
@@ -6427,7 +6493,7 @@ function renderCanauxVente() {
   }).join('') : '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--t3)">Aucune donnée sur cette période</td></tr>';
 }
 
-function renderDash() { try { _renderDashCore(); renderDashGLSRetard(); } catch(e) { console.warn('renderDash:',e.message); } try { paiRenderDash(); } catch(e) { console.warn('paiRenderDash:', e.message); } }
+function renderDash() { try { tdbRendre(); renderDashGLSRetard(); } catch(e) { console.warn('renderDash:',e.message); } try { paiRenderDash(); } catch(e) { console.warn('paiRenderDash:', e.message); } try { tdbRecentes(); tdbCanaux(); } catch(e) { console.warn('tdbRecentes:', e.message); } }
 // v7.5.113 : tableau de bord — paiements du mois en cours, payé en ligne et paiement à la
 // livraison séparés. Montants visibles par l'administrateur seulement.
 function paiRenderDash() {
@@ -6530,342 +6596,254 @@ async function marquerLivreGLS(cmdId) {
   if (document.getElementById('p-finance')?.classList.contains('on')) finRender();
 }
 
-function _renderDashCore() {
-  // ── v7.5.9 : Periode d'analyse selectionnee par l'utilisateur ──
-  var periodeMode = document.getElementById('dash-periode')?.value || 'mois';
-  var nowD = new Date();
-  var range = null; // { du, au } ou null pour "all"
-  if (periodeMode === 'jour') {
-    var d0 = nowD.toISOString().split('T')[0];
-    range = { du: d0, au: d0 };
-  } else if (periodeMode === 'semaine') {
-    var dow = nowD.getDay() === 0 ? 6 : nowD.getDay() - 1;
-    var ds = new Date(nowD); ds.setDate(nowD.getDate() - dow);
-    range = { du: ds.toISOString().split('T')[0], au: nowD.toISOString().split('T')[0] };
-  } else if (periodeMode === 'mois') {
-    var dm = new Date(nowD.getFullYear(), nowD.getMonth(), 1).toISOString().split('T')[0];
-    var fm = new Date(nowD.getFullYear(), nowD.getMonth()+1, 0).toISOString().split('T')[0];
-    range = { du: dm, au: fm };
-  } else if (periodeMode === 'annee') {
-    range = {
-      du: new Date(nowD.getFullYear(), 0, 1).toISOString().split('T')[0],
-      au: new Date(nowD.getFullYear(), 11, 31).toISOString().split('T')[0]
-    };
+// TDB-DEBUT — v7.5.137 : TABLEAU DE BORD (lot « tableau de bord + menus allégés », 25/11/2026)
+// Chiffre d'affaires de la période (Jour / Semaine / Mois / Année) comparé à la période précédente « à date égale »,
+// ventes, encaissé, livraisons, stock, marge (en attente des prix de revient), top zones du mois.
+// Règles (inchangées, reprises du code existant) :
+//  - CA = commandes LIVRÉES, comptées à leur date de LIVRAISON (comme l'ancien tableau de bord et la page Finance) ;
+//  - « pris » / ventes = commandes PRISES, comptées à leur date de COMMANDE, hors annulées, SAV et saisies rétroactives
+//    (date de livraison antérieure à la date de commande) — exactement les filtres de renderCmdStatsJour / cmdFetchRange ;
+//  - encaissé = commandes livrées de la période notées « Payé » (montant encaissé, sinon prix) — règle de l'ancien tableau ;
+//  - aucun montant pour la collaboratrice (nombres seulement) ; aucune marge calculée sans prix de revient.
+// Les fonctions tdbPeriodes, tdbLigne, tdbEstVente, tdbChiffres, tdbEcart, tdbTopZones, tdbStock, tdbLivreurs et tdbHtml
+// sont PURES (testées par outils/test-tableau-bord.js) ; les données viennent des commandes chargées si elles sont
+// complètes, sinon d'une lecture de la base limitée à la période (lecture seule, pages de 1 000 lignes).
+var TDB_MOIS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+var TDB_MOIS_LONG = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+var TDB_JOURS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+function tdbJ(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function tdbPlus(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n); }
+function tdbCourt(s) { var p = String(s).split('-'); return parseInt(p[2], 10) + ' ' + TDB_MOIS[parseInt(p[1], 10) - 1]; }
+function tdbEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function tdbEur(n) { var v = Math.round((parseFloat(n) || 0) * 100) / 100; return v.toLocaleString('fr-FR', { minimumFractionDigits: (v % 1 ? 2 : 0), maximumFractionDigits: 2 }) + ' €'; }
+/** Période choisie → bornes AAAA-MM-JJ (heure de l'appareil, jamais UTC) de la période en cours ENTIÈRE (du → au) et de la
+ *  période précédente À DATE ÉGALE (pdu → pau : même nombre de jours écoulés). Jour : même jour de la semaine précédente. */
+function tdbPeriodes(mode, maintenant) {
+  var n = new Date(maintenant || Date.now()), a = new Date(n.getFullYear(), n.getMonth(), n.getDate()), r;
+  if (mode === 'semaine') {
+    var lun = tdbPlus(a, -((a.getDay() + 6) % 7)), ecoules = Math.round((a - lun) / 864e5), plun = tdbPlus(lun, -7), fp = tdbPlus(plun, ecoules);
+    r = { du: tdbJ(lun), au: tdbJ(tdbPlus(lun, 6)), pdu: tdbJ(plun), pau: tdbJ(fp), titre: 'Cette semaine',
+          vs: ecoules === 6 ? 'vs semaine dernière' : 'vs semaine dernière, jusqu’au ' + TDB_JOURS[fp.getDay()] };
+  } else if (mode === 'mois') {
+    var p1 = new Date(a.getFullYear(), a.getMonth() - 1, 1), finPrec = new Date(a.getFullYear(), a.getMonth(), 0).getDate();
+    var pau = new Date(p1.getFullYear(), p1.getMonth(), Math.min(a.getDate(), finPrec));
+    var ml = TDB_MOIS_LONG[a.getMonth()];
+    r = { du: tdbJ(new Date(a.getFullYear(), a.getMonth(), 1)), au: tdbJ(new Date(a.getFullYear(), a.getMonth() + 1, 0)), pdu: tdbJ(p1), pau: tdbJ(pau),
+          titre: ml.charAt(0).toUpperCase() + ml.slice(1) + ' ' + a.getFullYear(), vs: 'vs ' + TDB_MOIS_LONG[p1.getMonth()] + ' (1 → ' + pau.getDate() + ')' };
+  } else if (mode === 'annee') {
+    var y = a.getFullYear(), finM = new Date(y - 1, a.getMonth() + 1, 0).getDate(), pa = new Date(y - 1, a.getMonth(), Math.min(a.getDate(), finM));
+    r = { du: y + '-01-01', au: y + '-12-31', pdu: (y - 1) + '-01-01', pau: tdbJ(pa), titre: 'Année ' + y, vs: 'vs ' + (y - 1) + ' au ' + tdbCourt(tdbJ(pa)) };
+  } else {
+    mode = 'jour'; var s7 = tdbPlus(a, -7);
+    r = { du: tdbJ(a), au: tdbJ(a), pdu: tdbJ(s7), pau: tdbJ(s7), titre: 'Aujourd’hui', vs: 'vs ' + TDB_JOURS[s7.getDay()] + ' dernier' };
   }
-  // Mois en cours toujours calculé (pour le KPI "CA Mois" qui reste indépendant)
-  var moisDebut = new Date(nowD.getFullYear(), nowD.getMonth(), 1).toISOString().split('T')[0];
-  var moisFin = new Date(nowD.getFullYear(), nowD.getMonth()+1, 0).toISOString().split('T')[0];
-  var dateInRange = function(c, r) {
-    if (!r) return true;
-    var d = c.date || '';
-    return d >= r.du && d <= r.au;
+  r.mode = mode; r.aujourdhui = tdbJ(a);
+  r.date = TDB_JOURS[a.getDay()].charAt(0).toUpperCase() + TDB_JOURS[a.getDay()].slice(1) + ' ' + tdbCourt(r.aujourdhui);
+  r.moisDu = tdbJ(new Date(a.getFullYear(), a.getMonth(), 1)); r.moisAu = tdbJ(new Date(a.getFullYear(), a.getMonth() + 1, 0));
+  return r;
+}
+/** Une commande, au format de l'appli (date, dateCmd, montantEnc) ou de la base (date_livraison, date_commande, montant_enc). */
+function tdbLigne(c) {
+  c = c || {}; var b = ('date_livraison' in c) || ('date_commande' in c);
+  return { id: c.id, prix: parseFloat(c.prix) || 0, statut: c.statut || '', stpaie: c.stpaie || '', enc: parseFloat(b ? c.montant_enc : c.montantEnc) || 0,
+           dLiv: String((b ? c.date_livraison : c.date) || '').slice(0, 10), dCmd: String((b ? c.date_commande : c.dateCmd) || '').slice(0, 10),
+           origine: c.origine || '', adresse: c.adresse || '', livreur: c.livreur || '' };
+}
+/** Vente = commande PRISE : date de commande connue, pas annulée, pas un SAV, pas une saisie rétroactive. */
+function tdbEstVente(l) {
+  if (!l.dCmd || l.statut === 'annulé') return false;
+  if (l.dLiv && l.dLiv < l.dCmd) return false;
+  return String(l.origine).toUpperCase().indexOf('SAV') !== 0;
+}
+/** Chiffres d'une période [du, au] (bornes comprises). */
+function tdbChiffres(lignes, du, au) {
+  var r = { ca: 0, livrees: 0, prevues: 0, encaisse: 0, ventes: 0, pris: 0 };
+  (lignes || []).forEach(function (l) {
+    var liv = !!l.dLiv && l.dLiv >= du && l.dLiv <= au;
+    if (liv && l.statut !== 'annulé') r.prevues++;
+    if (liv && l.statut === 'livré') { r.livrees++; r.ca += l.prix; if (l.stpaie === 'Payé') r.encaisse += (l.enc || l.prix); }
+    if (l.dCmd >= du && l.dCmd <= au && tdbEstVente(l)) { r.ventes++; r.pris += l.prix; }
+  });
+  ['ca', 'encaisse', 'pris'].forEach(function (k) { r[k] = Math.round(r[k] * 100) / 100; });
+  return r;
+}
+/** Écart en % avec la période précédente (null si rien avant : jamais de « +100 % » inventé). */
+function tdbEcart(cur, prev) {
+  if (!prev) return cur > 0 ? { dir: 'nouveau', pct: null } : { dir: 'egal', pct: 0 };
+  var p = Math.round((cur - prev) / prev * 100);
+  return { dir: p > 0 ? 'hausse' : p < 0 ? 'baisse' : 'egal', pct: p };
+}
+/** Classement des zones (commandes LIVRÉES de [du, au]) ; zoneDe(adresse) → zone {id, nom, couleur} ou null. */
+function tdbTopZones(lignes, du, au, zoneDe, max) {
+  var m = {};
+  (lignes || []).forEach(function (l) {
+    if (l.statut !== 'livré' || !l.dLiv || l.dLiv < du || l.dLiv > au) return;
+    var z = null; try { z = zoneDe ? zoneDe(l.adresse) : null; } catch (e) { z = null; }
+    var k = z && z.id ? z.id : 'autres';
+    if (!m[k]) m[k] = { id: k, nom: z && z.nom ? z.nom : 'Non identifié', couleur: z && z.couleur ? z.couleur : '#a39b90', nb: 0, ca: 0 };
+    m[k].nb++; m[k].ca += l.prix;
+  });
+  return Object.keys(m).map(function (k) { m[k].ca = Math.round(m[k].ca * 100) / 100; return m[k]; })
+    .sort(function (a, b) { return (b.ca - a.ca) || (b.nb - a.nb) || String(a.nom).localeCompare(String(b.nom)); }).slice(0, max || 5);
+}
+/** Livraisons par livreur (commandes livrées de [du, au]). */
+function tdbLivreurs(lignes, du, au) {
+  var m = {};
+  (lignes || []).forEach(function (l) {
+    if (l.statut !== 'livré' || !l.dLiv || l.dLiv < du || l.dLiv > au) return;
+    var k = String(l.livreur || '').trim() || '—'; if (!m[k]) m[k] = { nom: k, nb: 0, ca: 0 }; m[k].nb++; m[k].ca += l.prix;
+  });
+  return Object.keys(m).map(function (k) { return m[k]; }).sort(function (a, b) { return b.nb - a.nb || b.ca - a.ca; });
+}
+/** Stock : mêmes règles que l'inventaire (stkRender). Un ensemble (composants) n'est ni alerté ni valorisé (ses composants le sont).
+ *  Valeur au PRIX DE REVIENT seulement pour l'administrateur qui lit produits_revient (migration 039) ; sinon au PRIX DE VENTE. */
+function tdbStock(liste, revients, voitRevient) {
+  var phys = (liste || []).filter(function (p) { return !(p && Array.isArray(p.composants) && p.composants.length); });
+  var r = { ruptures: 0, bas: 0, valeurVente: 0, valeurRevient: 0, connus: 0, enStock: 0, base: 'vente' };
+  phys.forEach(function (p) {
+    var st = Number(p.stock) || 0, seuil = Number(p.seuil) || 0;
+    if (st === 0) r.ruptures++; else if (st > 0 && st <= seuil) r.bas++;
+    if (p.cat === 'Service') return;
+    r.valeurVente += st * (parseFloat(p.prix) || 0);
+    if (st > 0) { r.enStock++; var rv = revients && revients[p.id]; if (rv && !isNaN(parseFloat(rv.prix_revient_ht))) { r.connus++; r.valeurRevient += st * parseFloat(rv.prix_revient_ht); } }
+  });
+  if (voitRevient && revients && Object.keys(revients).length) r.base = 'revient';
+  r.valeurVente = Math.round(r.valeurVente * 100) / 100; r.valeurRevient = Math.round(r.valeurRevient * 100) / 100;
+  return r;
+}
+/** Écran complet (fonction pure). e = { P, cur, prev, zones, stock, livreurs, admin, note }. Collaboratrice : AUCUN montant. */
+function tdbHtml(e) {
+  var A = !!e.admin, P = e.P, c = e.cur, p = e.prev;
+  var ecart = function (v, w, vs, enEuros) {
+    var d = tdbEcart(v, w), base = A && enEuros ? tdbEur(w) : String(w);
+    if (d.dir === 'nouveau') return '<div class="tdb-ecart nouveau">Nouveau <span>(rien ' + tdbEsc(String(vs).replace(/^vs /, '')) + ')</span></div>';
+    return '<div class="tdb-ecart ' + d.dir + '">' + (d.pct > 0 ? '+' : '') + d.pct + ' % <span>' + tdbEsc(vs) + ' (' + base + ')</span></div>';
   };
-
-  // ── KPIs ──
-  const livreesTout = commandes.filter(c=>c.statut==='livré');
-  const livreesPeriode = livreesTout.filter(function(c){ return dateInRange(c, range); });
-  const livreesMois = livreesTout.filter(function(c){ return dateInRange(c, { du: moisDebut, au: moisFin }); });
-
-  const enAttente  = commandes.filter(c=>c.statut==='en-attente');
-  const enAttenteP = enAttente.filter(function(c){ return dateInRange(c, range); });
-
-  const caCumule   = livreesTout.reduce((s,c)=>s+c.prix, 0);
-  const caMois     = livreesMois.reduce((s,c)=>s+c.prix, 0);
-  const caPeriode  = livreesPeriode.reduce((s,c)=>s+c.prix, 0);
-  const encaisseP  = livreesPeriode.filter(c=>c.stpaie==='Payé').reduce((s,c)=>s+(c.montantEnc||c.prix),0);
-  const tauxLiv    = commandes.length ? Math.round(livreesTout.length/commandes.length*100) : 0;
-
-  // Labels période pour les KPIs filtrés
-  var lblP = periodeMode === 'jour' ? 'Aujourd\'hui'
-           : periodeMode === 'semaine' ? 'Cette semaine'
-           : periodeMode === 'mois' ? 'Ce mois'
-           : periodeMode === 'annee' ? 'Cette année'
-           : 'Total cumulé';
-
-  // ── Injection KPIs dans dash-kpis ──
-  // v7.5.132 : style D — libellé, grand chiffre, période ; l'emoji (ico) n'est plus affiché
-  var _kpi = function(ico, val, label, sublabel, trendHtml) {
-    return '<div class="kpi-d">' +
-      '<div class="kpi-d-l">' + label + '</div>' +
-      '<div class="kpi-d-v">' + val + '</div>' +
-      '<div class="kpi-d-s">' + (sublabel || '') + '</div>' +
-      '<div style="min-height:18px;font-size:13px">' + (trendHtml||'') + '</div>' +
-    '</div>';
-  };
-  var kpisEl = document.getElementById('dash-kpis');
-  if (kpisEl) {
-    kpisEl.innerHTML =
-      // KPI 1 : CA Cumulé (toujours total, indépendant du sélecteur)
-      _kpi('📊', role==='admin' ? caCumule.toLocaleString('fr-FR')+' €' : '—', 'CA Cumulé', 'Depuis le début', '') +
-      // KPI 2 : CA Mois (toujours mois en cours, indépendant)
-      _kpi('💶', role==='admin' ? caMois.toLocaleString('fr-FR')+' €' : '—', 'CA Mois', new Date().toLocaleDateString('fr-FR',{month:'long',year:'numeric'}), '<span id="dash-ca-trend"></span>') +
-      // KPI 3 : Livrées (selon période)
-      _kpi('✅', livreesPeriode.length, 'Livrées', lblP, '<span id="dash-livrees-trend"></span>') +
-      // KPI 4 : En attente (selon période)
-      _kpi('⏳', enAttenteP.length, 'En attente', lblP, '') +
-      // KPI 5 : Encaissé (selon période)
-      _kpi('💳', role==='admin' ? encaisseP.toLocaleString('fr-FR')+' €' : '—', 'Encaissé', lblP, '<span id="dash-enc-trend"></span>');
+  var carte = function (lib, val, sous, cls) { return '<div class="tdb-carte' + (cls ? ' ' + cls : '') + '"><div class="tdb-carte-l">' + lib + '</div><div class="tdb-carte-v">' + val + '</div>' + (sous ? '<div class="tdb-carte-s">' + sous + '</div>' : '') + '</div>'; };
+  var pl = function (n, mot) { return n + ' ' + mot + (n > 1 ? 's' : ''); };
+  var h = '<div class="tdb-grille">';
+  if (A) {
+    h += '<section class="tdb-heros" aria-label="Chiffre d’affaires"><div class="tdb-l">Chiffre d’affaires livré</div><div class="tdb-v">' + tdbEur(c.ca) + '</div>' + ecart(c.ca, p.ca, P.vs, true) +
+      '<div class="tdb-pris">Pris sur la période : <b>' + tdbEur(c.pris) + '</b> · ' + pl(c.ventes, 'commande') + ecart(c.pris, p.pris, P.vs, true) + '</div>' +
+      '<div class="tdb-note">Livré = commandes livrées, à leur date de livraison. Pris = commandes prises, à leur date de commande (hors annulées, SAV et saisies rétroactives).</div></section>';
+    h += '<div class="tdb-petites">' +
+      carte('Ventes', String(c.ventes), 'commande' + (c.ventes > 1 ? 's prises' : ' prise')) +
+      carte('Encaissé', tdbEur(c.encaisse), 'commandes livrées payées') +
+      carte('Livraisons', c.livrees + ' / ' + c.prevues, 'livrées / prévues') +
+      carte('Marge', '—', 'disponible dès les prix de revient saisis', 'marge') + '</div>';
+  } else {
+    h += '<section class="tdb-heros" aria-label="Livraisons"><div class="tdb-l">Commandes livrées</div><div class="tdb-v">' + c.livrees + '</div>' + ecart(c.livrees, p.livrees, P.vs, false) +
+      '<div class="tdb-pris">Prises sur la période : <b>' + pl(c.ventes, 'commande') + '</b>' + ecart(c.ventes, p.ventes, P.vs, false) + '</div></section>';
+    h += '<div class="tdb-petites">' +
+      carte('Ventes', String(c.ventes), 'commande' + (c.ventes > 1 ? 's prises' : ' prise')) +
+      carte('Livraisons', c.livrees + ' / ' + c.prevues, 'livrées / prévues') +
+      carte('Restant à livrer', String(Math.max(0, c.prevues - c.livrees)), 'sur la période') +
+      carte('Période précédente', String(p.livrees), pl(p.livrees, 'livraison') + ' · ' + pl(p.ventes, 'vente')) + '</div>';
   }
-
-  // ── TENDANCES semaine actuelle vs semaine précédente ──
-  var _today = new Date();
-  var _dow = _today.getDay() === 0 ? 6 : _today.getDay() - 1;
-  var _debutSem = new Date(_today); _debutSem.setDate(_today.getDate() - _dow); _debutSem.setHours(0,0,0,0);
-  var _debutPrev = new Date(_debutSem); _debutPrev.setDate(_debutSem.getDate() - 7);
-  var _finPrev = new Date(_debutSem); _finPrev.setMilliseconds(-1);
-  var _fmtD = function(d) { return d.toISOString().split('T')[0]; };
-  var _inSem  = function(c) { return (c.date||'') >= _fmtD(_debutSem) && (c.date||'') <= _fmtD(_today); };
-  var _inPrev = function(c) { return (c.date||'') >= _fmtD(_debutPrev) && (c.date||'') <= _fmtD(_finPrev); };
-
-  var _livSem   = livreesTout.filter(_inSem);
-  var _livPrev  = livreesTout.filter(_inPrev);
-  var _caSem    = _livSem.reduce(function(s,c){ return s+c.prix; }, 0);
-  var _caPrev   = _livPrev.reduce(function(s,c){ return s+c.prix; }, 0);
-  var _encSem   = _livSem.filter(function(c){ return c.stpaie==='Payé'; }).reduce(function(s,c){ return s+(c.montantEnc||c.prix); }, 0);
-  var _encPrev  = _livPrev.filter(function(c){ return c.stpaie==='Payé'; }).reduce(function(s,c){ return s+(c.montantEnc||c.prix); }, 0);
-
-  function _delta(cur, prev) {
-    if (prev === 0) return cur > 0 ? { pct: 100, dir: 'up' } : { pct: 0, dir: 'eq' };
-    var p = Math.round((cur - prev) / prev * 100);
-    return { pct: Math.abs(p), dir: p > 1 ? 'up' : p < -1 ? 'down' : 'eq' };
+  var s = e.stock || {};
+  h += '<section class="tdb-liste"><div class="tdb-ligne tdb-ligne-t"><span>Stock</span><a href="#" onclick="tdbAller(\'stock\');return false">Inventaire</a></div>' +
+    '<div class="tdb-ligne rouge"><span>Ruptures</span><b>' + (s.ruptures || 0) + '</b></div>' +
+    '<div class="tdb-ligne orange"><span>Stock bas</span><b>' + (s.bas || 0) + '</b></div>';
+  if (A) {
+    if (s.base === 'revient') h += '<div class="tdb-ligne"><span>Valeur au prix de revient HT<small>revient connu pour ' + s.connus + ' / ' + s.enStock + ' référence' + (s.enStock > 1 ? 's' : '') + ' en stock</small></span><b>' + tdbEur(s.valeurRevient) + '</b></div>';
+    else h += '<div class="tdb-ligne"><span>Valeur au prix de vente<small>prix de revient pas encore disponibles</small></span><b>' + tdbEur(s.valeurVente) + '</b></div>';
   }
-  function _trendHtml(d) {
-    if (d.dir === 'eq') return '<span style="font-size:11px;color:var(--t3);font-weight:600">→ Stable</span>';
-    var col = d.dir === 'up' ? '#27500A' : '#791F1F';
-    var bg  = d.dir === 'up' ? 'var(--gl)' : 'var(--rl)';
-    var ico = d.dir === 'up' ? '↑' : '↓';
-    return '<span style="font-size:11px;font-weight:700;color:'+col+';background:'+bg+';padding:2px 7px;border-radius:20px">'+ico+' '+d.pct+'%</span>';
-  }
-
-  var _dCA  = _delta(_caSem,  _caPrev);
-  var _dEnc = _delta(_encSem, _encPrev);
-  var _dLiv = _delta(_livSem.length, _livPrev.length);
-
-  // Injecter les badges tendance
-  var _elCaT = document.getElementById('dash-ca-trend');
-  if (_elCaT && role === 'admin') _elCaT.innerHTML = _trendHtml(_dCA);
-  var _elEncT = document.getElementById('dash-enc-trend');
-  if (_elEncT && role === 'admin') _elEncT.innerHTML = _trendHtml(_dEnc);
-  var _elLivT = document.getElementById('dash-livrees-trend');
-  if (_elLivT) _elLivT.innerHTML = _trendHtml(_dLiv);
-
-  // Taux livraison
-  const tl = document.getElementById('dash-taux');
-  if(tl) { tl.textContent=tauxLiv+'%'; tl.style.color=tauxLiv>=80?'var(--green)':tauxLiv>=50?'var(--orange)':'var(--red)'; }
-
-  // Barres statuts
-  const statuts=['en-attente','en-route','arrivé','livré','reporté','annulé'];
-  const stCls={'en-attente':'var(--gray)','en-route':'var(--blue)','arrivé':'var(--orange)','livré':'var(--green)','reporté':'var(--violet)','annulé':'var(--red)'};
-  const barEl=document.getElementById('dash-statuts');
-  if(barEl) {
-    barEl.innerHTML=statuts.map(s=>{
-      const n=commandes.filter(c=>c.statut===s).length;
-      const pct=commandes.length?Math.round(n/commandes.length*100):0;
-      return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
-        <span style="width:80px;font-size:12px;color:var(--t2);text-align:right">${s}</span>
-        <div style="flex:1;height:7px;background:var(--bg2);border-radius:4px;overflow:hidden">
-          <div style="width:${pct}%;height:100%;background:${stCls[s]};border-radius:4px;transition:width .5s"></div>
-        </div>
-        <span style="width:32px;font-size:12px;font-weight:700;color:${stCls[s]}">${n}</span>
-      </div>`;
-    }).join('');
-  }
-
-  // Livreurs perf (v7.5.9 : filtre selon période sélectionnée)
-  const lvEl=document.getElementById('dash-livreurs');
-  if(lvEl){
-    const actifs=livreurs.filter(l=>l.actif);
-    lvEl.innerHTML=actifs.map(l=>{
-      const lv=livreesPeriode.filter(c=>c.livreur===l.nom);
-      const lca=lv.reduce((s,c)=>s+c.prix,0);
-      return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-        <div style="width:30px;height:30px;border-radius:50%;background:${l.couleur};color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;flex-shrink:0">${l.nom.split(' ').map(n=>n[0]).join('')}</div>
-        <div style="flex:1">
-          <div style="font-size:12px;font-weight:700">${l.nom}</div>
-          <div style="font-size:11px;color:var(--t3)">${lv.length} livraison${lv.length>1?'s':''} · ${lca.toLocaleString('fr-FR')} €</div>
-        </div>
-        <span class="bdg b-green" style="font-size:11px">${lca.toLocaleString('fr-FR')} €</span>
-      </div>`;
-    }).join('') || '<div style="font-size:12px;color:var(--t3)">Aucune livraison</div>';
-  }
-
-  // Commandes récentes
-  const recent=commandes.slice(0,8);
-  const recEl=document.getElementById('dash-recent');
-  if(recEl) {
-    recEl.innerHTML=`<table><thead><tr><th>Client</th><th>Produit</th><th>Montant</th><th>Canal</th><th>Livreur</th><th>Statut</th></tr></thead>
-    <tbody>${recent.map(c=>`<tr onclick="ouvrirCmd('${c.id}')" style="cursor:pointer">
-      <td><div class="td-m">${c.client}</div><div class="td-s">${c.tel}</div></td>
-      <td style="font-size:12px">${c.produit}</td>
-      <td><strong>${c.prix} €</strong></td>
-      <td>${c.origine?origineBadge(c.origine):'<span style="color:var(--t3);font-size:11px">—</span>'}</td>
-      <td style="font-size:12px">${c.livreur || (c.transporteur==='GLS' ? '<span style="font-weight:800;color:var(--od)">GLS</span>' : '—')}</td>
-      <td>${stBdg(c.statut)}</td>
-    </tr>`).join('')}</tbody></table>`;
-  }
-
-  // ── Canaux de vente (admin uniquement) ──
-  const canauxSection = document.getElementById('dash-canaux-section');
-  if (canauxSection) {
-    canauxSection.style.display = role === 'admin' ? 'block' : 'none';
-    if (role === 'admin') renderDashCanaux();
-  }
-
-  renderCanauxVente();
+  h += '</section>';
+  var zs = e.zones || [], maxZ = zs.reduce(function (m, z) { return Math.max(m, A ? z.ca : z.nb); }, 0) || 1;
+  h += '<section class="tdb-liste"><div class="tdb-ligne tdb-ligne-t"><span>Top zones du mois</span>' + (A ? '<a href="#" onclick="tdbAller(\'zones\');return false">Toutes les zones</a>' : '') + '</div>' +
+    (zs.length ? zs.map(function (z, i) {
+      var v = A ? z.ca : z.nb;
+      return '<div class="tdb-ligne tdb-zone"><span><em>' + (i + 1) + '</em>' + tdbEsc(z.nom) + '<i style="width:' + Math.max(4, Math.round(v / maxZ * 100)) + '%;background:' + tdbEsc(z.couleur) + '"></i></span><b>' + (A ? tdbEur(z.ca) + ' <small>' + pl(z.nb, 'livraison') + '</small>' : pl(z.nb, 'livraison')) + '</b></div>';
+    }).join('') : '<div class="tdb-ligne vide"><span>Aucune livraison ce mois-ci</span></div>') + '</section>';
+  var lv = e.livreurs || [];
+  h += '<section class="tdb-liste"><div class="tdb-ligne tdb-ligne-t"><span>Livreurs — ' + tdbEsc(P.titre.toLowerCase()) + '</span></div>' +
+    (lv.length ? lv.slice(0, 6).map(function (l) { return '<div class="tdb-ligne"><span>' + tdbEsc(l.nom) + '</span><b>' + pl(l.nb, 'livraison') + (A ? ' <small>' + tdbEur(l.ca) + '</small>' : '') + '</b></div>'; }).join('')
+      : '<div class="tdb-ligne vide"><span>Aucune livraison sur la période</span></div>') + '</section>';
+  h += '</div>';
+  if (e.note) h += '<div class="tdb-source">' + tdbEsc(e.note) + '</div>';
+  return h;
 }
 
-function renderDashCanaux() {
-  // ── Filtrage période ──
-  const periode = document.getElementById('dash-canal-periode')?.value || 'mois';
-  const now = new Date();
-  let cmdsFiltered = commandes;
-  if (periode === 'mois') {
-    const m = now.getMonth(), y = now.getFullYear();
-    const du = new Date(y,m,1).toISOString().split('T')[0];
-    const au = new Date(y,m+1,0).toISOString().split('T')[0];
-    cmdsFiltered = commandes.filter(c=>c.date>=du&&c.date<=au);
-  } else if (periode === 'semaine') {
-    const day = now.getDay()||7;
-    const lun = new Date(now); lun.setDate(now.getDate()-day+1);
-    const dim = new Date(lun); dim.setDate(lun.getDate()+6);
-    const du = lun.toISOString().split('T')[0];
-    const au = dim.toISOString().split('T')[0];
-    cmdsFiltered = commandes.filter(c=>c.date>=du&&c.date<=au);
+// ── Données et affichage ──
+var TDB_COLS = 'id,prix,date_commande,date_livraison,statut,stpaie,montant_enc,origine,adresse,livreur';
+var TDB_ETAT = { cle: '', lignes: null, at: 0, enCours: '', erreur: '', revientsDemandes: false };
+/** Les commandes chargées par l'appli sont-elles TOUTES les commandes de la base ? (sinon : lecture limitée à la période) */
+function tdbLocalComplet() {
+  return Array.isArray(commandes) && commandes.length > 0 && typeof cmdTotalCount !== 'undefined' && cmdTotalCount > 0 && commandes.length >= cmdTotalCount;
+}
+async function tdbLire(filtre) {
+  var out = [];
+  for (var page = 0; page < 30; page++) {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + TDB_COLS + filtre + '&order=id.asc', {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Range-Unit': 'items', 'Range': (page * 1000) + '-' + (page * 1000 + 999) } });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var rows = await r.json(); if (!Array.isArray(rows)) throw new Error('réponse inattendue');
+    out = out.concat(rows); if (rows.length < 1000) break;
   }
-
-  // ── Agréger par canal ──
-  const canalMap = {};
-  cmdsFiltered.forEach(c => {
-    const canal = c.origine || 'Non renseigné';
-    if (!canalMap[canal]) canalMap[canal] = {canal, cmds:0, livrees:0, ca:0, encaisse:0, produits:{}};
-    canalMap[canal].cmds++;
-    if (c.statut==='livré') {
-      canalMap[canal].livrees++;
-      canalMap[canal].ca += c.prix;
-      if (c.stpaie==='Payé') canalMap[canal].encaisse += c.montantEnc||c.prix;
-    }
-    // Produits par canal
-    const prodKey = c.produit?.split(' ').slice(0,3).join(' ')||'Autre';
-    canalMap[canal].produits[prodKey] = (canalMap[canal].produits[prodKey]||0)+1;
-  });
-
-  const canaux = Object.values(canalMap).sort((a,b)=>b.ca-a.ca);
-  const caTotal = canaux.reduce((s,x)=>s+x.ca,0);
-
-  // ── KPIs canaux ──
-  const topCanal = canaux[0];
-  const nbCanaux = canaux.filter(x=>x.ca>0).length;
-  const meilleurTaux = canaux.filter(x=>x.cmds>0).reduce((best,x)=>{
-    const t=x.cmds?Math.round(x.livrees/x.cmds*100):0;
-    return t>(best.taux||0)?{...x,taux:t}:best;
-  },{taux:0});
-
-  document.getElementById('dash-canal-kpis').innerHTML = [
-    {col:'bl', ico:'🛒', val:nbCanaux, label:'Canaux actifs'},
-    {col:'gr', ico:'🏆', val:topCanal?topCanal.canal:'—', label:'Canal n°1 (CA)'},
-    {col:'or', ico:'💶', val:caTotal.toLocaleString('fr-FR')+' €', label:'CA total canaux'},
-    {col:'re', ico:'📈', val:meilleurTaux.canal||'—', label:'Meilleur taux livraison'},
-  ].map(k=>`<div class="kpi ${k.col}"><div class="kpi-ico">${k.ico}</div><div class="kpi-v" style="font-size:${k.val.toString().length>8?'13px':'18px'}">${k.val}</div><div class="kpi-l">${k.label}</div></div>`).join('');
-
-  var _gdash_canal_total_label=document.getElementById('dash-canal-total-label'); if(_gdash_canal_total_label) _gdash_canal_total_label.textContent='Total : '+caTotal.toLocaleString('fr-FR')+' €';
-
-  // ── Barres horizontales CA ──
-  const maxCA = canaux[0]?.ca || 1;
-  document.getElementById('dash-canal-bars').innerHTML = canaux.slice(0,8).map((x,i)=>{
-    const cfg = ORIGINE_CONFIG[x.canal]||{ico:'🛒',color:'#888780',bg:'#F1EFE8'};
-    const pct = Math.round(x.ca/Math.max(caTotal,1)*100);
-    const barW = Math.round(x.ca/maxCA*100);
-    const taux = x.cmds ? Math.round(x.livrees/x.cmds*100) : 0;
-    return `<div style="margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-        <div style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700">
-          <span>${cfg.ico}</span><span>${x.canal}</span>
-          <span style="font-size:10px;font-weight:400;color:var(--t3)">${x.cmds} cmd${x.cmds>1?'s':''} · ${taux}% livrées</span>
-        </div>
-        <span style="font-size:14px;font-weight:800;color:${cfg.color}">${x.ca.toLocaleString('fr-FR')} €</span>
-      </div>
-      <div style="height:8px;background:var(--bg2);border-radius:4px;overflow:hidden">
-        <div style="width:${barW}%;height:100%;background:${cfg.color};border-radius:4px;transition:width .6s ease;opacity:.85"></div>
-      </div>
-      <div style="font-size:10px;color:var(--t3);margin-top:2px;text-align:right">${pct}% du CA total</div>
-    </div>`;
-  }).join('') || '<div style="padding:16px;text-align:center;color:var(--t3)">Aucune commande sur cette période</div>';
-
-  // ── Tableau détaillé ──
-  document.getElementById('dash-canal-table').innerHTML = canaux.length
-    ? `<table style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead><tr>
-          <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--brd);color:var(--t2)">Canal</th>
-          <th style="padding:7px 10px;text-align:right;border-bottom:1px solid var(--brd);color:var(--t2)">Cmds</th>
-          <th style="padding:7px 10px;text-align:right;border-bottom:1px solid var(--brd);color:var(--t2)">CA</th>
-          <th style="padding:7px 10px;text-align:right;border-bottom:1px solid var(--brd);color:var(--t2)">Taux</th>
-          <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--brd);color:var(--t2)">Top produit</th>
-        </tr></thead>
-        <tbody>${canaux.map((x,i)=>{
-          const cfg = ORIGINE_CONFIG[x.canal]||{ico:'🛒',color:'#888780'};
-          const taux = x.cmds?Math.round(x.livrees/x.cmds*100):0;
-          const topProd = Object.entries(x.produits).sort((a,b)=>b[1]-a[1])[0];
-          return `<tr style="border-bottom:1px solid var(--brd)">
-            <td style="padding:7px 10px"><span style="display:inline-flex;align-items:center;gap:5px;font-weight:700;color:${cfg.color}">${cfg.ico} ${x.canal}</span></td>
-            <td style="padding:7px 10px;text-align:right;font-weight:700">${x.cmds}</td>
-            <td style="padding:7px 10px;text-align:right;font-weight:800;color:var(--green)">${x.ca.toLocaleString('fr-FR')} €</td>
-            <td style="padding:7px 10px;text-align:right">
-              <span style="color:${taux>=80?'var(--green)':taux>=50?'var(--orange)':'var(--red)'};font-weight:700">${taux}%</span>
-            </td>
-            <td style="padding:7px 10px;font-size:11px;color:var(--t2)">${topProd?topProd[0]:'—'}</td>
-          </tr>`;
-        }).join('')}</tbody>
-      </table>`
-    : '<div style="padding:16px;text-align:center;color:var(--t3)">Aucune donnée</div>';
-
-  // ── Donut visuel (barres circulaires CSS) ──
-  const colors = canaux.map(x=>(ORIGINE_CONFIG[x.canal]||{color:'#888780'}).color);
-  document.getElementById('dash-canal-donut').innerHTML =
-    `<div style="display:flex;flex-wrap:wrap;gap:8px;flex:1">${canaux.filter(x=>x.ca>0).map((x,i)=>{
-      const pct=Math.round(x.ca/Math.max(caTotal,1)*100);
-      const cfg=ORIGINE_CONFIG[x.canal]||{ico:'🛒',color:'#888780',bg:'#F1EFE8'};
-      return `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:${cfg.bg};border-radius:var(--rl2);min-width:160px;flex:1">
-        <div style="width:36px;height:36px;border-radius:50%;background:${cfg.color};color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">${cfg.ico}</div>
-        <div>
-          <div style="font-size:12px;font-weight:800;color:${cfg.color}">${x.canal}</div>
-          <div style="font-size:18px;font-weight:900;color:${cfg.color};line-height:1">${x.ca.toLocaleString('fr-FR')} €</div>
-          <div style="font-size:11px;color:var(--t3)">${pct}% du CA · ${x.livrees} livraisons</div>
-        </div>
-      </div>`;
-    }).join('')}</div>`;
-
-  // ── Recommandations stratégiques ──
-  const recos = [];
-  if (canaux.length > 0) {
-    const top = canaux[0];
-    recos.push({ico:'🏆', type:'success', titre:'Canal dominant : '+top.canal, msg:'Représente '+Math.round(top.ca/Math.max(caTotal,1)*100)+'% de votre CA. Continuez à y investir — votre moteur principal.'});
+  return out;
+}
+async function tdbCharger(P, cle) {
+  if (TDB_ETAT.enCours === cle) return; TDB_ETAT.enCours = cle;
+  var per = function (du, au) { return '&statut=neq.annul%C3%A9&or=(and(date_livraison.gte.' + du + ',date_livraison.lte.' + au + '),and(date_commande.gte.' + du + ',date_commande.lte.' + au + '))'; };
+  try {
+    var lots = await Promise.all([tdbLire(per(P.du, P.au)), tdbLire(per(P.pdu, P.pau)),
+      P.mode === 'mois' ? Promise.resolve([]) : tdbLire('&statut=eq.livr%C3%A9&date_livraison=gte.' + P.moisDu + '&date_livraison=lte.' + P.moisAu)]);
+    var vu = {}, lignes = [];
+    lots.forEach(function (l) { l.forEach(function (c) { if (!vu[c.id]) { vu[c.id] = 1; lignes.push(tdbLigne(c)); } }); });
+    TDB_ETAT.lignes = lignes; TDB_ETAT.erreur = '';
+  } catch (e) { TDB_ETAT.lignes = null; TDB_ETAT.erreur = String(e && e.message || e); }
+  TDB_ETAT.cle = cle; TDB_ETAT.at = Date.now(); TDB_ETAT.enCours = '';
+  tdbRendre();
+}
+function tdbAller(p) {
+  if (p === 'zones') { var z = document.querySelector('.ni[data-p="zones"]'); if (z) navVers('zones', z); return; }
+  goTo(p, document.querySelector('.ni[data-p="' + p + '"]'));
+}
+function tdbZoneDe(adresse) {
+  if (typeof zones !== 'undefined' && !zones.length && typeof ZONES_IDF_DEFAUT !== 'undefined') zones = ZONES_IDF_DEFAUT;
+  return getZoneFromAdresse(adresse);
+}
+function tdbRendre() {
+  var el = document.getElementById('tdb-contenu'); if (!el || !role || role === 'livreur') return;
+  var sel = document.getElementById('dash-periode'), mode = (sel && sel.value) || 'jour', P = tdbPeriodes(mode);
+  var td = document.getElementById('tdb-date'); if (td) td.textContent = P.date;
+  var tt = document.getElementById('tdb-titre'); if (tt) tt.textContent = P.titre;
+  var admin = role === 'admin', lignes, note = '';
+  var locales = function () { return (Array.isArray(commandes) ? commandes : []).map(tdbLigne); };
+  if (tdbLocalComplet()) lignes = locales();
+  else {
+    var cle = mode + ':' + P.du + ':' + P.pdu + ':' + P.pau;
+    var frais = TDB_ETAT.cle === cle && Date.now() - TDB_ETAT.at < 60000;
+    if (!frais && TDB_ETAT.enCours !== cle) tdbCharger(P, cle);
+    if (TDB_ETAT.cle === cle && TDB_ETAT.lignes) lignes = TDB_ETAT.lignes;
+    else { lignes = locales(); note = TDB_ETAT.cle === cle && TDB_ETAT.erreur ? 'Lecture de la base impossible : chiffres calculés sur les ' + lignes.length + ' commandes chargées dans l’appli (peut-être incomplets).' : 'Mise à jour depuis la base…'; }
   }
-  const faibleTaux = canaux.filter(x=>x.cmds>=3&&(x.livrees/x.cmds)<0.6);
-  if (faibleTaux.length) {
-    recos.push({ico:'⚠️', type:'warn', titre:'Taux livraison faible : '+faibleTaux[0].canal, msg:'Moins de 60% de livraisons confirmées. Verifiez la qualite des leads de ce canal.'});
-  }
-  const nonExploites = ['TikTok Shop','Instagram Shop','Google Shopping','ManoMano'].filter(c=>!canaux.find(x=>x.canal===c&&x.ca>0));
-  if (nonExploites.length) {
-    recos.push({ico:'🚀', type:'info', titre:'Canaux à développer', msg:nonExploites.slice(0,3).join(', ')+' — pas encore actifs. Fort potentiel dans le secteur literie.'});
-  }
-  const sansCanalCmds = cmdsFiltered.filter(c=>!c.origine&&c.statut==='livré').length;
-  if (sansCanalCmds > 0) {
-    recos.push({ico:'📝', type:'warn', titre:sansCanalCmds+' commande(s) sans canal renseigné', msg:'Pensez a renseigner l origine pour affiner votre analyse. Ces ventes ne sont pas comptabilisees.'});
-  }
-  if (canaux.length >= 3) {
-    const avg = caTotal/canaux.filter(x=>x.ca>0).length;
-    const fort = canaux.filter(x=>x.ca>avg*1.5).map(x=>x.canal);
-    if (fort.length) recos.push({ico:'📈', type:'success', titre:'Sur-performance', msg:fort.join(', ')+' génèrent '+Math.round(fort.reduce((s,n)=>{const x=canaux.find(c=>c.canal===n); return s+(x?x.ca:0);},0)/caTotal*100)+'% du CA. Augmentez votre presence sur ces plateformes.'});
-  }
-
-  const recoColors = {success:'var(--gl)',warn:'var(--ol)',info:'var(--bl)'};
-  const recoIcoBg  = {success:'var(--green)',warn:'var(--orange)',info:'var(--blue)'};
-  document.getElementById('dash-canal-reco-content').innerHTML = recos.length
-    ? recos.map(r=>`<div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;background:${recoColors[r.type]||'var(--bg)'};border-radius:var(--r);margin-bottom:8px">
-        <div style="width:32px;height:32px;border-radius:50%;background:${recoIcoBg[r.type]||'#888'};color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">${r.ico}</div>
-        <div><div style="font-size:13px;font-weight:700;margin-bottom:3px">${r.titre}</div><div style="font-size:12px;color:var(--t2);line-height:1.5">${r.msg}</div></div>
-      </div>`).join('')
-    : '<div style="padding:12px;color:var(--t3);font-size:13px">Ajoutez des commandes avec leur canal de vente pour obtenir des recommandations.</div>';
+  if (admin && !TDB_ETAT.revientsDemandes && typeof arrChargerRevients === 'function') { TDB_ETAT.revientsDemandes = true; arrChargerRevients().then(function () { tdbRendre(); }); }
+  var revients = admin && typeof ARR_ETAT !== 'undefined' ? ARR_ETAT.revients : {};
+  el.innerHTML = tdbHtml({ P: P, admin: admin, note: note,
+    cur: tdbChiffres(lignes, P.du, P.au), prev: tdbChiffres(lignes, P.pdu, P.pau),
+    zones: tdbTopZones(lignes, P.moisDu, P.moisAu, tdbZoneDe, 5), livreurs: tdbLivreurs(lignes, P.du, P.au),
+    stock: tdbStock(typeof produits !== 'undefined' ? produits : [], revients, admin) });
+}
+// TDB-FIN
+// Commandes récentes (collaboratrice : sans la colonne Montant)
+function tdbRecentes() {
+  var recEl = document.getElementById('dash-recent'); if (!recEl) return;
+  var A = role === 'admin', recent = (commandes || []).slice(0, 8);
+  recEl.innerHTML = '<table><thead><tr><th>Client</th><th>Produit</th>' + (A ? '<th>Montant</th>' : '') + '<th>Canal</th><th>Livreur</th><th>Statut</th></tr></thead><tbody>' +
+    recent.map(function (c) {
+      return '<tr onclick="ouvrirCmd(\'' + c.id + '\')" style="cursor:pointer"><td><div class="td-m">' + c.client + '</div><div class="td-s">' + c.tel + '</div></td>' +
+        '<td style="font-size:12px">' + c.produit + '</td>' + (A ? '<td><strong>' + c.prix + ' €</strong></td>' : '') +
+        '<td>' + (c.origine ? origineBadge(c.origine) : '<span style="color:var(--t3);font-size:11px">—</span>') + '</td>' +
+        '<td style="font-size:12px">' + (c.livreur || (c.transporteur === 'GLS' ? '<span style="font-weight:800;color:var(--od)">GLS</span>' : '—')) + '</td>' +
+        '<td>' + stBdg(c.statut) + '</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+// Analyse par canal de vente (administrateur), repliée sous le tableau de bord
+function tdbCanaux() {
+  var d = document.getElementById('tdb-canaux'); if (!d) return;
+  d.style.display = role === 'admin' ? '' : 'none';
+  if (role === 'admin') renderCanauxVente();
 }
 
 // ════════════════════════════════════════
@@ -15559,6 +15537,8 @@ function notifUpdateBadge() {
     badge.textContent = unread;
     badge.style.display = unread > 0 ? '' : 'none';
   }
+  var bp = document.getElementById('plus-nav-badge'); // v7.5.137 : Notifications est rangé dans « Plus »
+  if (bp) { bp.textContent = unread; bp.style.display = (unread > 0 && badge && badge.closest && badge.closest('#nav-plus')) ? '' : 'none'; }
 }
 
 // Ajouter notification auto depuis autres modules
@@ -17012,17 +16992,7 @@ function renderZoneBadge(adresse) {
     'padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700">' + z.nom + '</span>';
 }
 
-function renderZoneStats() {
-  var el = document.getElementById('zones-stats');
-  if (!el) return;
-
-  // Si pas de zones chargées — grouper par département directement
-  if (!commandes.length) {
-    el.innerHTML = '<div style="color:var(--t3);text-align:center;padding:20px">Aucune commande</div>';
-    return;
-  }
-  // Zones IDF complètes + Province
-  var ZONES_IDF = [
+var ZONES_IDF_DEFAUT = [
     {id:'z75', nom:'Paris (75)',              codes_postaux:'75', couleur:'#185FA5'},
     {id:'z77', nom:'Seine-et-Marne (77)',     codes_postaux:'77', couleur:'#BA7517'},
     {id:'z78', nom:'Yvelines (78)',           codes_postaux:'78', couleur:'#534AB7'},
@@ -17032,7 +17002,19 @@ function renderZoneStats() {
     {id:'z94', nom:'Val-de-Marne (94)',       codes_postaux:'94', couleur:'#00B294'},
     {id:"z95", nom:"Val-d'Oise (95)", codes_postaux:"95", couleur:"#E31E24"},
     {id:'zprovince', nom:'Province',          codes_postaux:'01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,21,22,23,24,25,26,27,28,29,2A,2B,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,76,79,80,81,82,83,84,85,86,87,88,89,90,971,972,973,974', couleur:'#888780'},
-  ];
+];
+
+function renderZoneStats() {
+  var el = document.getElementById('zones-stats');
+  if (!el) return;
+
+  // Si pas de zones chargées — grouper par département directement
+  if (!commandes.length) {
+    el.innerHTML = '<div style="color:var(--t3);text-align:center;padding:20px">Aucune commande</div>';
+    return;
+  }
+  // Zones IDF complètes + Province (v7.5.137 : liste partagée avec le tableau de bord)
+  var ZONES_IDF = ZONES_IDF_DEFAUT;
   if (!zones.length) zones = ZONES_IDF;
 
   var stats = {};
@@ -17397,7 +17379,7 @@ function initDarkMode() {
   } catch (e) {}
 }
 // Icônes trait du menu latéral (repli : l'emoji d'origine si la page n'a pas d'icône dédiée)
-var ICD_NAV = { dashboard:'tableau', sante:'sante', commandes:'colis', tournees:'route', livreur:'camion', suivi:'liste', gps:'lieu', notifs:'cloche', optim:'boussole', finance:'caisse', stock:'colis', camion:'camion', pins:'reglages' };
+var ICD_NAV = { dashboard:'tableau', sante:'sante', commandes:'colis', tournees:'route', livreur:'camion', suivi:'liste', gps:'lieu', notifs:'cloche', optim:'boussole', finance:'caisse', stock:'colis', camion:'camion', pins:'reglages', zones:'carte' };
 function icdNav(n) { var k = n && ICD_NAV[n.p]; return k ? '<i class="icd icd-' + k + '"></i>' : ((n && n.i) || ''); }
 // Sélecteur segmenté de la période du tableau de bord : pilote le menu d'origine (#dash-periode), puis renderDash()
 function segDashPeriode(v) {

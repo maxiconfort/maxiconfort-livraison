@@ -200,7 +200,7 @@ function nouveauBac(opts) {
   B = nouveauBac({ role: 'livreur' }); await B.bac.stkChargerArrivage();
   test('livreur : ni revient ni stock entrant demandés', B.appels.length === 0);
   test('colonne « Revient HT » masquée hors administrateur', extraireFonction('function stkApplyRoleVisibility()').includes("const voitRevient = role === 'admin';"));
-  test('écran Arrivages : administrateur seulement (menu et page)', /admin:\{[\s\S]*?\{p:'arrivages',i:'🚢',l:'Arrivages'\}[\s\S]*?collab:\{/.test(html) && !/collab:\{[\s\S]*?livreur:\{[\s\S]*?\{p:'arrivages'/.test(html.slice(html.indexOf('collab:{'), html.indexOf('function buildUI'))) && extraireFonction('async function arrInit()').includes("if (role !== 'admin')"));
+  test('écran Arrivages : administrateur seulement (v7.5.137 : page hors menu, bascule Inventaire / Arrivages de la page Stock réservée à l’admin)', /admin:\{[\s\S]*?cachees:\['sante','arrivages'\][\s\S]*?collab:\{/.test(html) && html.includes("s.style.display = role==='admin' ? '' : 'none'") && !/collab:\{[\s\S]*?livreur:\{[\s\S]*?\{p:'arrivages'/.test(html.slice(html.indexOf('collab:{'), html.indexOf('function buildUI'))) && extraireFonction('async function arrInit()').includes("if (role !== 'admin')"));
 
   console.log('\n8. TAUX DE CHANGE DÉFINITIF ET MARGES PASSÉES');
   const rec = sql.slice(sql.indexOf('create or replace function public.recalculer_revient_arrivage'), sql.indexOf('-- 7. Stock ENTRANT'));

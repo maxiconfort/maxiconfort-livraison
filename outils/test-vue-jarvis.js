@@ -90,6 +90,23 @@ test('aucune écriture dans le bloc', !/sbSave|rpcPin|fetch\(|sessionEcrire|loca
 }
 test('v7.5.128 : enregistrer l’ordre — une fois par tournée en 2 min, seulement sur l’ordre déjà calculé de CETTE tournée', /Date\.now\(\) - deja < 120000/.test(html) && /optimTourneeId === lo\[0\]\.id && typeof optimStops/.test(html) && /optimCalculeFini === lo\[0\]\.id/.test(html) && /optimCalculeFini = optimTourneeId;/.test(html) && /async function optimCharger\(\) \{\n  optimCalculeFini = null;/.test(html) && !/optimLancer\(\)/.test(html.slice(html.indexOf('// JVUE-DEBUT'), html.indexOf('// JVUE-FIN'))));
 test('v7.5.128 : plus aucun caractère invisible « retour arrière » dans l’appli (code postal de l’optimiseur)', !/\x08/.test(html) && /a\.match\(\/\\b\(75\|77/.test(html));
+{ // v7.5.137 (menus allégés) : Santé société n'est plus dans le menu, mais reste joignable par l'ancre pour l'administrateur
+  console.log('\n2 ter. PAGES RANGÉES DANS « PLUS » OU HORS MENU (v7.5.137)');
+  const k = html.indexOf('const ROLES = {'), fin = html.indexOf('\nfunction buildUI', k);
+  const br = { commandes: [] }; vm.createContext(br); vm.runInContext(html.slice(k, fin).replace('const ROLES', 'var ROLES'), br);
+  b.ROLES = br.ROLES;
+  test('page:sante : admin → Santé ouverte (hors menu)', JSON.stringify(lancer('#jarvis=page:sante', 'admin', [{ id: '#1' }])) === JSON.stringify(['fermer', 'goTo:sante']));
+  test('page:sante : collab → rien (pas son menu)', JSON.stringify(lancer('#jarvis=page:sante', 'collab', [{ id: '#1' }])) === JSON.stringify(['fermer']));
+  test('page:gps : collab → rien (réservée à l’admin)', JSON.stringify(lancer('#jarvis=page:gps', 'collab', [{ id: '#1' }])) === JSON.stringify(['fermer']));
+  const pagesDe = (r) => (br.ROLES[r].nav || []).concat(br.ROLES[r].plus || []).filter((n) => n.p).map((n) => n.p).concat(br.ROLES[r].cachees || []);
+  test('toutes les pages acceptées par l’ancre restent joignables par l’admin', b.JVUE_PAGES.every((x) => pagesDe('admin').includes(x)), b.JVUE_PAGES.filter((x) => !pagesDe('admin').includes(x)));
+  test('collab : ses pages d’avant toujours dans son menu ou « Plus »', ['dashboard', 'commandes', 'tournees', 'suivi', 'notifs', 'optim', 'stock'].every((x) => pagesDe('collab').includes(x)));
+  test('les entrées de « Plus » sont de vrais .ni[data-p] (trouvés par l’ancre même repliés)', /function navItemHtml\(n\) \{[\s\S]*?'<div class="ni" data-p="' \+ n\.p/.test(html));
+  // rubrique dans « Plus » : le sélecteur trouve l'entrée → ouverte comme avant
+  const avant = b.document.querySelector; b.document.querySelector = (q) => (q === '.ni[data-p="suivi"]' ? { id: 'nav-suivi' } : null);
+  test('page:suivi (rangée dans « Plus ») : ouverte', JSON.stringify(lancer('#jarvis=page:suivi', 'admin', [{ id: '#1' }])) === JSON.stringify(['fermer', 'goTo:suivi']));
+  b.document.querySelector = avant; delete b.ROLES;
+}
 console.log('\n3. MISE EN LIGNE');
 test('CACHE_VERSION augmentée (v7-5-128 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(2[89]|[3-9]\d)'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
