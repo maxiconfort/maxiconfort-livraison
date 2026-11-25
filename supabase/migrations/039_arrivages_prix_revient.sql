@@ -397,20 +397,25 @@ end $$;
 -- 6. Taux de change définitif (ADMINISTRATEUR, une seule fois par arrivage)
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 -- revient d'une ligne = FOB × taux + frais d'import répartis uniformément sur les quantités attendues.
--- Arrivage en attente : seules les lignes changent. Arrivage reçu : lignes + revient des produits + historique (une ligne de
--- correction par produit, la ligne provisoire est reliée, jamais modifiée). Les commandes ne sont jamais touchées.
--- Produit qui a reçu un AUTRE lot depuis cet arrivage : RECALCUL EN CHAÎNE. Le revient du produit est recalculé lot après lot,
--- à partir du lot corrigé, avec les lignes d'historique EFFECTIVES des lots suivants (non remplacées : leur revient de lot,
--- leur quantité et leur stock d'avant), dans l'ordre de réception. Les lignes d'historique de ces lots suivants gardent leurs
--- valeurs d'époque (ajout seul) ; la réponse indique, par produit, le nombre de lots suivants recalculés. Le revient reste
--- provisoire tant qu'un lot de la chaîne l'est encore.
+-- Arrivage en attente : seules les lignes changent. Arrivage reçu : lignes + revient des produits + historique.
+-- Revient du produit : REJOUÉ DEPUIS LE DÉPART (revue Codex) — tous les lots du produit (lignes 'arrivage' de l'historique),
+-- dans l'ordre de RÉCEPTION (arrivages.recu_le, puis id de l'arrivage), chacun avec son revient EFFECTIF (sa correction de taux
+-- si elle existe, sinon son revient d'origine ; pour l'arrivage corrigé ici : le nouveau revient), sa quantité REÇUE et le stock
+-- réel enregistré juste avant sa réception (stock_avant), en partant de la valorisation d'avant le tout premier lot.
+-- Le résultat ne dépend donc ni de l'ordre des corrections, ni d'une valeur intermédiaire périmée, ni du stock courant.
+-- Provisoire : un lot jamais corrigé reste provisoire ; le revient du produit l'est si un lot rejoué qu'il intègre l'est
+-- (interne.revient_provisoire_apres ; un lot reçu sur un stock nul repart de son seul revient).
+-- Historique jamais réécrit : UNE ligne de correction ('recalcul_taux') pour le lot de cet arrivage, reliée à l'original
+-- (remplace_par) ; les autres lots ne changent pas de revient et gardent leurs lignes telles quelles.
 -- Verrous dans le même ordre que valider_reception_arrivage : arrivage → produits → produits_revient, avant toute lecture.
+-- Les commandes ne sont jamais touchées.
 create or replace function public.recalculer_revient_arrivage(p_arrivage_id bigint, p_nouveau_taux numeric) returns json
 language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
 declare
   a public.arrivages%rowtype; l record; h record; x record;
-  v_total integer; v_frais_u numeric; v_rev numeric; v_corrige numeric; v_prov boolean; v_cur numeric; v_chaine integer;
-  v_id bigint; v_res jsonb := '[]'::jsonb;
+  v_total integer; v_frais_u numeric; v_rev numeric; v_id bigint; v_res jsonb := '[]'::jsonb;
+  v_cur numeric; v_prov boolean; v_premier boolean; v_nb integer;
+  v_h_avant numeric; v_h_prov_avant boolean; v_h_apres numeric; v_h_prov_apres boolean;
 begin
   if (select public.session_role()) is distinct from 'admin' then
     return json_build_object('ok', false, 'erreur', 'session_admin_requise');
@@ -438,27 +443,37 @@ begin
       select * into h from public.prix_revient_historique
        where arrivage_id = a.id and produit_id = l.produit_id and source = 'arrivage' and remplace_par is null;
       if found then
-        v_corrige := interne.revient_apres(h.methode, h.stock_avant, h.revient_moyen_avant, h.quantite, v_rev);
-        v_prov := interne.revient_provisoire_apres(h.methode, h.stock_avant, h.revient_moyen_avant, h.quantite, coalesce(h.moyen_avant_provisoire, false), false);
+        -- rejeu de TOUS les lots du produit, dans l'ordre de réception, revient effectif de chaque lot
+        v_cur := null; v_prov := false; v_premier := true; v_nb := 0;
+        for x in
+          select o.id, o.arrivage_id, o.methode, o.stock_avant, o.quantite, o.revient_moyen_avant, o.moyen_avant_provisoire,
+                 case when o.arrivage_id = a.id then v_rev else coalesce(c.revient_ht, o.revient_ht) end as revient_effectif,
+                 case when o.arrivage_id = a.id then false when c.id is not null then c.provisoire else o.provisoire end as provisoire_effectif
+            from public.prix_revient_historique o
+            join public.arrivages ar on ar.id = o.arrivage_id
+            left join public.prix_revient_historique c on c.id = o.remplace_par
+           where o.produit_id = l.produit_id and o.source = 'arrivage'
+           order by ar.recu_le nulls last, ar.id, o.id
+        loop
+          if v_premier then  -- valorisation d'avant le tout premier lot de l'historique
+            v_cur := x.revient_moyen_avant; v_prov := coalesce(x.moyen_avant_provisoire, false); v_premier := false;
+          end if;
+          if x.arrivage_id = a.id then v_h_avant := v_cur; v_h_prov_avant := v_prov; end if;
+          v_prov := interne.revient_provisoire_apres(x.methode, x.stock_avant, v_cur, x.quantite, v_prov, x.provisoire_effectif);
+          v_cur := interne.revient_apres(x.methode, x.stock_avant, v_cur, x.quantite, x.revient_effectif);
+          if x.arrivage_id = a.id then v_h_apres := v_cur; v_h_prov_apres := v_prov; end if;
+          v_nb := v_nb + 1;
+        end loop;
         insert into public.prix_revient_historique (produit_id, revient_ht, quantite, stock_avant, revient_moyen_avant, revient_moyen_apres,
             methode, source, arrivage_id, provisoire, moyen_avant_provisoire, moyen_apres_provisoire, corrige_id, cree_par)
-          values (l.produit_id, v_rev, h.quantite, h.stock_avant, h.revient_moyen_avant, v_corrige, h.methode, 'recalcul_taux', a.id, false,
-            h.moyen_avant_provisoire, v_prov, h.id, 'admin')
+          values (l.produit_id, v_rev, h.quantite, h.stock_avant, v_h_avant, v_h_apres, h.methode, 'recalcul_taux', a.id, false,
+            v_h_prov_avant, v_h_prov_apres, h.id, 'admin')
           returning id into v_id;
         update public.prix_revient_historique set remplace_par = v_id where id = h.id;
-        -- chaîne : lots reçus APRÈS celui-ci, lignes effectives seulement, dans l'ordre
-        v_cur := v_corrige; v_chaine := 0;
-        for x in select * from public.prix_revient_historique
-                  where produit_id = l.produit_id and id > h.id and remplace_par is null and arrivage_id is distinct from a.id
-                  order by id loop
-          v_prov := interne.revient_provisoire_apres(x.methode, x.stock_avant, v_cur, x.quantite, v_prov, x.provisoire);
-          v_cur := interne.revient_apres(x.methode, x.stock_avant, v_cur, x.quantite, x.revient_ht);
-          v_chaine := v_chaine + 1;
-        end loop;
         update public.produits_revient set prix_revient_ht = v_cur, provisoire = v_prov, maj_at = now(), maj_par = 'admin'
          where produit_id = l.produit_id;
-        v_res := v_res || jsonb_build_object('produit_id', l.produit_id, 'revient_lot', v_rev, 'revient_apres_lot', v_corrige,
-          'lots_suivants_recalcules', v_chaine, 'revient_produit', v_cur, 'revient_provisoire', v_prov);
+        v_res := v_res || jsonb_build_object('produit_id', l.produit_id, 'revient_lot', v_rev, 'lots_rejoues', v_nb,
+          'revient_produit', v_cur, 'revient_provisoire', v_prov);
       end if;
     else
       v_res := v_res || jsonb_build_object('produit_id', l.produit_id, 'revient_lot', v_rev);

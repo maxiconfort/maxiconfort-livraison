@@ -207,24 +207,59 @@ function nouveauBac(opts) {
   test('recalcul : revient = FOB × nouveau taux + frais répartis sur les quantités attendues', rec.includes('v_frais_u := a.frais_import_ht / v_total;') && rec.includes('round(l.fob_unitaire * p_nouveau_taux + v_frais_u, 4)'));
   test('recalcul : une seule fois (taux ensuite définitif)', rec.includes("if not a.taux_provisoire then return json_build_object('ok', false, 'erreur', 'taux_deja_definitif')") && rec.includes('taux_provisoire = false'));
   test('recalcul : l\'historique provisoire est RELIÉ à une ligne de correction, jamais réécrit', rec.includes("'recalcul_taux'") && rec.includes('update public.prix_revient_historique set remplace_par = v_id where id = h.id'));
-  test('recalcul : plus de refus sec, RECALCUL EN CHAÎNE des lots reçus ensuite (revue Codex P2)', !rec.includes('RECALCUL IMPOSSIBLE')
-    && rec.includes('where produit_id = l.produit_id and id > h.id and remplace_par is null and arrivage_id is distinct from a.id')
-    && rec.includes('v_cur := interne.revient_apres(x.methode, x.stock_avant, v_cur, x.quantite, x.revient_ht);') && rec.includes("'lots_suivants_recalcules', v_chaine"));
-  // simulation de la chaîne avec le calcul de l'appli (même formule que la base) : corriger le lot 1 après la réception du lot 2
-  // donne le même revient que si le lot 1 avait été reçu directement au bon taux.
+  test('recalcul : REJEU depuis le départ de TOUS les lots du produit, ordre de RÉCEPTION, revient effectif (revue Codex P2)',
+    rec.includes('order by ar.recu_le nulls last, ar.id, o.id') && rec.includes('left join public.prix_revient_historique c on c.id = o.remplace_par')
+    && rec.includes("where o.produit_id = l.produit_id and o.source = 'arrivage'")
+    && rec.includes('case when o.arrivage_id = a.id then v_rev else coalesce(c.revient_ht, o.revient_ht) end as revient_effectif')
+    && rec.includes('v_cur := interne.revient_apres(x.methode, x.stock_avant, v_cur, x.quantite, x.revient_effectif);')
+    && !rec.includes('id > h.id') && !rec.includes('RECALCUL IMPOSSIBLE'));
+  test('recalcul : départ = valorisation d\'avant le tout premier lot ; quantités reçues et stock enregistré, jamais le stock courant',
+    rec.includes('v_cur := x.revient_moyen_avant; v_prov := coalesce(x.moyen_avant_provisoire, false); v_premier := false;') && !/from public\.produits p?\s*where id = l\.produit_id/.test(rec) && !rec.includes('p.stock'));
+  // ----- MODÈLE du rejeu (même algorithme que la base), calcul de référence = arrNouveauRevient de l'appli -----
   const N = bac.arrNouveauRevient;
-  const lot1prov = 50, lot1def = 52, lot2 = 60;                       // revients fictifs
-  const apres1 = N('CUMP', 10, 40, 30, lot1prov), apres2 = N('CUMP', 25, apres1, 20, lot2); // 10 en stock à 40 ; 30 reçus ; vendu 15 ; 20 reçus
-  const corrige1 = N('CUMP', 10, 40, 30, lot1def), chaine = N('CUMP', 25, corrige1, 20, lot2);
-  const direct = N('CUMP', 25, N('CUMP', 10, 40, 30, lot1def), 20, lot2);
-  test('chaîne : lot 1 corrigé puis lot 2 rejoué = calcul direct au bon taux', chaine === direct && chaine !== apres2, { apres2, chaine, direct });
+  const provApres = (m, st, ravant, q, pav, plot) => (q <= 0 ? pav : (m === 'DERNIER_PRIX' || ravant == null || st <= 0) ? plot : (plot || pav));
+  function modele() {
+    const hist = [], arr = {}; let cur = null, prov = false, idh = 0;
+    return {
+      recevoir(a, recuLe, stockAvant, q, rev) { arr[a] = { recuLe, prov: true };
+        const r = { id: ++idh, a, source: 'arrivage', st: stockAvant, q, rev, prov: true, moyAv: cur, moyAvProv: prov, remplace: null };
+        prov = provApres('CUMP', stockAvant, cur, q, prov, true); cur = N('CUMP', stockAvant, cur, q, rev); hist.push(r); },
+      finaliser(a, revDef) {
+        const h = hist.find(x => x.a === a && x.source === 'arrivage' && x.remplace === null);
+        const lots = hist.filter(x => x.source === 'arrivage').sort((x, y) => arr[x.a].recuLe - arr[y.a].recuLe || (x.a < y.a ? -1 : 1) || x.id - y.id);
+        let c = null, p = false, premier = true;
+        for (const x of lots) {
+          const corr = x.remplace ? hist.find(y => y.id === x.remplace) : null;
+          const revEff = x.a === a ? revDef : (corr ? corr.rev : x.rev), provEff = x.a === a ? false : (corr ? corr.prov : x.prov);
+          if (premier) { c = x.moyAv; p = x.moyAvProv; premier = false; }
+          p = provApres('CUMP', x.st, c, x.q, p, provEff); c = N('CUMP', x.st, c, x.q, revEff);
+        }
+        const corr = { id: ++idh, a, source: 'recalcul_taux', rev: revDef, prov: false, remplace: null }; hist.push(corr); h.remplace = corr.id;
+        cur = c; prov = p; arr[a].prov = false; },
+      get revient() { return cur; }, get provisoire() { return prov; }, hist };
+  }
+  // scénario Codex 2 : A 10 à 100 puis B 10 à 200 (stock nul au départ) ; A finalisé à 120, B à 220 → (10×120 + 10×220) / 20 = 170
+  let M = modele(); M.recevoir('A', 1, 0, 10, 100); M.recevoir('B', 2, 10, 10, 200); M.finaliser('A', 120); M.finaliser('B', 220);
+  test('scénario Codex : A 100→120, B →220, 10 + 10 ⇒ 170, plus provisoire', M.revient === 170 && M.provisoire === false, { r: M.revient, p: M.provisoire });
+  M = modele(); M.recevoir('A', 1, 0, 10, 100); M.recevoir('B', 2, 10, 10, 200); M.finaliser('B', 220); M.finaliser('A', 120);
+  test('même scénario, corrections dans l\'autre ordre ⇒ 170 aussi', M.revient === 170 && M.provisoire === false, M.revient);
+  // scénario Codex 1 : A, B, C reçus ; B puis A finalisés ; C encore provisoire
+  const directABC = N('CUMP', 20, N('CUMP', 10, N('CUMP', 0, null, 10, 110), 10, 210), 10, 300);
+  M = modele(); M.recevoir('A', 1, 0, 10, 100); M.recevoir('B', 2, 10, 10, 200); M.recevoir('C', 3, 20, 10, 300); M.finaliser('B', 210); M.finaliser('A', 110);
+  test('scénario Codex : A, B, C ; B puis A finalisés = calcul direct (A 110, B 210, C 300)', M.revient === directABC, { r: M.revient, directABC });
+  test('scénario Codex : C jamais finalisé ⇒ revient encore provisoire', M.provisoire === true);
+  M.finaliser('C', 310);
+  test('puis C finalisé ⇒ calcul direct au bon taux, plus provisoire', M.revient === N('CUMP', 20, N('CUMP', 10, N('CUMP', 0, null, 10, 110), 10, 210), 10, 310) && M.provisoire === false, M.revient);
+  M = modele(); M.recevoir('A', 1, 0, 10, 100); M.recevoir('B', 2, 4, 10, 200); M.finaliser('A', 120);
+  test('ventes entre deux lots : poids = stock enregistré à la réception (4), pas le stock courant', M.revient === N('CUMP', 4, 120, 10, 200) && M.provisoire === true, M.revient);
+  test('historique jamais réécrit : une ligne de correction par lot finalisé, reliée à l\'original', M.hist.filter(x => x.source === 'recalcul_taux').length === 1 && M.hist.find(x => x.a === 'A' && x.source === 'arrivage').remplace !== null);
   console.log('\n8 bis. REVIENT PROVISOIRE, STOCK_ENTREES, ORDRE DES VERROUS (revue Codex P2)');
   test('CUMP qui intègre un revient précédent provisoire = provisoire (lot OU ancien)', sql.includes("else coalesce(p_prov_lot, false) or coalesce(p_prov_avant, false)")
     && sql.includes('v_prov_apres := interne.revient_provisoire_apres(v_methode, v_stock_avant, v_rev_avant, v_rec, v_prov_avant, a.taux_provisoire);')
     && sql.includes('values (l.produit_id, v_rev_apres, v_methode, v_prov_apres, now(), \'admin\')'));
   test('revient du lot seul (pas de stock / revient inconnu / dernier prix) : provisoire selon le lot', sql.includes("when p_methode = 'DERNIER_PRIX' or p_revient_avant is null or coalesce(p_stock_avant, 0) <= 0 then coalesce(p_prov_lot, false)"));
   test('historique : état provisoire du revient avant / après conservé (sert au recalcul en chaîne)', sql.includes('moyen_avant_provisoire boolean,') && sql.includes('moyen_apres_provisoire boolean not null default false,')
-    && rec.includes('v_prov := interne.revient_provisoire_apres(x.methode, x.stock_avant, v_cur, x.quantite, v_prov, x.provisoire);'));
+    && rec.includes('v_prov := interne.revient_provisoire_apres(x.methode, x.stock_avant, v_cur, x.quantite, v_prov, x.provisoire_effectif);'));
   const val = sql.slice(sql.indexOf('create or replace function public.valider_reception_arrivage'), sql.indexOf('create or replace function public.recalculer_revient_arrivage'));
   test('réception : entrée écrite aussi dans stock_entrees (motif « arrivage:<réf> »), reçus bons seulement',
     /insert into public\.stock_entrees \(date_entree, app_produit_id, quantite, motif, cmd_id, saisi_par, remarque\)\s+values \(now\(\), l\.produit_id, v_rec, 'arrivage:' \|\| a\.reference_interne/.test(val)
