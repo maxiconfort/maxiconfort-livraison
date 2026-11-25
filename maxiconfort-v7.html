@@ -2138,7 +2138,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
           <tr>
             <th>Produit</th><th>Catégorie</th><th>Dimensions</th>
             <th>Prix TTC</th><th>Stock dispo</th><th>Seuil alerte</th>
-            <th>Livré (mois)</th><th id="th-valeur-stock">Valeur stock</th><th>Statut</th><th></th>
+            <th>Livré (mois)</th><th id="th-valeur-stock">Valeur stock</th><th id="th-revient">Revient HT</th><th>Statut</th><th></th>
           </tr>
         </thead>
         <tbody id="stk-tbody"></tbody>
@@ -2148,6 +2148,15 @@ Maxiconfort — {TEL_CONTACT}</textarea>
     <!-- Mouvements récents -->
     <div class="sh" style="margin-top:20px"><div class="st">Mouvements de stock récents</div></div>
     <div class="tw" id="stk-mouvements"></div>
+  </div>
+
+  <!-- v7.5.136 : PAGE ARRIVAGES (administrateur) : réception d'un conteneur, prix de revient -->
+  <div class="page" id="p-arrivages">
+    <div class="sh">
+      <div class="st">🚢 Arrivages</div>
+      <div class="sd">Conteneurs attendus et réception (reçu / endommagé / manquant)</div>
+    </div>
+    <div id="arr-contenu"></div>
   </div>
 
   <!-- v7.1.7 : PAGE CONTENU CAMION -->
@@ -3899,6 +3908,288 @@ function aoLigne(prod, opt) {
 }
 function aoBadge() { return '<span style="display:inline-block;margin-top:3px;padding:2px 7px;border-radius:4px;background:#b91c1c;color:#fff;font-size:10px;font-weight:800;letter-spacing:.3px">' + AO_LIBELLE + '</span>'; }
 // AO-FIN
+
+// ARR-DEBUT — v7.5.136 (25/11/2026) : ARRIVAGES (réception d'un conteneur), PRIX DE REVIENT, PRODUITS NON VENDABLES.
+// Base : migration 039 (tables arrivages, arrivage_lignes, produits_revient, prix_revient_historique ; fonctions
+// valider_reception_arrivage, recalculer_revient_arrivage, stock_entrant ; colonnes produits.vendable / prix_vente_defini /
+// reference_interne / caracteristiques). AUCUN prix d'achat dans ce fichier (dépôt public) : les revients sont lus dans la base,
+// par l'administrateur seulement (la collaboratrice et le livreur n'y ont pas accès, même en lisant la base directement).
+// * Un produit « non vendable » (nouvelle référence dont le prix de vente n'est pas encore fixé, ou retirée de la vente) n'est
+//   proposé dans aucune nouvelle commande, ni le SAV, ni un ensemble ; la base refuse aussi une telle ligne.
+// * Le stock ENTRANT (arrivages en attente) est affiché à part : il n'est jamais compté dans le stock disponible.
+// * La réception est validée UNE seule fois, par l'administrateur, dans la base (tout ou rien) : seules les quantités reçues en
+//   bon état entrent dans le stock ; le prix de revient du produit est recalculé selon ARR_METHODE_VALORISATION.
+var ARR_METHODE_VALORISATION = 'CUMP'; // CHOIX À VALIDER PAR BORHEN — doit rester égal à interne.arrivage_methode_valorisation() (migration 039)
+var ARR_METHODES = { CUMP: 'Coût moyen pondéré', DERNIER_PRIX: 'Dernier prix d\'achat' };
+var VEN_LIBELLE = 'Prix à définir — non vendable';
+// Lecture d'une ligne de la table produits. Avant la migration 039, les colonnes n'existent pas : tout reste vendable.
+function venDepuisBase(r) {
+  return { vendable: !(r && r.vendable === false), prixDefini: !!r && r.prix_vente_defini !== false && r.prix != null };
+}
+// Un produit est vendable s'il n'est ni marqué non vendable, ni sans prix de vente, ni un ensemble dont un composant l'est.
+function venEst(p, liste) {
+  if (!p) return false;
+  if (p.vendable === false || p.prixDefini === false) return false;
+  if (p.composants && Array.isArray(p.composants) && p.composants.length) {
+    for (var i = 0; i < p.composants.length; i++) {
+      var c = p.composants[i] || {};
+      var cp = (liste || []).find(function(x) { return x.id === c.id; });
+      if (cp && (cp.vendable === false || cp.prixDefini === false)) return false;
+    }
+  }
+  return true;
+}
+function venSelectionnables(liste) { return (liste || []).filter(function(p) { return venEst(p, liste); }); }
+// Lignes d'une commande à refuser : produit du catalogue non vendable, NOUVEAU dans la commande (une commande déjà prise qui le
+// contient reste modifiable, sa ligne est figée comme une ancienne offre). Même règle que la base (commandes_produit_vendable_garde).
+function venLignesRefusees(lignes, liste, ancienne) {
+  var avant = ((ancienne && ancienne.lignes) || []).map(function(l) { return l && l.produitId; });
+  var refus = [];
+  (lignes || []).forEach(function(l) {
+    if (!l || !l.produitId || avant.indexOf(l.produitId) > -1) return;
+    var p = (liste || []).find(function(x) { return x.id === l.produitId; });
+    if (p && !venEst(p, liste) && refus.indexOf(p.nom) < 0) refus.push(p.nom);
+  });
+  return refus;
+}
+function venBadge() { return '<span style="display:inline-block;margin-top:3px;padding:2px 7px;border-radius:4px;background:var(--ol,#fff4e5);color:var(--od,#9a3412);border:1px solid var(--orange,#f59e0b);font-size:10px;font-weight:800;letter-spacing:.3px">' + VEN_LIBELLE + '</span>'; }
+
+// Revient HT du produit après une réception (même calcul que interne.revient_apres de la migration 039).
+function arrNouveauRevient(methode, stockAvant, revientAvant, qte, revientLot) {
+  var q = parseInt(qte) || 0;
+  if (q <= 0) return revientAvant == null ? null : revientAvant;
+  var lot = Math.round(parseFloat(revientLot) * 10000) / 10000;
+  var s = parseInt(stockAvant) || 0;
+  if (methode === 'DERNIER_PRIX' || revientAvant == null || isNaN(parseFloat(revientAvant)) || s <= 0) return lot;
+  return Math.round((s * parseFloat(revientAvant) + q * parseFloat(revientLot)) / (s + q) * 10000) / 10000;
+}
+function arrPeutValider(a) { return !!(a && a.statut === 'en_attente'); }
+function arrEntier(v) { var s = String(v == null ? '' : v).trim(); return /^\d+$/.test(s) ? parseInt(s, 10) : NaN; }
+// Contrôle de la saisie : une saisie par ligne, entiers ≥ 0, reçu + endommagé + manquant = attendu.
+function arrControleSaisies(lignes, saisies) {
+  var erreurs = [], tot = { attendu: 0, recue: 0, endommagee: 0, manquante: 0 };
+  (lignes || []).forEach(function(l) {
+    var s = (saisies || {})[l.id] || {};
+    var r = arrEntier(s.recue), e = arrEntier(s.endommagee), m = arrEntier(s.manquante);
+    tot.attendu += l.quantite_attendue || 0;
+    if (isNaN(r) || isNaN(e) || isNaN(m)) { erreurs.push({ ligne: l.id, texte: 'nombres entiers (0 ou plus) obligatoires' }); return; }
+    tot.recue += r; tot.endommagee += e; tot.manquante += m;
+    if (r + e + m !== l.quantite_attendue) erreurs.push({ ligne: l.id, texte: 'reçu ' + r + ' + endommagé ' + e + ' + manquant ' + m + ' = ' + (r + e + m) + ' au lieu de ' + l.quantite_attendue });
+  });
+  if (!(lignes || []).length) erreurs.push({ ligne: null, texte: 'arrivage sans ligne' });
+  return { ok: erreurs.length === 0, erreurs: erreurs, total: tot };
+}
+// Aperçu (avant validation) : stock et revient de chaque produit après la réception. Les endommagés et manquants n'entrent pas.
+function arrApercu(lignes, saisies, liste, revients, methode) {
+  return (lignes || []).map(function(l) {
+    var p = (liste || []).find(function(x) { return x.id === l.produit_id; });
+    var r = arrEntier(((saisies || {})[l.id] || {}).recue); if (isNaN(r)) r = 0;
+    var sAv = p ? (parseInt(p.stock) || 0) : 0;
+    var rv = (revients || {})[l.produit_id];
+    var rAv = (rv && rv.prix_revient_ht != null) ? parseFloat(rv.prix_revient_ht) : null;
+    return { ligne: l.id, produit_id: l.produit_id, stockAvant: sAv, stockApres: sAv + r, revientAvant: rAv,
+      revientApres: arrNouveauRevient(methode || ARR_METHODE_VALORISATION, sAv, rAv, r, l.revient_unitaire_ht) };
+  });
+}
+function arrCorpsValidation(arrivageId, lignes, saisies) {
+  return { p_arrivage_id: arrivageId, p_lignes: (lignes || []).map(function(l) {
+    var s = (saisies || {})[l.id] || {};
+    return { ligne_id: l.id, recue: arrEntier(s.recue), endommagee: arrEntier(s.endommagee), manquante: arrEntier(s.manquante) };
+  }) };
+}
+// Saisie de départ : tout reçu en bon état (l'administrateur corrige ce qui manque ou est abîmé).
+function arrSaisiesInitiales(lignes) {
+  var s = {}; (lignes || []).forEach(function(l) { s[l.id] = { recue: l.quantite_attendue, endommagee: 0, manquante: 0 }; }); return s;
+}
+// Stock entrant par produit (réponse de stock_entrant : une ligne par produit des arrivages EN ATTENTE).
+function arrStockEntrant(rows) {
+  var m = {}; (rows || []).forEach(function(r) { if (r && r.produit_id) m[r.produit_id] = (m[r.produit_id] || 0) + (parseInt(r.quantite) || 0); }); return m;
+}
+function arrStatutLibelle(st) { return st === 'recu' ? 'Reçu' : st === 'annule' ? 'Annulé' : 'En attente de réception'; }
+function arrEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function arrRevientTexte(v) { return (v == null || isNaN(parseFloat(v))) ? '—' : paiEur(v); }
+
+// ── Données et écran (administrateur) ──
+var ARR_ETAT = { arrivages: [], lignes: [], revients: {}, entrant: {}, ouvert: null, saisies: {}, envoi: false, erreur: '' };
+function arrEntetes() { return { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }; }
+async function arrChargerRevients() {
+  if (role !== 'admin') { ARR_ETAT.revients = {}; return; }
+  try {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/produits_revient?select=produit_id,prix_revient_ht,provisoire,methode', { headers: arrEntetes() });
+    if (!r.ok) return;
+    var m = {}; (await r.json() || []).forEach(function(x) { m[x.produit_id] = x; }); ARR_ETAT.revients = m;
+  } catch(e) {}
+}
+async function arrChargerEntrant() {
+  if (role !== 'admin' && role !== 'collab') { ARR_ETAT.entrant = {}; return; }
+  try {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/stock_entrant', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()), body: '{}' });
+    if (!r.ok) return;
+    ARR_ETAT.entrant = arrStockEntrant(await r.json());
+  } catch(e) {}
+}
+// Inventaire : stock entrant (admin + collaboratrice) et revient (admin), puis nouvel affichage.
+async function stkChargerArrivage() {
+  await Promise.all([arrChargerEntrant(), arrChargerRevients()]);
+  if (typeof stkRender === 'function') { stkRender(); stkApplyRoleVisibility(); }
+}
+async function arrCharger() {
+  ARR_ETAT.erreur = '';
+  try {
+    var b = SUPABASE_URL + '/rest/v1/';
+    var rs = await Promise.all([
+      fetch(b + 'arrivages?select=*&order=cree_at.desc', { headers: arrEntetes() }),
+      fetch(b + 'arrivage_lignes?select=*&order=id.asc', { headers: arrEntetes() })
+    ]);
+    if (!rs[0].ok || !rs[1].ok) { ARR_ETAT.erreur = 'Lecture impossible (HTTP ' + rs[0].status + ' / ' + rs[1].status + ') — la migration 039 est-elle appliquée ?'; return; }
+    ARR_ETAT.arrivages = await rs[0].json() || [];
+    ARR_ETAT.lignes = await rs[1].json() || [];
+    await arrChargerRevients();
+  } catch(e) { ARR_ETAT.erreur = 'Pas de connexion'; }
+}
+async function arrInit() {
+  var el = document.getElementById('arr-contenu'); if (!el) return;
+  if (role !== 'admin') { el.innerHTML = '<div class="card" style="padding:18px">Réservé à l\'administrateur.</div>'; return; }
+  el.innerHTML = '<div style="padding:18px;color:var(--t3)">Chargement des arrivages…</div>';
+  await arrCharger();
+  arrRendre();
+}
+function arrLignesDe(id) { return ARR_ETAT.lignes.filter(function(l) { return l.arrivage_id === id; }).sort(function(a, b) { return a.id - b.id; }); }
+function arrProduit(id) { return produits.find(function(p) { return p.id === id; }); }
+function arrOuvrir(id) {
+  ARR_ETAT.ouvert = id; ARR_ETAT.envoi = false;
+  var a = ARR_ETAT.arrivages.find(function(x) { return x.id === id; });
+  var ls = arrLignesDe(id);
+  ARR_ETAT.saisies = (a && a.statut === 'en_attente') ? arrSaisiesInitiales(ls)
+    : ls.reduce(function(m, l) { m[l.id] = { recue: l.quantite_recue, endommagee: l.quantite_endommagee, manquante: l.quantite_manquante }; return m; }, {});
+  arrRendre();
+}
+function arrFermer() { ARR_ETAT.ouvert = null; arrRendre(); }
+function arrBadgeStatut(st) {
+  var c = st === 'recu' ? 'b-green' : st === 'annule' ? 'b-gray' : 'b-orange';
+  return '<span class="bdg ' + c + '">' + arrStatutLibelle(st) + '</span>';
+}
+function arrRendre() {
+  var el = document.getElementById('arr-contenu'); if (!el) return;
+  if (ARR_ETAT.erreur) { el.innerHTML = '<div class="card" style="padding:18px;color:var(--rd)">' + arrEsc(ARR_ETAT.erreur) + '</div>'; return; }
+  var a = ARR_ETAT.ouvert != null ? ARR_ETAT.arrivages.find(function(x) { return x.id === ARR_ETAT.ouvert; }) : null;
+  if (!a) {
+    el.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px;flex-wrap:wrap">' +
+      '<div style="font-size:13px;color:var(--t2)">Méthode de valorisation du stock : <strong>' + arrEsc(ARR_METHODES[ARR_METHODE_VALORISATION] || ARR_METHODE_VALORISATION) + '</strong></div>' +
+      '<button class="btn" onclick="arrInit()">🔄 Actualiser</button></div>' +
+      (ARR_ETAT.arrivages.length ? ARR_ETAT.arrivages.map(function(x) {
+        var ls = arrLignesDe(x.id), att = ls.reduce(function(s, l) { return s + (l.quantite_attendue || 0); }, 0);
+        var rec = ls.reduce(function(s, l) { return s + (l.quantite_recue || 0); }, 0);
+        return '<div class="card" style="padding:14px 16px;margin-bottom:10px;cursor:pointer" onclick="arrOuvrir(' + x.id + ')">' +
+          '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">' +
+            '<div><div style="font-size:15px;font-weight:800">🚢 ' + arrEsc(x.reference_interne) + '</div>' +
+            '<div style="font-size:12px;color:var(--t3)">' + arrEsc(x.navire || '') + (x.date_facture ? ' · facture du ' + arrEsc(x.date_facture) : '') + '</div></div>' +
+            '<div style="text-align:right">' + arrBadgeStatut(x.statut) + (x.taux_provisoire ? ' <span class="bdg b-orange">Taux provisoire</span>' : '') +
+            '<div style="font-size:12px;color:var(--t2);margin-top:4px">' + ls.length + ' références · ' + att + ' attendus' + (x.statut === 'recu' ? ' · ' + rec + ' reçus en bon état' : '') + '</div></div>' +
+          '</div></div>';
+      }).join('') : '<div class="card" style="padding:18px;color:var(--t3)">Aucun arrivage enregistré.</div>');
+    return;
+  }
+  var ls = arrLignesDe(a.id), attente = arrPeutValider(a);
+  var ap = arrApercu(ls, ARR_ETAT.saisies, produits, ARR_ETAT.revients, ARR_METHODE_VALORISATION);
+  var champ = function(l, k) {
+    var v = (ARR_ETAT.saisies[l.id] || {})[k];
+    if (!attente) return '<td style="text-align:center;font-weight:700">' + (v == null ? '—' : arrEsc(v)) + '</td>';
+    return '<td style="text-align:center"><input type="number" min="0" step="1" value="' + arrEsc(v) + '" oninput="arrSaisie(' + l.id + ',\'' + k + '\',this.value)" style="width:64px;padding:6px;border:1px solid var(--brd2);border-radius:6px;text-align:center;font-weight:700;background:var(--card);color:var(--text);font-family:var(--font)"></td>';
+  };
+  el.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">' +
+      '<button class="btn" onclick="arrFermer()">← Tous les arrivages</button>' +
+      '<div>' + arrBadgeStatut(a.statut) + (a.taux_provisoire ? ' <span class="bdg b-orange">Revient provisoire (taux de change à confirmer)</span>' : '') + '</div></div>' +
+    '<div class="card" style="padding:14px 16px;margin-bottom:12px"><div style="font-size:17px;font-weight:800">🚢 ' + arrEsc(a.reference_interne) + '</div>' +
+      '<div style="font-size:12px;color:var(--t3);margin-top:3px">' + arrEsc(a.navire || '') + (a.recu_le ? ' · reçu le ' + arrEsc(String(a.recu_le).slice(0, 10)) : '') + '</div></div>' +
+    '<div class="tw"><table><thead><tr><th>Produit</th><th style="text-align:center">Attendu</th><th>Revient HT (lot)</th>' +
+      '<th style="text-align:center">Reçu bon état</th><th style="text-align:center">Endommagé</th><th style="text-align:center">Manquant</th>' +
+      '<th>' + (attente ? 'Stock : actuel → après' : 'Stock ajouté') + '</th><th>' + (attente ? 'Revient produit : actuel → après' : 'Revient produit actuel') + '</th><th></th></tr></thead><tbody>' +
+    ls.map(function(l, i) {
+      var p = arrProduit(l.produit_id), x = ap[i];
+      return '<tr><td><div class="td-m">' + arrEsc(p ? p.nom : l.produit_id) + '</div>' +
+        (p && p.refInterne ? '<div class="td-s">Réf. ' + arrEsc(p.refInterne) + '</div>' : '') + (p && !venEst(p, produits) ? '<div>' + venBadge() + '</div>' : '') + '</td>' +
+        '<td style="text-align:center;font-weight:700">' + l.quantite_attendue + '</td><td>' + arrRevientTexte(l.revient_unitaire_ht) + '</td>' +
+        champ(l, 'recue') + champ(l, 'endommagee') + champ(l, 'manquante') +
+        '<td id="arr-stk-' + l.id + '">' + (attente ? x.stockAvant + ' → <strong>' + x.stockApres + '</strong>' : '+' + (l.quantite_recue || 0)) + '</td>' +
+        '<td id="arr-rev-' + l.id + '">' + (attente ? arrRevientTexte(x.revientAvant) + ' → <strong>' + arrRevientTexte(x.revientApres) + '</strong>' : arrRevientTexte((ARR_ETAT.revients[l.produit_id] || {}).prix_revient_ht)) + '</td>' +
+        '<td id="arr-ok-' + l.id + '"></td></tr>';
+    }).join('') + '</tbody></table></div>' +
+    '<div id="arr-controle" style="margin:12px 0"></div>' +
+    (attente ? '<button id="arr-btn-valider" class="btn btn-p" style="width:100%;padding:14px;font-size:15px" onclick="arrValider()">✅ Valider la réception</button>' +
+      '<div style="font-size:12px;color:var(--t3);margin-top:6px">Seules les quantités reçues en bon état entrent dans le stock. La validation est définitive et ne peut être faite qu\'une fois.</div>' : '');
+  arrMajControle();
+}
+function arrSaisie(ligneId, champ, valeur) {
+  if (!ARR_ETAT.saisies[ligneId]) ARR_ETAT.saisies[ligneId] = {};
+  ARR_ETAT.saisies[ligneId][champ] = valeur;
+  arrMajControle();
+}
+function arrMajControle() {
+  var a = ARR_ETAT.arrivages.find(function(x) { return x.id === ARR_ETAT.ouvert; }); if (!a) return;
+  var ls = arrLignesDe(a.id), c = arrControleSaisies(ls, ARR_ETAT.saisies), attente = arrPeutValider(a);
+  if (attente) {
+    var ap = arrApercu(ls, ARR_ETAT.saisies, produits, ARR_ETAT.revients, ARR_METHODE_VALORISATION);
+    ls.forEach(function(l, i) {
+      var e = c.erreurs.find(function(x) { return x.ligne === l.id; });
+      var ok = document.getElementById('arr-ok-' + l.id); if (ok) ok.innerHTML = e ? '<span style="color:var(--rd);font-weight:700" title="' + arrEsc(e.texte) + '">✕</span>' : '<span style="color:var(--green)">✓</span>';
+      var st = document.getElementById('arr-stk-' + l.id); if (st) st.innerHTML = ap[i].stockAvant + ' → <strong>' + ap[i].stockApres + '</strong>';
+      var rv = document.getElementById('arr-rev-' + l.id); if (rv) rv.innerHTML = arrRevientTexte(ap[i].revientAvant) + ' → <strong>' + arrRevientTexte(ap[i].revientApres) + '</strong>';
+    });
+  }
+  var t = c.total, box = document.getElementById('arr-controle');
+  if (box) box.innerHTML = '<div style="padding:12px 14px;border-radius:var(--r);border:1px solid ' + (c.ok ? 'var(--green)' : 'var(--red)') + ';background:' + (c.ok ? 'var(--gl)' : 'var(--rl)') + '">' +
+    '<strong>' + (c.ok ? 'Contrôle OK' : 'Contrôle à corriger') + '</strong> — attendu <strong>' + t.attendu + '</strong> = reçu bon état ' + t.recue + ' + endommagé ' + t.endommagee + ' + manquant ' + t.manquante +
+    ' (total ' + (t.recue + t.endommagee + t.manquante) + ')' +
+    (c.erreurs.length ? '<ul style="margin:6px 0 0 18px;font-size:12px">' + c.erreurs.map(function(e) { var l = ls.find(function(x) { return x.id === e.ligne; }); var p = l && arrProduit(l.produit_id); return '<li>' + arrEsc((p ? p.nom : 'Arrivage') + ' : ' + e.texte) + '</li>'; }).join('') + '</ul>' : '') + '</div>';
+  var b = document.getElementById('arr-btn-valider');
+  if (b) { b.disabled = !attente || !c.ok || ARR_ETAT.envoi; b.textContent = ARR_ETAT.envoi ? '⏳ Validation en cours…' : '✅ Valider la réception'; }
+}
+async function arrValider() {
+  if (ARR_ETAT.envoi) return;
+  if (role !== 'admin') { toast('Réservé à l\'administrateur', 'err'); return; }
+  var a = ARR_ETAT.arrivages.find(function(x) { return x.id === ARR_ETAT.ouvert; });
+  if (!arrPeutValider(a)) { toast('Cet arrivage a déjà été traité', 'err'); return; }
+  var ls = arrLignesDe(a.id), c = arrControleSaisies(ls, ARR_ETAT.saisies);
+  if (!c.ok) { toast('Contrôle à corriger avant de valider', 'err'); arrMajControle(); return; }
+  var t = c.total;
+  if (!confirm('Valider la réception de ' + a.reference_interne + ' ?\n\n• ' + t.recue + ' article(s) en bon état AJOUTÉS au stock\n• ' + t.endommagee + ' endommagé(s) : NON ajoutés\n• ' + t.manquante + ' manquant(s)\n\nPrix de revient recalculé (' + (ARR_METHODES[ARR_METHODE_VALORISATION] || ARR_METHODE_VALORISATION) + ').\nCette validation est DÉFINITIVE (une seule fois).')) return;
+  ARR_ETAT.envoi = true; arrMajControle();
+  var j = null, http = 0;
+  try {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/valider_reception_arrivage', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()),
+      body: JSON.stringify(arrCorpsValidation(a.id, ls, ARR_ETAT.saisies)) });
+    http = r.status; try { j = await r.json(); } catch(e) {}
+  } catch(e) { j = { ok: false, erreur: 'pas de connexion' }; }
+  if (!j || j.ok !== true) {
+    ARR_ETAT.envoi = false;
+    var msg = (j && (j.erreur || j.message)) || ('HTTP ' + http);
+    toast('Réception NON validée : ' + msg, 'err');
+    if (j && j.erreur === 'arrivage_deja_traite') { await arrCharger(); arrRendre(); return; }
+    arrMajControle(); return;
+  }
+  toast('✅ Réception validée : ' + (j.total_recu || 0) + ' article(s) ajoutés au stock', 'ok');
+  a.statut = 'recu'; ARR_ETAT.envoi = false; // bouton retiré immédiatement (statut « recu »), même avant le rechargement
+  arrRendre();
+  await arrCharger(); arrRendre();
+  try { await sbLoadProduits(); } catch(e) {}
+}
+// Fixer le prix de vente d'une nouvelle référence (administrateur) : prix > 0, puis vendable. La base le refuse à tout autre rôle.
+async function venDefinirPrix(p, prix) {
+  if (!p || role !== 'admin' || !(prix > 0)) return false;
+  try {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/produits?id=eq.' + encodeURIComponent(p.id), { method: 'PATCH',
+      headers: Object.assign({ 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }, arrEntetes()),
+      body: JSON.stringify({ prix: prix, prix_vente_defini: true, vendable: true, updated_at: new Date().toISOString() }) });
+    if (!r.ok) { toast('Prix NON enregistré (HTTP ' + r.status + ')', 'err'); return false; }
+    p.prix = prix; p.prixDefini = true; p.vendable = true;
+    toast('Prix de vente fixé : ' + prix + ' € — produit vendable', 'ok');
+    if (typeof stkRender === 'function') stkRender(); buildProduitOptions();
+    return true;
+  } catch(e) { toast('Prix NON enregistré : pas de connexion', 'err'); return false; }
+}
+// ARR-FIN
 
 async function sbSaveCommande(cmd) {
   // Toujours tenter Supabase d'abord, queue seulement si fetch échoue
@@ -5704,6 +5995,7 @@ const ROLES = {
       {p:'finance',i:'💰',l:'Encaissements'},
       {s:'Stock'},
       {p:'stock',i:'📦',l:'Inventaire stock'},
+      {p:'arrivages',i:'🚢',l:'Arrivages'},
       {p:'camion',i:'🚛',l:'Contenu camions'},
       {s:'Paramètres'},
       {p:'pins',i:'⚙️',l:'Paramètres'},
@@ -5887,7 +6179,7 @@ function goTo(p, el) {
   document.getElementById('p-'+p).classList.add('on');
   document.querySelectorAll('.ni').forEach(x=>x.classList.remove('on','cv','lv'));
   if(el){el.classList.add('on');if(role==='collab')el.classList.add('cv');if(role==='livreur')el.classList.add('lv');}
-  const titles={dashboard:'Tableau de bord',commandes:'Commandes',tournees:'Tournées',livreur:'Ma tournée',finance:'Encaissements',pins:'Gestion des PINs',camion:'Contenu camion',suivi:'Suivi logistique',sante:'Santé société'};
+  const titles={dashboard:'Tableau de bord',commandes:'Commandes',tournees:'Tournées',livreur:'Ma tournée',finance:'Encaissements',pins:'Gestion des PINs',camion:'Contenu camion',suivi:'Suivi logistique',sante:'Santé société',arrivages:'Arrivages'};
   var _gpage_title=document.getElementById('page-title'); if(_gpage_title) _gpage_title.textContent=titles[p]||p;
 
   if(p==='commandes') {
@@ -5910,7 +6202,8 @@ function goTo(p, el) {
   }
   if(p==='livreur') renderLivreur();
   if(p==='finance') { renderFinance(); finRender(); }
-  if(p==='stock') { stkRender(); stkApplyRoleVisibility(); }
+  if(p==='stock') { stkRender(); stkApplyRoleVisibility(); stkChargerArrivage(); } // v7.5.136 : stock entrant + revient (admin)
+  if(p==='arrivages') arrInit(); // v7.5.136
   if(p==='camion') { renderCamionContenu(); }
   if(p==='gps') { gpsInit(); setTimeout(function(){ gpsChargerPositions(); }, 800); }
   if(p==='optim') optimInit();
@@ -8190,7 +8483,8 @@ async function marketplaceReset() {
 function buildProduitOptions() {
   const cats = {};
   // v7.5.118 : une ancienne offre n'est plus proposée
-  aoSelectionnables(produits).forEach(p => { if (!cats[p.cat]) cats[p.cat]=[]; cats[p.cat].push(p); });
+  // v7.5.136 : un produit non vendable (prix de vente à définir) n'est plus proposé non plus
+  aoSelectionnables(produits).filter(p => venEst(p, produits)).forEach(p => { if (!cats[p.cat]) cats[p.cat]=[]; cats[p.cat].push(p); });
   const icons = {'Canapé':'🛋','Ensemble':'🛏','Matelas':'🧸','Lit coffre':'🗄','Lit':'🏠','Lit superposé':'🪜','Sommier':'🛏'};
   return Object.entries(cats).map(([cat,ps]) =>
     '<optgroup label="'+(icons[cat]||'📦')+' '+cat+'">'+
@@ -8423,14 +8717,15 @@ function ouvrirEditionCommande(id) {
         var prod = produits.find(function(p){ return p.nom === l.produit; })
                 || produits.find(function(p){ return normNom(p.nom) === ln; });
         // v7.5.118 : ancienne offre -> ligne figée (même produit, même prix que sur la commande), jamais proposée ailleurs
-        if (!prod && l.produitId) prod = produits.find(function(p){ return p.id === l.produitId && aoEst(p); });
-        var ligneAo = !!(prod && aoEst(prod));
+        if (!prod && l.produitId) prod = produits.find(function(p){ return p.id === l.produitId && (aoEst(p) || !venEst(p, produits)); });
+        // v7.5.136 : produit devenu non vendable -> ligne figée aussi (sinon la ligne disparaîtrait de la liste de choix)
+        var ligneAo = !!(prod && (aoEst(prod) || !venEst(prod, produits)));
         if (prod && !ligneAo) sel.value = prod.id;
         else {
           // Produit non trouvé dans catalogue — afficher quand même le nom
           var opt = document.createElement('option');
           opt.value = ligneAo ? prod.id : '_custom_' + l.produit;
-          opt.textContent = l.produit + ' — ' + l.prixUnit + ' €' + (ligneAo ? ' · ANCIENNE OFFRE, NE PLUS UTILISER' : '');
+          opt.textContent = l.produit + ' — ' + l.prixUnit + ' €' + (ligneAo ? (aoEst(prod) ? ' · ANCIENNE OFFRE, NE PLUS UTILISER' : ' · NON VENDABLE (prix à définir)') : '');
           opt.selected = true;
           if (ligneAo) opt.dataset.ancienne = '1';
           // v7.4.0 : stocker le prixUnit dans le dataset pour recalcTotal et getLignesData
@@ -8451,7 +8746,7 @@ function ouvrirEditionCommande(id) {
     ajouterLigne();
     var sel2 = document.querySelector('#lignes-produits > div:last-child .ligne-produit');
     if (sel2) {
-      var prod2 = aoSelectionnables(produits).find(function(p){ return c.produit && c.produit.includes(p.nom.split(' ')[0]); });
+      var prod2 = aoSelectionnables(produits).find(function(p){ return venEst(p, produits) && c.produit && c.produit.includes(p.nom.split(' ')[0]); });
       if (prod2) sel2.value = prod2.id;
     }
     var prixEl = document.querySelector('#lignes-produits > div:last-child .ligne-prix');
@@ -8486,6 +8781,9 @@ function saveCmd() {
   const isSavCmd = !!(existingCmd && (((existingCmd.origine || '').indexOf('SAV') === 0) || (String(existingCmd.id).indexOf('#SAV') === 0)));
   const lignes = getLignesData();
   if (!lignes.length && !isSavCmd) { toast('Ajoutez au moins un produit','err'); return; }
+  // v7.5.136 : un produit non vendable (prix de vente à définir) ne peut pas être AJOUTÉ à une commande (la base le refuse aussi)
+  var _venRefus = isSavCmd ? [] : venLignesRefusees(lignes, produits, existingCmd);
+  if (_venRefus.length) { toast('Produit non vendable (prix de vente à définir) : ' + _venRefus.join(', '), 'err'); return; }
   const soustotal = lignes.reduce((s,l)=>s+l.sousTotal,0);
   const remGV = parseFloat(document.getElementById('f-remise-val').value)||0;
   const remGT = document.getElementById('f-remise-type').value;
@@ -13521,7 +13819,7 @@ function composRenderList() {
   var optionsHtml = produits
     .filter(function(x){ return x.actif !== false && x.cat !== 'Ensemble' && x.cat !== 'Service'; })
     .sort(function(a,b){ return (a.cat||'').localeCompare(b.cat||'') || (a.nom||'').localeCompare(b.nom||''); })
-    .map(function(x){ return '<option value="'+x.id+'">['+x.cat+'] '+x.nom+' (stk '+x.stock+')</option>'; })
+    .map(function(x){ return '<option value="'+x.id+'">['+x.cat+'] '+x.nom+' (stk '+x.stock+')'+(venEst(x, produits) ? '' : ' — NON VENDABLE : l’ensemble ne sera pas vendable')+'</option>'; })
     .join('');
 
   el.innerHTML = window._composBuffer.map(function(c, idx){
@@ -13819,13 +14117,15 @@ function stkRender() {
       <td>
         <div class="td-m">${p.nom}</div>
         ${aoEst(p)?`<div>${aoBadge()}</div>`:''}
+        ${!venEst(p, produits)?`<div>${venBadge()}</div>`:''}
+        ${p.refInterne?`<div class="td-s">Réf. ${arrEsc(p.refInterne)}</div>`:''}
         ${estEnsemble?`<div class="td-s" style="color:var(--violet);font-weight:600">📦 Ensemble · dispo composants : <b>${dispoCompo}</b></div><div class="td-s" style="font-size:10px">${composantsLabel}</div>`:''}
         ${p.remarque?`<div class="td-s">💡 ${p.remarque}</div>`:''}
         ${p.empl?`<div class="td-s">📍 ${p.empl}</div>`:''}
       </td>
       <td><span class="bdg b-blue">${p.cat}</span></td>
       <td style="font-size:12px;color:var(--t2)">${p.dim||'—'}</td>
-      <td><strong>${p.prix} €</strong></td>
+      <td>${p.prixDefini===false?'<span style="font-size:12px;font-weight:700;color:var(--od)">Prix à définir</span>':`<strong>${p.prix} €</strong>`}</td>
       <td>
         <div style="display:flex;align-items:center;gap:8px">
           <div style="flex:1;max-width:60px">
@@ -13835,10 +14135,12 @@ function stkRender() {
             </div>
           </div>
         </div>
+        ${(ARR_ETAT.entrant[p.id]||0)>0?`<div class="td-s" style="color:var(--blue);font-weight:700" title="Arrivage en attente de réception : pas encore dans le stock disponible">🚢 +${ARR_ETAT.entrant[p.id]} entrant</div>`:''}
       </td>
       <td style="font-size:13px">${p.seuil}</td>
       <td style="font-size:13px;font-weight:600;color:var(--blue)">${livreMois}</td>
       <td class="td-valeur-stock" style="font-size:13px;font-weight:600;color:var(--t2)">${(p.cat==='Service' || (p.composants && p.composants.length>0)) ? '—' : valeur.toLocaleString('fr-FR') + ' €'}</td>
+      <td class="td-revient" style="font-size:13px;color:var(--t2)">${role==='admin' && ARR_ETAT.revients[p.id] ? arrRevientTexte(ARR_ETAT.revients[p.id].prix_revient_ht) + (ARR_ETAT.revients[p.id].provisoire ? ' <span title="Taux de change provisoire">*</span>' : '') : '—'}</td>
       <td>${statutHtml}</td>
       <td>
         <div style="display:flex;gap:5px">
@@ -13849,7 +14151,7 @@ function stkRender() {
         </div>
       </td>
     </tr>`;
-  }).join('') || '<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--t3)">Aucun produit trouvé</td></tr>';
+  }).join('') || '<tr><td colspan="11" style="text-align:center;padding:20px;color:var(--t3)">Aucun produit trouvé</td></tr>';
 
   // Valeur totale — exclut les Services et les Ensembles avec composants
   // (les composants sont deja comptes dans leur ligne propre, ne pas double-compter)
@@ -13864,6 +14166,13 @@ function stkRender() {
   foot.id = 'stk-footer';
   foot.style.cssText = 'margin-top:8px;text-align:right;font-size:13px;color:var(--t2)';
   foot.innerHTML = role!=='collab' ? `Valeur totale du stock : <strong style="color:var(--green);font-size:15px">${valTotale.toLocaleString('fr-FR')} €</strong>` : '';
+  // v7.5.136 : stock ENTRANT (arrivages en attente, jamais compté dans le disponible) et valeur au prix de revient (admin)
+  var _entTot = Object.keys(ARR_ETAT.entrant).reduce(function(s, k){ return s + (ARR_ETAT.entrant[k] || 0); }, 0);
+  if (_entTot > 0) foot.innerHTML += `<div style="margin-top:4px">🚢 Stock entrant (arrivages en attente de réception) : <strong style="color:var(--blue)">${_entTot}</strong> unité(s) — non compté dans le stock disponible</div>`;
+  if (role === 'admin') {
+    var _valRev = produits.reduce(function(s, p){ var r = ARR_ETAT.revients[p.id]; return (r && p.cat !== 'Service' && !(p.composants && p.composants.length)) ? s + Math.max(0, p.stock || 0) * (parseFloat(r.prix_revient_ht) || 0) : s; }, 0);
+    if (_valRev > 0) foot.innerHTML += `<div style="margin-top:4px">Valeur au prix de revient HT (produits dont le revient est connu, ${arrEsc(ARR_METHODES[ARR_METHODE_VALORISATION] || '')}) : <strong>${paiEur(_valRev)}</strong></div>`;
+  }
   document.getElementById('stk-table-wrap').after(foot);
 
   // Mouvements
@@ -13900,6 +14209,11 @@ function stkApplyRoleVisibility() {
   document.querySelectorAll('.td-valeur-stock').forEach(td => {
     td.style.display = isCollab ? 'none' : '';
   });
+  // v7.5.136 : prix de revient = administrateur seulement
+  const voitRevient = role === 'admin';
+  const thRev = document.getElementById('th-revient');
+  if (thRev) thRev.style.display = voitRevient ? '' : 'none';
+  document.querySelectorAll('.td-revient').forEach(td => { td.style.display = voitRevient ? '' : 'none'; });
 }
 
 function stkFilter() { stkRender(); }
@@ -13911,6 +14225,7 @@ function ouvrirAjoutProduit() {
 
   ['p-nom','p-dim','p-empl','p-remarque'].forEach(id => document.getElementById(id).value = '');
   ['p-prix','p-poids','p-stock','p-seuil'].forEach(id => document.getElementById(id).value = '');
+  var _pPrixN = document.getElementById('p-prix'); if (_pPrixN) { _pPrixN.disabled = false; _pPrixN.placeholder = '169'; } // v7.5.136
   document.getElementById('p-cat').value = 'Matelas';
   openModal('m-produit');
 }
@@ -13924,7 +14239,10 @@ function editerProduit(id) {
   document.getElementById('p-nom').value     = p.nom;
   document.getElementById('p-cat').value     = p.cat;
   document.getElementById('p-dim').value     = p.dim || '';
-  document.getElementById('p-prix').value    = p.prix;
+  document.getElementById('p-prix').value    = p.prixDefini === false ? '' : p.prix;
+  // v7.5.136 : prix de vente pas encore fixé : seul l'administrateur le saisit (le produit devient alors vendable)
+  var _pPrix = document.getElementById('p-prix');
+  if (_pPrix) { _pPrix.disabled = (p.prixDefini === false && role !== 'admin'); _pPrix.placeholder = p.prixDefini === false ? 'Prix à définir' : '169'; }
   document.getElementById('p-poids').value   = p.poids || '';
   document.getElementById('p-stock').value   = p.stock;
   document.getElementById('p-seuil').value   = p.seuil;
@@ -13947,6 +14265,15 @@ function sauvegarderProduit() {
     empl:    document.getElementById('p-empl').value,
     remarque:document.getElementById('p-remarque').value,
   };
+  // v7.5.136 : produit sans prix de vente : le prix ne passe que par venDefinirPrix (administrateur, confirmation)
+  var _venPrix = null;
+  if (editProduitId) {
+    const _pAvant = produits.find(x => x.id === editProduitId);
+    if (_pAvant && _pAvant.prixDefini === false) {
+      if (role === 'admin' && data.prix > 0 && confirm('Fixer le prix de vente de « ' + _pAvant.nom + ' » à ' + data.prix + ' € ?\n\nLe produit deviendra VENDABLE (commandes, ensembles).')) _venPrix = data.prix;
+      data.prix = _pAvant.prix;
+    }
+  }
   if (editProduitId) {
     const p = produits.find(x => x.id === editProduitId);
     Object.assign(p, data);
@@ -13959,7 +14286,7 @@ function sauvegarderProduit() {
   closeModal('m-produit');
   // Sync Supabase
   var savedProd = editProduitId ? produits.find(function(p){ return p.id===editProduitId; }) : produits[produits.length-1];
-  if (savedProd) sbSaveProduit(savedProd);
+  if (savedProd) sbSaveProduit(savedProd).then(function(){ if (_venPrix) venDefinirPrix(savedProd, _venPrix); });
   // localStorage fallback
   var customProds = produits.filter(function(p){ return p.id && p.id.startsWith('pr'); });
   localStorage.setItem('mx_produits_custom', JSON.stringify(customProds));
@@ -15561,7 +15888,8 @@ async function sbSaveProduit(p) {
       },
       body: JSON.stringify({
         id: p.id, nom: p.nom, cat: p.cat||'', dim: p.dim||'',
-        prix: p.prix||0, poids: p.poids||0, stock: p.stock||0,
+        prix: (p.prixDefini === false) ? null : (p.prix||0), // v7.5.136 : prix de vente pas encore fixé -> reste « à définir » (la base le garde aussi)
+        poids: p.poids||0, stock: p.stock||0,
         seuil: p.seuil||2, empl: p.empl||'', remarque: p.remarque||'',
         composants: (p.composants && Array.isArray(p.composants) && p.composants.length > 0) ? p.composants : null,
         actif: p.actif !== false, updated_at: new Date().toISOString()
@@ -15607,7 +15935,10 @@ async function sbLoadProduits() {
           empl:r.empl||'', remarque:r.remarque||'',
           composants: (r.composants && Array.isArray(r.composants)) ? r.composants : null,
           actif: r.actif !== false,
-          ancienneOffre: aoDepuisBase(r)
+          ancienneOffre: aoDepuisBase(r),
+          // v7.5.136 : vendable / prix de vente défini (migration 039 ; colonnes absentes avant = vendable), référence interne
+          vendable: venDepuisBase(r).vendable, prixDefini: venDepuisBase(r).prixDefini,
+          refInterne: r.reference_interne || '', caracteristiques: r.caracteristiques || null
         };
         if (existing > -1) produits[existing] = mapped;
         else produits.push(mapped);
@@ -15670,7 +16001,10 @@ function sbStartRealtimeProduits() {
           empl:r.empl||'', remarque:r.remarque||'',
           composants: (r.composants && Array.isArray(r.composants)) ? r.composants : null,
           actif: r.actif !== false,
-          ancienneOffre: aoDepuisBase(r)
+          ancienneOffre: aoDepuisBase(r),
+          // v7.5.136 : vendable / prix de vente défini (migration 039 ; colonnes absentes avant = vendable), référence interne
+          vendable: venDepuisBase(r).vendable, prixDefini: venDepuisBase(r).prixDefini,
+          refInterne: r.reference_interne || '', caracteristiques: r.caracteristiques || null
         };
         var idx = produits.findIndex(function(p){ return p.id === r.id; });
         if (idx > -1) produits[idx] = mapped;

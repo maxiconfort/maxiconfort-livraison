@@ -14,6 +14,9 @@
 // ════════════════════════════════════════════════════════════════════
 
 export const VERSION = 'v2';
+// v2.18 (25/11/2026, arrivage de matelas) : produit NON VENDABLE (prix de vente à définir, migration 039 : colonnes vendable /
+//   prix_vente_defini, ou ensemble dont un composant l'est) — jamais rapproché d'un nom dicté, refusé dans une nouvelle commande.
+//   LECTURE seulement (catalogueDepuisBase) ; la base refuse aussi ces lignes (déclencheur commandes_produit_vendable_garde).
 // v2.12 (11/11/2026, vidéo 21:21 « tous ceux qui sont absents aujourd'hui, tu les mets pour demain ») : déplacer une commande au
 //   statut « absent » (posé par le livreur sur l'arrêt de sa tournée) vers une AUTRE date la passe à « reporté » — sinon elle gardait
 //   « absent » dans la liste des commandes alors qu'elle est replanifiée, et serait relue le lendemain comme une absente du jour.
@@ -438,8 +441,21 @@ export function prochainNumero(ids: string[]): string {
   return '#' + (max + 1);
 }
 
-export type CatalogueProduit = { id: string; nom: string; prix: number; actif?: boolean; ancienne_offre?: boolean };
+export type CatalogueProduit = { id: string; nom: string; prix: number; actif?: boolean; ancienne_offre?: boolean; non_vendable?: boolean };
 export type Catalogue = Map<string, CatalogueProduit>;
+/** v2.18 — catalogue lu dans la table produits (select *). Avant la migration 039 les colonnes vendable / prix_vente_defini n'existent pas :
+ *  tout reste vendable. Un ensemble dont un composant est non vendable l'est aussi (un niveau, comme l'appli). Pure. */
+export function catalogueDepuisBase(rows: Record<string, any>[]): Catalogue {
+  const brut = new Map((rows || []).map((r) => [String(r.id), r]));
+  const nonVendable = (r: Record<string, any> | undefined) => !!r && (r.vendable === false || r.prix_vente_defini === false);
+  const m: Catalogue = new Map();
+  for (const r of rows || []) {
+    const compos = Array.isArray(r.composants) ? r.composants : [];
+    const nv = nonVendable(r) || compos.some((c: any) => nonVendable(brut.get(String(c && c.id))));
+    m.set(String(r.id), { id: String(r.id), nom: String(r.nom || ''), prix: Number(r.prix) || 0, actif: r.actif !== false, ancienne_offre: !!r.ancienne_offre, ...(nv ? { non_vendable: true } : {}) });
+  }
+  return m;
+}
 /** Lignes de commande prêtes à enregistrer : prix du catalogue quand le produit est connu (par identifiant ou nom exact), 0 sinon (à régler par
  *  modifier_prix). Une ancienne offre est refusée (règle du 09/10). Renvoie { lignes, erreur }. */
 /** v2.8 (10/11/2026, « go produit catalogue ») — mots d'un nom de produit : sans accent ni casse ; dimensions « 140 x 190 », « 140×190 »,
@@ -466,7 +482,7 @@ export function produitProche(dit: string, catalogue: Catalogue, sansEpaisseur =
   const present = (m: string, n: Set<string>) => n.has(m) || (/^\d{2,3}$/.test(m) && Number(m) >= 80 && [...n].some((x) => x.startsWith(m + 'x')));
   const cands: { p: CatalogueProduit; mots: string[]; surplus: number }[] = [];
   for (const p of catalogue.values()) {
-    if (p.actif === false || p.ancienne_offre) continue;
+    if (p.actif === false || p.ancienne_offre || p.non_vendable) continue; // v2.18 : non vendable jamais proposé
     const mots = motsProduit(p.nom); const n = new Set(mots);
     // relecture (majeur) : un « lit » peut aussi être un pack lit ou un ensemble lit → ils entrent dans la liste au lieu d'un choix
     const f2 = familleDe(mots); if (fam && f2 !== fam && !(fam === 'lit' && (f2 === 'pack' || f2 === 'ensemble') && n.has('lit'))) continue;
@@ -498,6 +514,7 @@ export function lignesCommande(lignes: Ligne[], catalogue: Catalogue): { lignes:
     }
     if (p && p.ancienne_offre) return { lignes: [], erreur: `« ${p.nom} » est une ancienne offre : plus vendue` };
     if (p && p.actif === false) return { lignes: [], erreur: `« ${p.nom} » n'est plus au catalogue` };
+    if (p && p.non_vendable) return { lignes: [], erreur: `« ${p.nom} » n'est pas encore vendable (prix de vente à définir)` }; // v2.18
     const pu = p ? Number(p.prix) || 0 : (typeof l.prixUnit === 'number' && l.prixUnit >= 0 ? l.prixUnit : 0);
     const q = Number(l.qte) || 1;
     out.push({ produitId: p ? p.id : null, produit: p ? p.nom : nom, qte: q, prixUnit: pu, prixBrut: pu * q, remiseLigne: 0, remiseVal: 0, remiseType: 'pct', sousTotal: pu * q });

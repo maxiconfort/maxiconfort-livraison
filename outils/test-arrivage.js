@@ -1,0 +1,203 @@
+// Banc de test « ARRIVAGES, PRIX DE REVIENT, PRODUITS NON VENDABLES » (v7.5.136 + migration 039, 25/11/2026).
+// Usage : node outils/test-arrivage.js
+// Il EXTRAIT le vrai code de maxiconfort-v7.html (bloc ARR-DEBUT … ARR-FIN, bloc AO, buildProduitOptions, sbLoadProduits) et
+// l'exécute dans un bac à sable : aucune connexion à la base, VALEURS FICTIVES uniquement (aucun prix réel dans ce dépôt public).
+// La migration SQL n'est pas exécutée ici (pas de base de test locale) : ses règles sont vérifiées sur le texte du fichier, et
+// le calcul du revient est le même des deux côtés (constante et formule comparées).
+const fs = require('fs'), path = require('path'), vm = require('vm');
+const racine = path.join(__dirname, '..');
+const html = fs.readFileSync(path.join(racine, 'maxiconfort-v7.html'), 'utf8');
+const sql = fs.readFileSync(path.join(racine, 'supabase', 'migrations', '039_arrivages_prix_revient.sql'), 'utf8');
+const sw = fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8');
+function extraireBloc(debut, fin) { const i = html.indexOf(debut), j = html.indexOf(fin, i); if (i < 0 || j < 0) throw new Error('bloc introuvable : ' + debut); return html.slice(i, j); }
+function extraireFonction(signature) { const i = html.indexOf(signature); if (i < 0) throw new Error('fonction introuvable : ' + signature);
+  let k = html.indexOf('{', i), n = 0, dansChaine = null, ech = false;
+  for (let p = k; p < html.length; p++) { const ch = html[p];
+    if (dansChaine) { if (ech) ech = false; else if (ch === '\\') ech = true; else if (ch === dansChaine) dansChaine = null; continue; }
+    if (ch === '/' && html[p + 1] === '/') { p = html.indexOf('\n', p); continue; }
+    if (ch === "'" || ch === '"' || ch === '`') { dansChaine = ch; continue; }
+    if (ch === '{') n++; else if (ch === '}') { n--; if (n === 0) return html.slice(i, p + 1); } }
+  throw new Error('accolade non refermée : ' + signature); }
+let ok = 0, ko = 0; const test = (nom, cond, det) => { if (cond) { ok++; console.log('  OK   ' + nom); } else { ko++; console.log('  ÉCHEC ' + nom + (det !== undefined ? ' — ' + JSON.stringify(det) : '')); } };
+
+// ---------- catalogue FICTIF ----------
+const catalogue = () => [
+  { id: 'pr-a', nom: 'Matelas Fictif A 140×190', cat: 'Matelas', prix: 100, stock: 10, seuil: 2 },
+  { id: 'pr-b', nom: 'Matelas Fictif B 160×200', cat: 'Matelas', prix: 120, stock: 0, seuil: 2 },
+  { id: 'pr-n', nom: 'Matelas Nouveau N 180×190', cat: 'Matelas', prix: 0, prixDefini: false, vendable: false, stock: 0, seuil: 2, refInterne: 'MC-TEST-1' },
+  { id: 'pr-s', nom: 'Sommier Fictif 140×190', cat: 'Sommier', prix: 80, stock: 5, seuil: 2 },
+  { id: 'pr-e1', nom: 'Ensemble Fictif A + Sommier', cat: 'Ensemble', prix: 200, stock: 0, seuil: 2, composants: [{ id: 'pr-a', qte: 1 }, { id: 'pr-s', qte: 1 }] },
+  { id: 'pr-e2', nom: 'Ensemble Nouveau N + Sommier', cat: 'Ensemble', prix: 260, stock: 0, seuil: 2, composants: [{ id: 'pr-n', qte: 1 }, { id: 'pr-s', qte: 1 }] },
+  { id: 'pr-retire', nom: 'Matelas Retiré R', cat: 'Matelas', prix: 90, vendable: false, stock: 3, seuil: 2 },
+];
+const arrivage = (st) => ({ id: 7, reference_interne: 'ARR-TEST-1', navire: 'Navire fictif', statut: st || 'en_attente', taux_provisoire: true });
+const lignesArr = () => [
+  { id: 71, arrivage_id: 7, produit_id: 'pr-a', quantite_attendue: 30, revient_unitaire_ht: 50 },
+  { id: 72, arrivage_id: 7, produit_id: 'pr-n', quantite_attendue: 40, revient_unitaire_ht: 70 },
+];
+function nouveauBac(opts) {
+  const o = opts || {}, appels = [], toasts = [], elts = {};
+  const el = (id) => elts[id] || (elts[id] = { id, innerHTML: '', textContent: '', disabled: false, style: {}, value: '' });
+  const bac = { console: { log() {}, warn() {} }, Math, Date, JSON, parseFloat, parseInt, String, Array, Object, Number, isNaN, encodeURIComponent, Promise, Set,
+    SUPABASE_URL: 'https://exemple.invalid', SUPABASE_KEY: 'cle-de-test', role: o.role || 'admin', produits: catalogue(), window: {},
+    document: { getElementById: el, querySelectorAll: () => [], querySelector: () => null },
+    localStorage: { setItem() {}, getItem() { return null; } },
+    confirm: () => o.confirmer !== false, toast: (m, t) => toasts.push({ m, t }), paiEur: (n) => (Math.round(n * 100) / 100) + ' €',
+    stkRender() {}, stkApplyRoleVisibility() {}, sbLoadProduits: async () => {}, sbSaveEchec() {},
+    fetch: async (url, init) => { appels.push({ url, methode: (init && init.method) || 'GET', body: init && init.body ? JSON.parse(init.body) : null });
+      const rep = o.repondre ? o.repondre(url, init) : { ok: true, status: 200, corps: [] };
+      return { ok: rep.ok, status: rep.status, json: async () => rep.corps, text: async () => JSON.stringify(rep.corps) }; } };
+  vm.createContext(bac);
+  vm.runInContext(extraireBloc('// AO-DEBUT', '// AO-FIN'), bac);
+  vm.runInContext(extraireBloc('// ARR-DEBUT', '// ARR-FIN'), bac);
+  for (const f of ['function buildProduitOptions()', 'async function sbLoadProduits()']) vm.runInContext(extraireFonction(f), bac);
+  return { bac, appels, toasts, elts };
+}
+
+(async () => {
+  console.log('\n1. VALORISATION : COÛT MOYEN PONDÉRÉ (CUMP) — CHOIX À VALIDER PAR BORHEN');
+  let { bac } = nouveauBac();
+  test('méthode retenue dans l\'appli = CUMP', bac.ARR_METHODE_VALORISATION === 'CUMP');
+  test('même méthode dans la base (interne.arrivage_methode_valorisation)', /arrivage_methode_valorisation\(\) returns text\s+language sql immutable as \$\$ select 'CUMP'::text \$\$/.test(sql));
+  test('revient inconnu avant → revient du lot', bac.arrNouveauRevient('CUMP', 10, null, 30, 50) === 50);
+  test('stock nul avant → revient du lot', bac.arrNouveauRevient('CUMP', 0, 40, 30, 50) === 50);
+  test('stock négatif avant (écart d\'inventaire) → revient du lot', bac.arrNouveauRevient('CUMP', -3, 40, 30, 50) === 50);
+  test('10 en stock à 40 + 30 reçus à 50 → (10×40 + 30×50) / 40 = 47,5', bac.arrNouveauRevient('CUMP', 10, 40, 30, 50) === 47.5, bac.arrNouveauRevient('CUMP', 10, 40, 30, 50));
+  test('arrondi à 4 décimales (1 à 10 + 2 à 11 → 10,6667)', bac.arrNouveauRevient('CUMP', 1, 10, 2, 11) === 10.6667, bac.arrNouveauRevient('CUMP', 1, 10, 2, 11));
+  test('rien reçu → revient inchangé', bac.arrNouveauRevient('CUMP', 10, 40, 0, 50) === 40);
+  test('méthode « dernier prix » (paramétrable) → revient du lot', bac.arrNouveauRevient('DERNIER_PRIX', 10, 40, 30, 50) === 50);
+  test('même formule dans la base (interne.revient_apres)', sql.includes('round((p_stock_avant * p_revient_avant + p_qte * p_revient_lot) / (p_stock_avant + p_qte), 4)')
+    && sql.includes("when p_methode = 'DERNIER_PRIX' or p_revient_avant is null or coalesce(p_stock_avant, 0) <= 0 then round(p_revient_lot, 4)"));
+
+  console.log('\n2. SAISIE DE LA RÉCEPTION : CONTRÔLE DU TOTAL, QUANTITÉS PARTIELLES');
+  const L = lignesArr();
+  let c = bac.arrControleSaisies(L, bac.arrSaisiesInitiales(L));
+  test('saisie de départ = tout reçu en bon état, contrôle OK', c.ok && c.total.recue === 70 && c.total.attendu === 70, c);
+  c = bac.arrControleSaisies(L, { 71: { recue: 27, endommagee: 2, manquante: 1 }, 72: { recue: 40, endommagee: 0, manquante: 0 } });
+  test('reçu partiel 27 + 2 endommagés + 1 manquant = 30 : accepté', c.ok && c.total.recue === 67 && c.total.endommagee === 2 && c.total.manquante === 1, c);
+  c = bac.arrControleSaisies(L, { 71: { recue: 28, endommagee: 0, manquante: 0 }, 72: { recue: 40, endommagee: 0, manquante: 0 } });
+  test('total faux (28 au lieu de 30) : refusé, ligne désignée', !c.ok && c.erreurs.length === 1 && c.erreurs[0].ligne === 71, c.erreurs);
+  for (const v of ['', 'abc', '-1', '2.5']) {
+    c = bac.arrControleSaisies(L, { 71: { recue: v, endommagee: 0, manquante: 0 }, 72: { recue: 40, endommagee: 0, manquante: 0 } });
+    test('quantité « ' + v + ' » refusée', !c.ok && c.erreurs[0].ligne === 71);
+  }
+  test('arrivage sans ligne : refusé', !bac.arrControleSaisies([], {}).ok);
+  const corps = bac.arrCorpsValidation(7, L, { 71: { recue: '27', endommagee: '2', manquante: '1' }, 72: { recue: 40, endommagee: 0, manquante: 0 } });
+  test('envoi à la base : une saisie par ligne, en nombres entiers', corps.p_arrivage_id === 7 && corps.p_lignes.length === 2 && corps.p_lignes[0].ligne_id === 71 && corps.p_lignes[0].recue === 27 && corps.p_lignes[0].endommagee === 2, corps);
+  test('base : une saisie exigée par ligne et total reçu + endommagé + manquant = attendu', sql.includes("'une_saisie_par_ligne_requise'") && sql.includes('if v_rec + v_end + v_man <> l.quantite_attendue then'));
+  test('base : contrainte de table sur le même total', sql.includes('quantite_recue + coalesce(quantite_endommagee, 0) + coalesce(quantite_manquante, 0) = quantite_attendue'));
+
+  console.log('\n3. STOCK : SEULS LES REÇUS EN BON ÉTAT ENTRENT, LES ENDOMMAGÉS NON');
+  let ap = bac.arrApercu(L, { 71: { recue: 27, endommagee: 2, manquante: 1 }, 72: { recue: 38, endommagee: 2, manquante: 0 } }, bac.produits, { 'pr-a': { prix_revient_ht: 40 } }, 'CUMP');
+  test('produit A : 10 en stock + 27 reçus bons = 37 (2 endommagés et 1 manquant non ajoutés)', ap[0].stockAvant === 10 && ap[0].stockApres === 37, ap[0]);
+  test('produit A : revient 40 → CUMP (10×40 + 27×50) / 37', ap[0].revientAvant === 40 && ap[0].revientApres === Math.round((400 + 1350) / 37 * 10000) / 10000, ap[0]);
+  test('nouveau produit N : 0 + 38 = 38, revient = celui du lot', ap[1].stockApres === 38 && ap[1].revientAvant === null && ap[1].revientApres === 70, ap[1]);
+  test('l\'aperçu ne modifie pas le stock en mémoire', bac.produits.find(p => p.id === 'pr-a').stock === 10);
+  test('base : le stock n\'augmente que des reçus bons (v_rec), jamais des endommagés', sql.includes('update public.produits set stock = coalesce(stock, 0) + v_rec') && !/stock = coalesce\(stock, 0\) \+ v_(end|man)/.test(sql));
+  test('base : une ligne mouvements_stock « entree » par produit, source = référence de l\'arrivage', /insert into public\.mouvements_stock[\s\S]{0,200}values \('entree', p\.nom, v_rec, 'arrivage:' \|\| a\.reference_interne/.test(sql));
+  test('base : historique du revient par lot écrit à la réception', /insert into public\.prix_revient_historique[\s\S]{0,300}'arrivage', a\.id, a\.taux_provisoire/.test(sql));
+
+  console.log('\n4. DOUBLE VALIDATION REFUSÉE');
+  test('arrivage en attente : validable', bac.arrPeutValider(arrivage('en_attente')) === true);
+  test('arrivage reçu : non validable', bac.arrPeutValider(arrivage('recu')) === false);
+  test('arrivage annulé : non validable', bac.arrPeutValider(arrivage('annule')) === false);
+  const fonc = sql.slice(sql.indexOf('create or replace function public.valider_reception_arrivage'), sql.indexOf('create or replace function public.recalculer_revient_arrivage'));
+  const iVerrou = fonc.indexOf('from public.arrivages where id = p_arrivage_id for update'), iStatut = fonc.indexOf("if a.statut <> 'en_attente' then"), iPremiereEcriture = fonc.indexOf('update public.');
+  test('base : verrou sur l\'arrivage, puis refus si statut ≠ en_attente, AVANT toute écriture', iVerrou > 0 && iStatut > iVerrou && iPremiereEcriture > iStatut, { iVerrou, iStatut, iPremiereEcriture });
+  test('base : l\'arrivage passe « recu » dans la même opération', fonc.includes("update public.arrivages set statut = 'recu'"));
+  test('base : réservé à une session administrateur', fonc.includes("if (select public.session_role()) is distinct from 'admin' then"));
+  // écran : deux clics (même très rapprochés) n'envoient qu'UNE validation ; après succès, le bouton disparaît
+  let B = nouveauBac({ repondre: (url) => url.includes('/rpc/valider_reception_arrivage') ? { ok: true, status: 200, corps: { ok: true, total_recu: 70 } }
+    : url.includes('/arrivages?') ? { ok: true, status: 200, corps: [arrivage('recu')] } : url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: lignesArr() } : { ok: true, status: 200, corps: [] } });
+  B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr();
+  B.bac.arrOuvrir(7);
+  const p1 = B.bac.arrValider(), p2 = B.bac.arrValider(); await Promise.all([p1, p2]);
+  const nbRpc = () => B.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage')).length;
+  test('double clic : une seule validation envoyée', nbRpc() === 1, nbRpc());
+  test('après succès : arrivage relu « recu », plus de bouton Valider', B.bac.ARR_ETAT.arrivages[0].statut === 'recu' && !B.elts['arr-contenu'].innerHTML.includes('arr-btn-valider'), B.elts['arr-contenu'].innerHTML.slice(0, 200));
+  B.bac.ARR_ETAT.arrivages = [arrivage('recu')]; await B.bac.arrValider();
+  test('nouvelle tentative sur un arrivage reçu : refusée sans appel à la base', nbRpc() === 1 && B.toasts.some(t => t.t === 'err' && /déjà été traité/.test(t.m)), B.toasts);
+  B = nouveauBac({ repondre: (url) => url.includes('/rpc/') ? { ok: true, status: 200, corps: { ok: false, erreur: 'arrivage_deja_traite', statut: 'recu' } } : { ok: true, status: 200, corps: [] } });
+  B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.arrOuvrir(7); await B.bac.arrValider();
+  test('la base refuse (validé ailleurs entre-temps) : message clair, rien n\'est compté comme reçu', B.toasts.some(t => t.t === 'err' && /NON validée : arrivage_deja_traite/.test(t.m)), B.toasts);
+  B = nouveauBac({ confirmer: false }); B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.arrOuvrir(7); await B.bac.arrValider();
+  test('sans confirmation : rien n\'est envoyé', !B.appels.some(a => a.url.includes('/rpc/')));
+  B = nouveauBac(); B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.arrOuvrir(7); B.bac.arrSaisie(71, 'recue', '29'); await B.bac.arrValider();
+  test('total faux : rien n\'est envoyé', !B.appels.some(a => a.url.includes('/rpc/')) && B.toasts.some(t => /Contrôle à corriger/.test(t.m)));
+  B = nouveauBac({ role: 'collab' }); B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.ARR_ETAT.ouvert = 7; await B.bac.arrValider();
+  test('collaboratrice : validation refusée par l\'appli (et par la base)', !B.appels.some(a => a.url.includes('/rpc/')));
+
+  console.log('\n5. PRODUIT NON VENDABLE : REFUSÉ PARTOUT');
+  ({ bac } = nouveauBac());
+  test('base → appli : prix NULL = prix à définir', bac.venDepuisBase({ prix: null }).prixDefini === false);
+  test('base → appli : vendable=false lu', bac.venDepuisBase({ prix: 10, vendable: false }).vendable === false);
+  test('base → appli : colonnes absentes (avant migration) = vendable, prix défini', (() => { const v = bac.venDepuisBase({ prix: 99 }); return v.vendable && v.prixDefini; })());
+  const opts = bac.buildProduitOptions();
+  test('nouvelle commande / SAV : le produit sans prix n\'est pas proposé', !opts.includes('value="pr-n"'), opts);
+  test('nouvelle commande : un produit retiré de la vente n\'est pas proposé', !opts.includes('value="pr-retire"'));
+  test('ensemble dont un composant est non vendable : pas proposé', !opts.includes('value="pr-e2"'));
+  test('les produits vendables restent proposés (A, B, sommier, ensemble A)', ['pr-a', 'pr-b', 'pr-s', 'pr-e1'].every(id => opts.includes('value="' + id + '"')));
+  test('venEst : ensemble avec composant non vendable = non vendable', bac.venEst(bac.produits.find(p => p.id === 'pr-e2'), bac.produits) === false && bac.venEst(bac.produits.find(p => p.id === 'pr-e1'), bac.produits) === true);
+  test('enregistrement d\'une commande : ligne nouvelle avec produit non vendable refusée', JSON.stringify(bac.venLignesRefusees([{ produitId: 'pr-a' }, { produitId: 'pr-n' }], bac.produits, null)) === JSON.stringify(['Matelas Nouveau N 180×190']));
+  test('commande déjà prise qui le contenait : reste modifiable (ligne figée)', bac.venLignesRefusees([{ produitId: 'pr-retire' }], bac.produits, { lignes: [{ produitId: 'pr-retire' }] }).length === 0);
+  test('produit hors catalogue (commande du site) : comportement inchangé', bac.venLignesRefusees([{ produitId: '_custom_X' }], bac.produits, null).length === 0);
+  const saveCmd = extraireFonction('function saveCmd()');
+  test('saveCmd applique le refus avant tout enregistrement', saveCmd.includes('venLignesRefusees(lignes, produits, existingCmd)') && saveCmd.indexOf('venLignesRefusees') < saveCmd.indexOf('paiAvancePreparer'));
+  const compo = extraireFonction('function composRenderList()');
+  test('composition d\'un ensemble : composant non vendable signalé', compo.includes('NON VENDABLE'));
+  test('stock : badge « Prix à définir — non vendable » et prix « à définir »', bac.VEN_LIBELLE === 'Prix à définir — non vendable' && extraireFonction('function stkRender()').includes('venBadge()') && extraireFonction('function stkRender()').includes("p.prixDefini===false?"));
+  const save = extraireFonction('async function sbSaveProduit(p)');
+  test('fiche produit : un produit sans prix n\'est jamais renvoyé avec un prix 0', save.includes('prix: (p.prixDefini === false) ? null : (p.prix||0)'));
+  test('fiche produit : seul l\'administrateur fixe le prix (puis vendable)', extraireFonction('async function venDefinirPrix(p, prix)').includes("role !== 'admin'") && extraireFonction('function sauvegarderProduit()').includes("role === 'admin' && data.prix > 0"));
+  // chargement depuis la base : les marqueurs arrivent dans le catalogue en mémoire
+  B = nouveauBac({ repondre: () => ({ ok: true, status: 200, corps: [{ id: 'pr-z', nom: 'Nouveau Z', cat: 'Matelas', prix: null, stock: 0, actif: true, vendable: false, prix_vente_defini: false, reference_interne: 'MC-TEST-Z' }] }) });
+  await B.bac.sbLoadProduits(); const z = B.bac.produits.find(p => p.id === 'pr-z');
+  test('chargement : prix NULL → prix 0 affiché « à définir », non vendable, réf. interne', z && z.prix === 0 && z.prixDefini === false && z.vendable === false && z.refInterne === 'MC-TEST-Z', z);
+  test('base : déclencheur sur commandes (lignes nouvelles seulement, upsert compris)', sql.includes('create trigger commandes_produit_vendable_garde before insert or update of lignes on public.commandes') && sql.includes('select to_jsonb(c.lignes) into v_old from public.commandes c where c.id = new.id'));
+  test('base : déclencheur sur la correspondance Shopify (variante « certaine »)', sql.includes('create trigger stock_correspondance_vendable_garde') && sql.includes("new.fiabilite = 'certaine' and interne.produit_non_vendable(new.app_produit_id)"));
+  test('base : un ensemble dont un composant est non vendable est non vendable', /produit_non_vendable[\s\S]{0,700}jsonb_array_elements\(p\.composants\)/.test(sql));
+  test('base : collaboratrice / livreur ne peuvent pas rendre un produit vendable', sql.includes('new.vendable := old.vendable;') && sql.includes('new.prix_vente_defini := old.prix_vente_defini;'));
+  test('base : un produit vendable sans prix défini est impossible', sql.includes("PRODUIT NON VENDABLE : « % » n''a pas de prix de vente défini"));
+  const wa = fs.readFileSync(path.join(racine, 'supabase', 'functions', 'whatsapp-receive', 'index.ts'), 'utf8');
+  test('rapprochement WhatsApp : produits non vendables écartés (lecture seule)', wa.includes("filter((p: any) => p.vendable !== false && p.prix_vente_defini !== false)"));
+  const jl = await import('file:///' + path.join(racine, 'supabase', 'functions', '_shared', 'jarvis-action-logique.ts').replace(/\\/g, '/'));
+  const catJ = jl.catalogueDepuisBase([{ id: 'n', nom: 'Matelas Nouveau N 180×190', prix: null, vendable: false, prix_vente_defini: false }, { id: 'a', nom: 'Matelas Fictif A 140×190', prix: 100 }]);
+  test('JARVIS creer_commande : produit non vendable refusé', /pas encore vendable/.test(jl.lignesCommande([{ produitId: 'n', produit: 'x', qte: 1 }], catJ).erreur || ''));
+  test('JARVIS : produit vendable accepté au prix du catalogue', jl.lignesCommande([{ produitId: 'a', produit: 'x', qte: 1 }], catJ).lignes[0].prixUnit === 100);
+
+  console.log('\n6. STOCK ENTRANT DISTINCT DU STOCK DISPONIBLE');
+  test('stock entrant agrégé par produit', JSON.stringify(bac.arrStockEntrant([{ produit_id: 'pr-a', quantite: 30 }, { produit_id: 'pr-n', quantite: '40' }, { produit_id: 'pr-a', quantite: 5 }])) === JSON.stringify({ 'pr-a': 35, 'pr-n': 40 }));
+  B = nouveauBac({ repondre: (url) => url.includes('stock_entrant') ? { ok: true, status: 200, corps: [{ produit_id: 'pr-n', quantite: 40, arrivages: 1 }] } : { ok: true, status: 200, corps: [] } });
+  await B.bac.stkChargerArrivage();
+  test('inventaire : stock entrant chargé, stock disponible INCHANGÉ (0)', B.bac.ARR_ETAT.entrant['pr-n'] === 40 && B.bac.produits.find(p => p.id === 'pr-n').stock === 0);
+  const stk = extraireFonction('function stkRender()');
+  test('inventaire : « entrant » affiché à part, getStockDispo (disponible) inchangé', stk.includes('ARR_ETAT.entrant[p.id]') && stk.includes('non compté dans le stock disponible') && extraireFonction('function getStockDispo(p)').includes('return p.stock || 0;'));
+  test('base : stock_entrant = arrivages EN ATTENTE seulement, sans aucun prix', /function public\.stock_entrant\(\)[\s\S]*where a\.statut = 'en_attente'/.test(sql) && !/stock_entrant\(\) returns table \([^)]*(revient|fob)/.test(sql));
+  test('base : stock_entrant réservé à l\'administrateur et à la collaboratrice', sql.includes("if coalesce((select public.session_role()), '') not in ('admin', 'collab') then return; end if;"));
+
+  console.log('\n7. PRIX DE REVIENT : ADMINISTRATEUR SEULEMENT');
+  test('le revient n\'est PAS une colonne de produits (lisible par collaboratrice et livreur)', !/alter table public\.produits[\s\S]{0,400}prix_revient_ht/.test(sql) && sql.includes('create table if not exists public.produits_revient'));
+  for (const t of ['arrivages', 'arrivage_lignes', 'produits_revient', 'prix_revient_historique']) test('table ' + t + ' : lecture administrateur seulement, aucune écriture par l\'appli', sql.includes("'" + t + "'") && sql.includes("create policy sess_admin_lecture on public.%I for select to anon using ((select public.session_role()) = ''admin'')"));
+  test('historique des revients : ajout seul (modification et suppression refusées)', sql.includes('create trigger prix_revient_historique_fige before update or delete on public.prix_revient_historique'));
+  B = nouveauBac({ role: 'collab' }); await B.bac.arrChargerRevients();
+  test('collaboratrice : l\'appli ne demande même pas les revients', !B.appels.some(a => a.url.includes('produits_revient')));
+  B = nouveauBac({ role: 'livreur' }); await B.bac.stkChargerArrivage();
+  test('livreur : ni revient ni stock entrant demandés', B.appels.length === 0);
+  test('colonne « Revient HT » masquée hors administrateur', extraireFonction('function stkApplyRoleVisibility()').includes("const voitRevient = role === 'admin';"));
+  test('écran Arrivages : administrateur seulement (menu et page)', /admin:\{[\s\S]*?\{p:'arrivages',i:'🚢',l:'Arrivages'\}[\s\S]*?collab:\{/.test(html) && !/collab:\{[\s\S]*?livreur:\{[\s\S]*?\{p:'arrivages'/.test(html.slice(html.indexOf('collab:{'), html.indexOf('function buildUI'))) && extraireFonction('async function arrInit()').includes("if (role !== 'admin')"));
+
+  console.log('\n8. TAUX DE CHANGE DÉFINITIF ET MARGES PASSÉES');
+  const rec = sql.slice(sql.indexOf('create or replace function public.recalculer_revient_arrivage'), sql.indexOf('-- 7. Stock ENTRANT'));
+  test('recalcul : revient = FOB × nouveau taux + frais répartis sur les quantités attendues', rec.includes('v_frais_u := a.frais_import_ht / v_total;') && rec.includes('round(l.fob_unitaire * p_nouveau_taux + v_frais_u, 4)'));
+  test('recalcul : une seule fois (taux ensuite définitif)', rec.includes("if not a.taux_provisoire then return json_build_object('ok', false, 'erreur', 'taux_deja_definitif')") && rec.includes('taux_provisoire = false'));
+  test('recalcul : l\'historique provisoire est RELIÉ à une ligne de correction, jamais réécrit', rec.includes("'recalcul_taux'") && rec.includes('update public.prix_revient_historique set remplace_par = v_id where id = h.id'));
+  test('recalcul : refusé si un autre lot a été reçu depuis', rec.includes('RECALCUL IMPOSSIBLE'));
+  test('aucune commande touchée (marges passées jamais recalculées)', !/update public\.commandes|alter table public\.commandes/.test(sql));
+
+  console.log('\n9. VERSION');
+  const m = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(sw);
+  test('CACHE_VERSION augmentée (v7-5-136 ou plus)', !!m && Number(m[1]) >= 136, m && m[0]);
+
+  console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
+  process.exit(ko ? 1 : 0);
+})().catch(e => { console.log('ERREUR : ' + (e && e.stack || e)); process.exit(1); });

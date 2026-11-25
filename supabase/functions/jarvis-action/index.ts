@@ -31,7 +31,7 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
+import { VERSION, alerteCorrectionStock, apercuCommande, catalogueDepuisBase, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
   controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, variantesTel, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_COMPTES, STATUTS_COMPTES_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 import { lireCompteSmsOVH } from '../_shared/ovh-sms.ts';
 import { envoyerAvecReservation, echecCertain, phraseIndetermine } from '../_shared/sms-prevenir.ts';
@@ -74,9 +74,9 @@ function resumeGls(j: any) {
     suivis: Array.isArray(j?.parcels) ? j.parcels.map((x: any) => x?.trackId || x?.parcelNumber).filter(Boolean) : j?.trackId ? [j.trackId] : [] };
 }
 async function catalogue(): Promise<Catalogue> {
-  const { data } = await sb.from('produits').select('id, nom, prix, actif, ancienne_offre');
-  const m: Catalogue = new Map(); for (const p of data || []) m.set(String(p.id), { id: String(p.id), nom: String(p.nom || ''), prix: Number(p.prix) || 0, actif: p.actif !== false, ancienne_offre: !!p.ancienne_offre });
-  return m;
+  // v2.18 : select * (lecture seule) pour lire vendable / prix_vente_defini / composants, présents seulement après la migration 039
+  const { data } = await sb.from('produits').select('*');
+  return catalogueDepuisBase((data as any[]) || []);
 }
 const ecritureRefusee = (e: unknown) => rep(502, { ok: false, erreur: 'écriture refusée par la base' + (e && (e as any).code ? ' (' + (e as any).code + ')' : '') });
 

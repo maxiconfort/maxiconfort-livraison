@@ -36,6 +36,7 @@ function nouveauBac(lignes) { const envois = [], memoire = {}, champs = { 'f-rem
     stkRender() { bac._rendus++; }, sbSaveEchec() { bac._echecs++; }, _rendus: 0, _echecs: 0, _reponse: null };
   vm.createContext(bac);
   vm.runInContext(extraireBloc('// AO-DEBUT', '// AO-FIN'), bac);
+  vm.runInContext(extraireBloc('// ARR-DEBUT', '// ARR-FIN'), bac); // v7.5.136 : buildProduitOptions écarte aussi les produits non vendables
   for (const f of ['function buildProduitOptions()', 'function recalcTotal()', 'function getLignesData()', 'function stkTrouverProduit(produitId, nomProduit)', 'async function sbLoadProduits()', 'async function sbSaveProduit(p)']) vm.runInContext(extraireFonction(f), bac);
   return { bac, envois, memoire, champs }; }
 let ok = 0, ko = 0; const test = (nom, cond, det) => { if (cond) { ok++; console.log('  OK   ' + nom); } else { ko++; console.log('  ÉCHEC ' + nom + (det !== undefined ? ' — ' + JSON.stringify(det) : '')); } };

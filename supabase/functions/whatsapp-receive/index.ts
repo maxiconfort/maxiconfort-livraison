@@ -94,8 +94,11 @@ async function nextCmdId(): Promise<string> {
 }
 
 async function chargerCatalogue(): Promise<any[]> {
-  const { data } = await sb.from('produits').select('id, nom, cat, dim, prix').eq('actif', true).limit(200);
-  return data || [];
+  // 25/11/2026 (migration 039) : un produit NON VENDABLE (prix de vente à définir) n'est jamais proposé au rapprochement.
+  // select * : les colonnes vendable / prix_vente_defini n'existent qu'après la migration (avant : tout reste vendable).
+  const { data } = await sb.from('produits').select('*').eq('actif', true).limit(200);
+  return (data || []).filter((p: any) => p.vendable !== false && p.prix_vente_defini !== false)
+    .map((p: any) => ({ id: p.id, nom: p.nom, cat: p.cat, dim: p.dim, prix: p.prix }));
 }
 
 // ════════════════════════════════════════════════════════════

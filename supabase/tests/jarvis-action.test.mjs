@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { actionFactureSms } from '../functions/_shared/jarvis-facture-sms.ts';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
-  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, resumeSuivi, resumeSms, variantesTel, resumeCredits, SEUIL_CREDITS_SMS_BAS, factureSms, MARQUE_LIEN_FACTURE, segmentsSms, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, catalogueDepuisBase, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, resumeSuivi, resumeSms, variantesTel, resumeCredits, SEUIL_CREDITS_SMS_BAS, factureSms, MARQUE_LIEN_FACTURE, segmentsSms, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -851,4 +851,27 @@ test('v2.17 comptage : TOUS les statuts réels comptés (en-route et arrivé com
   const bloc = src.slice(src.indexOf("d.action === 'compter_commandes'"), src.indexOf("d.action === 'lire_stock'"));
   assert.match(bloc, /const statuts = STATUTS_COMPTES;/); assert.match(bloc, /STATUTS_COMPTES_OUVERTS\.reduce/);
   assert.doesNotMatch(src, /STATUTS_OUVERTS/, 'index.ts n’utilise plus la liste de changer_statut');
+});
+
+test('v2.18 : produit NON VENDABLE (prix de vente à définir, migration 039) — jamais rapproché, refusé dans une commande, ensemble compris', () => {
+  const rows = [
+    { id: 'pr-15', nom: 'Matelas DODOCONFORT 140×190×15', prix: 100, actif: true },
+    { id: 'pr-new', nom: 'Matelas Hybride Fictif 140×190 – 25 cm', prix: null, actif: true, vendable: false, prix_vente_defini: false },
+    { id: 'pr-ens', nom: 'Ensemble 140x190 Matelas Hybride Fictif + Sommier', prix: 300, actif: true, composants: [{ id: 'pr-new', qte: 1 }] },
+    { id: 'pr-ok', nom: 'Ensemble 140x190 Matelas DODOCONFORT 15 + Sommier', prix: 250, actif: true, composants: [{ id: 'pr-15', qte: 1 }] },
+  ];
+  const cat = catalogueDepuisBase(rows);
+  assert.equal(cat.get('pr-new').non_vendable, true);
+  assert.equal(cat.get('pr-ens').non_vendable, true, 'ensemble dont un composant est non vendable');
+  assert.equal(cat.get('pr-15').non_vendable, undefined);
+  assert.equal(cat.get('pr-ok').non_vendable, undefined);
+  assert.match(lignesCommande([{ produitId: 'pr-new', produit: 'x', qte: 1 }], cat).erreur, /pas encore vendable/);
+  assert.match(lignesCommande([{ produitId: 'pr-ens', produit: 'x', qte: 1 }], cat).erreur, /pas encore vendable/);
+  assert.match(lignesCommande([{ produit: 'Matelas Hybride Fictif 140×190 – 25 cm', qte: 1 }], cat).erreur, /pas encore vendable/, 'nom exact refusé aussi');
+  assert.equal(produitProche('matelas hybride fictif 140x190', cat), null, 'jamais proposé par rapprochement');
+  const ok = lignesCommande([{ produitId: 'pr-15', produit: 'x', qte: 2 }], cat);
+  assert.equal(ok.erreur, null); assert.equal(ok.lignes[0].prixUnit, 100);
+  // avant la migration 039 (colonnes absentes) : tout reste vendable, comme avant
+  const avant = catalogueDepuisBase([{ id: 'a', nom: 'Matelas A', prix: 99 }]);
+  assert.equal(avant.get('a').non_vendable, undefined); assert.equal(avant.get('a').actif, true);
 });
