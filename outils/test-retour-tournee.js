@@ -36,7 +36,7 @@ function nouveauBac(role) {
     stkDeduireStock() {}, clearSig() {}, renderLivreur() {}, renderTournees() {}, renderCmds() {}, renderDash() {}, finRender() {},
     sbSaveTournee(t) { tourneesSauvees.push(JSON.parse(JSON.stringify(t))); }, notifAjout(...a) { bac._notifs.push(a); }, _notifs: [],
     confirm: () => bac._confirm, _confirm: true, genererBonLivraison() {}, brevoSendSMS: async () => false, cmdOrigineMarketplace: () => null,
-    findCmdForStop(s) { return bac.commandes.find((c) => c.id === s.cmdId) || null; }, findStopForCmd: () => null, retirerStockCamion() {},
+    findCmdForStop(s) { return bac.commandes.find((c) => c.id === s.cmdId) || null; }, findStopForCmd: () => null, retirerStockCamion() {}, _mx: {}, mxLire(k) { return Object.prototype.hasOwnProperty.call(bac._mx, k) ? bac._mx[k] : null; }, mxEcrire(k, v) { bac._mx[k] = v; }, mxSupprimer(k) { delete bac._mx[k]; },
     sendCmdSmsAsync() {}, annDemanderMotif() {}, fmtDate: (d) => d, paiVerrouBody() {},
   };
   vm.createContext(bac);
@@ -197,6 +197,62 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     const { bac, envois, pris, stop } = preparer(SITE); bac.validerSig(); await attendre(); const b = envois[0] && envois[0].body;
     // le verrou paiVerrouBody retire volontairement paie / stpaie / montant_enc du corps envoyé (la base garde le paiement en ligne)
     test('commande payée en ligne : écran dédié inchangé, aucun choix demandé, paiement jamais renvoyé', pris === true && bac.sigChoixFait === null && b && b.statut === 'livré' && !('montant_enc' in b) && !('stpaie' in b) && stop.stpaie === 'Payé', { pris, choix: bac.sigChoixFait, statut: b && b.statut, cles: b && Object.keys(b).filter((k) => /paie|montant/.test(k)) });
+  }
+
+  // ══════════ 3 bis. Acompte : encaissé PENDANT la tournée (revue Codex P1, v7.5.132) ══════════
+  console.log('\n3 bis. ACOMPTE SÉPARÉ DE L\'ENCAISSEMENT DE LA TOURNÉE (revue Codex P1)');
+  const pointDe = (bac) => bac.rtPointCaisse(bac.tournees[0], bac.getCmdsLivresParTournee(bac.tournees[0]), [], bac.rtOutilsPage());
+  { const cmd = LBC({ stpaie: 'Partiel', montantEnc: 50 }); const { bac, envois, stop, els } = preparer(cmd);
+    bac.sigChoixSimple('cb'); els['sig-ticket'].value = 'TK-A1';
+    test('acompte 50 € : montant pré-rempli 130 €', els['sig-montant'].value === '130');
+    bac.validerSig(); await attendre(); const b = envois[0] && envois[0].body;
+    test('acompte 50 € + 130 € CB : cumul de la commande 180 €, « Payé »', b && b.montant_enc === 180 && b.stpaie === 'Payé' && b.paie === 'CB', b);
+    test('arrêt : acompte noté (encAvant = 50), montant encaissé sur la tournée = 130 €', stop.encAvant === 50 && stop.enc && stop.enc.montant === 130, { encAvant: stop.encAvant, enc: stop.enc });
+    const pt = pointDe(bac);
+    test('point de caisse : 130 € de CB attendus (et non 180 €), 0 € d\'espèces', pt.cb === 130 && pt.especes === 0 && pt.resteAEncaisser.montant === 0, pt);
+    bac.depenses = []; bac.renderLivreurCaisse(bac.tournees[0]); const h = els['lv-caisse-summary'].innerHTML;
+    test('caisse du livreur : CB +130 (et non +180)', /\+130 €/.test(h) && !/\+180 €/.test(h), h.slice(0, 300));
+  }
+  { const cmd = LBC({ stpaie: 'Partiel', montantEnc: 50 }); const { bac, envois, els } = preparer(cmd);
+    bac.sigChoixSimple('esp'); els['sig-montant'].value = '100'; els['sig-montant-motif'].value = 'Le client paiera le reste demain';
+    bac.validerSig(); await attendre(); const b = envois[0] && envois[0].body;
+    test('acompte 50 € + 100 € espèces (baisse avec motif) : cumul 150 €, « Partiel »', b && b.montant_enc === 150 && b.stpaie === 'Partiel', b);
+    const pt = pointDe(bac);
+    test('point de caisse : 100 € d\'espèces attendus (et non 150 €), 30 € restent à encaisser', pt.especes === 100 && pt.resteAEncaisser.montant === 30, pt);
+  }
+  { const cmd = LBC({ stpaie: 'Partiel', montantEnc: 50 }); const { bac, envois, els } = preparer(cmd);
+    bac.sigAutreCas('Mixte'); bac.document.getElementById('sig-paie-esp').value = '80'; bac.document.getElementById('sig-paie-cb').value = '50'; els['sig-ticket'].value = 'TK-M';
+    bac.validerSig(); await attendre(); const b = envois[0] && envois[0].body;
+    test('acompte 50 € + espèces 80 € + CB 50 € : cumul 180 €, « Payé » (acompte gardé)', b && b.montant_enc === 180 && b.stpaie === 'Payé' && b.paie === 'Mixte', b);
+    const pt = pointDe(bac);
+    test('point de caisse Mixte : 80 € espèces, 50 € CB', pt.especes === 80 && pt.cb === 50, pt);
+  }
+  { const { bac: p } = nouveauBac();
+    test('arrêt signé avant cette version (sans encAvant) : calcul d\'origine conservé', p.rtEncaisseTournee({ paie: 'CB', stpaie: 'Payé', montantEnc: 180 }, { statut: 'livré' }) === null);
+    test('encaissement complété plus tard (« Encaisser ») : cumul − acompte', JSON.stringify(p.rtEncaisseTournee({ paie: 'Espèces', stpaie: 'Payé', montantEnc: 180 }, { encAvant: 50 })) === JSON.stringify({ esp: 130, cb: 0 }));
+    test('commande repassée « Non payé » : rien sur la tournée', JSON.stringify(p.rtEncaisseTournee({ paie: 'Espèces', stpaie: 'Non payé', montantEnc: 0 }, { encAvant: 0 })) === JSON.stringify({ esp: 0, cb: 0 }));
+  }
+
+  // ══════════ 3 ter. Tournée clôturée gardée à l'écran (revue Codex P2, v7.5.132) ══════════
+  console.log('\n3 ter. TOURNÉE CLÔTURÉE GARDÉE À L\'ÉCRAN (revue Codex P2)');
+  { const { bac: p } = nouveauBac();
+    vm.runInContext(extraireFonction('function lvListeNav(mesTournees, courante, aujourdhui)'), p);
+    const AUJ = '2026-11-25';
+    const mes = [{ id: 'T-AUJ', date: AUJ, statut: 'terminée' }, { id: 'T-DEMAIN', date: '2026-11-26', statut: 'préparée' }, { id: 'T-HIER', date: '2026-11-24', statut: 'terminée' }];
+    test('tournée affichée terminée aujourd\'hui : gardée', p.rtTourneeAGarder(mes, 'T-AUJ', null, AUJ).id === 'T-AUJ');
+    test('après rechargement : tournée mémorisée à la clôture gardée', p.rtTourneeAGarder(mes, null, { id: 'T-AUJ', date: AUJ }, AUJ).id === 'T-AUJ');
+    test('mémoire d\'un autre jour, ou tournée non terminée : rien de gardé', p.rtTourneeAGarder(mes, null, { id: 'T-AUJ', date: '2026-11-24' }, AUJ) === null && p.rtTourneeAGarder(mes, 'T-DEMAIN', null, AUJ) === null && p.rtTourneeAGarder(mes, 'T-HIER', null, AUJ) === null);
+    const nav = p.lvListeNav(mes, mes[0], AUJ).map((x) => x.id).join();
+    test('navigation : la tournée clôturée du jour reste accessible (avec celle de demain)', nav === 'T-AUJ,T-DEMAIN', nav);
+    test('navigation : une tournée terminée d\'un autre jour n\'y est pas', !/T-HIER/.test(nav));
+  }
+  { const { bac } = nouveauBac();
+    const AUJ = (() => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })();
+    bac.commandes = [LBC({ id: '#G1', statut: 'livré', stpaie: 'Payé', montantEnc: 180 })];
+    bac.tournees = [{ id: 'T-G', livreur: 'RANOU', date: AUJ, statut: 'en cours', stops: [{ cmdId: '#G1', client: 'A', statut: 'livré' }] }];
+    bac.lvCloturerTournee('T-G');
+    test('clôture : la tournée est mémorisée pour rester affichée (même après rechargement)', JSON.parse(bac._mx['mx_lv_tournee_cloturee'] || 'null').id === 'T-G');
+    test('la page garde la tournée terminée du jour avant de choisir la suivante, sauf changement explicite', /var _garder = LV_APERCU_ID \? null : rtTourneeAGarder\(myTournees, currentLvTourneeId, _memoClo, lvToday\);\s*if \(_garder\) myT = _garder;/.test(html) && /LV_APERCU_ID = LV_NAV\[j\]\.id;\s*try \{ mxSupprimer\('mx_lv_tournee_cloturee'\)/.test(html));
   }
 
   // ══════════ 4. Reporté / absent : valeurs de statut existantes ══════════
@@ -363,7 +419,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
   test('Retour de tournée : bouton « Valider le point de caisse » branché sur validerRemiseCaisse (caisse_remises)', /validerRemiseCaisse\(\\'' \+ r\.caisseKey \+ '\\'\)"[^>]*>✅ Valider le point de caisse/.test(html));
   test('validerRemiseCaisse écrit toujours dans caisse_remises (mécanisme existant)', /rest\/v1\/caisse_remises', \{\s*method: 'POST'/.test(extraireFonction('async function validerRemiseCaisse(key)')));
   test('ancre JARVIS (bloc JVUE) présente', html.indexOf('// JVUE-DEBUT') > 0 && html.indexOf('// JVUE-FIN') > html.indexOf('// JVUE-DEBUT'));
-  test('CACHE_VERSION augmentée (v7-5-131 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(3[1-9]|[4-9]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
+  test('CACHE_VERSION augmentée (v7-5-132 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(3[2-9]|[4-9]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
