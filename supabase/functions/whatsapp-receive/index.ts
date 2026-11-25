@@ -25,6 +25,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.117.2';
+import { produitsVendables } from '../_shared/produits-vendables.ts';
 
 const ANTHROPIC_KEY = Deno.env.get('ANTHROPIC_API_KEY') || '';
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
@@ -94,10 +95,11 @@ async function nextCmdId(): Promise<string> {
 }
 
 async function chargerCatalogue(): Promise<any[]> {
-  // 25/11/2026 (migration 039) : un produit NON VENDABLE (prix de vente à définir) n'est jamais proposé au rapprochement.
-  // select * : les colonnes vendable / prix_vente_defini n'existent qu'après la migration (avant : tout reste vendable).
-  const { data } = await sb.from('produits').select('*').eq('actif', true).limit(200);
-  return (data || []).filter((p: any) => p.vendable !== false && p.prix_vente_defini !== false)
+  // 25/11/2026 (migration 039) : un produit NON VENDABLE (prix de vente à définir, ou ENSEMBLE dont un composant l'est) n'est
+  // jamais proposé au rapprochement. select * sur TOUT le catalogue (composants compris) : les colonnes vendable /
+  // prix_vente_defini n'existent qu'après la migration (avant : tout reste vendable) ; les produits actifs sont gardés ensuite.
+  const { data } = await sb.from('produits').select('*').limit(1000);
+  return produitsVendables((data as any[]) || []).filter((p: any) => p.actif === true).slice(0, 200)
     .map((p: any) => ({ id: p.id, nom: p.nom, cat: p.cat, dim: p.dim, prix: p.prix }));
 }
 

@@ -95,7 +95,7 @@ function nouveauBac(opts) {
   test('l\'aperçu ne modifie pas le stock en mémoire', bac.produits.find(p => p.id === 'pr-a').stock === 10);
   test('base : le stock n\'augmente que des reçus bons (v_rec), jamais des endommagés', sql.includes('update public.produits set stock = coalesce(stock, 0) + v_rec') && !/stock = coalesce\(stock, 0\) \+ v_(end|man)/.test(sql));
   test('base : une ligne mouvements_stock « entree » par produit, source = référence de l\'arrivage', /insert into public\.mouvements_stock[\s\S]{0,200}values \('entree', p\.nom, v_rec, 'arrivage:' \|\| a\.reference_interne/.test(sql));
-  test('base : historique du revient par lot écrit à la réception', /insert into public\.prix_revient_historique[\s\S]{0,300}'arrivage', a\.id, a\.taux_provisoire/.test(sql));
+  test('base : historique du revient par lot écrit à la réception', /insert into public\.prix_revient_historique[\s\S]{0,500}'arrivage', a\.id, a\.taux_provisoire/.test(sql));
 
   console.log('\n4. DOUBLE VALIDATION REFUSÉE');
   test('arrivage en attente : validable', bac.arrPeutValider(arrivage('en_attente')) === true);
@@ -159,7 +159,23 @@ function nouveauBac(opts) {
   test('base : collaboratrice / livreur ne peuvent pas rendre un produit vendable', sql.includes('new.vendable := old.vendable;') && sql.includes('new.prix_vente_defini := old.prix_vente_defini;'));
   test('base : un produit vendable sans prix défini est impossible', sql.includes("PRODUIT NON VENDABLE : « % » n''a pas de prix de vente défini"));
   const wa = fs.readFileSync(path.join(racine, 'supabase', 'functions', 'whatsapp-receive', 'index.ts'), 'utf8');
-  test('rapprochement WhatsApp : produits non vendables écartés (lecture seule)', wa.includes("filter((p: any) => p.vendable !== false && p.prix_vente_defini !== false)"));
+  const pv = await import('file:///' + path.join(racine, 'supabase', 'functions', '_shared', 'produits-vendables.ts').replace(/\\/g, '/'));
+  const rowsW = [
+    { id: 'a', nom: 'Matelas Fictif A', actif: true }, { id: 's', nom: 'Sommier Fictif', actif: true },
+    { id: 'n', nom: 'Matelas Nouveau N', actif: true, vendable: false, prix_vente_defini: false },
+    { id: 'e-ok', nom: 'Ensemble A + Sommier', actif: true, composants: [{ id: 'a', qte: 1 }, { id: 's', qte: 1 }] },
+    { id: 'e-nv', nom: 'Ensemble N + Sommier', actif: true, composants: [{ id: 'n', qte: 1 }, { id: 's', qte: 1 }] },
+    { id: 'e-inactif', nom: 'Ensemble composant inactif non vendable', actif: true, composants: [{ id: 'x', qte: 1 }] },
+    { id: 'x', nom: 'Matelas X inactif non vendable', actif: false, vendable: false },
+  ];
+  const vend = pv.produitsVendables(rowsW).map(r => r.id);
+  test('règle commune : produit non vendable écarté', !vend.includes('n'));
+  test('règle commune : ENSEMBLE dont un composant est non vendable écarté (revue Codex P2)', !vend.includes('e-nv') && vend.includes('e-ok'), vend);
+  test('règle commune : composant INACTIF non vendable pris en compte (catalogue complet lu avant le filtre « actif »)', !vend.includes('e-inactif'), vend);
+  test('règle commune : colonnes absentes (avant migration) = tout vendable', pv.produitsVendables([{ id: 'z' }, { id: 'y', composants: [{ id: 'z' }] }]).length === 2);
+  test('rapprochement WhatsApp : règle commune sur TOUT le catalogue, puis produits actifs', wa.includes("import { produitsVendables } from '../_shared/produits-vendables.ts';")
+    && /produitsVendables\(\(data as any\[\]\) \|\| \[\]\)\.filter\(\(p: any\) => p\.actif === true\)/.test(wa) && !/from\('produits'\)\.select\('\*'\)\.eq\('actif'/.test(wa));
+  test('JARVIS : même règle commune (idsNonVendables)', fs.readFileSync(path.join(racine, 'supabase', 'functions', '_shared', 'jarvis-action-logique.ts'), 'utf8').includes('const nonVendables = idsNonVendables(rows);'));
   const jl = await import('file:///' + path.join(racine, 'supabase', 'functions', '_shared', 'jarvis-action-logique.ts').replace(/\\/g, '/'));
   const catJ = jl.catalogueDepuisBase([{ id: 'n', nom: 'Matelas Nouveau N (fictif)', prix: null, vendable: false, prix_vente_defini: false }, { id: 'a', nom: 'Matelas Fictif A 140×190', prix: 100 }]);
   test('JARVIS creer_commande : produit non vendable refusé', /pas encore vendable/.test(jl.lignesCommande([{ produitId: 'n', produit: 'x', qte: 1 }], catJ).erreur || ''));
@@ -191,7 +207,38 @@ function nouveauBac(opts) {
   test('recalcul : revient = FOB × nouveau taux + frais répartis sur les quantités attendues', rec.includes('v_frais_u := a.frais_import_ht / v_total;') && rec.includes('round(l.fob_unitaire * p_nouveau_taux + v_frais_u, 4)'));
   test('recalcul : une seule fois (taux ensuite définitif)', rec.includes("if not a.taux_provisoire then return json_build_object('ok', false, 'erreur', 'taux_deja_definitif')") && rec.includes('taux_provisoire = false'));
   test('recalcul : l\'historique provisoire est RELIÉ à une ligne de correction, jamais réécrit', rec.includes("'recalcul_taux'") && rec.includes('update public.prix_revient_historique set remplace_par = v_id where id = h.id'));
-  test('recalcul : refusé si un autre lot a été reçu depuis', rec.includes('RECALCUL IMPOSSIBLE'));
+  test('recalcul : plus de refus sec, RECALCUL EN CHAÎNE des lots reçus ensuite (revue Codex P2)', !rec.includes('RECALCUL IMPOSSIBLE')
+    && rec.includes('where produit_id = l.produit_id and id > h.id and remplace_par is null and arrivage_id is distinct from a.id')
+    && rec.includes('v_cur := interne.revient_apres(x.methode, x.stock_avant, v_cur, x.quantite, x.revient_ht);') && rec.includes("'lots_suivants_recalcules', v_chaine"));
+  // simulation de la chaîne avec le calcul de l'appli (même formule que la base) : corriger le lot 1 après la réception du lot 2
+  // donne le même revient que si le lot 1 avait été reçu directement au bon taux.
+  const N = bac.arrNouveauRevient;
+  const lot1prov = 50, lot1def = 52, lot2 = 60;                       // revients fictifs
+  const apres1 = N('CUMP', 10, 40, 30, lot1prov), apres2 = N('CUMP', 25, apres1, 20, lot2); // 10 en stock à 40 ; 30 reçus ; vendu 15 ; 20 reçus
+  const corrige1 = N('CUMP', 10, 40, 30, lot1def), chaine = N('CUMP', 25, corrige1, 20, lot2);
+  const direct = N('CUMP', 25, N('CUMP', 10, 40, 30, lot1def), 20, lot2);
+  test('chaîne : lot 1 corrigé puis lot 2 rejoué = calcul direct au bon taux', chaine === direct && chaine !== apres2, { apres2, chaine, direct });
+  console.log('\n8 bis. REVIENT PROVISOIRE, STOCK_ENTREES, ORDRE DES VERROUS (revue Codex P2)');
+  test('CUMP qui intègre un revient précédent provisoire = provisoire (lot OU ancien)', sql.includes("else coalesce(p_prov_lot, false) or coalesce(p_prov_avant, false)")
+    && sql.includes('v_prov_apres := interne.revient_provisoire_apres(v_methode, v_stock_avant, v_rev_avant, v_rec, v_prov_avant, a.taux_provisoire);')
+    && sql.includes('values (l.produit_id, v_rev_apres, v_methode, v_prov_apres, now(), \'admin\')'));
+  test('revient du lot seul (pas de stock / revient inconnu / dernier prix) : provisoire selon le lot', sql.includes("when p_methode = 'DERNIER_PRIX' or p_revient_avant is null or coalesce(p_stock_avant, 0) <= 0 then coalesce(p_prov_lot, false)"));
+  test('historique : état provisoire du revient avant / après conservé (sert au recalcul en chaîne)', sql.includes('moyen_avant_provisoire boolean,') && sql.includes('moyen_apres_provisoire boolean not null default false,')
+    && rec.includes('v_prov := interne.revient_provisoire_apres(x.methode, x.stock_avant, v_cur, x.quantite, v_prov, x.provisoire);'));
+  const val = sql.slice(sql.indexOf('create or replace function public.valider_reception_arrivage'), sql.indexOf('create or replace function public.recalculer_revient_arrivage'));
+  test('réception : entrée écrite aussi dans stock_entrees (motif « arrivage:<réf> »), reçus bons seulement',
+    /insert into public\.stock_entrees \(date_entree, app_produit_id, quantite, motif, cmd_id, saisi_par, remarque\)\s+values \(now\(\), l\.produit_id, v_rec, 'arrivage:' \|\| a\.reference_interne/.test(val)
+    && val.indexOf('insert into public.stock_entrees') > val.indexOf('if v_rec > 0 then'));
+  test('stock_entrees accepte le motif « arrivage:… » (contrainte élargie, motifs existants gardés)', sql.includes("check (motif in ('reassort', 'retour_gls', 'reprise_sav', 'correction') or motif like 'arrivage:%')"));
+  test('pas de double comptage : l\'appli lit produits.stock et jamais stock_entrees', !html.includes('stock_entrees'));
+  const ordre = (txt) => { const iA = txt.indexOf('from public.arrivages where id = p_arrivage_id for update'), iP = txt.indexOf('perform 1 from public.produits where id in'),
+    iR = txt.indexOf('perform 1 from public.produits_revient where produit_id in'), iLit = txt.indexOf('from public.produits_revient where produit_id = l.produit_id'),
+    iLitH = txt.indexOf('select * into h from public.prix_revient_historique');
+    return { iA, iP, iR, iLit, iLitH, ok: iA > 0 && iP > iA && iR > iP && (iLit < 0 || iLit > iR) && (iLitH < 0 || iLitH > iR) }; };
+  test('verrous de la réception : arrivage → produits → produits_revient, AVANT la lecture de l\'ancien revient', ordre(val).ok && ordre(val).iLit > 0, ordre(val));
+  test('verrous du recalcul : même ordre (produits puis produits_revient) avant toute lecture', ordre(rec).ok && ordre(rec).iLitH > 0, ordre(rec));
+  test('verrous triés (par id / par produit_id)', (val.match(/order by id for update/g) || []).length === 1 && (val.match(/order by produit_id for update/g) || []).length === 1
+    && (rec.match(/order by id for update/g) || []).length === 1 && (rec.match(/order by produit_id for update/g) || []).length === 1);
   test('aucune commande touchée (marges passées jamais recalculées)', !/update public\.commandes|alter table public\.commandes/.test(sql));
 
   console.log('\n9. VERSION');

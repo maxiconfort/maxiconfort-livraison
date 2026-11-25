@@ -13,6 +13,8 @@
 // Cahier des charges : maxiconfort-brain/conception/JARVIS-LIVRAISON-AUTORISATION-TOTALE.md
 // ════════════════════════════════════════════════════════════════════
 
+import { idsNonVendables } from './produits-vendables.ts';
+
 export const VERSION = 'v2';
 // v2.18 (25/11/2026, arrivage de matelas) : produit NON VENDABLE (prix de vente à définir, migration 039 : colonnes vendable /
 //   prix_vente_defini, ou ensemble dont un composant l'est) — jamais rapproché d'un nom dicté, refusé dans une nouvelle commande.
@@ -446,12 +448,10 @@ export type Catalogue = Map<string, CatalogueProduit>;
 /** v2.18 — catalogue lu dans la table produits (select *). Avant la migration 039 les colonnes vendable / prix_vente_defini n'existent pas :
  *  tout reste vendable. Un ensemble dont un composant est non vendable l'est aussi (un niveau, comme l'appli). Pure. */
 export function catalogueDepuisBase(rows: Record<string, any>[]): Catalogue {
-  const brut = new Map((rows || []).map((r) => [String(r.id), r]));
-  const nonVendable = (r: Record<string, any> | undefined) => !!r && (r.vendable === false || r.prix_vente_defini === false);
+  const nonVendables = idsNonVendables(rows); // règle commune (_shared/produits-vendables.ts), ensembles compris
   const m: Catalogue = new Map();
   for (const r of rows || []) {
-    const compos = Array.isArray(r.composants) ? r.composants : [];
-    const nv = nonVendable(r) || compos.some((c: any) => nonVendable(brut.get(String(c && c.id))));
+    const nv = nonVendables.has(String(r.id));
     m.set(String(r.id), { id: String(r.id), nom: String(r.nom || ''), prix: Number(r.prix) || 0, actif: r.actif !== false, ancienne_offre: !!r.ancienne_offre, ...(nv ? { non_vendable: true } : {}) });
   }
   return m;
