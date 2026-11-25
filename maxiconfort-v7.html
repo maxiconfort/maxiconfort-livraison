@@ -9934,6 +9934,19 @@ function rtEncaisseTournee(c, arret) {
   if (c.paie === 'CB') return { esp: 0, cb: m };
   return { esp: 0, cb: 0 };
 }
+// v7.5.133 (revue Codex sur 0fb4eae) : cumul et statut écrits par l'éditeur de paiement du livreur (« Encaisser » /
+// ✏️ sur un arrêt livré). L'acompte déjà payé avant la livraison (arrêt.encAvant) reste dans le cumul :
+//  - Mixte : cumul = acompte + espèces + CB ; statut d'après ce cumul ;
+//  - « Payé » : cumul = prix ;
+//  - « Non payé » : rien encaissé à la livraison ; s'il y avait un acompte, la commande reste « Partiel » (cumul = acompte) ;
+//  - « Partiel » sans montant : cumul inchangé.
+function rtCumulEditeur(prix, acompte, mode, statut, esp, cb, cumulActuel) {
+  var a = Math.max(0, rtArrondi(acompte));
+  if (mode === 'Mixte') { var tot = rtArrondi(a + (parseFloat(esp) || 0) + (parseFloat(cb) || 0)); return { montantEnc: tot, stpaie: rtStatutApres(prix, a, tot - a) }; }
+  if (statut === 'Payé') return { montantEnc: rtArrondi(prix), stpaie: 'Payé' };
+  if (statut === 'Non payé') return a > 0 ? { montantEnc: a, stpaie: 'Partiel' } : { montantEnc: 0, stpaie: 'Non payé' };
+  return { montantEnc: rtArrondi(cumulActuel), stpaie: statut || 'Partiel' };
+}
 // v7.5.132 (revue Codex P2) : tournée du livreur à GARDER affichée après sa clôture (ou sa fin automatique) :
 // celle qu'il regarde, sinon celle mémorisée à la clôture, si elle est « terminée » et datée d'aujourd'hui.
 function rtTourneeAGarder(mesTournees, idAffichee, memo, aujourdhui) {
@@ -11042,11 +11055,12 @@ function lvModifierPaie(tid, idx) {
   sheet.dataset.tid       = tid;
   sheet.dataset.idx       = String(idx);
   sheet.dataset.prixTotal = String(prixTotal);
+  sheet.dataset.acompte   = String((s && s.encAvant != null && !isNaN(parseFloat(s.encAvant))) ? parseFloat(s.encAvant) : 0); // v7.5.133
 
   var html = '<div style="width:40px;height:4px;background:var(--brd);border-radius:2px;margin:0 auto 16px"></div>';
   html += '<div style="font-size:16px;font-weight:800;margin-bottom:6px">Modifier le paiement</div>';
   html += '<div style="font-size:13px;color:var(--t2);margin-bottom:4px">' + (s.client||'Client') + '</div>';
-  html += '<div style="font-size:12px;color:var(--t3);margin-bottom:16px">Montant total : <strong style="color:var(--green)">' + prixTotal + ' €</strong></div>';
+  html += '<div style="font-size:12px;color:var(--t3);margin-bottom:16px">Montant total : <strong style="color:var(--green)">' + prixTotal + ' €</strong>' + ((parseFloat(sheet.dataset.acompte) || 0) > 0 ? ' · acompte déjà payé avant la livraison : <strong>' + paiEur(sheet.dataset.acompte) + '</strong>' : '') + '</div>'; // v7.5.133
   html += '<div style="font-size:12px;font-weight:700;color:var(--t3);margin-bottom:8px">MODE DE PAIEMENT</div>';
   html += '<div id="lv-modes-wrap" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">';
   modes.forEach(function(m) {
@@ -11123,14 +11137,15 @@ function lvPaieMixteRecap() {
   if (!sheet || sheet.dataset.mode !== 'Mixte') return;
   var esp = parseFloat(document.getElementById('lv-paie-esp')?.value) || 0;
   var cb  = parseFloat(document.getElementById('lv-paie-cb')?.value)  || 0;
-  var total = esp + cb;
+  var acompteM = parseFloat(sheet.dataset.acompte) || 0; // v7.5.133 : acompte compris dans le total
+  var total = acompteM + esp + cb;
   var prixTotal = parseFloat(sheet.dataset.prixTotal) || 0;
   var recap = document.getElementById('lv-paie-mixte-recap');
   if (!recap) return;
   var diff = total - prixTotal;
   var msg, bg, fg;
-  if (total === 0) {
-    msg = 'Saisir les 2 montants ci-dessus';
+  if (esp + cb === 0) {
+    msg = 'Saisir les 2 montants ci-dessus' + (acompteM > 0 ? ' (acompte de ' + paiEur(acompteM) + ' déjà compté)' : '');
     bg = 'var(--bg)'; fg = 'var(--t2)';
   } else if (Math.abs(diff) < 0.01) {
     msg = '✅ Total : ' + total.toFixed(2) + ' € · MATCH parfait';
@@ -11146,7 +11161,7 @@ function lvPaieMixteRecap() {
   recap.style.background = bg;
   recap.style.color = fg;
   // Auto statut : Payé si total >= prix, Partiel sinon (>0)
-  var newStatut = (total > 0 && Math.abs(diff) < 0.01) ? 'Payé' : (total > 0 ? 'Partiel' : 'Non payé');
+  var newStatut = (total > 0 && diff > -0.01) ? 'Payé' : (total > 0 ? 'Partiel' : 'Non payé'); // v7.5.133 : acompte compris
   sheet.dataset.statut = newStatut;
   // Refresh visuel des boutons statut
   document.querySelectorAll('.lv-statut-btn').forEach(function(b) {
@@ -11206,6 +11221,12 @@ async function lvPaieValider() {
   var _cmdPaiS = findCmdForStop(s);
   if (_cmdPaiS && paiEstEnLigne(_cmdPaiS)) { toast('Commande déjà payée en ligne : paiement non modifiable ici', 'err'); renderLivreur(); return; }
 
+  // v7.5.133 (revue Codex) : cumul et statut avec l'acompte payé avant la livraison (s.encAvant)
+  var _cmdCum = findCmdForStop(s);
+  var _acompteEd = (s.encAvant != null && !isNaN(parseFloat(s.encAvant))) ? parseFloat(s.encAvant) : 0;
+  var _cum = rtCumulEditeur(_cmdCum ? _cmdCum.prix : s.prix, _acompteEd, newMode, newStatut, paieEsp, paieCb, _cmdCum ? _cmdCum.montantEnc : 0);
+  var _statutChoisi = newStatut; // statut choisi dans la fenêtre (avant correction par l'acompte)
+  newStatut = _cum.stpaie;
   // Mettre à jour le stop
   s.paie   = newMode;
   s.stpaie = newStatut;
@@ -11225,17 +11246,17 @@ async function lvPaieValider() {
     cmd.paie   = newMode;
     cmd.stpaie = newStatut;
     // v7.5.114 : colonnes dédiées de l'encaissement (ticket CB, livreur, date et heure)
-    if (newStatut !== 'Non payé') { cmd.ticketCb = _tkSheet; cmd.encaissePar = t.livreur || livNom || ''; cmd.encaisseAt = new Date().toISOString(); cmd.encaisseTournee = t.id || ''; cmd._enc = true; }
+    if (_statutChoisi !== 'Non payé') { cmd.ticketCb = _tkSheet; cmd.encaissePar = t.livreur || livNom || ''; cmd.encaisseAt = new Date().toISOString(); cmd.encaisseTournee = t.id || ''; cmd._enc = true; }
     if (newMode === 'Mixte') {
-      cmd.montantEnc = paieEsp + paieCb;
+      cmd.montantEnc = _cum.montantEnc; // v7.5.133 : acompte + espèces + CB (avant : espèces + CB, acompte perdu)
       // En memoire (non envoye a la DB - retrouve via tournee)
       cmd.paie_especes = paieEsp;
       cmd.paie_cb      = paieCb;
     } else if (newStatut === 'Payé') {
-      cmd.montantEnc = cmd.prix;
+      cmd.montantEnc = _cum.montantEnc;
       delete cmd.paie_especes; delete cmd.paie_cb;
-    } else if (newStatut === 'Non payé') {
-      cmd.montantEnc = 0;
+    } else if (newStatut === 'Non payé' || _acompteEd > 0) {
+      cmd.montantEnc = _cum.montantEnc; // v7.5.133 : « Non payé » avec acompte -> reste « Partiel », cumul = acompte
       delete cmd.paie_especes; delete cmd.paie_cb;
     }
     await sbSaveCommande(cmd);
