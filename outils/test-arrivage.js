@@ -24,7 +24,7 @@ let ok = 0, ko = 0; const test = (nom, cond, det) => { if (cond) { ok++; console
 const catalogue = () => [
   { id: 'pr-a', nom: 'Matelas Fictif A 140×190', cat: 'Matelas', prix: 100, stock: 10, seuil: 2 },
   { id: 'pr-b', nom: 'Matelas Fictif B 160×200', cat: 'Matelas', prix: 120, stock: 0, seuil: 2 },
-  { id: 'pr-n', nom: 'Matelas Nouveau N 180×190', cat: 'Matelas', prix: 0, prixDefini: false, vendable: false, stock: 0, seuil: 2, refInterne: 'MC-TEST-1' },
+  { id: 'pr-n', nom: 'Matelas Nouveau N (fictif)', cat: 'Matelas', prix: 0, prixDefini: false, vendable: false, stock: 0, seuil: 2, refInterne: 'MC-TEST-1' },
   { id: 'pr-s', nom: 'Sommier Fictif 140×190', cat: 'Sommier', prix: 80, stock: 5, seuil: 2 },
   { id: 'pr-e1', nom: 'Ensemble Fictif A + Sommier', cat: 'Ensemble', prix: 200, stock: 0, seuil: 2, composants: [{ id: 'pr-a', qte: 1 }, { id: 'pr-s', qte: 1 }] },
   { id: 'pr-e2', nom: 'Ensemble Nouveau N + Sommier', cat: 'Ensemble', prix: 260, stock: 0, seuil: 2, composants: [{ id: 'pr-n', qte: 1 }, { id: 'pr-s', qte: 1 }] },
@@ -138,7 +138,7 @@ function nouveauBac(opts) {
   test('ensemble dont un composant est non vendable : pas proposé', !opts.includes('value="pr-e2"'));
   test('les produits vendables restent proposés (A, B, sommier, ensemble A)', ['pr-a', 'pr-b', 'pr-s', 'pr-e1'].every(id => opts.includes('value="' + id + '"')));
   test('venEst : ensemble avec composant non vendable = non vendable', bac.venEst(bac.produits.find(p => p.id === 'pr-e2'), bac.produits) === false && bac.venEst(bac.produits.find(p => p.id === 'pr-e1'), bac.produits) === true);
-  test('enregistrement d\'une commande : ligne nouvelle avec produit non vendable refusée', JSON.stringify(bac.venLignesRefusees([{ produitId: 'pr-a' }, { produitId: 'pr-n' }], bac.produits, null)) === JSON.stringify(['Matelas Nouveau N 180×190']));
+  test('enregistrement d\'une commande : ligne nouvelle avec produit non vendable refusée', JSON.stringify(bac.venLignesRefusees([{ produitId: 'pr-a' }, { produitId: 'pr-n' }], bac.produits, null)) === JSON.stringify(['Matelas Nouveau N (fictif)']));
   test('commande déjà prise qui le contenait : reste modifiable (ligne figée)', bac.venLignesRefusees([{ produitId: 'pr-retire' }], bac.produits, { lignes: [{ produitId: 'pr-retire' }] }).length === 0);
   test('produit hors catalogue (commande du site) : comportement inchangé', bac.venLignesRefusees([{ produitId: '_custom_X' }], bac.produits, null).length === 0);
   const saveCmd = extraireFonction('function saveCmd()');
@@ -161,7 +161,7 @@ function nouveauBac(opts) {
   const wa = fs.readFileSync(path.join(racine, 'supabase', 'functions', 'whatsapp-receive', 'index.ts'), 'utf8');
   test('rapprochement WhatsApp : produits non vendables écartés (lecture seule)', wa.includes("filter((p: any) => p.vendable !== false && p.prix_vente_defini !== false)"));
   const jl = await import('file:///' + path.join(racine, 'supabase', 'functions', '_shared', 'jarvis-action-logique.ts').replace(/\\/g, '/'));
-  const catJ = jl.catalogueDepuisBase([{ id: 'n', nom: 'Matelas Nouveau N 180×190', prix: null, vendable: false, prix_vente_defini: false }, { id: 'a', nom: 'Matelas Fictif A 140×190', prix: 100 }]);
+  const catJ = jl.catalogueDepuisBase([{ id: 'n', nom: 'Matelas Nouveau N (fictif)', prix: null, vendable: false, prix_vente_defini: false }, { id: 'a', nom: 'Matelas Fictif A 140×190', prix: 100 }]);
   test('JARVIS creer_commande : produit non vendable refusé', /pas encore vendable/.test(jl.lignesCommande([{ produitId: 'n', produit: 'x', qte: 1 }], catJ).erreur || ''));
   test('JARVIS : produit vendable accepté au prix du catalogue', jl.lignesCommande([{ produitId: 'a', produit: 'x', qte: 1 }], catJ).lignes[0].prixUnit === 100);
 
