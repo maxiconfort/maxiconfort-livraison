@@ -2700,7 +2700,8 @@ Maxiconfort — {TEL_CONTACT}</textarea>
 <!-- Modal Dépense Livreur -->
   <div id="m-dep-livreur" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;align-items:center;justify-content:center;padding:20px">
     <div style="background:var(--card);border-radius:20px;padding:24px;width:100%;max-width:420px">
-      <div style="font-size:17px;font-weight:800;margin-bottom:16px">💸 Ajouter une dépense</div>
+      <div id="dep-lv-titre" style="font-size:17px;font-weight:800;margin-bottom:4px">💸 Ajouter une dépense</div>
+      <div id="dep-lv-sous-titre" style="font-size:12px;color:var(--t2);margin-bottom:14px">Payée avec les espèces encaissées : elle est déduite des espèces à remettre.</div>
 
       <div style="margin-bottom:12px">
         <div style="font-size:12px;color:var(--t2);margin-bottom:6px;font-weight:700">Catégorie</div>
@@ -2766,14 +2767,14 @@ Maxiconfort — {TEL_CONTACT}</textarea>
   <!-- v7.5.129 : « Reporté » -> nouvelle date facultative -->
   <div id="m-report" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;align-items:center;justify-content:center;padding:20px">
     <div style="background:var(--card);border-radius:20px;padding:24px;width:100%;max-width:420px">
-      <div style="font-size:17px;font-weight:800;margin-bottom:4px">📅 Livraison reportée</div>
+      <div id="report-titre" style="font-size:17px;font-weight:800;margin-bottom:4px">📅 Livraison reportée</div>
       <div id="report-client-info" style="font-size:13px;color:var(--t2);margin-bottom:14px"></div>
-      <label for="report-date" style="font-size:13px;font-weight:700;color:var(--t2);display:block;margin-bottom:6px">Nouvelle date proposée par le client (facultatif)</label>
+      <label id="report-label" for="report-date" style="font-size:13px;font-weight:700;color:var(--t2);display:block;margin-bottom:6px">Nouvelle date proposée par le client (facultatif)</label>
       <input type="date" id="report-date" style="width:100%;padding:12px;border:1.5px solid var(--brd);border-radius:12px;font-size:16px;font-family:var(--font);box-sizing:border-box;background:var(--bg);color:var(--text)">
       <div style="font-size:11px;color:var(--t3);margin-top:6px">Le bureau replanifie la livraison ; la date est notée sur la commande.</div>
       <div style="display:flex;gap:10px;margin-top:14px">
         <button onclick="lvFermerReport()" style="flex:1;padding:13px;border-radius:12px;border:1.5px solid var(--brd);background:var(--bg);font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">Annuler</button>
-        <button onclick="lvValiderReport()" style="flex:1;padding:13px;border-radius:12px;border:none;background:var(--violet);color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">📅 Valider le report</button>
+        <button id="report-valider" onclick="lvValiderReport()" style="flex:1;padding:13px;border-radius:12px;border:none;background:var(--violet);color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">📅 Valider le report</button>
       </div>
     </div>
   </div>
@@ -9559,7 +9560,7 @@ function rtPointCaisse(t, cmdsLivrees, depEspeces, outils) {
     if (!s) return;
     if (s.statut === 'livré') p.livres++;
     else if (s.statut === 'reporté') p.reportes.push({ cmdId: s.cmdId || '', client: s.client || '', reportAu: s.reportAu || '' });
-    else if (s.statut === 'absent') p.absents.push({ cmdId: s.cmdId || '', client: s.client || '' });
+    else if (s.statut === 'absent') p.absents.push({ cmdId: s.cmdId || '', client: s.client || '', reportAu: s.reportAu || '' });
     else if (s.statut === 'annulé') p.annules++;
   });
   (cmdsLivrees || []).forEach(function(c) {
@@ -9573,8 +9574,49 @@ function rtPointCaisse(t, cmdsLivrees, depEspeces, outils) {
   p.depEspeces = rtArrondi((depEspeces || []).reduce(function(s, d) { return s + (parseFloat(d && d.montant) || 0); }, 0));
   p.especes = rtArrondi(p.especes); p.cb = rtArrondi(p.cb);
   p.dejaPaye.montant = rtArrondi(p.dejaPaye.montant); p.resteAEncaisser.montant = rtArrondi(p.resteAEncaisser.montant);
-  p.aRemettre = Math.max(0, rtArrondi(p.especes - p.depEspeces));
+  var rr = rtResteARemettre(p.especes, p.depEspeces);
+  p.aRemettre = rr.reste; p.aRembourser = rr.aRembourser;
+  p.depenses = (depEspeces || []).map(function(d) { return { id: d.id || '', cat: d.cat || '', montant: rtArrondi(d.montant), comment: d.comment || '' }; });
   return p;
+}
+// v7.5.130 : dépenses du livreur payées avec les espèces encaissées (carburant, péage, parking, fournisseur…).
+// Une dépense appartient à une tournée par son identifiant de tournée (sinon par la date) ; jamais celles de « CAISSE ».
+function rtDepensesTournee(t, liste) {
+  var lv = String((t && t.livreur) || '').toLowerCase();
+  return (liste || []).filter(function(d) {
+    if (!d || !t) return false;
+    var memeTournee = d.tourneeId ? d.tourneeId === t.id : d.date === t.date;
+    return String(d.livreur || '').toLowerCase() === lv && String(d.livreur || '').toUpperCase() !== 'CAISSE' && memeTournee;
+  });
+}
+function rtDepensesEspeces(liste) { return (liste || []).filter(function(d) { return d && d.modePaie !== 'CB'; }); }
+// Reste à remettre = espèces encaissées − dépenses payées en espèces. Si les dépenses dépassent, rien à remettre
+// et la différence est à rembourser au livreur.
+function rtResteARemettre(especes, depEspeces) {
+  var net = rtArrondi((parseFloat(especes) || 0) - (parseFloat(depEspeces) || 0));
+  return { reste: Math.max(0, net), aRembourser: net < 0 ? rtArrondi(-net) : 0 };
+}
+// Contrôle d'une dépense saisie (livreur ou administrateur).
+function rtDepenseValide(cat, montant) {
+  if (!String(cat || '').trim()) return { ok: false, erreur: 'Choisissez une catégorie' };
+  var m = parseFloat(String(montant == null ? '' : montant).replace(',', '.'));
+  if (isNaN(m) || m <= 0) return { ok: false, erreur: 'Entrez un montant valide' };
+  if (m > 5000) return { ok: false, erreur: 'Montant trop élevé (5 000 € au plus)' };
+  return { ok: true, montant: rtArrondi(m) };
+}
+// Tournée à laquelle rattacher une dépense du livreur : celle qu'il regarde (si c'est la sienne et pas un aperçu),
+// sinon sa tournée du jour, sinon sa tournée non terminée la plus proche, sinon sa plus récente.
+function rtTourneePourDepense(liste, livreur, idAffichee, apercu, aujourdhui) {
+  var lv = String(livreur || '').toUpperCase();
+  var siennes = (liste || []).filter(function(t) { return t && String(t.livreur || '').toUpperCase() === lv; });
+  if (!siennes.length) return null;
+  var aff = !apercu && idAffichee ? siennes.find(function(t) { return t.id === idAffichee; }) : null;
+  if (aff) return aff;
+  var duJour = siennes.find(function(t) { return t.date === aujourdhui; });
+  if (duJour) return duJour;
+  var ouvertes = siennes.filter(function(t) { return t.statut !== 'terminée'; }).sort(function(a, b) { return Math.abs(Date.parse(a.date) - Date.parse(aujourdhui)) - Math.abs(Date.parse(b.date) - Date.parse(aujourdhui)); });
+  if (ouvertes.length) return ouvertes[0];
+  return siennes.slice().sort(function(a, b) { return String(b.date || '').localeCompare(String(a.date || '')); })[0];
 }
 // RT-FIN
 
@@ -9585,13 +9627,7 @@ function rtOutilsPage() {
            prepaye: function(c){ return modesPrepaye.indexOf(c.paie) >= 0 || c.paie === PAI_MODE_SITE; } };
 }
 // v7.5.129 : dépenses en espèces d'un livreur pour une tournée (même règle que les retours de caisse)
-function rtDepensesEspecesTournee(t, liste) {
-  var lv = String((t && t.livreur) || '').toLowerCase();
-  return (liste || []).filter(function(d){
-    var memeTournee = d.tourneeId ? d.tourneeId === t.id : d.date === t.date;
-    return (d.livreur || '').toLowerCase() === lv && (d.livreur || '').toUpperCase() !== 'CAISSE' && d.modePaie !== 'CB' && memeTournee;
-  });
-}
+function rtDepensesEspecesTournee(t, liste) { return rtDepensesEspeces(rtDepensesTournee(t, liste)); }
 // v7.5.129 : bloc de clôture en bas de « Ma tournée » (livreur seulement, jamais en aperçu)
 function lvClotureHtml(t) {
   if (!t || role !== 'livreur' || LV_APERCU_ACTIF) return '';
@@ -9627,10 +9663,15 @@ function lvCloturerTournee(tid) {
 // commande ; la date de livraison n'est PAS changée ici : c'est le bureau ou JARVIS qui replanifie,
 // sinon l'arrêt quitterait la tournée avant le point de caisse — cf. reconcilierTournees).
 var lvReportCible = null;
-function lvReporter(tid, idx) {
+// v7.5.130 (demande Borhen) : « Client absent » propose aussi une date de report facultative (même fenêtre).
+function lvReporter(tid, idx, statut) {
   var t = tournees.find(function(x){ return x.id === tid; });
   if (!t || !t.stops[idx]) return;
-  lvReportCible = { tid: tid, idx: idx };
+  var absent = statut === 'absent';
+  lvReportCible = { tid: tid, idx: idx, statut: absent ? 'absent' : 'reporté' };
+  var ti = document.getElementById('report-titre'); if (ti) ti.textContent = absent ? '🔔 Client absent' : '📅 Livraison reportée';
+  var lb = document.getElementById('report-label'); if (lb) lb.textContent = absent ? 'Reporter au … (facultatif : si le client a donné une date)' : 'Nouvelle date proposée par le client (facultatif)';
+  var bv = document.getElementById('report-valider'); if (bv) { bv.textContent = absent ? '🔔 Valider : client absent' : '📅 Valider le report'; bv.style.background = absent ? 'var(--red)' : 'var(--violet)'; }
   var s = t.stops[idx];
   var info = document.getElementById('report-client-info'); if (info) info.textContent = (s.client || '') + ' · ' + (s.produit || '');
   var d = document.getElementById('report-date');
@@ -9648,16 +9689,13 @@ function lvValiderReport() {
   var cible = lvReportCible;
   s.reportAu = v.date || '';
   var c = s.cmdId ? commandes.find(function(x){ return x.id === s.cmdId; }) : null;
-  if (c && v.date) c.instr = (String(c.instr || '') + ' 📅 Report demandé par le client au ' + fmtDate(v.date) + ' (' + (livNom || role || '') + ', ' + new Date().toLocaleDateString('fr-FR') + ').').trim();
+  var statutRt = cible.statut === 'absent' ? 'absent' : 'reporté';
+  if (c && v.date) c.instr = (String(c.instr || '') + (statutRt === 'absent' ? ' 🔔 Client absent — à reporter au ' : ' 📅 Report demandé par le client au ') + fmtDate(v.date) + ' (' + (livNom || role || '') + ', ' + new Date().toLocaleDateString('fr-FR') + ').').trim();
   lvFermerReport();
-  setLvSt(cible.tid, cible.idx, 'reporté');
+  setLvSt(cible.tid, cible.idx, statutRt);
 }
-function lvAbsent(tid, idx) {
-  var t = tournees.find(function(x){ return x.id === tid; });
-  if (!t || !t.stops[idx]) return;
-  if (!confirm('Client absent : ' + (t.stops[idx].client || '') + ' ?')) return;
-  setLvSt(tid, idx, 'absent');
-}
+// v7.5.130 : « Client absent » ouvre la même fenêtre (date facultative) ; valider = confirmation.
+function lvAbsent(tid, idx) { lvReporter(tid, idx, 'absent'); }
 
 // Resume caisse du livreur — extrait de renderLivreur() pour lisibilite (refactor 2026-05-28)
 // Affiche la caisse uniquement si le role est 'livreur' ET qu'il a au moins 1 livraison.
@@ -9673,7 +9711,9 @@ function renderLivreurCaisse(t) {
   }
 
   var livreesCount = t && t.stops ? t.stops.filter(function(s){ return s.statut === 'livré'; }).length : 0;
-  if (!(livreesCount > 0 && role === 'livreur')) {
+  // v7.5.130 : dépenses rattachées à CETTE tournée (même règle que le Retour de tournée de l'administrateur)
+  var depJour = (t && role === 'livreur') ? rtDepensesTournee(t, depenses) : [];
+  if (!(role === 'livreur' && t && (livreesCount > 0 || depJour.length))) {
     caisseDiv.innerHTML = '';
     return;
   }
@@ -9702,12 +9742,6 @@ function renderLivreurCaisse(t) {
         && s.stpaie==='Payé';
   }).reduce(function(a,s){ return a+(s.prix||0); },0);
 
-  var today = new Date().toISOString().split('T')[0];
-  var tourneeDate = t ? t.date : today;
-  var depJour = depenses.filter(function(d){
-    return (d.livreur||'').toLowerCase() === livNom.toLowerCase()
-        && (d.date === tourneeDate || d.date === today);
-  });
 
   var lignes = [];
   if (caisseEsp     > 0) lignes.push({icon:'💵', label:'Espèces',   val:'+'+caisseEsp+' €',     color:'var(--od)'});
@@ -9726,7 +9760,8 @@ function renderLivreurCaisse(t) {
   });
 
   var totalDepEsp = depJour.filter(function(d){ return d.modePaie !== 'CB'; }).reduce(function(s,d){ return s+d.montant; }, 0);
-  var netARemettre = Math.max(0, caisseEsp - totalDepEsp);
+  var _rrLv = rtResteARemettre(caisseEsp, totalDepEsp); // v7.5.130
+  var netARemettre = _rrLv.reste;
 
   caisseDiv.innerHTML = '<div style="background:var(--card);border:1.5px solid var(--brd);border-radius:16px;padding:16px;margin:0 0 4px">' +
     '<div style="font-size:15px;font-weight:800;margin-bottom:14px">💼 Ma caisse du jour</div>' +
@@ -9741,8 +9776,12 @@ function renderLivreurCaisse(t) {
     '</div>' +
     '<div style="background:' + (netARemettre > 0 ? 'var(--green)' : 'var(--rl)') + ';border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center">' +
       '<div style="color:' + (netARemettre > 0 ? '#fff' : 'var(--rd)') + ';font-size:14px;font-weight:700">💵 Espèces à remettre</div>' +
-      '<div style="color:' + (netARemettre > 0 ? '#fff' : 'var(--rd)') + ';font-size:22px;font-weight:900">' + netARemettre + ' €</div>' +
+      '<div style="color:' + (netARemettre > 0 ? '#fff' : 'var(--rd)') + ';font-size:22px;font-weight:900">' + paiEur(netARemettre) + '</div>' +
     '</div>' +
+    // v7.5.130 : le calcul est écrit, et les dépenses se saisissent ici
+    '<div style="font-size:12px;color:var(--t2);margin-top:8px;text-align:center">Espèces encaissées ' + paiEur(caisseEsp) + ' − dépenses payées en espèces ' + paiEur(totalDepEsp) + '</div>' +
+    (_rrLv.aRembourser > 0 ? '<div style="font-size:13px;font-weight:800;color:var(--rd);margin-top:6px;text-align:center">Dépenses plus élevées que les espèces : ' + paiEur(_rrLv.aRembourser) + ' à vous rembourser</div>' : '') +
+    (LV_APERCU_ACTIF ? '' : '<button onclick="ouvrirDepenseLivreur()" style="width:100%;margin-top:10px;padding:12px;border-radius:12px;border:1.5px dashed var(--red);background:var(--rl);color:var(--rd);font-size:14px;font-weight:800;cursor:pointer;font-family:var(--font)">💸 Ajouter une dépense (carburant, péage, parking, fournisseur…)</button>') +
   '</div>';
 }
 
@@ -10076,7 +10115,7 @@ function renderLivreur() {
 
           // ── v7.5.129 : résultat de l'arrêt (Livré / Reporté / Client absent) + autres statuts repliés ──
           '<div class="lv-statuts-wrap">'+
-            (st === 'reporté' || st === 'absent' ? '<div class="lv-resultat-bandeau '+(st === 'absent' ? 'lv-res-absent' : 'lv-res-reporte')+'">'+(st === 'absent' ? '🔔 Client absent' : '📅 Reporté'+(s.reportAu ? ' — le client propose le '+fmtDate(s.reportAu) : ''))+'<span style="font-weight:600;font-size:11px;display:block;opacity:.8">Vous pouvez encore changer le résultat</span></div>' : '')+
+            (st === 'reporté' || st === 'absent' ? '<div class="lv-resultat-bandeau '+(st === 'absent' ? 'lv-res-absent' : 'lv-res-reporte')+'">'+(st === 'absent' ? '🔔 Client absent'+(s.reportAu ? ' — à reporter au '+fmtDate(s.reportAu) : '') : '📅 Reporté'+(s.reportAu ? ' — le client propose le '+fmtDate(s.reportAu) : ''))+'<span style="font-weight:600;font-size:11px;display:block;opacity:.8">Vous pouvez encore changer le résultat</span></div>' : '')+
             '<div class="lv-statuts-lbl">Résultat de la livraison</div>'+
             '<div class="lv-resultats-grid">'+resBtns+'</div>'+
             '<details class="lv-autres-statuts"><summary>Autres statuts (en route, arrivé, annulé…)</summary><div class="lv-statuts-grid" style="margin-top:8px">'+stBtns+'</div></details>'+
@@ -12060,10 +12099,10 @@ function finRender() {
           '</div>' +
           '<div style="font-size:14px">' +
             '<div style="display:flex;justify-content:space-between;padding:5px 0"><span style="color:var(--t2)">💰 Espèces encaissées</span><span style="color:var(--green);font-weight:700">+ ' + eur(r.especes) + '</span></div>' +
-            '<div style="display:flex;justify-content:space-between;padding:5px 0"><span style="color:var(--t2)">🧾 Dépenses payées en espèces</span><span style="color:' + (r.depEspLv>0?'var(--red)':'var(--t3)') + ';font-weight:700">' + (r.depEspLv>0?('− '+eur(r.depEspLv)):'0 €') + '</span></div>' +
-            (r.depEspLv>0 ? '<div style="padding:0 0 6px 22px;font-size:11px;color:var(--t3)">' + depLignes + '</div>' : '') +
+            '<div style="display:flex;justify-content:space-between;padding:5px 0"><span style="color:var(--t2)">🧾 Dépenses du livreur (payées en espèces)</span><span style="color:' + (r.depEspLv>0?'var(--red)':'var(--t3)') + ';font-weight:700">' + (r.depEspLv>0?('− '+eur(r.depEspLv)):'0 €') + '</span></div>' +
+            rtLignesDepenses(r) + // v7.5.130 : détail par dépense, correction et ajout avant validation
             '<div style="border-top:1px solid var(--brd);margin-top:4px;padding-top:10px;display:flex;align-items:center;justify-content:space-between">' +
-              '<span style="font-weight:800">ESPÈCES ATTENDUES<br><span style="font-size:11px;font-weight:600;color:var(--t3)">à comparer à l\'argent remis</span></span>' +
+              '<span style="font-weight:800">RESTE À REMETTRE<br><span style="font-size:11px;font-weight:600;color:var(--t3)">espèces − dépenses : à comparer à l\'argent remis</span></span>' +
               '<span style="font-size:24px;font-weight:900;color:var(--gd)">' + eur(r.aRemettre) + '</span>' +
             '</div>' +
             (dejaEnc.length ? '<div style="font-size:11px;color:var(--t3);margin:6px 0 12px">ℹ️ Déjà encaissé, rien à rendre : ' + dejaEnc.join(' · ') + '</div>' : '<div style="margin-bottom:12px"></div>') +
@@ -12194,6 +12233,21 @@ function finRender() {
 // total CB encaissé par le livreur.
 // v7.5.129 : lignes du point de caisse d'une tournée (Retour de tournée, page Encaissements)
 function rtEchapper(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+// v7.5.130 : dépenses d'une tournée (Retour de tournée) : une ligne par dépense (✏️ corriger), + Ajouter.
+function rtLignesDepenses(r) {
+  var t = r && r.t; if (!t) return '';
+  var toutes = rtDepensesTournee(t, depenses);
+  var h = '<div style="padding:0 0 8px 22px;font-size:12px">';
+  toutes.forEach(function(d) {
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;padding:3px 0;color:var(--t2)">' +
+      '<span>' + rtEchapper(d.cat || 'Dépense') + (d.comment ? ' — ' + rtEchapper(String(d.comment).substring(0, 40)) : '') + (d.modePaie === 'CB' ? ' <span style="color:var(--bd)">(CB société, non déduite)</span>' : '') + '</span>' +
+      '<span style="white-space:nowrap"><strong style="color:' + (d.modePaie === 'CB' ? 'var(--bd)' : 'var(--red)') + '">− ' + paiEur(d.montant) + '</strong>' +
+      ' <button onclick="ouvrirDepenseLivreur({ tid: \'' + t.id + '\', depId: \'' + rtEchapper(d.id) + '\' })" title="Corriger" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px">✏️</button></span></div>';
+  });
+  h += '<button onclick="ouvrirDepenseLivreur({ tid: \'' + t.id + '\' })" style="margin-top:4px;padding:6px 12px;border-radius:8px;border:1.5px dashed var(--red);background:transparent;color:var(--rd);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">+ Ajouter une dépense du livreur</button>';
+  if (r.point && r.point.aRembourser > 0) h += '<div style="margin-top:6px;font-weight:800;color:var(--rd)">Dépenses plus élevées que les espèces : ' + paiEur(r.point.aRembourser) + ' à rembourser au livreur</div>';
+  return h + '</div>';
+}
 function rtLignesPoint(p, eur) {
   if (!p) return '';
   var ligne = function(lbl, val, coul, detail) {
@@ -12208,7 +12262,7 @@ function rtLignesPoint(p, eur) {
   h += ligne('📅 Reportées', String(p.reportes.length), p.reportes.length ? 'var(--vd)' : 'var(--t3)',
     p.reportes.length ? noms(p.reportes, function(x){ return rtEchapper(x.client) + (x.reportAu ? ' (proposé le ' + fmtDate(x.reportAu) + ')' : ''); }) : '');
   h += ligne('🔔 Absents', String(p.absents.length), p.absents.length ? 'var(--rd)' : 'var(--t3)',
-    p.absents.length ? noms(p.absents, function(x){ return rtEchapper(x.client); }) : '');
+    p.absents.length ? noms(p.absents, function(x){ return rtEchapper(x.client) + (x.reportAu ? ' (à reporter au ' + fmtDate(x.reportAu) + ')' : ''); }) : '');
   h += ligne('⏳ Reste à encaisser', eur(p.resteAEncaisser.montant) + (p.resteAEncaisser.nb ? ' (' + p.resteAEncaisser.nb + ')' : ''), p.resteAEncaisser.montant > 0 ? 'var(--red)' : 'var(--t3)',
     p.resteAEncaisser.nb ? noms(p.resteAEncaisser.liste, function(x){ return rtEchapper(x.client) + ' ' + eur(x.reste); }) : '');
   return h + '</div>';
@@ -19430,15 +19484,24 @@ function sauvegarderModif() {
 // ════════════════════════════════════════
 var depLvCatSelected = '';
 
-function ouvrirDepenseLivreur() {
-  depLvCatSelected = '';
+// v7.5.130 : cible de l'écran Dépense. null = le livreur sur sa tournée ; sinon { tid, depId } posée par
+// l'administrateur depuis le Retour de tournée (ajout ou correction AVANT la validation du point de caisse).
+var depLvCible = null;
+function ouvrirDepenseLivreur(cible) {
+  depLvCible = (cible && cible.tid) ? cible : null;
+  var existante = (depLvCible && depLvCible.depId) ? depenses.find(function(d){ return d.id === depLvCible.depId; }) : null;
+  depLvCatSelected = existante ? (existante.cat || '') : '';
   // Reset mode à Espèces
-  setTimeout(function(){ depLvSelectMode('Espèces'); }, 50);
+  setTimeout(function(){ depLvSelectMode(existante && existante.modePaie === 'CB' ? 'CB' : 'Espèces'); }, 50);
   document.querySelectorAll('.dep-lv-cat-btn').forEach(function(b){
-    b.style.background='var(--bg)'; b.style.borderColor='var(--brd)'; b.style.color='var(--text)';
+    var actif = existante && b.dataset.cat === existante.cat;
+    b.style.background = actif ? 'var(--red)' : 'var(--bg)'; b.style.borderColor = actif ? 'var(--red)' : 'var(--brd)'; b.style.color = actif ? '#fff' : 'var(--text)';
   });
-  var m = document.getElementById('dep-lv-montant'); if(m) m.value='';
-  var c = document.getElementById('dep-lv-comment'); if(c) c.value='';
+  var m = document.getElementById('dep-lv-montant'); if(m) m.value = existante ? String(existante.montant) : '';
+  var c = document.getElementById('dep-lv-comment'); if(c) c.value = existante ? (existante.comment || '') : '';
+  var tCible = depLvCible ? tournees.find(function(x){ return x.id === depLvCible.tid; }) : null;
+  var ti = document.getElementById('dep-lv-titre'); if (ti) ti.textContent = existante ? '✏️ Corriger la dépense' : '💸 Ajouter une dépense';
+  var st = document.getElementById('dep-lv-sous-titre'); if (st) st.textContent = tCible ? ('Tournée ' + tCible.id + ' · ' + (tCible.livreur || '') + ' · ' + fmtDate(tCible.date) + ' — déduite des espèces à remettre si payée en espèces.') : 'Payée avec les espèces encaissées : elle est déduite des espèces à remettre.';
   document.getElementById('m-dep-livreur').style.display='flex';
   setTimeout(function(){ document.getElementById('dep-lv-montant').focus(); }, 100);
 }
@@ -19519,7 +19582,7 @@ function lvModifierDepense(depId) {
         if (Array.isArray(depData)) {
           depenses = depData.map(function(r) {
             return { id:r.id, date:r.date_depense||'', cat:r.cat||'', montant:parseFloat(r.montant)||0,
-                     livreur:r.livreur||'', modePaie:r.mode_paie||'Espèces', comment:r.comment||'' };
+                     livreur:r.livreur||'', modePaie:r.mode_paie||'Espèces', comment:r.comment||'', tourneeId:r.tournee_id||null }; // v7.5.130 : tourneeId gardé
           });
         }
       }
@@ -19548,9 +19611,10 @@ function depLvSelectMode(mode) {
 }
 
 async function validerDepenseLivreur() {
-  if (!depLvCatSelected) { toast('Choisissez une categorie', 'err'); return; }
-  var montantVal = parseFloat(document.getElementById('dep-lv-montant').value);
-  if (!montantVal || montantVal <= 0) { toast('Entrez un montant valide', 'err'); return; }
+  // v7.5.130 : contrôle commun (catégorie, montant > 0, 5 000 € au plus)
+  var _ctlDep = rtDepenseValide(depLvCatSelected, document.getElementById('dep-lv-montant').value);
+  if (!_ctlDep.ok) { toast(_ctlDep.erreur, 'err'); return; }
+  var montantVal = _ctlDep.montant;
   var comment = document.getElementById('dep-lv-comment').value.trim();
   var today = new Date().toISOString().split('T')[0];
 
@@ -19558,30 +19622,26 @@ async function validerDepenseLivreur() {
   var btnCbLv = document.getElementById('dep-lv-mode-cb');
   var modePaieLv = (btnCbLv && btnCbLv.dataset.selected === '1') ? 'CB' : 'Espèces';
 
-  // Récupérer l'ID de la tournée active du livreur
-  var _activeTournee = tournees.find(function(t){
-    return t.livreur && t.livreur.toUpperCase() === livNom.toUpperCase() && t.statut !== 'terminée';
-  });
-  if (!_activeTournee) {
-    _activeTournee = tournees.filter(function(t){
-      return t.livreur && t.livreur.toUpperCase() === livNom.toUpperCase();
-    }).sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); })[0];
-  }
+  // v7.5.130 : tournée de rattachement. Administrateur depuis le Retour de tournée : la tournée de la carte.
+  // Livreur : celle qu'il regarde (pas un aperçu), sinon celle du jour (avant : la première non terminée de la
+  // liste, parfois une tournée À VENIR -> dépense absente du point de caisse du jour).
+  var _cible = depLvCible;
+  var _activeTournee = _cible ? tournees.find(function(t){ return t.id === _cible.tid; })
+    : rtTourneePourDepense(tournees, livNom, currentLvTourneeId, LV_APERCU_ACTIF, (function(){ var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })());
   var _tourneeDate = _activeTournee ? _activeTournee.date : today;
+  var _existante = (_cible && _cible.depId) ? depenses.find(function(d){ return d.id === _cible.depId; }) : null;
 
-  var dep = {
+  var dep = _existante || {
     id: generateId('dlv'),
-    cat: depLvCatSelected,
-    montant: montantVal,
     date: _tourneeDate, // Date de la tournée active, pas today
-    livreur: livNom,
-    comment: comment || '',
-    modePaie: modePaieLv,
+    livreur: _cible && _activeTournee ? (_activeTournee.livreur || '') : livNom,
     tourneeId: _activeTournee ? _activeTournee.id : null,
-    source: 'livreur'
+    source: _cible ? 'admin' : 'livreur'
   };
+  dep.cat = depLvCatSelected; dep.montant = montantVal; dep.comment = comment || ''; dep.modePaie = modePaieLv;
 
-  depenses.unshift(dep);
+  if (!_existante) depenses.unshift(dep);
+  depLvCible = null;
 
   try {
     await fetch(SUPABASE_URL + '/rest/v1/depenses', {
@@ -19603,8 +19663,9 @@ async function validerDepenseLivreur() {
 
   document.getElementById('m-dep-livreur').style.display='none';
   try { localStorage.removeItem('mx_depenses_cache'); } catch(e) {}
-  toast('Depense enregistree : ' + depLvCatSelected + ' ' + montantVal + ' EUR', 'ok');
+  toast((_existante ? 'Dépense corrigée : ' : 'Dépense enregistrée : ') + depLvCatSelected + ' ' + paiEur(montantVal) + (modePaieLv === 'CB' ? ' (CB société)' : ' — déduite des espèces à remettre'), 'ok');
   if (document.getElementById('p-finance') && document.getElementById('p-finance').classList.contains('on')) finRender();
+  if (document.getElementById('p-livreur') && document.getElementById('p-livreur').classList.contains('on')) renderLivreur(); // v7.5.130 : caisse à jour tout de suite
   renderDash();
 }
 

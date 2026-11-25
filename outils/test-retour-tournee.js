@@ -49,9 +49,12 @@ function nouveauBac(role) {
   for (const f of ['function _sigPaieBtns(actif)', 'function sigTogglePaie(encaisse)', 'function sigDejaPaye()', 'function sigSelectMode(mode)', 'function sigCodChoisir(ch)', 'function paiSigPreparer(cmdSig, banner)', 'function validerSig()',
     'function setLvSt(tid, idx, st, _annOk)', 'function getMontantEspecesCmd(c)', 'function getMontantCBCmd(c)', 'function getCmdsLivresParTournee(t)',
     'function rtOutilsPage()', 'function rtDepensesEspecesTournee(t, liste)', 'function lvClotureHtml(t)', 'function lvCloturerTournee(tid)',
-    'function lvReporter(tid, idx)', 'function lvFermerReport()', 'function lvValiderReport()', 'function lvAbsent(tid, idx)'])
+    'function lvReporter(tid, idx, statut)', 'function lvFermerReport()', 'function lvValiderReport()', 'function lvAbsent(tid, idx)',
+    // v7.5.130 : dépenses du livreur
+    'function ouvrirDepenseLivreur(cible)', 'function depLvSelectMode(mode)', 'async function validerDepenseLivreur()', 'function rtLignesDepenses(r)', 'function rtEchapper(s)', 'function renderLivreurCaisse(t)'])
     vm.runInContext(extraireFonction(f), bac);
-  vm.runInContext('var lvReportCible = null;', bac);
+  vm.runInContext('var lvReportCible = null, depLvCatSelected = "", depLvCible = null, currentLvTourneeId = null;', bac);
+  let _n = 0; bac.generateId = (p) => p + '-test-' + (++_n);
   bac.sigMixteRecap = () => {};
   return { bac, els, envois, tourneesSauvees };
 }
@@ -213,13 +216,96 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     bac.lvReporter('T-R', 0); els['report-date'].value = ''; bac.lvValiderReport(); await attendre();
     test('report sans date : accepté, rien ajouté aux instructions', bac.tournees[0].stops[0].statut === 'reporté' && envois[0].body.instr === '' && bac.tournees[0].stops[0].reportAu === '');
   }
-  { const cmd = LBC({ id: '#A9' }); const { bac, envois } = nouveauBac();
+  { const cmd = LBC({ id: '#A9' }); const { bac, envois, els } = nouveauBac();
     bac.commandes = [cmd]; bac.tournees = [{ id: 'T-A', livreur: 'RANOU', date: '2026-11-25', statut: 'en cours', stops: [{ cmdId: '#A9', client: 'Y', statut: 'en-route' }] }];
-    bac._confirm = false; bac.lvAbsent('T-A', 0); await attendre();
-    test('client absent non confirmé : rien ne change', bac.tournees[0].stops[0].statut === 'en-route' && envois.length === 0);
-    bac._confirm = true; bac.lvAbsent('T-A', 0); await attendre();
-    test('client absent confirmé : statut « absent » (valeur existante) sur l\'arrêt et la commande', bac.tournees[0].stops[0].statut === 'absent' && envois[0].body.statut === 'absent');
+    bac.lvAbsent('T-A', 0);
+    test('client absent : la fenêtre s\'ouvre (titre « Client absent », date facultative), rien n\'est encore enregistré', els['m-report'].style.display === 'flex' && /Client absent/.test(els['report-titre'].textContent) && /Reporter au/.test(els['report-label'].textContent) && envois.length === 0);
+    bac.lvFermerReport(); await attendre();
+    test('client absent annulé : rien ne change', bac.tournees[0].stops[0].statut === 'en-route' && envois.length === 0);
+    bac.lvAbsent('T-A', 0); els['report-date'].value = ''; bac.lvValiderReport(); await attendre();
+    test('client absent sans date : statut « absent » (valeur existante) sur l\'arrêt et la commande, instructions inchangées', bac.tournees[0].stops[0].statut === 'absent' && envois[0].body.statut === 'absent' && envois[0].body.instr === '');
   }
+  { const cmd = LBC({ id: '#A8', date: '2026-11-25' }); const { bac, envois, els } = nouveauBac();
+    bac.commandes = [cmd]; bac.tournees = [{ id: 'T-A', livreur: 'RANOU', date: '2026-11-25', statut: 'en cours', stops: [{ cmdId: '#A8', client: 'Z', statut: 'en-route' }] }];
+    bac.lvAbsent('T-A', 0); els['report-date'].value = '2026-11-20'; bac.lvValiderReport(); await attendre();
+    test('client absent, date passée : refusée', bac.tournees[0].stops[0].statut === 'en-route' && envois.length === 0);
+    els['report-date'].value = '2026-11-27'; bac.lvValiderReport(); await attendre(); const b = envois[0] && envois[0].body;
+    test('client absent AVEC date : statut « absent », date notée sur l\'arrêt et dans les instructions', bac.tournees[0].stops[0].statut === 'absent' && bac.tournees[0].stops[0].reportAu === '2026-11-27' && b && /Client absent — à reporter au 2026-11-27/.test(b.instr), b && b.instr);
+    test('client absent avec date : date de livraison inchangée', b && b.date_livraison === '2026-11-25');
+    const pt = bac.rtPointCaisse(bac.tournees[0], [], [], bac.rtOutilsPage());
+    test('Retour de tournée : l\'absent porte sa date de report', pt.absents.length === 1 && pt.absents[0].reportAu === '2026-11-27', pt.absents);
+  }
+
+  // ══════════ 4 bis. Dépenses du livreur ══════════
+  console.log('\n4 bis. DÉPENSES DU LIVREUR (déduites des espèces à remettre)');
+  { const { bac: p } = nouveauBac();
+    test('reste à remettre = espèces − dépenses espèces', JSON.stringify(p.rtResteARemettre(500, 75.5)) === JSON.stringify({ reste: 424.5, aRembourser: 0 }));
+    test('dépenses > espèces : rien à remettre, différence à rembourser au livreur', JSON.stringify(p.rtResteARemettre(40, 65)) === JSON.stringify({ reste: 0, aRembourser: 25 }));
+    test('dépense : catégorie obligatoire', p.rtDepenseValide('', 10).ok === false);
+    test('dépense : montant > 0 (virgule acceptée), 5 000 € au plus', p.rtDepenseValide('Péage', '12,40').montant === 12.4 && !p.rtDepenseValide('Péage', '0').ok && !p.rtDepenseValide('Péage', 'abc').ok && !p.rtDepenseValide('Péage', 6000).ok);
+    const T = [{ id: 'T-HIER', livreur: 'RANOU', date: '2026-11-24', statut: 'terminée' }, { id: 'T-DEMAIN', livreur: 'RANOU', date: '2026-11-26', statut: 'préparée' }, { id: 'T-AUJ', livreur: 'RANOU', date: '2026-11-25', statut: 'en cours' }, { id: 'T-AUTRE', livreur: 'AUTRE', date: '2026-11-25' }];
+    test('rattachement : la tournée affichée (pas un aperçu)', p.rtTourneePourDepense(T, 'ranou', 'T-AUJ', false, '2026-11-25').id === 'T-AUJ');
+    test('rattachement : en aperçu de demain → la tournée du JOUR (avant : la première non terminée, parfois à venir)', p.rtTourneePourDepense(T, 'RANOU', 'T-DEMAIN', true, '2026-11-25').id === 'T-AUJ');
+    test('rattachement : jamais la tournée d\'un autre livreur', p.rtTourneePourDepense(T, 'RANOU', 'T-AUTRE', false, '2026-11-25').id === 'T-AUJ' && p.rtTourneePourDepense(T, 'PERSONNE', null, false, '2026-11-25') === null);
+    const deps = [{ id: 'd1', livreur: 'RANOU', tourneeId: 'T-AUJ', date: '2026-11-25', modePaie: 'Espèces', montant: 30 }, { id: 'd2', livreur: 'RANOU', tourneeId: 'T-HIER', date: '2026-11-25', modePaie: 'Espèces', montant: 99 }, { id: 'd3', livreur: 'RANOU', date: '2026-11-25', modePaie: 'Espèces', montant: 10 }, { id: 'd4', livreur: 'RANOU', tourneeId: 'T-AUJ', modePaie: 'CB', montant: 50 }, { id: 'd5', livreur: 'CAISSE', date: '2026-11-25', montant: 7 }];
+    test('dépenses d\'une tournée : par identifiant de tournée, sinon par date ; jamais CAISSE', p.rtDepensesTournee(T[2], deps).map((d) => d.id).join() === 'd1,d3,d4');
+    test('seules les dépenses en espèces sont déduites (CB société exclue)', p.rtDepensesEspeces(p.rtDepensesTournee(T[2], deps)).map((d) => d.id).join() === 'd1,d3');
+  }
+  { // plusieurs dépenses + déduction dans le point de caisse et la caisse du livreur
+    const { bac, els } = nouveauBac();
+    bac.commandes = [LBC({ id: '#P1', statut: 'livré', stpaie: 'Payé', montantEnc: 300, prix: 300, paie: 'Espèces' }), LBC({ id: '#P2', statut: 'livré', stpaie: 'Payé', montantEnc: 200, prix: 200, paie: 'Espèces' })];
+    bac.tournees = [{ id: 'T-P', livreur: 'RANOU', date: '2026-11-25', statut: 'en cours', stops: [{ cmdId: '#P1', client: 'A', statut: 'livré' }, { cmdId: '#P2', client: 'B', statut: 'livré' }] }];
+    bac.depenses = [{ id: 'e1', livreur: 'RANOU', tourneeId: 'T-P', date: '2026-11-25', cat: 'Carburant', modePaie: 'Espèces', montant: 60 }, { id: 'e2', livreur: 'RANOU', tourneeId: 'T-P', date: '2026-11-25', cat: 'Péage', modePaie: 'Espèces', montant: 14.5 }, { id: 'e3', livreur: 'RANOU', tourneeId: 'T-P', date: '2026-11-25', cat: 'Achat fournisseur', modePaie: 'CB', montant: 120 }];
+    const pt = bac.rtPointCaisse(bac.tournees[0], bac.getCmdsLivresParTournee(bac.tournees[0]), bac.rtDepensesEspecesTournee(bac.tournees[0], bac.depenses), bac.rtOutilsPage());
+    test('plusieurs dépenses : 500 € encaissés − (60 + 14,50) = 425,50 € à remettre (la CB société n\'est pas déduite)', pt.especes === 500 && pt.depEspeces === 74.5 && pt.aRemettre === 425.5 && pt.depenses.length === 2, pt);
+    bac.renderLivreurCaisse(bac.tournees[0]); const h = els['lv-caisse-summary'].innerHTML;
+    test('caisse du livreur : « Espèces à remettre » = 425,50 €, calcul écrit, bouton « Ajouter une dépense »', /Espèces à remettre/.test(h) && /425,50 €/.test(h) && /Espèces encaissées 500 € − dépenses payées en espèces 74,50 €/.test(h) && /Ajouter une dépense/.test(h), h.slice(0, 200));
+    test('caisse du livreur : chaque dépense listée avec son bouton de correction', /lvModifierDepense\('e1'\)/.test(h) && /lvModifierDepense\('e2'\)/.test(h) && /lvModifierDepense\('e3'\)/.test(h));
+    test('caisse du livreur : bloc de clôture et caisse disent le même montant', /Espèces à remettre : 425,50 €/.test((bac.tournees[0].statut = 'terminée', bac.lvClotureHtml(bac.tournees[0]))));
+  }
+  { // dépense saisie par le livreur : rattachée à la tournée affichée du jour, déduite tout de suite
+    const { bac, els, envois } = nouveauBac();
+    const AUJ = (() => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })();
+    bac.tournees = [{ id: 'T-FUTUR', livreur: 'RANOU', date: '2099-01-01', statut: 'préparée', stops: [] }, { id: 'T-JOUR', livreur: 'RANOU', date: AUJ, statut: 'en cours', stops: [] }];
+    vm.runInContext('currentLvTourneeId = "T-JOUR";', bac);
+    bac.ouvrirDepenseLivreur(); vm.runInContext('depLvCatSelected = "Parking";', bac); els['dep-lv-montant'].value = '8'; els['dep-lv-comment'].value = 'Parking client';
+    await bac.validerDepenseLivreur(); const b = envois[0] && envois[0].body;
+    test('livreur : dépense rattachée à SA tournée du jour (pas la tournée à venir), date de la tournée, espèces', b && b.tournee_id === 'T-JOUR' && b.date_depense === AUJ && b.livreur === 'RANOU' && b.mode_paie === 'Espèces' && b.montant === 8 && b.cat === 'Parking', b);
+    test('livreur : la dépense est dans la liste locale (déduction immédiate)', bac.depenses.length === 1 && bac.depenses[0].tourneeId === 'T-JOUR');
+    bac.ouvrirDepenseLivreur(); vm.runInContext('depLvCatSelected = "Parking";', bac); els['dep-lv-montant'].value = '0';
+    await bac.validerDepenseLivreur();
+    test('livreur : montant nul refusé', envois.length === 1 && bac.depenses.length === 1);
+  }
+  { // dépense ajoutée puis corrigée par l'administrateur depuis le Retour de tournée
+    const { bac, els, envois } = nouveauBac('admin');
+    bac.livNom = '';
+    bac.commandes = [LBC({ id: '#Q1', statut: 'livré', stpaie: 'Payé', montantEnc: 250, prix: 250, paie: 'Espèces' })];
+    bac.tournees = [{ id: 'T-Q', livreur: 'RANOU', date: '2026-11-24', statut: 'terminée', stops: [{ cmdId: '#Q1', client: 'A', statut: 'livré' }] }];
+    const r = { t: bac.tournees[0], point: { aRembourser: 0 } };
+    test('Retour de tournée : bouton « + Ajouter une dépense du livreur » branché sur la tournée', /ouvrirDepenseLivreur\(\{ tid: 'T-Q' \}\)/.test(bac.rtLignesDepenses(r)));
+    bac.ouvrirDepenseLivreur({ tid: 'T-Q' });
+    test('écran Dépense ouvert par l\'admin : sous-titre de la tournée', /Tournée T-Q · RANOU/.test(els['dep-lv-sous-titre'].textContent));
+    vm.runInContext('depLvCatSelected = "Achat fournisseur";', bac); els['dep-lv-montant'].value = '45'; els['dep-lv-comment'].value = 'Visserie';
+    await bac.validerDepenseLivreur(); let b = envois[0] && envois[0].body;
+    test('admin : dépense ajoutée au nom du LIVREUR de la tournée, à la date et sur l\'identifiant de la tournée', b && b.livreur === 'RANOU' && b.tournee_id === 'T-Q' && b.date_depense === '2026-11-24' && b.montant === 45, b);
+    const id = bac.depenses[0].id;
+    test('Retour de tournée : la dépense apparaît avec son bouton ✏️', new RegExp("depId: '" + id + "'").test(bac.rtLignesDepenses(r)) && /Visserie/.test(bac.rtLignesDepenses(r)));
+    bac.ouvrirDepenseLivreur({ tid: 'T-Q', depId: id });
+    test('correction : montant et commentaire pré-remplis, titre « Corriger »', els['dep-lv-montant'].value === '45' && els['dep-lv-comment'].value === 'Visserie' && /Corriger/.test(els['dep-lv-titre'].textContent));
+    els['dep-lv-montant'].value = '40';
+    await bac.validerDepenseLivreur(); b = envois[1] && envois[1].body;
+    test('correction : même identifiant (mise à jour, pas de doublon), nouveau montant', b && b.id === id && b.montant === 40 && bac.depenses.length === 1, b);
+    const pt = bac.rtPointCaisse(bac.tournees[0], bac.getCmdsLivresParTournee(bac.tournees[0]), bac.rtDepensesEspecesTournee(bac.tournees[0], bac.depenses), bac.rtOutilsPage());
+    test('point de caisse après correction : 250 − 40 = 210 € à remettre', pt.aRemettre === 210, pt);
+    // la validation enregistre bien le montant APRÈS dépenses (mécanisme existant validerRemiseCaisse / caisse_remises)
+    bac.window = { _paiRemisesAttendu: { 't_T-Q': { especes: pt.aRemettre, cb: pt.cb } } }; bac.caissesRemises = {}; bac.prompt = () => '200';
+    const reponses = ['200', 'Il manque 10 € : ticket perdu']; bac.prompt = () => reponses.shift();
+    vm.runInContext(extraireFonction('function paiCalculRemise(attendu, saisie)'), bac);
+    vm.runInContext(extraireFonction('async function validerRemiseCaisse(key)'), bac);
+    await bac.validerRemiseCaisse('t_T-Q'); const rem = envois.find((e) => /caisse_remises/.test(e.url));
+    test('validation du point de caisse : caisse_remises reçoit le RESTE À REMETTRE (210 €), la somme remise et l\'écart', rem && rem.body.especes_attendues === 210 && rem.body.especes_remises === 200 && rem.body.ecart === -10 && rem.body.commentaire === 'Il manque 10 € : ticket perdu', rem && rem.body);
+  }
+  test('la page transmet bien le reste à remettre (après dépenses) à la validation', /_paiRemisesAttendu\[r\.caisseKey\] = \{ especes: r\.aRemettre/.test(html) && /var aRemettre = Math\.max\(0, especes - depEspLv\);/.test(html));
 
   // ══════════ 5. Clôture de la tournée ══════════
   console.log('\n5. CLÔTURE DE LA TOURNÉE PAR LE LIVREUR');
@@ -254,7 +340,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
   test('Retour de tournée : bouton « Valider le point de caisse » branché sur validerRemiseCaisse (caisse_remises)', /validerRemiseCaisse\(\\'' \+ r\.caisseKey \+ '\\'\)"[^>]*>✅ Valider le point de caisse/.test(html));
   test('validerRemiseCaisse écrit toujours dans caisse_remises (mécanisme existant)', /rest\/v1\/caisse_remises', \{\s*method: 'POST'/.test(extraireFonction('async function validerRemiseCaisse(key)')));
   test('ancre JARVIS (bloc JVUE) présente', html.indexOf('// JVUE-DEBUT') > 0 && html.indexOf('// JVUE-FIN') > html.indexOf('// JVUE-DEBUT'));
-  test('CACHE_VERSION augmentée (v7-5-129 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(29|[3-9]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
+  test('CACHE_VERSION augmentée (v7-5-130 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1([3-9]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
