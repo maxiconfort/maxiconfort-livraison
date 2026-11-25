@@ -154,6 +154,24 @@ function nouveauBac(opts) {
   await B.bac.sbLoadProduits(); const z = B.bac.produits.find(p => p.id === 'pr-z');
   test('chargement : prix NULL → prix 0 affiché « à définir », non vendable, réf. interne', z && z.prix === 0 && z.prixDefini === false && z.vendable === false && z.refInterne === 'MC-TEST-Z', z);
   test('base : déclencheur sur commandes (lignes nouvelles seulement, upsert compris)', sql.includes('create trigger commandes_produit_vendable_garde before insert or update of lignes on public.commandes') && sql.includes('select to_jsonb(c.lignes) into v_old from public.commandes c where c.id = new.id'));
+  {
+    // revue Codex sur 82a9b09 (point 1) : lignes FIGÉES ligne à ligne
+    const trig = sql.slice(sql.indexOf('create or replace function interne.commandes_produit_vendable_garde()'), sql.indexOf('create trigger commandes_produit_vendable_garde'));
+    test('base : lignes figées — TOUTES les lignes des produits non vendables comparées (plus d\'exemption « produit déjà présent »)',
+      trig.includes('v_modif := interne.lignes_non_vendables_modifiees(v_new, v_old, v_nv);') && !trig.includes("not exists (select 1 from jsonb_array_elements(v_old) o where o ->> 'produitId' = e ->> 'produitId')"));
+    test('base : lignes figées — comparaison en multiensemble trié de signatures (occurrences, quantité, prix, remises)',
+      /jsonb_agg\(interne\.l039_signature_ligne\(e\) order by interne\.l039_signature_ligne\(e\)\)[\s\S]{0,200}is distinct from[\s\S]{0,200}jsonb_agg\(interne\.l039_signature_ligne\(o\) order by interne\.l039_signature_ligne\(o\)\)/.test(sql)
+      && ['qte', 'prixUnit', 'prixBrut', 'remiseLigne', 'remiseVal', 'remiseType', 'sousTotal'].every(k => sql.includes("'" + k + "', ")));
+    test('base : lignes figées — upsert : lignes actuelles de la commande comme référence, commande nouvelle = refus', trig.includes('select to_jsonb(c.lignes) into v_old from public.commandes c where c.id = new.id;') && trig.includes('Commande nouvelle : v_old reste NULL'));
+    const auto = sql.slice(sql.indexOf('9. Auto-contrôle à l\'application : lignes figées'));
+    test('base : auto-contrôle EXÉCUTÉ à l\'application de la migration (quantité, prix, doublon, occurrence retirée, commande nouvelle, ordre libre)',
+      ['identique', 'ordre / produit vendable modifié', 'retrait total', 'quantité', 'prix', 'ligne en double ajoutée', 'une occurrence retirée', 'commande nouvelle'].every(c => auto.includes("f := '" + c + "'")) && auto.includes('Migration annulée'));
+    // point 2 : correspondance certaine d'un produit qui DEVIENT non vendable
+    test('base : produit (ou composant d\'ensemble) qui devient non vendable avec une variante Shopify « certaine » → refusé',
+      sql.includes('create trigger produits_correspondance_garde after update of vendable, prix_vente_defini, composants on public.produits')
+      && /produits_correspondance_garde\(\)[\s\S]{0,900}sc\.fiabilite = 'certaine'[\s\S]{0,500}c ->> 'id' = new\.id[\s\S]{0,200}interne\.produit_non_vendable\(sc\.app_produit_id\)/.test(sql)
+      && sql.includes('drop trigger if exists produits_correspondance_garde on public.produits;'));
+  }
   test('base : déclencheur sur la correspondance Shopify (variante « certaine »)', sql.includes('create trigger stock_correspondance_vendable_garde') && sql.includes("new.fiabilite = 'certaine' and interne.produit_non_vendable(new.app_produit_id)"));
   test('base : un ensemble dont un composant est non vendable est non vendable', /produit_non_vendable[\s\S]{0,700}jsonb_array_elements\(p\.composants\)/.test(sql));
   test('base : collaboratrice / livreur ne peuvent pas rendre un produit vendable', sql.includes('new.vendable := old.vendable;') && sql.includes('new.prix_vente_defini := old.prix_vente_defini;'));
@@ -173,8 +191,33 @@ function nouveauBac(opts) {
   test('règle commune : ENSEMBLE dont un composant est non vendable écarté (revue Codex P2)', !vend.includes('e-nv') && vend.includes('e-ok'), vend);
   test('règle commune : composant INACTIF non vendable pris en compte (catalogue complet lu avant le filtre « actif »)', !vend.includes('e-inactif'), vend);
   test('règle commune : colonnes absentes (avant migration) = tout vendable', pv.produitsVendables([{ id: 'z' }, { id: 'y', composants: [{ id: 'z' }] }]).length === 2);
-  test('rapprochement WhatsApp : règle commune sur TOUT le catalogue, puis produits actifs', wa.includes("import { produitsVendables } from '../_shared/produits-vendables.ts';")
-    && /produitsVendables\(\(data as any\[\]\) \|\| \[\]\)\.filter\(\(p: any\) => p\.actif === true\)/.test(wa) && !/from\('produits'\)\.select\('\*'\)\.eq\('actif'/.test(wa));
+  test('rapprochement WhatsApp : lecture COMPLÈTE (pages + composants par identifiants), règle commune, puis produits actifs',
+    wa.includes("import { lireCatalogueComplet, produitsVendables } from '../_shared/produits-vendables.ts';")
+    && /\.eq\('actif', true\)\.order\('id'\)\.range\(debut, fin\)/.test(wa) && /\.select\('\*'\)\.in\('id', ids\)/.test(wa)
+    && /produitsVendables\(rows\)\.filter\(\(p: any\) => p\.actif === true\)/.test(wa) && !/\.limit\(1000\)/.test(wa));
+  test('rapprochement WhatsApp : erreur de lecture → catalogue VIDE (jamais partiel)', /catch \(e\) \{\s*console\.error\('chargerCatalogue : lecture impossible', e\);\s*return \[\];/.test(wa));
+  {
+    // revue Codex sur 82a9b09 : 1 500 produits actifs (au-delà de l'ancien plafond de 1 000), ensemble en DERNIÈRE page dont le
+    // composant non vendable est INACTIF (donc absent de la lecture des actifs) : il doit être lu par identifiant et l'ensemble écarté
+    const actifs = [];
+    for (let n = 0; n < 1499; n++) actifs.push({ id: 'p' + String(n).padStart(4, '0'), nom: 'Fictif ' + n, actif: true });
+    actifs.push({ id: 'p9999-ens', nom: 'Ensemble fictif', actif: true, composants: [{ id: 'cach', qte: 1 }, { id: 'p0001', qte: 1 }] });
+    const base = actifs.concat([{ id: 'cach', nom: 'Composant inactif non vendable', actif: false, vendable: false, prix_vente_defini: false }]);
+    const pages = [], parIds = [];
+    const rows = await pv.lireCatalogueComplet(
+      async (d, f2) => { pages.push([d, f2]); return actifs.slice(d, f2 + 1); },
+      async (ids) => { parIds.push(ids.slice()); return base.filter(r => ids.includes(r.id)); });
+    const vendW = pv.produitsVendables(rows).filter(p => p.actif === true).map(p => p.id);
+    test('catalogue complet : lu par pages de 1 000 au-delà du plafond (2 pages)', pages.length === 2 && rows.filter(r => r.actif).length === 1500, pages);
+    test('catalogue complet : composant absent de la lecture chargé PAR IDENTIFIANT', parIds.length === 1 && JSON.stringify(parIds[0]) === '["cach"]', parIds);
+    test('catalogue complet : ensemble dont le composant (non lu au départ) est non vendable → écarté', !vendW.includes('p9999-ens') && vendW.includes('p1498'), vendW.length);
+    let leve = false;
+    try { await pv.lireCatalogueComplet(async () => actifs.slice(-2), async () => { throw new Error('panne'); }); } catch (e) { leve = true; }
+    test('catalogue complet : erreur de lecture des composants → exception (pas de catalogue partiel)', leve);
+    leve = false;
+    try { await pv.lireCatalogueComplet(async () => null, async () => []); } catch (e) { leve = true; }
+    test('catalogue complet : page illisible → exception', leve);
+  }
   test('JARVIS : même règle commune (idsNonVendables)', fs.readFileSync(path.join(racine, 'supabase', 'functions', '_shared', 'jarvis-action-logique.ts'), 'utf8').includes('const nonVendables = idsNonVendables(rows);'));
   const jl = await import('file:///' + path.join(racine, 'supabase', 'functions', '_shared', 'jarvis-action-logique.ts').replace(/\\/g, '/'));
   const catJ = jl.catalogueDepuisBase([{ id: 'n', nom: 'Matelas Nouveau N (fictif)', prix: null, vendable: false, prix_vente_defini: false }, { id: 'a', nom: 'Matelas Fictif A 140×190', prix: 100 }]);

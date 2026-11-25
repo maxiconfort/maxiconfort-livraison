@@ -25,7 +25,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.117.2';
-import { produitsVendables } from '../_shared/produits-vendables.ts';
+import { lireCatalogueComplet, produitsVendables } from '../_shared/produits-vendables.ts';
 
 const ANTHROPIC_KEY = Deno.env.get('ANTHROPIC_API_KEY') || '';
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
@@ -96,10 +96,27 @@ async function nextCmdId(): Promise<string> {
 
 async function chargerCatalogue(): Promise<any[]> {
   // 25/11/2026 (migration 039) : un produit NON VENDABLE (prix de vente à définir, ou ENSEMBLE dont un composant l'est) n'est
-  // jamais proposé au rapprochement. select * sur TOUT le catalogue (composants compris) : les colonnes vendable /
-  // prix_vente_defini n'existent qu'après la migration (avant : tout reste vendable) ; les produits actifs sont gardés ensuite.
-  const { data } = await sb.from('produits').select('*').limit(1000);
-  return produitsVendables((data as any[]) || []).filter((p: any) => p.actif === true).slice(0, 200)
+  // jamais proposé au rapprochement. select * (les colonnes vendable / prix_vente_defini n'existent qu'après la migration : avant,
+  // tout reste vendable). 26/11 (revue Codex sur 82a9b09) : plus de plafond à 1 000 lignes — produits actifs lus PAR PAGES, puis
+  // composants d'ensemble manquants (inactifs) lus par identifiants (lireCatalogueComplet). Erreur de lecture : catalogue VIDE
+  // (tous les produits partent « hors catalogue », à vérifier à la main), jamais un catalogue partiel.
+  let rows: any[];
+  try {
+    rows = await lireCatalogueComplet(
+      async (debut, fin) => {
+        const { data, error } = await sb.from('produits').select('*').eq('actif', true).order('id').range(debut, fin);
+        if (error) throw error; return (data as any[]) || [];
+      },
+      async (ids) => {
+        const { data, error } = await sb.from('produits').select('*').in('id', ids);
+        if (error) throw error; return (data as any[]) || [];
+      },
+    );
+  } catch (e) {
+    console.error('chargerCatalogue : lecture impossible', e);
+    return [];
+  }
+  return produitsVendables(rows).filter((p: any) => p.actif === true).slice(0, 200)
     .map((p: any) => ({ id: p.id, nom: p.nom, cat: p.cat, dim: p.dim, prix: p.prix }));
 }
 
