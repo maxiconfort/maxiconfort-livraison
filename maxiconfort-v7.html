@@ -9904,7 +9904,10 @@ function rtPointCaisse(t, cmdsLivrees, depEspeces, outils) {
   });
   (cmdsLivrees || []).forEach(function(c) {
     if (!c) return;
-    var e = rtArrondi(esp(c)), k = rtArrondi(cb(c));
+    // v7.5.132 (revue Codex P1) : ce qui a été encaissé PENDANT cette tournée (acompte déjà payé exclu)
+    var arret = stops.find(function(x) { return x && x.cmdId === c.id && x.statut === 'livré'; }) || null;
+    var part = hors(c) ? { esp: 0, cb: 0 } : rtEncaisseTournee(c, arret);
+    var e = part ? part.esp : rtArrondi(esp(c)), k = part ? part.cb : rtArrondi(cb(c));
     p.especes += e; p.cb += k; if (k > 0) p.nbCb++;
     if (hors(c) || (prep(c) && c.stpaie === 'Payé')) { p.dejaPaye.nb++; p.dejaPaye.montant += rtArrondi(c.prix); return; }
     var reste = rtResteDu(c.prix, c.montantEnc, c.stpaie);
@@ -9917,6 +9920,31 @@ function rtPointCaisse(t, cmdsLivrees, depEspeces, outils) {
   p.aRemettre = rr.reste; p.aRembourser = rr.aRembourser;
   p.depenses = (depEspeces || []).map(function(d) { return { id: d.id || '', cat: d.cat || '', montant: rtArrondi(d.montant), comment: d.comment || '' }; });
   return p;
+}
+// v7.5.132 (revue Codex P1) : montant encaissé PENDANT la tournée sur un arrêt livré. Le cumul de la commande
+// (montant_enc) comprend un éventuel acompte payé avant ; l'arrêt garde, à la signature, ce qui était déjà encaissé
+// (`encAvant`). Encaissé sur la tournée = cumul actuel − encAvant, attribué au mode de la commande (Mixte : parts
+// espèces / CB de la livraison). Sans `encAvant` (arrêt signé avant cette version) : null -> calcul d'origine.
+function rtEncaisseTournee(c, arret) {
+  if (!c || !arret || arret.encAvant == null || isNaN(parseFloat(arret.encAvant))) return null;
+  if (c.stpaie !== 'Payé' && c.stpaie !== 'Partiel') return { esp: 0, cb: 0 };
+  if (c.paie === 'Mixte') return { esp: rtArrondi(c.paie_especes != null ? c.paie_especes : arret.paie_especes), cb: rtArrondi(c.paie_cb != null ? c.paie_cb : arret.paie_cb) };
+  var m = Math.max(0, rtArrondi((parseFloat(c.montantEnc) || 0) - (parseFloat(arret.encAvant) || 0)));
+  if (c.paie === 'Espèces') return { esp: m, cb: 0 };
+  if (c.paie === 'CB') return { esp: 0, cb: m };
+  return { esp: 0, cb: 0 };
+}
+// v7.5.132 (revue Codex P2) : tournée du livreur à GARDER affichée après sa clôture (ou sa fin automatique) :
+// celle qu'il regarde, sinon celle mémorisée à la clôture, si elle est « terminée » et datée d'aujourd'hui.
+function rtTourneeAGarder(mesTournees, idAffichee, memo, aujourdhui) {
+  var ids = [];
+  if (idAffichee) ids.push(idAffichee);
+  if (memo && memo.id && memo.date === aujourdhui) ids.push(memo.id);
+  for (var i = 0; i < ids.length; i++) {
+    var t = (mesTournees || []).find(function(x) { return x && x.id === ids[i]; });
+    if (t && t.statut === 'terminée' && t.date === aujourdhui) return t;
+  }
+  return null;
 }
 // v7.5.130 : dépenses du livreur payées avec les espèces encaissées (carburant, péage, parking, fournisseur…).
 // Une dépense appartient à une tournée par son identifiant de tournée (sinon par la date) ; jamais celles de « CAISSE ».
@@ -10006,6 +10034,7 @@ function lvCloturerTournee(tid) {
   var p = rtPointCaisse(t, getCmdsLivresParTournee(t), rtDepensesEspecesTournee(t, depenses), rtOutilsPage());
   if (!confirm('Clôturer la tournée ' + t.id + ' ?\n\n' + p.livres + ' livré(s), ' + p.reportes.length + ' reporté(s), ' + p.absents.length + ' absent(s).\nEspèces à remettre : ' + paiEur(p.aRemettre) + '\nCarte bleue : ' + paiEur(p.cb))) return;
   t.statut = 'terminée';
+  try { mxEcrire('mx_lv_tournee_cloturee', JSON.stringify({ id: t.id, date: t.date })); } catch(e) {} // v7.5.132 : reste affichée
   sbSaveTournee(t);
   try { localStorage.setItem('mx_tournees_cache', JSON.stringify(tournees)); } catch(e) {}
   toast('🏁 Tournée clôturée — espèces à remettre : ' + paiEur(p.aRemettre), 'ok');
@@ -10077,7 +10106,11 @@ function renderLivreurCaisse(t) {
     // v7.5.129 : commande connue -> même calcul que le point de caisse de l'administrateur
     // (montant réellement encaissé, payé en ligne exclu) ; sinon calcul d'origine sur l'arrêt.
     var _cRt = (typeof findCmdForStop === 'function') ? findCmdForStop(s) : null;
-    if (_cRt) { caisseEsp += getMontantEspecesCmd(_cRt); caisseCB += getMontantCBCmd(_cRt); return; }
+    if (_cRt) {
+      var _pRt = paiHorsCaisse(_cRt) ? { esp: 0, cb: 0 } : rtEncaisseTournee(_cRt, s); // v7.5.132 : acompte exclu
+      if (_pRt) { caisseEsp += _pRt.esp; caisseCB += _pRt.cb; } else { caisseEsp += getMontantEspecesCmd(_cRt); caisseCB += getMontantCBCmd(_cRt); }
+      return;
+    }
     if (s.stpaie !== 'Payé' && s.stpaie !== 'Partiel') return;
     if (s.paie === 'Mixte') {
       caisseEsp += parseFloat(s.paie_especes) || 0;
@@ -10164,7 +10197,8 @@ var LV_APERCU_ACTIF = false; // vrai quand il regarde une AUTRE journée que la 
 // Liste navigable : sa tournée du jour / en cours + toutes celles à venir, par date.
 function lvListeNav(mesTournees, courante, aujourdhui) {
   var liste = (mesTournees || []).filter(function(t){
-    return t && t.statut !== 'terminée' && (t.date || '') >= aujourdhui;
+    // v7.5.132 (revue Codex P2) : une tournée terminée AUJOURD'HUI reste dans la navigation de la journée
+    return t && (t.statut !== 'terminée' || t.date === aujourdhui) && (t.date || '') >= aujourdhui;
   });
   if (courante && !liste.some(function(t){ return t.id === courante.id; })) liste.push(courante); // tournée en retard
   return liste.sort(function(a, b){ return (a.date || '').localeCompare(b.date || ''); });
@@ -10202,6 +10236,7 @@ function lvNaviguerTournee(sens) {
   var j = i + sens;
   if (j < 0 || j >= LV_NAV.length) return;
   LV_APERCU_ID = LV_NAV[j].id;
+  try { mxSupprimer('mx_lv_tournee_cloturee'); } catch(e) {} // v7.5.132 : changement de tournée explicite
   currentLvTourneeId = LV_APERCU_ID;
   renderLivreur();
 }
@@ -10253,6 +10288,11 @@ function renderLivreur() {
     var livNomLow = livNom.toLowerCase().trim();
     var myTournees = tournees.filter(function(t){ return t.livreur && t.livreur.toLowerCase().trim() === livNomLow; });
     var myT = lvChoisirTournee(myTournees); // v7.5.83 : tournée du JOUR en priorité
+    // v7.5.132 (revue Codex P2) : après « Clôturer ma tournée » (ou fin automatique), la tournée terminée du jour
+    // reste affichée (résumé de caisse, dépenses) tant que le livreur ne change pas lui-même de tournée.
+    var _memoClo = null; try { _memoClo = JSON.parse(mxLire('mx_lv_tournee_cloturee') || 'null'); } catch(e) {}
+    var _garder = LV_APERCU_ID ? null : rtTourneeAGarder(myTournees, currentLvTourneeId, _memoClo, lvToday);
+    if (_garder) myT = _garder;
     // v7.5.120 : le livreur peut regarder ses tournées SUIVANTES (flèches). S'il n'y a
     // rien demain, la flèche l'emmène directement à la prochaine journée qui existe :
     // la liste ne contient que des tournées réelles, les jours vides n'y figurent pas.
@@ -11667,6 +11707,11 @@ function validerSig(){
   }
   const heure=new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
   s.statut='livré'; s.heure=heure; s.signataire=nom;
+  // v7.5.132 (revue Codex P1) : ce qui était DÉJÀ encaissé avant cette livraison (acompte), pour séparer
+  // le cumul de la commande de ce que le livreur encaisse sur cette tournée (point de caisse).
+  var _cAvant = commandes.find(function(c){ return c.id === s.cmdId; }) || null;
+  var _avantEnc = (_cAvant && _cAvant.stpaie === 'Partiel') ? Math.round((parseFloat(_cAvant.montantEnc) || 0) * 100) / 100 : 0;
+  if (sigPrepaidMode) delete s.encAvant; else s.encAvant = _avantEnc;
   // v7.3.4 : recuperer les montants Mixte si applicable
   var sigPaieEsp = 0, sigPaieCb = 0, sigStatut = 'Payé';
   if (sigPaieEncaisse && sigPaieMode === 'Mixte') {
@@ -11677,7 +11722,7 @@ function validerSig(){
       return;
     }
     var prixStop = parseFloat(s.prix) || 0;
-    var diffStop = (sigPaieEsp + sigPaieCb) - prixStop;
+    var diffStop = (_avantEnc + sigPaieEsp + sigPaieCb) - prixStop; // v7.5.132 : acompte compris
     sigStatut = (Math.abs(diffStop) < 0.01) ? 'Payé' : 'Partiel';
   }
   // v7.5.129 : montant plus bas que le reste dû -> « Partiel » (ou « Non payé » à 0 €)
@@ -11723,7 +11768,7 @@ function validerSig(){
       cmd.paie = sigPaieMode;
       cmd.stpaie = sigStatut;
       if (sigPaieMode === 'Mixte') {
-        cmd.montantEnc = sigPaieEsp + sigPaieCb;
+        cmd.montantEnc = Math.round((_avantEnc + sigPaieEsp + sigPaieCb) * 100) / 100; // v7.5.132 : cumul = acompte + encaissé
         cmd.paie_especes = sigPaieEsp;
         cmd.paie_cb      = sigPaieCb;
       } else {
@@ -11745,7 +11790,7 @@ function validerSig(){
       // v7.5.114 : encaissement ordinaire (Leboncoin, téléphone…) -> colonnes dédiées
       var _avecCb = sigPaieMode === 'CB' || sigPaieMode === 'Mixte';
       cmd.ticketCb = _avecCb ? _tkStd : ''; cmd.encaissePar = _livCod; cmd.encaisseAt = new Date().toISOString(); cmd.encaisseTournee = t.id || ''; cmd._enc = true;
-      s.enc = { choix: sigPaieMode, montant: (sigPaieMode === 'Mixte' ? sigPaieEsp + sigPaieCb : ((_rtCtl && _rtCtl.baisse) ? _rtCtl.montant : (parseFloat(cmd.prix) || 0))), ticket: _avecCb ? _tkStd : null, par: _livCod, at: cmd.encaisseAt };
+      s.enc = { choix: sigPaieMode, montant: (sigPaieMode === 'Mixte' ? sigPaieEsp + sigPaieCb : (_rtCtl ? _rtCtl.montant : (parseFloat(cmd.prix) || 0))), ticket: _avecCb ? _tkStd : null, par: _livCod, at: cmd.encaisseAt };
     }
     if (sigCodActif) {
       var _tkCod = String((document.getElementById('sig-cod-ticket') || {}).value || '').trim();
@@ -12388,8 +12433,10 @@ function finRender() {
       var retInfos = tourneesLv.map(function(t) {
         var lv = t.livreur || '';
         var cmdsLv = getCmdsLivresParTournee(t) || [];
-        var especes  = cmdsLv.reduce(function(s,c){ return s + getMontantEspecesCmd(c); }, 0);
-        var cb       = cmdsLv.reduce(function(s,c){ return s + getMontantCBCmd(c); }, 0);
+        // v7.5.132 (revue Codex P1) : encaissé PENDANT la tournée (acompte exclu), même calcul que le point de caisse
+        var _pt0 = rtPointCaisse(t, cmdsLv, [], rtOutilsPage());
+        var especes  = _pt0.especes;
+        var cb       = _pt0.cb;
         var virement = cmdsLv.filter(function(c){ return c.paie==='Virement' && c.stpaie==='Payé'; }).reduce(function(s,c){ return s+(c.montantEnc||c.prix); },0);
         var prepaye  = cmdsLv.filter(function(c){ return MODES_PAIE.filter(function(m){return m.cat==='prepaye';}).map(function(m){ return m.id; }).includes(c.paie) && c.stpaie==='Payé'; }).reduce(function(s,c){ return s+(c.montantEnc||c.prix); },0);
         var nonEnc   = cmdsLv.filter(function(c){ return c.stpaie!=='Payé'; }).reduce(function(s,c){ return s+c.prix; },0);
