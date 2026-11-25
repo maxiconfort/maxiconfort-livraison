@@ -214,8 +214,85 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
   test('temps réel produits → signal produits', /table:'produits'\}, function\(payload\) \{[\s\S]*?tdbSignaler\('produits'\)[\s\S]*?\.subscribe\(\);/.test(html));
   test('réception d’arrivage → produits relus + revient relu', /await sbLoadProduits\(\); \} catch\(e\) \{\}\n\s*if \(typeof tdbSignaler === 'function'\) tdbSignaler\('revients'\);/.test(f('async function arrValider() {')));
   test('ouverture de la page Tableau de bord → recalcul', f('function goTo(p, el) {').includes("if(p==='dashboard') renderDash();"));
+  console.log('\n7 ter. REVUE CODEX DE 8705c41 (date égale, lectures concurrentes, pagination, classements de la collaboratrice)');
+  { // 1. comparaison à date égale : rien après aujourd'hui dans les chiffres comparés
+    const Ps = bac.tdbPeriodes('semaine', mer), Pm = bac.tdbPeriodes('mois', mer), Pa = bac.tdbPeriodes('annee', mer);
+    test('période en cours comparée jusqu’à aujourd’hui (cau = aujourd’hui ; fin de période gardée pour les prévues)', Ps.cau === '2026-11-25' && Pm.cau === '2026-11-25' && Pa.cau === '2026-11-25' && Ps.au === '2026-11-29');
+    const fut = base.concat([
+      C('#f1', { prix: 999, statut: 'en-attente', date_commande: '2026-11-27', date_livraison: '2026-11-28' }), // commande saisie à l'avance (date future)
+      C('#f2', { prix: 700, statut: 'livré', stpaie: 'Payé', montant_enc: 700, date_commande: '2026-11-20', date_livraison: '2026-11-27' }), // livraison datée dans le futur
+      C('#f3', { prix: 60, statut: 'en-attente', date_commande: '2026-11-24', date_livraison: '2026-11-28' }), // prise cette semaine, livraison samedi
+    ]).map(bac.tdbLigne);
+    for (const [nom, P, pris, nb] of [['semaine', Ps, 60, 1], ['mois', Pm, 760, 2], ['année', Pa, 760, 2]]) { // prises avant aujourd'hui : #f3 (et #f2, prise le 20/11) ; #f1 (27/11) jamais
+      const d = bac.tdbDonnees(fut, P, true, () => null), sans = bac.tdbDonnees(L, P, true, () => null);
+      test(nom + ' : commande future exclue de « pris » et des ventes', d.cur.pris === sans.cur.pris + pris && d.cur.ventes === sans.cur.ventes + nb, [d.cur, sans.cur]);
+      test(nom + ' : livraison datée du futur exclue du CA, des livrées et de l’encaissé', d.cur.ca === sans.cur.ca && d.cur.livrees === sans.cur.livrees && d.cur.encaisse === sans.cur.encaisse, d.cur);
+      test(nom + ' : prévues comptées sur la période entière (jusqu’à sa fin)', d.cur.prevuesPeriode === sans.cur.prevuesPeriode + 3 && d.cur.prevues === sans.cur.prevues, d.cur);
+    }
+    const ds = bac.tdbDonnees(fut, Ps, true, () => null);
+    const hS = bac.tdbHtml(Object.assign({ P: Ps, admin: true, stock: sv }, ds));
+    test('affichage : livrées / prévues de la période entière, CA à date égale', hS.includes(ds.cur.livrees + ' / ' + ds.cur.prevuesPeriode) && hS.includes(bac.tdbEur(ds.cur.ca)) && ds.cur.ca === bac.tdbDonnees(L, Ps, true, () => null).cur.ca, ds.cur);
+    test('top zones et livreurs : rien après aujourd’hui', bac.tdbDonnees(fut, Pm, true, () => null).zones.reduce((s, z) => s + z.nb, 0) === bac.tdbDonnees(L, Pm, true, () => null).zones.reduce((s, z) => s + z.nb, 0) && ds.livreurs.reduce((s, l) => s + l.nb, 0) === bac.tdbDonnees(L, Ps, true, () => null).livreurs.reduce((s, l) => s + l.nb, 0));
+  }
+  { // 5. collaboratrice : classements par NOMBRE, jamais par CA
+    const Zc = [
+      C('#c1', { statut: 'livré', prix: 5000, adresse: '1 rue A 75011 Paris', livreur: 'ZED' }),
+      C('#c2', { statut: 'livré', prix: 100, adresse: '2 rue B 93100 Montreuil', livreur: 'ZED' }), C('#c3', { statut: 'livré', prix: 100, adresse: '3 rue C 93200 Saint-Denis', livreur: 'ALI' }),
+      C('#c4', { statut: 'livré', prix: 100, adresse: '4 rue D 93300 Aubervilliers', livreur: 'ALI' }),
+      C('#c5', { statut: 'livré', prix: 50, adresse: '5 rue E 92130 Issy' }), C('#c6', { statut: 'livré', prix: 50, adresse: '6 rue F 92100 Boulogne' }),
+    ].map(bac.tdbLigne);
+    const za = bac.tdbTopZones(Zc, '2026-11-01', '2026-11-30', bac.getZoneFromAdresse, 2), zc = bac.tdbTopZones(Zc, '2026-11-01', '2026-11-30', bac.getZoneFromAdresse, 2, true);
+    test('admin : top 2 par CA (Paris, 1 livraison à 5 000 €, d’abord)', egal(za.map((z) => z.nom), ['Paris (75)', 'Seine-Saint-Denis (93)']), za);
+    test('collab : top 2 par NOMBRE (93 : 3, 92 : 2 ; Paris écarté)', egal(zc.map((z) => [z.nom, z.nb]), [['Seine-Saint-Denis (93)', 3], ['Hauts-de-Seine (92)', 2]]), zc);
+    test('collab : aucun montant dans les zones (champ ca absent)', zc.every((z) => !('ca' in z)));
+    const la = bac.tdbLivreurs(Zc.slice(0, 4), '2026-11-01', '2026-11-30'), lc = bac.tdbLivreurs(Zc.slice(0, 4), '2026-11-01', '2026-11-30', true);
+    test('livreurs à égalité : admin départagé par CA (ZED), collab par nom (ALI)', egal(la.map((l) => l.nom), ['ZED', 'ALI']) && egal(lc.map((l) => l.nom), ['ALI', 'ZED']), [la, lc]);
+    test('collab : aucun montant chez les livreurs (champ ca absent)', lc.every((l) => !('ca' in l)));
+    const Pm2 = bac.tdbPeriodes('mois', mer), dC = bac.tdbDonnees(Zc, Pm2, false, bac.getZoneFromAdresse);
+    test('tdbDonnees collab : classements par nombre, aucun montant affiché', dC.zones[0].nb === 3 && !bac.tdbHtml(Object.assign({ P: Pm2, admin: false, stock: sv }, dC)).includes('€'), dC.zones);
+  }
+  { // 2. lectures concurrentes : la dernière lancée gagne, les réponses obsolètes sont ignorées
+    const enCours = []; let lectures = 0; const periode = { value: 'mois' }; const el = { innerHTML: '' };
+    const b5 = { console, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, Promise, zones: [],
+      role: 'admin', commandes: [{ id: '#1' }], cmdTotalCount: 5000, produits: [], SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
+      setTimeout: () => 0, clearTimeout: () => {}, renderDash: () => {}, getZoneFromAdresse: () => null, arrChargerRevients: () => new Promise(() => {}),
+      document: { getElementById: (id) => (id === 'tdb-contenu' ? el : id === 'p-dashboard' ? { classList: { contains: () => true } } : id === 'dash-periode' ? periode : null) },
+      fetch: () => { lectures++; return new Promise((ok) => { enCours.push((rows) => ok({ ok: true, json: async () => rows })); }); } };
+    vm.createContext(b5); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b5);
+    const attendre = async () => { for (let k = 0; k < 6; k++) await new Promise((r) => setImmediate(r)); };
+    const ligne = (id) => ({ id, prix: 1, statut: 'livré', stpaie: '', montant_enc: 0, date_commande: '2026-11-01', date_livraison: '2026-11-01', origine: '', adresse: '', livreur: '' });
+    b5.tdbRendre(); const mois = enCours.splice(0); // Mois : 2 lectures
+    periode.value = 'semaine'; b5.tdbRendre(); const sem = enCours.splice(0); // Semaine : 3 lectures
+    test('changement rapide de période : deux lectures distinctes lancées', mois.length === 2 && sem.length === 3 && b5.TDB_ETAT.req === 2, [mois.length, sem.length]);
+    sem.forEach((r) => r([ligne('#S')])); await attendre(); // la plus récente répond d'abord
+    const apres = lectures;
+    test('réponse de la lecture la plus récente gardée', b5.TDB_ETAT.cle.indexOf('semaine:') === 0 && egal(b5.TDB_ETAT.lignes.map((l) => l.id), ['#S']) && b5.TDB_ETAT.at > 0, b5.TDB_ETAT.cle);
+    mois.forEach((r) => r([ligne('#M')])); await attendre(); // l'ancienne arrive après
+    test('réponse obsolète (Mois) arrivée après : ignorée, rien remplacé', b5.TDB_ETAT.cle.indexOf('semaine:') === 0 && egal(b5.TDB_ETAT.lignes.map((l) => l.id), ['#S']), [b5.TDB_ETAT.cle, b5.TDB_ETAT.lignes]);
+    test('réponse obsolète : aucune relecture inutile déclenchée', lectures === apres && enCours.length === 0, [apres, lectures]);
+    // ordre inverse : l'ancienne d'abord, puis la récente
+    periode.value = 'annee'; b5.TDB_ETAT.at = 0; b5.tdbRendre(); const an = enCours.splice(0);
+    periode.value = 'jour'; b5.tdbRendre(); const jr = enCours.splice(0);
+    an.forEach((r) => r([ligne('#A')])); await attendre();
+    test('ancienne réponse (Année) arrivée la première : ignorée, lecture Jour toujours attendue', b5.TDB_ETAT.enCours.indexOf('jour:') === 0 && !b5.TDB_ETAT.lignes.some((l) => l.id === '#A') && enCours.length === 0, b5.TDB_ETAT.enCours);
+    jr.forEach((r) => r([ligne('#J')])); await attendre();
+    test('puis la récente (Jour) : gardée et affichée', b5.TDB_ETAT.cle.indexOf('jour:') === 0 && egal(b5.TDB_ETAT.lignes.map((l) => l.id), ['#J']) && b5.TDB_ETAT.enCours === '');
+  }
+  { // 4. pagination complète, garde-fou explicite
+    let pages = 0;
+    const b6 = { console, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, Promise, SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
+      fetch: (url, o) => { pages++; const deb = Number(o.headers.Range.split('-')[0]); const n = deb >= 31000 ? 5 : 1000; return Promise.resolve({ ok: true, json: async () => Array.from({ length: n }, (_, k) => ({ id: '#' + (deb + k) })) }); } };
+    vm.createContext(b6); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b6);
+    const tout = await b6.tdbLire('');
+    test('au-delà de 30 pages : la lecture continue jusqu’à la dernière (31 005 lignes, 32 pages)', tout.length === 31005 && pages === 32 && new Set(tout.map((r) => r.id)).size === 31005, [tout.length, pages]);
+    b6.TDB_PAGES_MAX = 3; let err = '';
+    try { await b6.tdbLire(''); } catch (e) { err = e.message; }
+    test('garde-fou atteint : erreur explicite (jamais de chiffres tronqués en silence)', /chiffres non calculés/.test(err), err);
+    test('erreur de lecture affichée dans la note (motif compris)', tranche('// TDB-DEBUT', '// TDB-FIN').includes("'Lecture de la base impossible (' + TDB_ETAT.erreur + ')"));
+    test('plus aucune limite silencieuse à 30 pages', !/page < 30/.test(tranche('// TDB-DEBUT', '// TDB-FIN')));
+  }
   console.log('\n8. MISE EN LIGNE');
 
-test('CACHE_VERSION augmentée (v7-5-140 ou plus)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 140; })());
+test('CACHE_VERSION augmentée (v7-5-141 ou plus)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 141; })());
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

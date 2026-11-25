@@ -5866,7 +5866,7 @@ var JVUE_LIVREURS = ['RANOU', 'GLS'];
 var JVUE_STATUTS = ['en-attente', 'en-route', 'arrivé', 'livré', 'reporté', 'annulé'];
 // v7.5.127 (JARVIS 09/11 20:42, « filtre les commandes de TikTok ») : origine facultative, liste FERMÉE (= ORIGINES_APPLI de jarvis-action).
 var JVUE_ORIGINES = ['Site Maxiconfort', 'Appel direct', 'Email direct', 'Boutique physique', 'Recommandation', 'LeBonCoin', 'TikTok Shop', 'Amazon', 'Cdiscount', 'Fnac Darty', 'Rakuten', 'Rue du Commerce', 'Ubaldi', 'ManoMano', 'Conforama', 'But', 'La Redoute', 'Maison du Monde', 'Boulanger', 'Leroy Merlin', 'eBay', 'Wish'];
-var JVUE_PAGES = ['dashboard', 'commandes', 'tournees', 'suivi', 'notifs', 'optim', 'stock', 'camion', 'finance', 'gps', 'sante', 'livreur'];
+var JVUE_PAGES = ['dashboard', 'commandes', 'tournees', 'suivi', 'notifs', 'optim', 'stock', 'camion', 'finance', 'gps', 'sante', 'livreur', 'zones'];
 /** Jour JARVIS → AAAA-MM-JJ à l'heure de l'appareil (jamais l'heure UTC : le soir, « demain » resterait aujourd'hui). */
 function jvueJour(j, maintenant) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(j)) return j;
@@ -5987,7 +5987,12 @@ function jvueAppliquer() {
         goTo('optim', nav);
         if (v.jour && lo.length !== 1 && typeof toast === 'function') toast(lo.length ? lo.length + ' tournées ce jour-là : choisis-la dans la liste' : 'Aucune tournée le ' + jvueJour(v.jour).split('-').reverse().join('/'));
       }
-      else if (v.vue === 'page') { var np = document.querySelector('.ni[data-p="' + v.page + '"]'); if (np || jvuePageCachee(role, v.page)) goTo(v.page, np); else if (typeof toast === 'function') toast('Rubrique non disponible pour ce compte'); }
+      else if (v.vue === 'page') {
+        var np = document.querySelector('.ni[data-p="' + v.page + '"]');
+        // v7.5.139 (revue Codex de 8705c41) : Zones n'est pas une page mais un ONGLET de la page Encaissements → navVers
+        if (v.page === 'zones') { if (np && typeof navVers === 'function') navVers('zones', np); else if (typeof toast === 'function') toast('Rubrique non disponible pour ce compte'); }
+        else if (np || jvuePageCachee(role, v.page)) goTo(v.page, np); else if (typeof toast === 'function') toast('Rubrique non disponible pour ce compte');
+      }
       else if (v.vue === 'parametres') { if (role === 'admin') goTo('pins', document.querySelector('[data-p="pins"]')); }
       else goTo('dashboard', document.querySelector('.ni[onclick*="\'dashboard\'"]'));
     } catch (e) { /* vue impossible : l'appli reste où elle est */ }
@@ -6574,7 +6579,7 @@ async function marquerLivreGLS(cmdId) {
   if (document.getElementById('p-finance')?.classList.contains('on')) finRender();
 }
 
-// TDB-DEBUT — v7.5.137 (+ v7.5.138 : bloc Paiements retiré, carte Encaissé → page Encaissements) : TABLEAU DE BORD (lot « tableau de bord + menus allégés », 25/11/2026)
+// TDB-DEBUT — v7.5.137 (+ v7.5.138 : bloc Paiements retiré, carte Encaissé → page Encaissements ; + v7.5.139 : comparaisons à date égale jusqu’à aujourd’hui, lectures concurrentes, pagination complète, classements par nombre pour la collaboratrice) : TABLEAU DE BORD (lot « tableau de bord + menus allégés », 25/11/2026)
 // Chiffre d'affaires de la période (Jour / Semaine / Mois / Année) comparé à la période précédente « à date égale »,
 // ventes, encaissé, livraisons, stock, marge (en attente des prix de revient), top zones du mois.
 // Règles (inchangées, reprises du code existant) :
@@ -6615,7 +6620,9 @@ function tdbPeriodes(mode, maintenant) {
     mode = 'jour'; var s7 = tdbPlus(a, -7);
     r = { du: tdbJ(a), au: tdbJ(a), pdu: tdbJ(s7), pau: tdbJ(s7), titre: 'Aujourd’hui', vs: 'vs ' + TDB_JOURS[s7.getDay()] + ' dernier' };
   }
-  r.mode = mode; r.aujourdhui = tdbJ(a);
+  // v7.5.139 (revue Codex de 8705c41) : les COMPARAISONS de la période en cours s'arrêtent à aujourd'hui (cau), comme la
+  // période précédente (pau) ; « au » (fin de période) ne sert plus qu'aux livraisons prévues et au « restant à livrer ».
+  r.mode = mode; r.aujourdhui = tdbJ(a); r.cau = r.aujourdhui;
   r.date = TDB_JOURS[a.getDay()].charAt(0).toUpperCase() + TDB_JOURS[a.getDay()].slice(1) + ' ' + tdbCourt(r.aujourdhui);
   r.moisDu = tdbJ(new Date(a.getFullYear(), a.getMonth(), 1)); r.moisAu = tdbJ(new Date(a.getFullYear(), a.getMonth() + 1, 0));
   return r;
@@ -6652,7 +6659,7 @@ function tdbEcart(cur, prev) {
   return { dir: p > 0 ? 'hausse' : p < 0 ? 'baisse' : 'egal', pct: p };
 }
 /** Classement des zones (commandes LIVRÉES de [du, au]) ; zoneDe(adresse) → zone {id, nom, couleur} ou null. */
-function tdbTopZones(lignes, du, au, zoneDe, max) {
+function tdbTopZones(lignes, du, au, zoneDe, max, parNombre) {
   var m = {};
   (lignes || []).forEach(function (l) {
     if (l.statut !== 'livré' || !l.dLiv || l.dLiv < du || l.dLiv > au) return;
@@ -6661,17 +6668,33 @@ function tdbTopZones(lignes, du, au, zoneDe, max) {
     if (!m[k]) m[k] = { id: k, nom: z && z.nom ? z.nom : 'Non identifié', couleur: z && z.couleur ? z.couleur : '#a39b90', nb: 0, ca: 0 };
     m[k].nb++; m[k].ca += l.prix;
   });
-  return Object.keys(m).map(function (k) { m[k].ca = Math.round(m[k].ca * 100) / 100; return m[k]; })
-    .sort(function (a, b) { return (b.ca - a.ca) || (b.nb - a.nb) || String(a.nom).localeCompare(String(b.nom)); }).slice(0, max || 5);
+  // v7.5.139 (revue Codex de 8705c41) : collaboratrice (parNombre) → classée et limitée par NOMBRE de livraisons, sans montant
+  // (ni tri ni départage par CA : le classement ne révèle aucun montant ; le champ ca est retiré).
+  var t = Object.keys(m).map(function (k) { m[k].ca = Math.round(m[k].ca * 100) / 100; return m[k]; });
+  if (parNombre) return t.sort(function (a, b) { return (b.nb - a.nb) || String(a.nom).localeCompare(String(b.nom)); }).slice(0, max || 5)
+    .map(function (z) { return { id: z.id, nom: z.nom, couleur: z.couleur, nb: z.nb }; });
+  return t.sort(function (a, b) { return (b.ca - a.ca) || (b.nb - a.nb) || String(a.nom).localeCompare(String(b.nom)); }).slice(0, max || 5);
 }
 /** Livraisons par livreur (commandes livrées de [du, au]). */
-function tdbLivreurs(lignes, du, au) {
+function tdbLivreurs(lignes, du, au, parNombre) {
   var m = {};
   (lignes || []).forEach(function (l) {
     if (l.statut !== 'livré' || !l.dLiv || l.dLiv < du || l.dLiv > au) return;
     var k = String(l.livreur || '').trim() || '—'; if (!m[k]) m[k] = { nom: k, nb: 0, ca: 0 }; m[k].nb++; m[k].ca += l.prix;
   });
-  return Object.keys(m).map(function (k) { return m[k]; }).sort(function (a, b) { return b.nb - a.nb || b.ca - a.ca; });
+  var t = Object.keys(m).map(function (k) { return m[k]; });
+  // collaboratrice : départage par nom, jamais par CA ; champ ca retiré
+  if (parNombre) return t.sort(function (a, b) { return b.nb - a.nb || String(a.nom).localeCompare(String(b.nom)); }).map(function (l) { return { nom: l.nom, nb: l.nb }; });
+  return t.sort(function (a, b) { return b.nb - a.nb || b.ca - a.ca; });
+}
+/** Données de l'écran (fonction pure) : comparaisons À DATE ÉGALE (période en cours jusqu'à aujourd'hui, P.cau, contre la
+ *  précédente jusqu'au même jour, P.pau) ; livraisons prévues sur la période ENTIÈRE ; collaboratrice : classements par nombre. */
+function tdbDonnees(lignes, P, admin, zoneDe) {
+  var cur = tdbChiffres(lignes, P.du, P.cau), entiere = tdbChiffres(lignes, P.du, P.au);
+  cur.prevuesPeriode = entiere.prevues;
+  return { cur: cur, prev: tdbChiffres(lignes, P.pdu, P.pau),
+    zones: tdbTopZones(lignes, P.moisDu, P.cau < P.moisAu ? P.cau : P.moisAu, zoneDe, 5, !admin),
+    livreurs: tdbLivreurs(lignes, P.du, P.cau, !admin) };
 }
 /** Stock : mêmes règles que l'inventaire (stkRender). Un ensemble (composants) n'est ni alerté ni valorisé (ses composants le sont).
  *  Valeur au PRIX DE REVIENT seulement pour l'administrateur qui lit produits_revient (migration 039) ; sinon au PRIX DE VENTE. */
@@ -6689,6 +6712,8 @@ function tdbStock(liste, revients, voitRevient) {
   r.valeurVente = Math.round(r.valeurVente * 100) / 100; r.valeurRevient = Math.round(r.valeurRevient * 100) / 100;
   return r;
 }
+/** Livraisons prévues sur la période entière (jusqu'à sa fin), sinon jusqu'à aujourd'hui. */
+function tdbPrevues(c) { return c.prevuesPeriode != null ? c.prevuesPeriode : c.prevues; }
 /** Écran complet (fonction pure). e = { P, cur, prev, zones, stock, livreurs, admin, note }. Collaboratrice : AUCUN montant. */
 function tdbHtml(e) {
   var A = !!e.admin, P = e.P, c = e.cur, p = e.prev;
@@ -6710,15 +6735,15 @@ function tdbHtml(e) {
     h += '<div class="tdb-petites">' +
       carte('Ventes', String(c.ventes), 'commande' + (c.ventes > 1 ? 's prises' : ' prise')) +
       carte('Encaissé', tdbEur(c.encaisse), 'commandes livrées payées', '', 'finance') +
-      carte('Livraisons', c.livrees + ' / ' + c.prevues, 'livrées / prévues') +
+      carte('Livraisons', c.livrees + ' / ' + tdbPrevues(c), 'livrées / prévues') +
       carte('Marge', '—', 'disponible dès les prix de revient saisis', 'marge') + '</div>';
   } else {
     h += '<section class="tdb-heros" aria-label="Livraisons"><div class="tdb-l">Commandes livrées</div><div class="tdb-v">' + c.livrees + '</div>' + ecart(c.livrees, p.livrees, P.vs, false) +
       '<div class="tdb-pris">Prises sur la période : <b>' + pl(c.ventes, 'commande') + '</b>' + ecart(c.ventes, p.ventes, P.vs, false) + '</div></section>';
     h += '<div class="tdb-petites">' +
       carte('Ventes', String(c.ventes), 'commande' + (c.ventes > 1 ? 's prises' : ' prise')) +
-      carte('Livraisons', c.livrees + ' / ' + c.prevues, 'livrées / prévues') +
-      carte('Restant à livrer', String(Math.max(0, c.prevues - c.livrees)), 'sur la période') +
+      carte('Livraisons', c.livrees + ' / ' + tdbPrevues(c), 'livrées / prévues') +
+      carte('Restant à livrer', String(Math.max(0, tdbPrevues(c) - c.livrees)), 'sur la période') +
       carte('Période précédente', String(p.livrees), pl(p.livrees, 'livraison') + ' · ' + pl(p.ventes, 'vente')) + '</div>';
   }
   var s = e.stock || {};
@@ -6747,8 +6772,11 @@ function tdbHtml(e) {
 
 // ── Données et affichage ──
 var TDB_COLS = 'id,prix,date_commande,date_livraison,statut,stpaie,montant_enc,origine,adresse,livreur';
-var TDB_ETAT = { cle: '', lignes: null, at: 0, enCours: '', erreur: '', revientsDemandes: false, gen: 0 };
+var TDB_ETAT = { cle: '', lignes: null, at: 0, enCours: '', erreur: '', revientsDemandes: false, gen: 0, req: 0 };
 var TDB_DUREE = 60000; // durée de vie de la lecture « par période » (ms)
+// v7.5.139 (revue Codex de 8705c41) : la lecture continue page après page jusqu'à la dernière ; garde-fou EXPLICITE (jamais un
+// arrêt silencieux) : au-delà de TDB_PAGES_MAX pages, erreur affichée (« chiffres non calculés »), jamais de chiffres tronqués.
+var TDB_PAGES_MAX = 500;
 var _tdbSignal = null, _tdbExpire = null;
 function tdbVisible() { var p = document.getElementById('p-dashboard'); return !!(p && p.classList && p.classList.contains('on')); }
 /** Revue Codex (b425c03) : toute modification qui touche les chiffres le signale.
@@ -6772,7 +6800,8 @@ function tdbLocalComplet() {
 }
 async function tdbLire(filtre) {
   var out = [];
-  for (var page = 0; page < 30; page++) {
+  for (var page = 0; ; page++) {
+    if (page >= TDB_PAGES_MAX) throw new Error('plus de ' + (TDB_PAGES_MAX * 1000).toLocaleString('fr-FR') + ' commandes sur la période : lecture arrêtée, chiffres non calculés');
     var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + TDB_COLS + filtre + '&order=id.asc', {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Range-Unit': 'items', 'Range': (page * 1000) + '-' + (page * 1000 + 999) } });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -6782,15 +6811,18 @@ async function tdbLire(filtre) {
   return out;
 }
 async function tdbCharger(P, cle) {
-  if (TDB_ETAT.enCours === cle) return; TDB_ETAT.enCours = cle; var gen = TDB_ETAT.gen;
+  // v7.5.139 (revue Codex de 8705c41) : chaque lecture a son numéro (req) ; seule la DERNIÈRE lancée est gardée, une réponse
+  // plus ancienne arrivée après (changement rapide de période) est ignorée sans rien toucher ni relancer.
+  if (TDB_ETAT.enCours === cle) return; TDB_ETAT.enCours = cle; var gen = TDB_ETAT.gen, req = ++TDB_ETAT.req, lignes = null, erreur = '';
   var per = function (du, au) { return '&statut=neq.annul%C3%A9&or=(and(date_livraison.gte.' + du + ',date_livraison.lte.' + au + '),and(date_commande.gte.' + du + ',date_commande.lte.' + au + '))'; };
   try {
     var lots = await Promise.all([tdbLire(per(P.du, P.au)), tdbLire(per(P.pdu, P.pau)),
       P.mode === 'mois' ? Promise.resolve([]) : tdbLire('&statut=eq.livr%C3%A9&date_livraison=gte.' + P.moisDu + '&date_livraison=lte.' + P.moisAu)]);
-    var vu = {}, lignes = [];
+    var vu = {}; lignes = [];
     lots.forEach(function (l) { l.forEach(function (c) { if (!vu[c.id]) { vu[c.id] = 1; lignes.push(tdbLigne(c)); } }); });
-    TDB_ETAT.lignes = lignes; TDB_ETAT.erreur = '';
-  } catch (e) { TDB_ETAT.lignes = null; TDB_ETAT.erreur = String(e && e.message || e); }
+  } catch (e) { lignes = null; erreur = String(e && e.message || e); }
+  if (req !== TDB_ETAT.req) return; // réponse obsolète : une lecture plus récente a été lancée
+  TDB_ETAT.lignes = lignes; TDB_ETAT.erreur = erreur;
   TDB_ETAT.cle = cle; TDB_ETAT.enCours = '';
   // une commande a changé pendant la lecture : résultat affiché mais aussitôt périmé (relu au prochain affichage)
   TDB_ETAT.at = gen === TDB_ETAT.gen ? Date.now() : 0;
@@ -6818,13 +6850,12 @@ function tdbRendre() {
     if (!frais && TDB_ETAT.enCours !== cle) tdbCharger(P, cle);
     else if (frais) tdbProgrammerExpiration(TDB_ETAT.at + TDB_DUREE - Date.now());
     if (TDB_ETAT.cle === cle && TDB_ETAT.lignes) lignes = TDB_ETAT.lignes;
-    else { lignes = locales(); note = TDB_ETAT.cle === cle && TDB_ETAT.erreur ? 'Lecture de la base impossible : chiffres calculés sur les ' + lignes.length + ' commandes chargées dans l’appli (peut-être incomplets).' : 'Mise à jour depuis la base…'; }
+    else { lignes = locales(); note = TDB_ETAT.cle === cle && TDB_ETAT.erreur ? 'Lecture de la base impossible (' + TDB_ETAT.erreur + ') : chiffres calculés sur les ' + lignes.length + ' commandes chargées dans l’appli (peut-être incomplets).' : 'Mise à jour depuis la base…'; }
   }
   if (admin && !TDB_ETAT.revientsDemandes && typeof arrChargerRevients === 'function') { TDB_ETAT.revientsDemandes = true; arrChargerRevients().then(function () { tdbRendre(); }); }
   var revients = admin && typeof ARR_ETAT !== 'undefined' ? ARR_ETAT.revients : {};
-  el.innerHTML = tdbHtml({ P: P, admin: admin, note: note,
-    cur: tdbChiffres(lignes, P.du, P.au), prev: tdbChiffres(lignes, P.pdu, P.pau),
-    zones: tdbTopZones(lignes, P.moisDu, P.moisAu, tdbZoneDe, 5), livreurs: tdbLivreurs(lignes, P.du, P.au),
+  var d = tdbDonnees(lignes, P, admin, tdbZoneDe);
+  el.innerHTML = tdbHtml({ P: P, admin: admin, note: note, cur: d.cur, prev: d.prev, zones: d.zones, livreurs: d.livreurs,
     stock: tdbStock(typeof produits !== 'undefined' ? produits : [], revients, admin) });
 }
 // TDB-FIN

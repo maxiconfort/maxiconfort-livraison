@@ -107,6 +107,27 @@ test('v7.5.128 : plus aucun caractère invisible « retour arrière » dans l’
   test('page:suivi (rangée dans « Plus ») : ouverte', JSON.stringify(lancer('#jarvis=page:suivi', 'admin', [{ id: '#1' }])) === JSON.stringify(['fermer', 'goTo:suivi']));
   b.document.querySelector = avant; delete b.ROLES;
 }
+{ // v7.5.139 (revue Codex de 8705c41) : page:zones ouvre l'ONGLET Zones de la page Encaissements (vrais navVers + showFinTab)
+  console.log('\n2 quater. ANCRE page:zones → ONGLET ZONES DES ENCAISSEMENTS (v7.5.139)');
+  const fn = (e) => { const k = html.indexOf(e); return html.slice(k, html.indexOf('\n}\n', k) + 2); };
+  const k = html.indexOf('const ROLES = {'), fin = html.indexOf('\nfunction buildUI', k);
+  const br = { commandes: [] }; vm.createContext(br); vm.runInContext(html.slice(k, fin).replace('const ROLES', 'var ROLES'), br);
+  b.ROLES = br.ROLES;
+  const els = {}, el = (id) => (els[id] = els[id] || { id, style: { display: 'x' }, textContent: '', classList: { actifs: {}, toggle(c, v) { this.actifs[c] = !!v; } } });
+  const avantQ = b.document.querySelector, avantG = b.document.getElementById; let zonesDessinees = 0, rent = 0;
+  b.renderZoneStats = () => { zonesDessinees++; }; b.renderRentabiliteTournees = () => { rent++; };
+  vm.runInContext(fn('function navVers(p, el) {') + fn('function showFinTab(tab, el) {'), b);
+  test('page:zones acceptée par l’ancre', JSON.stringify(L('#jarvis=page:zones')) === JSON.stringify({ vue: 'page', page: 'zones' }));
+  b.document.getElementById = el; b.document.querySelector = (q) => (q === '.ni[data-p="zones"]' ? { id: 'nav-zones' } : null);
+  const a1 = lancer('#jarvis=page:zones', 'admin', [{ id: '#1' }]);
+  test('admin : page Encaissements ouverte (jamais goTo(\'zones\'), qui n’existe pas)', JSON.stringify(a1) === JSON.stringify(['fermer', 'goTo:finance']), a1);
+  test('admin : onglet Zones affiché, Encaissements et Rentabilité masqués', els['fin-section-zones'].style.display === '' && els['fin-section-enc'].style.display === 'none' && els['fin-section-rent'].style.display === 'none', Object.keys(els).map((x) => [x, els[x].style.display]));
+  test('admin : bouton d’onglet Zones actif, zones dessinées, titre « Zones »', els['fin-tab-zones'].classList.actifs.active === true && els['fin-tab-enc'].classList.actifs.active === false && zonesDessinees === 1 && rent === 0 && els['page-title'].textContent === 'Zones');
+  b.document.querySelector = () => null; zonesDessinees = 0; Object.keys(els).forEach((x) => delete els[x]);
+  const a2 = lancer('#jarvis=page:zones', 'collab', [{ id: '#1' }]);
+  test('collab (pas d’entrée Zones) : rien n’est ouvert', JSON.stringify(a2) === JSON.stringify(['fermer']) && zonesDessinees === 0 && !els['fin-section-zones'], a2);
+  b.document.querySelector = avantQ; b.document.getElementById = avantG; delete b.ROLES;
+}
 console.log('\n3. MISE EN LIGNE');
 test('CACHE_VERSION augmentée (v7-5-128 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(2[89]|[3-9]\d)'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
