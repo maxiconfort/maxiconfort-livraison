@@ -22,7 +22,7 @@ function test(nom, cond, detail) { if (cond) { ok++; console.log('  OK    ' + no
 const attendre = () => new Promise((r) => setImmediate(r));
 
 // ---------- faux navigateur ----------
-function fauxElement(id) { return { id, value: '', checked: true, open: false, style: {}, dataset: {}, innerHTML: '', textContent: '', disabled: false, classList: { add() {}, remove() {}, contains() { return false; } }, querySelectorAll() { return []; }, insertAdjacentHTML() {}, parentNode: null }; }
+function fauxElement(id) { return { id, value: '', checked: true, open: false, style: {}, dataset: {}, innerHTML: '', textContent: '', disabled: false, classList: { add() {}, remove() {}, contains() { return false; } }, querySelectorAll() { return []; }, insertAdjacentHTML() {}, remove() {}, parentNode: null }; }
 function nouveauBac(role) {
   const els = {}; const envois = []; const tourneesSauvees = [];
   const bac = {
@@ -233,6 +233,49 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     test('commande repassée « Non payé » : rien sur la tournée', JSON.stringify(p.rtEncaisseTournee({ paie: 'Espèces', stpaie: 'Non payé', montantEnc: 0 }, { encAvant: 0 })) === JSON.stringify({ esp: 0, cb: 0 }));
   }
 
+  // ══════════ 3 quater. Éditeur de paiement du livreur et acompte (revue Codex sur 0fb4eae, v7.5.133) ══════════
+  console.log('\n3 quater. ÉDITEUR DE PAIEMENT (« Encaisser » / ✏️) ET ACOMPTE (revue Codex)');
+  { const { bac: p } = nouveauBac();
+    test('cumul éditeur Mixte : acompte 50 + 60 + 70 = 180, « Payé »', JSON.stringify(p.rtCumulEditeur(180, 50, 'Mixte', 'Partiel', 60, 70, 50)) === JSON.stringify({ montantEnc: 180, stpaie: 'Payé' }));
+    test('cumul éditeur Mixte sans acompte : 100 + 80 = 180, « Payé » (inchangé)', JSON.stringify(p.rtCumulEditeur(180, 0, 'Mixte', 'Payé', 100, 80, 0)) === JSON.stringify({ montantEnc: 180, stpaie: 'Payé' }));
+    test('cumul éditeur Mixte incomplet : acompte 50 + 40 + 40 = 130, « Partiel »', JSON.stringify(p.rtCumulEditeur(180, 50, 'Mixte', 'Payé', 40, 40, 50)) === JSON.stringify({ montantEnc: 130, stpaie: 'Partiel' }));
+    test('« Non payé » avec acompte : reste « Partiel », cumul = acompte (pas de fausse dette)', JSON.stringify(p.rtCumulEditeur(180, 50, 'Espèces', 'Non payé', 0, 0, 50)) === JSON.stringify({ montantEnc: 50, stpaie: 'Partiel' }));
+    test('« Non payé » sans acompte : 0 €, « Non payé » (inchangé)', JSON.stringify(p.rtCumulEditeur(180, 0, 'Espèces', 'Non payé', 0, 0, 0)) === JSON.stringify({ montantEnc: 0, stpaie: 'Non payé' }));
+    test('« Payé » : cumul = prix ; « Partiel » sans montant : cumul inchangé', p.rtCumulEditeur(180, 50, 'CB', 'Payé', 0, 0, 50).montantEnc === 180 && p.rtCumulEditeur(180, 50, 'Espèces', 'Partiel', 0, 0, 120).montantEnc === 120);
+  }
+  const editeur = async (cmdPlus, stopPlus, fenetre) => {
+    const x = nouveauBac(); const { bac, els } = x;
+    for (const f of ['function lvPaieMixteRecap()', 'async function lvPaieValider()']) vm.runInContext(extraireFonction(f), bac);
+    bac.renderFinance = () => {};
+    const cmd = LBC(Object.assign({ statut: 'livré' }, cmdPlus)); bac.commandes = [cmd];
+    const stop = Object.assign({ cmdId: cmd.id, client: cmd.client, prix: cmd.prix, statut: 'livré', paie: cmd.paie, stpaie: cmd.stpaie }, stopPlus);
+    bac.tournees = [{ id: 'T-ED', livreur: 'RANOU', date: '2026-11-25', statut: 'en cours', stops: [stop] }];
+    const sh = bac.document.getElementById('lv-paie-sheet');
+    Object.assign(sh.dataset, { mode: fenetre.mode, statut: fenetre.statut || 'Payé', tid: 'T-ED', idx: '0', prixTotal: String(cmd.prix), acompte: String(stop.encAvant || 0) });
+    bac.document.getElementById('lv-paie-esp').value = String(fenetre.esp || 0); bac.document.getElementById('lv-paie-cb').value = String(fenetre.cb || 0);
+    bac.prompt = () => 'TK-ED';
+    bac.lvPaieMixteRecap(); const statutRecap = sh.dataset.statut; const recap = bac.document.getElementById('lv-paie-mixte-recap').textContent;
+    await bac.lvPaieValider(); await attendre();
+    return Object.assign(x, { cmd, stop, statutRecap, recap, b: x.envois[0] && x.envois[0].body });
+  };
+  { const r = await editeur({ stpaie: 'Partiel', montantEnc: 50 }, { encAvant: 50 }, { mode: 'Mixte', esp: 60, cb: 70 });
+    test('éditeur Mixte avec acompte 50 € : le récapitulatif annonce « Payé » (180 €), plus « partiel »', r.statutRecap === 'Payé' && /180\.00 €/.test(r.recap), { statut: r.statutRecap, recap: r.recap });
+    test('éditeur Mixte avec acompte : cumul enregistré 180 € (et non 130 €), « Payé »', r.b && r.b.montant_enc === 180 && r.b.stpaie === 'Payé' && r.b.paie === 'Mixte', r.b);
+    const pt = r.bac.rtPointCaisse(r.bac.tournees[0], r.bac.getCmdsLivresParTournee(r.bac.tournees[0]), [], r.bac.rtOutilsPage());
+    test('point de caisse après l\'éditeur : 60 € espèces, 70 € CB, rien ne reste dû', pt.especes === 60 && pt.cb === 70 && pt.resteAEncaisser.montant === 0, pt);
+  }
+  { const r = await editeur({ stpaie: 'Partiel', montantEnc: 50, paie: 'Espèces' }, { encAvant: 50 }, { mode: 'Espèces', statut: 'Non payé' });
+    test('éditeur « Non payé » avec acompte : cumul 50 €, « Partiel » (pas de dette de 180 €)', r.b && r.b.montant_enc === 50 && r.b.stpaie === 'Partiel' && r.stop.stpaie === 'Partiel', r.b);
+  }
+  { const r = await editeur({ stpaie: 'Partiel', montantEnc: 50, paie: 'CB' }, { encAvant: 50 }, { mode: 'CB', statut: 'Payé' });
+    const pt = r.bac.rtPointCaisse(r.bac.tournees[0], r.bac.getCmdsLivresParTournee(r.bac.tournees[0]), [], r.bac.rtOutilsPage());
+    test('éditeur « Payé » en CB avec acompte : cumul 180 €, 130 € de CB sur la tournée', r.b && r.b.montant_enc === 180 && r.b.ticket_cb === 'TK-ED' && pt.cb === 130, { b: r.b && r.b.montant_enc, cb: pt.cb });
+  }
+  { const r = await editeur({ stpaie: 'Non payé', montantEnc: 0 }, {}, { mode: 'Mixte', esp: 100, cb: 80 });
+    test('éditeur Mixte sans acompte (arrêt ancien) : 180 € « Payé », comme avant', r.b && r.b.montant_enc === 180 && r.b.stpaie === 'Payé', r.b);
+  }
+  test('autres chemins qui réécrivent le cumul : signature (acompte compris), admin = montant saisi (cumul explicite, motif + journal)', /cmd\.montantEnc = Math\.round\(\(_avantEnc \+ sigPaieEsp \+ sigPaieCb\) \* 100\) \/ 100;/.test(html) && /c\.paie = nMode; c\.stpaie = nStatut; c\.montantEnc = rawMontant;/.test(html));
+
   // ══════════ 3 ter. Tournée clôturée gardée à l'écran (revue Codex P2, v7.5.132) ══════════
   console.log('\n3 ter. TOURNÉE CLÔTURÉE GARDÉE À L\'ÉCRAN (revue Codex P2)');
   { const { bac: p } = nouveauBac();
@@ -419,7 +462,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
   test('Retour de tournée : bouton « Valider le point de caisse » branché sur validerRemiseCaisse (caisse_remises)', /validerRemiseCaisse\(\\'' \+ r\.caisseKey \+ '\\'\)"[^>]*>✅ Valider le point de caisse/.test(html));
   test('validerRemiseCaisse écrit toujours dans caisse_remises (mécanisme existant)', /rest\/v1\/caisse_remises', \{\s*method: 'POST'/.test(extraireFonction('async function validerRemiseCaisse(key)')));
   test('ancre JARVIS (bloc JVUE) présente', html.indexOf('// JVUE-DEBUT') > 0 && html.indexOf('// JVUE-FIN') > html.indexOf('// JVUE-DEBUT'));
-  test('CACHE_VERSION augmentée (v7-5-132 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(3[2-9]|[4-9]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
+  test('CACHE_VERSION augmentée (v7-5-134 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(3[4-9]|[4-9]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
