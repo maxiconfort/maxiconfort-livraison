@@ -208,7 +208,7 @@ function nouveauBac(opts) {
   test('recalcul : une seule fois (taux ensuite définitif)', rec.includes("if not a.taux_provisoire then return json_build_object('ok', false, 'erreur', 'taux_deja_definitif')") && rec.includes('taux_provisoire = false'));
   test('recalcul : l\'historique provisoire est RELIÉ à une ligne de correction, jamais réécrit', rec.includes("'recalcul_taux'") && rec.includes('update public.prix_revient_historique set remplace_par = v_id where id = h.id'));
   test('recalcul : REJEU depuis le départ de TOUS les lots du produit, ordre de RÉCEPTION, revient effectif (revue Codex P2)',
-    rec.includes('order by ar.recu_le nulls last, ar.id, o.id') && rec.includes('left join public.prix_revient_historique c on c.id = o.remplace_par')
+    rec.includes('order by ar.ordre_reception nulls last, ar.id, o.id') && !rec.includes('ar.recu_le') && rec.includes('left join public.prix_revient_historique c on c.id = o.remplace_par')
     && rec.includes("where o.produit_id = l.produit_id and o.source = 'arrivage'")
     && rec.includes('case when o.arrivage_id = a.id then v_rev else coalesce(c.revient_ht, o.revient_ht) end as revient_effectif')
     && rec.includes('v_cur := interne.revient_apres(x.methode, x.stock_avant, v_cur, x.quantite, x.revient_effectif);')
@@ -219,14 +219,14 @@ function nouveauBac(opts) {
   const N = bac.arrNouveauRevient;
   const provApres = (m, st, ravant, q, pav, plot) => (q <= 0 ? pav : (m === 'DERNIER_PRIX' || ravant == null || st <= 0) ? plot : (plot || pav));
   function modele() {
-    const hist = [], arr = {}; let cur = null, prov = false, idh = 0;
+    const hist = [], arr = {}; let cur = null, prov = false, idh = 0, ordre = 0;
     return {
-      recevoir(a, recuLe, stockAvant, q, rev) { arr[a] = { recuLe, prov: true };
+      recevoir(a, recuLe, stockAvant, q, rev) { arr[a] = { recuLe, ordre: ++ordre, prov: true }; // ordre = séquence tirée après les verrous
         const r = { id: ++idh, a, source: 'arrivage', st: stockAvant, q, rev, prov: true, moyAv: cur, moyAvProv: prov, remplace: null };
         prov = provApres('CUMP', stockAvant, cur, q, prov, true); cur = N('CUMP', stockAvant, cur, q, rev); hist.push(r); },
       finaliser(a, revDef) {
         const h = hist.find(x => x.a === a && x.source === 'arrivage' && x.remplace === null);
-        const lots = hist.filter(x => x.source === 'arrivage').sort((x, y) => arr[x.a].recuLe - arr[y.a].recuLe || (x.a < y.a ? -1 : 1) || x.id - y.id);
+        const lots = hist.filter(x => x.source === 'arrivage').sort((x, y) => arr[x.a].ordre - arr[y.a].ordre || (x.a < y.a ? -1 : 1) || x.id - y.id);
         let c = null, p = false, premier = true;
         for (const x of lots) {
           const corr = x.remplace ? hist.find(y => y.id === x.remplace) : null;
@@ -252,6 +252,14 @@ function nouveauBac(opts) {
   test('puis C finalisé ⇒ calcul direct au bon taux, plus provisoire', M.revient === N('CUMP', 20, N('CUMP', 10, N('CUMP', 0, null, 10, 110), 10, 210), 10, 310) && M.provisoire === false, M.revient);
   M = modele(); M.recevoir('A', 1, 0, 10, 100); M.recevoir('B', 2, 4, 10, 200); M.finaliser('A', 120);
   test('ventes entre deux lots : poids = stock enregistré à la réception (4), pas le stock courant', M.revient === N('CUMP', 4, 120, 10, 200) && M.provisoire === true, M.revient);
+  // réceptions qui se chevauchent : B a commencé AVANT A (heure de début de transaction plus ancienne) mais a obtenu les verrous APRÈS
+  const M2 = modele(); M2.recevoir('A', 5, 0, 10, 100); M2.recevoir('B', 1, 10, 10, 200); M2.finaliser('A', 120); M2.finaliser('B', 220);
+  test('réceptions qui se chevauchent : le rejeu suit l\'ordre réel (séquence), pas l\'heure de début ⇒ 170', M2.revient === 170, M2.revient);
+  const valO = sql.slice(sql.indexOf('create or replace function public.valider_reception_arrivage'), sql.indexOf('create or replace function public.recalculer_revient_arrivage'));
+  test('ordre de réception tiré par séquence APRÈS les verrous produits et produits_revient, enregistré sur l\'arrivage',
+    valO.indexOf("v_ordre := nextval('public.arrivages_ordre_reception_seq');") > valO.indexOf('perform 1 from public.produits_revient where produit_id in')
+    && valO.indexOf('perform 1 from public.produits_revient where produit_id in') > 0 && valO.includes('recu_le = clock_timestamp(), ordre_reception = v_ordre')
+    && sql.includes('ordre_reception bigint unique,') && sql.includes('create sequence if not exists public.arrivages_ordre_reception_seq;'));
   test('historique jamais réécrit : une ligne de correction par lot finalisé, reliée à l\'original', M.hist.filter(x => x.source === 'recalcul_taux').length === 1 && M.hist.find(x => x.a === 'A' && x.source === 'arrivage').remplace !== null);
   console.log('\n8 bis. REVIENT PROVISOIRE, STOCK_ENTREES, ORDRE DES VERROUS (revue Codex P2)');
   test('CUMP qui intègre un revient précédent provisoire = provisoire (lot OU ancien)', sql.includes("else coalesce(p_prov_lot, false) or coalesce(p_prov_avant, false)")

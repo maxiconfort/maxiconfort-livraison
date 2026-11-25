@@ -171,6 +171,7 @@ create table if not exists public.arrivages (
   frais_import_ht numeric(12,2) not null default 0 check (frais_import_ht >= 0), -- transport, transit, douane (€ HT)
   statut text not null default 'en_attente' check (statut in ('en_attente', 'recu', 'annule')),
   recu_le timestamptz,
+  ordre_reception bigint unique,                     -- ordre RÉEL des réceptions (séquence tirée après les verrous produits)
   recu_par text,
   remarque text,
   cree_at timestamptz not null default now(),
@@ -193,6 +194,12 @@ create table if not exists public.arrivage_lignes (
          or quantite_recue + coalesce(quantite_endommagee, 0) + coalesce(quantite_manquante, 0) = quantite_attendue)
 );
 create index if not exists arrivage_lignes_produit_idx on public.arrivage_lignes (produit_id);
+
+-- Ordre des réceptions : tiré dans valider_reception_arrivage APRÈS les verrous sur les produits. Deux réceptions qui touchent
+-- un même produit sont sérialisées par ces verrous : la seconde obtient forcément un numéro plus grand. now() (heure de début
+-- de transaction) ne le garantit pas, d'où cette séquence (revue Codex).
+create sequence if not exists public.arrivages_ordre_reception_seq;
+revoke all on sequence public.arrivages_ordre_reception_seq from public, anon, authenticated;
 
 -- Prix de revient HT ACTUEL de chaque produit (valeur de la méthode de valorisation). Administrateur seulement.
 create table if not exists public.produits_revient (
@@ -316,7 +323,7 @@ declare
   v_methode text := interne.arrivage_methode_valorisation();
   v_rec integer; v_end integer; v_man integer;
   v_rev_avant numeric; v_prov_avant boolean; v_rev_apres numeric; v_prov_apres boolean; v_stock_avant integer;
-  v_nb integer; v_resultat jsonb := '[]'::jsonb; v_total_recu integer := 0;
+  v_nb integer; v_resultat jsonb := '[]'::jsonb; v_total_recu integer := 0; v_ordre bigint;
 begin
   if (select public.session_role()) is distinct from 'admin' then
     return json_build_object('ok', false, 'erreur', 'session_admin_requise');
@@ -338,6 +345,8 @@ begin
   -- verrous dans un ordre fixe (pas d'interblocage avec une autre réception ni un recalcul) : produits, PUIS produits_revient
   perform 1 from public.produits where id in (select produit_id from public.arrivage_lignes where arrivage_id = a.id) order by id for update;
   perform 1 from public.produits_revient where produit_id in (select produit_id from public.arrivage_lignes where arrivage_id = a.id) order by produit_id for update;
+  -- ordre de réception tiré APRÈS les verrous : il suit l'ordre réel de valorisation (rejoué par recalculer_revient_arrivage)
+  v_ordre := nextval('public.arrivages_ordre_reception_seq');
 
   for l in select * from public.arrivage_lignes where arrivage_id = a.id order by produit_id loop
     select e into s from jsonb_array_elements(p_lignes) e where e ->> 'ligne_id' = l.id::text;
@@ -389,7 +398,7 @@ begin
       'revient_provisoire', v_prov_apres);
   end loop;
 
-  update public.arrivages set statut = 'recu', recu_le = now(), recu_par = 'admin', maj_at = now() where id = a.id;
+  update public.arrivages set statut = 'recu', recu_le = clock_timestamp(), ordre_reception = v_ordre, recu_par = 'admin', maj_at = now() where id = a.id;
   return json_build_object('ok', true, 'arrivage', a.reference_interne, 'methode', v_methode, 'total_recu', v_total_recu, 'lignes', v_resultat);
 end $$;
 
@@ -399,7 +408,7 @@ end $$;
 -- revient d'une ligne = FOB × taux + frais d'import répartis uniformément sur les quantités attendues.
 -- Arrivage en attente : seules les lignes changent. Arrivage reçu : lignes + revient des produits + historique.
 -- Revient du produit : REJOUÉ DEPUIS LE DÉPART (revue Codex) — tous les lots du produit (lignes 'arrivage' de l'historique),
--- dans l'ordre de RÉCEPTION (arrivages.recu_le, puis id de l'arrivage), chacun avec son revient EFFECTIF (sa correction de taux
+-- dans l'ordre RÉEL de RÉCEPTION (arrivages.ordre_reception, tiré après les verrous ; puis id de l'arrivage), chacun avec son revient EFFECTIF (sa correction de taux
 -- si elle existe, sinon son revient d'origine ; pour l'arrivage corrigé ici : le nouveau revient), sa quantité REÇUE et le stock
 -- réel enregistré juste avant sa réception (stock_avant), en partant de la valorisation d'avant le tout premier lot.
 -- Le résultat ne dépend donc ni de l'ordre des corrections, ni d'une valeur intermédiaire périmée, ni du stock courant.
@@ -453,7 +462,7 @@ begin
             join public.arrivages ar on ar.id = o.arrivage_id
             left join public.prix_revient_historique c on c.id = o.remplace_par
            where o.produit_id = l.produit_id and o.source = 'arrivage'
-           order by ar.recu_le nulls last, ar.id, o.id
+           order by ar.ordre_reception nulls last, ar.id, o.id
         loop
           if v_premier then  -- valorisation d'avant le tout premier lot de l'historique
             v_cur := x.revient_moyen_avant; v_prov := coalesce(x.moyen_avant_provisoire, false); v_premier := false;
