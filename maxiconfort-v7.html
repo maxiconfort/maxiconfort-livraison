@@ -742,6 +742,10 @@ html .lv-dep-btn{border:0 !important;background:var(--bl) !important;color:var(-
 .tdb-carte-v{font-size:26px;font-weight:700;color:var(--texte);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tdb-carte-s{font-size:12.5px;color:var(--t3)}
 .tdb-carte.marge{background:var(--gl);box-shadow:none}
+.tdb-carte.tdb-lien{cursor:pointer;transition:box-shadow .15s,transform .15s}
+.tdb-carte.tdb-lien:hover{box-shadow:var(--shm)}
+.tdb-carte.tdb-lien:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.tdb-fleche{color:var(--blue);font-size:17px;margin-left:2px}
 .tdb-carte.marge .tdb-carte-l,.tdb-carte.marge .tdb-carte-s{color:var(--gd)}
 .tdb-carte.marge .tdb-carte-v{color:var(--gd)}
 .tdb-liste{grid-column:span 4;background:var(--carte);border-radius:18px;box-shadow:var(--ombre);overflow:hidden;min-width:0}
@@ -868,9 +872,7 @@ html .nav-plus .ni{font-size:14.5px}
       </select>
     </div>
     <div id="tdb-contenu"></div>
-    <!-- v7.5.113 : situation des paiements du mois (administrateur) -->
-    <div id="dash-paiements" style="margin:18px 0"></div>
-    <div class="sh"><div class="st">Commandes récentes</div></div>
+    <div class="sh" style="margin-top:22px"><div class="st">Commandes récentes</div></div>
     <div class="tw" id="dash-recent"></div>
     <!-- Analyse par canal de vente : administrateur, repliée -->
     <details class="tdb-canaux" id="tdb-canaux" style="display:none">
@@ -4217,6 +4219,7 @@ async function arrValider() {
   arrRendre();
   await arrCharger(); arrRendre();
   try { await sbLoadProduits(); } catch(e) {}
+  if (typeof tdbSignaler === 'function') tdbSignaler('revients'); // v7.5.138 : revient relu par le tableau de bord
 }
 // Fixer le prix de vente d'une nouvelle référence (administrateur) : prix > 0, puis vendable. La base le refuse à tout autre rôle.
 async function venDefinirPrix(p, prix) {
@@ -4317,6 +4320,7 @@ async function sbSaveCommande(cmd) {
     offlineQueueAdd('commande', cmd);
     toast('📵 Sauvegarde hors ligne — sync au retour réseau', 'info');
   }
+  if (typeof tdbSignaler === 'function') tdbSignaler('commandes'); // v7.5.138 : chiffres du tableau de bord à relire
 }
 
 // v7.5.90 : quand une commande est REPORTÉE (date de livraison changée), les drapeaux
@@ -5114,6 +5118,7 @@ function startPolling() {
             }
           });
           if (updated) {
+            if (typeof tdbSignaler === 'function') tdbSignaler('commandes'); // v7.5.138
             renderCmds();
             renderDash();
             renderTournees();
@@ -5209,6 +5214,7 @@ function sbStartRealtime() {
       };
       if (idx > -1) commandes[idx] = mapped;
       else commandes.unshift(mapped);
+      if (typeof tdbSignaler === 'function') tdbSignaler('commandes'); // v7.5.138
       renderDash(); renderCmds(); renderTournees(); renderLivreur();
     })
     .on('postgres_changes', {event:'*', schema:'public', table:'tournees'}, function(payload) {
@@ -6099,7 +6105,7 @@ function buildUI(r) {
 
   // nav
   document.getElementById('sb-nav').innerHTML = navHtml(cfg);
-  navPlusOuvrir(navPlusMemo());
+  navPlusOuvrir(false);
 
   // top btn
   const tb=document.getElementById('top-btn');
@@ -6205,13 +6211,11 @@ function navHtml(cfg) {
     '<div class="nav-plus" id="nav-plus" hidden>' + cfg.plus.map(navItemHtml).join('') + '</div>';
   return h;
 }
-function navPlusMemo() { try { return localStorage.getItem('mx_nav_plus') === '1'; } catch (e) { return false; } }
 /** Ouvre / ferme « Plus » (sans argument : bascule). */
 function navPlusOuvrir(ouvrir) {
   var b = document.getElementById('nav-plus-btn'), z = document.getElementById('nav-plus'); if (!b || !z) return;
   if (ouvrir === undefined) ouvrir = z.hidden;
   z.hidden = !ouvrir; b.setAttribute('aria-expanded', ouvrir ? 'true' : 'false');
-  try { localStorage.setItem('mx_nav_plus', ouvrir ? '1' : '0'); } catch (e) {}
 }
 /** Entrée de menu qui ouvre un onglet d'une autre page (Zones = onglet de la page Encaissements). */
 function navVers(p, el) {
@@ -6242,7 +6246,7 @@ function goTo(p, el) {
   document.querySelectorAll('.ni').forEach(x=>x.classList.remove('on','cv','lv'));
   if(!el && NAV_PARENT[p]) el = document.querySelector('.ni[data-p="'+NAV_PARENT[p]+'"]'); // v7.5.137
   if(el){el.classList.add('on');if(role==='collab')el.classList.add('cv');if(role==='livreur')el.classList.add('lv');}
-  if(el && el.closest && el.closest('#nav-plus')) navPlusOuvrir(true); // v7.5.137 : page rangée dans « Plus » → bloc ouvert
+  navPlusOuvrir(!!(el && el.closest && el.closest('#nav-plus'))); // v7.5.138 : « Plus » ouvert seulement si la page affichée y est rangée
   if(p==='finance' && el && el.getAttribute && el.getAttribute('data-p')==='finance') showFinTab('enc', document.getElementById('fin-tab-enc'));
   document.querySelectorAll('.stk-arr-seg').forEach(function(s){ s.style.display = role==='admin' ? '' : 'none'; });
   const titles={dashboard:'Tableau de bord',commandes:'Commandes',tournees:'Tournées',livreur:'Ma tournée',finance:'Encaissements',pins:'Réglages',camion:'Contenu camion',suivi:'Suivi logistique',sante:'Santé société',arrivages:'Arrivages',stock:'Stock',notifs:'Notifications',optim:'Optimiser tournée',gps:'Géolocalisation'};
@@ -6266,6 +6270,7 @@ function goTo(p, el) {
     var _tdate = document.getElementById('t-date');
     if (_tdate && !_tdate.value) _tdate.value = new Date().toISOString().split('T')[0];
   }
+  if(p==='dashboard') renderDash(); // v7.5.138 (revue Codex) : chiffres et stock recalculés à chaque ouverture
   if(p==='livreur') renderLivreur();
   if(p==='finance') { renderFinance(); finRender(); }
   if(p==='stock') { stkRender(); stkApplyRoleVisibility(); stkChargerArrivage(); } // v7.5.136 : stock entrant + revient (admin)
@@ -6493,34 +6498,7 @@ function renderCanauxVente() {
   }).join('') : '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--t3)">Aucune donnée sur cette période</td></tr>';
 }
 
-function renderDash() { try { tdbRendre(); renderDashGLSRetard(); } catch(e) { console.warn('renderDash:',e.message); } try { paiRenderDash(); } catch(e) { console.warn('paiRenderDash:', e.message); } try { tdbRecentes(); tdbCanaux(); } catch(e) { console.warn('tdbRecentes:', e.message); } }
-// v7.5.113 : tableau de bord — paiements du mois en cours, payé en ligne et paiement à la
-// livraison séparés. Montants visibles par l'administrateur seulement.
-function paiRenderDash() {
-  var el = document.getElementById('dash-paiements'); if (!el) return;
-  if (role !== 'admin' || !Array.isArray(commandes)) { el.innerHTML = ''; return; }
-  var d = new Date(), mois = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
-  var r = paiTotaux(commandes, mois);
-  var ligne = function(ico, lib, val, n, coul, filtre) {
-    return '<div ' + (filtre ? 'onclick="paiOuvrirFiltre(\'' + filtre + '\')" style="cursor:pointer;' : 'style="') + 'flex:1;min-width:150px;background:var(--bg);border-radius:10px;padding:10px 12px;border-left:4px solid ' + coul + '">' +
-      '<div style="font-size:10.5px;font-weight:800;color:var(--t3);letter-spacing:.3px">' + ico + ' ' + lib + '</div>' +
-      '<div style="font-size:18px;font-weight:900;color:var(--text);margin-top:2px">' + paiEur(val) + '</div>' +
-      (n != null ? '<div style="font-size:11px;color:var(--t3)">' + n + ' commande' + (n > 1 ? 's' : '') + '</div>' : '') + '</div>';
-  };
-  el.innerHTML = '<div class="card" style="margin:0"><div class="card-t" style="margin-bottom:10px">💳 Paiements — ' + d.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }) + '</div>' +
-    '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
-    ligne('🟢', 'PAYÉ EN LIGNE', r.enLigne, r.nEnLigne, '#2E9E5B', 'en_ligne') +
-    ligne('🟠', 'À ENCAISSER À LA LIVRAISON', r.aEncaisser, r.nAEncaisser, '#E08A00', 'cod_ko') +
-    ligne('💵', 'ENCAISSÉ ESPÈCES PAR LIVREURS', r.especes, null, '#1F5A36', '') +
-    ligne('💳', 'ENCAISSÉ CB PAR LIVREURS', r.cb, null, '#185FA5', '') +
-    ligne('🔴', 'NON ENCAISSÉ', r.nonEncaisse, r.nNonEncaisse, '#C0392B', 'anomalie') +
-    '</div>' + (r.nNonEncaisse ? '<div style="margin-top:10px;background:#FCEBEB;color:#791F1F;border:1.5px solid #C0392B;border-radius:10px;padding:9px 12px;font-size:13px;font-weight:800">🚨 ' + r.nNonEncaisse + ' commande' + (r.nNonEncaisse > 1 ? 's livrées non encaissées' : ' livrée non encaissée') + ' ce mois — cliquer sur « NON ENCAISSÉ » pour les voir.</div>' : '') + '</div>';
-}
-function paiOuvrirFiltre(val) {
-  try { goTo('commandes', document.querySelector('.ni[onclick*="\'commandes\'"]')); } catch(e) {}
-  setTimeout(function(){ var s = document.getElementById('cmd-filter-paiement'); if (s) { s.value = val; cmdPresetActif = 'all'; if (typeof cmdUpdateQuickBtns === 'function') cmdUpdateQuickBtns('all'); cmdAppliquerFiltres(); } }, 250);
-}
-
+function renderDash() { try { tdbRendre(); renderDashGLSRetard(); } catch(e) { console.warn('renderDash:',e.message); } try { tdbRecentes(); tdbCanaux(); } catch(e) { console.warn('tdbRecentes:', e.message); } }
 // v7.5.8 : Detection des colis GLS expediés mais pas marqués livré (date_livraison passée +3j)
 function getGLSEnRetard() {
   if (!Array.isArray(commandes)) return [];
@@ -6596,7 +6574,7 @@ async function marquerLivreGLS(cmdId) {
   if (document.getElementById('p-finance')?.classList.contains('on')) finRender();
 }
 
-// TDB-DEBUT — v7.5.137 : TABLEAU DE BORD (lot « tableau de bord + menus allégés », 25/11/2026)
+// TDB-DEBUT — v7.5.137 (+ v7.5.138 : bloc Paiements retiré, carte Encaissé → page Encaissements) : TABLEAU DE BORD (lot « tableau de bord + menus allégés », 25/11/2026)
 // Chiffre d'affaires de la période (Jour / Semaine / Mois / Année) comparé à la période précédente « à date égale »,
 // ventes, encaissé, livraisons, stock, marge (en attente des prix de revient), top zones du mois.
 // Règles (inchangées, reprises du code existant) :
@@ -6719,7 +6697,10 @@ function tdbHtml(e) {
     if (d.dir === 'nouveau') return '<div class="tdb-ecart nouveau">Nouveau <span>(rien ' + tdbEsc(String(vs).replace(/^vs /, '')) + ')</span></div>';
     return '<div class="tdb-ecart ' + d.dir + '">' + (d.pct > 0 ? '+' : '') + d.pct + ' % <span>' + tdbEsc(vs) + ' (' + base + ')</span></div>';
   };
-  var carte = function (lib, val, sous, cls) { return '<div class="tdb-carte' + (cls ? ' ' + cls : '') + '"><div class="tdb-carte-l">' + lib + '</div><div class="tdb-carte-v">' + val + '</div>' + (sous ? '<div class="tdb-carte-s">' + sous + '</div>' : '') + '</div>'; };
+  var carte = function (lib, val, sous, cls, vers) {
+    var lien = vers ? ' tdb-lien" role="link" tabindex="0" onclick="tdbAller(\'' + vers + '\')" onkeydown="if(event.key===\'Enter\'){tdbAller(\'' + vers + '\')}" title="Ouvrir la page Encaissements' : '';
+    return '<div class="tdb-carte' + (cls ? ' ' + cls : '') + lien + '"><div class="tdb-carte-l">' + lib + (vers ? ' <span class="tdb-fleche" aria-hidden="true">›</span>' : '') + '</div><div class="tdb-carte-v">' + val + '</div>' + (sous ? '<div class="tdb-carte-s">' + sous + '</div>' : '') + '</div>';
+  };
   var pl = function (n, mot) { return n + ' ' + mot + (n > 1 ? 's' : ''); };
   var h = '<div class="tdb-grille">';
   if (A) {
@@ -6728,7 +6709,7 @@ function tdbHtml(e) {
       '<div class="tdb-note">Livré = commandes livrées, à leur date de livraison. Pris = commandes prises, à leur date de commande (hors annulées, SAV et saisies rétroactives).</div></section>';
     h += '<div class="tdb-petites">' +
       carte('Ventes', String(c.ventes), 'commande' + (c.ventes > 1 ? 's prises' : ' prise')) +
-      carte('Encaissé', tdbEur(c.encaisse), 'commandes livrées payées') +
+      carte('Encaissé', tdbEur(c.encaisse), 'commandes livrées payées', '', 'finance') +
       carte('Livraisons', c.livrees + ' / ' + c.prevues, 'livrées / prévues') +
       carte('Marge', '—', 'disponible dès les prix de revient saisis', 'marge') + '</div>';
   } else {
@@ -6766,7 +6747,25 @@ function tdbHtml(e) {
 
 // ── Données et affichage ──
 var TDB_COLS = 'id,prix,date_commande,date_livraison,statut,stpaie,montant_enc,origine,adresse,livreur';
-var TDB_ETAT = { cle: '', lignes: null, at: 0, enCours: '', erreur: '', revientsDemandes: false };
+var TDB_ETAT = { cle: '', lignes: null, at: 0, enCours: '', erreur: '', revientsDemandes: false, gen: 0 };
+var TDB_DUREE = 60000; // durée de vie de la lecture « par période » (ms)
+var _tdbSignal = null, _tdbExpire = null;
+function tdbVisible() { var p = document.getElementById('p-dashboard'); return !!(p && p.classList && p.classList.contains('on')); }
+/** Revue Codex (b425c03) : toute modification qui touche les chiffres le signale.
+ *  « commandes » : la lecture par période est périmée (même si une lecture est en cours : génération) ;
+ *  « produits » : la carte Stock est recalculée ; « revients » : prix de revient relus (réception d'arrivage).
+ *  Le tableau, s'il est affiché, est redessiné une fois (regroupement 0,8 s) ; sinon à sa prochaine ouverture (goTo). */
+function tdbSignaler(quoi) {
+  if (quoi === 'commandes') { TDB_ETAT.gen++; TDB_ETAT.at = 0; }
+  if (quoi === 'revients') TDB_ETAT.revientsDemandes = false;
+  clearTimeout(_tdbSignal);
+  _tdbSignal = setTimeout(function () { _tdbSignal = null; if (tdbVisible()) renderDash(); }, 800);
+}
+/** Relecture programmée à l'expiration de la lecture par période (tableau affiché seulement). */
+function tdbProgrammerExpiration(ms) {
+  clearTimeout(_tdbExpire);
+  _tdbExpire = setTimeout(function () { _tdbExpire = null; if (tdbVisible()) tdbRendre(); }, Math.max(1000, ms + 200));
+}
 /** Les commandes chargées par l'appli sont-elles TOUTES les commandes de la base ? (sinon : lecture limitée à la période) */
 function tdbLocalComplet() {
   return Array.isArray(commandes) && commandes.length > 0 && typeof cmdTotalCount !== 'undefined' && cmdTotalCount > 0 && commandes.length >= cmdTotalCount;
@@ -6783,7 +6782,7 @@ async function tdbLire(filtre) {
   return out;
 }
 async function tdbCharger(P, cle) {
-  if (TDB_ETAT.enCours === cle) return; TDB_ETAT.enCours = cle;
+  if (TDB_ETAT.enCours === cle) return; TDB_ETAT.enCours = cle; var gen = TDB_ETAT.gen;
   var per = function (du, au) { return '&statut=neq.annul%C3%A9&or=(and(date_livraison.gte.' + du + ',date_livraison.lte.' + au + '),and(date_commande.gte.' + du + ',date_commande.lte.' + au + '))'; };
   try {
     var lots = await Promise.all([tdbLire(per(P.du, P.au)), tdbLire(per(P.pdu, P.pau)),
@@ -6792,7 +6791,9 @@ async function tdbCharger(P, cle) {
     lots.forEach(function (l) { l.forEach(function (c) { if (!vu[c.id]) { vu[c.id] = 1; lignes.push(tdbLigne(c)); } }); });
     TDB_ETAT.lignes = lignes; TDB_ETAT.erreur = '';
   } catch (e) { TDB_ETAT.lignes = null; TDB_ETAT.erreur = String(e && e.message || e); }
-  TDB_ETAT.cle = cle; TDB_ETAT.at = Date.now(); TDB_ETAT.enCours = '';
+  TDB_ETAT.cle = cle; TDB_ETAT.enCours = '';
+  // une commande a changé pendant la lecture : résultat affiché mais aussitôt périmé (relu au prochain affichage)
+  TDB_ETAT.at = gen === TDB_ETAT.gen ? Date.now() : 0;
   tdbRendre();
 }
 function tdbAller(p) {
@@ -6813,8 +6814,9 @@ function tdbRendre() {
   if (tdbLocalComplet()) lignes = locales();
   else {
     var cle = mode + ':' + P.du + ':' + P.pdu + ':' + P.pau;
-    var frais = TDB_ETAT.cle === cle && Date.now() - TDB_ETAT.at < 60000;
+    var frais = TDB_ETAT.cle === cle && Date.now() - TDB_ETAT.at < TDB_DUREE;
     if (!frais && TDB_ETAT.enCours !== cle) tdbCharger(P, cle);
+    else if (frais) tdbProgrammerExpiration(TDB_ETAT.at + TDB_DUREE - Date.now());
     if (TDB_ETAT.cle === cle && TDB_ETAT.lignes) lignes = TDB_ETAT.lignes;
     else { lignes = locales(); note = TDB_ETAT.cle === cle && TDB_ETAT.erreur ? 'Lecture de la base impossible : chiffres calculés sur les ' + lignes.length + ' commandes chargées dans l’appli (peut-être incomplets).' : 'Mise à jour depuis la base…'; }
   }
@@ -14366,6 +14368,7 @@ function sauvegarderAjustement() {
     notifAjout('warn','stock','Stock bas — '+p.nom, p.stock+' unité(s) restante(s).','Réapprovisionner','stock');
   }
   toast(p.nom + ' : stock mis à jour → ' + newStock + ' unités ✓', 'ok');
+  if (typeof tdbSignaler === 'function') tdbSignaler('produits'); // v7.5.138 : carte Stock du tableau de bord
 }
 
 // ════════════════════════════════════════
@@ -15935,6 +15938,7 @@ async function sbLoadProduits() {
       try { localStorage.setItem('mx_produits_custom', JSON.stringify(produits.filter(function(p){ return p.id && p.id.indexOf('pr') === 0; }))); } catch(e) {}
       stkRender();
       buildProduitOptions();
+      if (typeof tdbSignaler === 'function') tdbSignaler('produits'); // v7.5.138
     }
   } catch(e) { console.warn('sbLoadProduits err:', e.message); }
 }
@@ -15999,6 +16003,7 @@ function sbStartRealtimeProduits() {
       }
       stkRender();
       buildProduitOptions();
+      if (typeof tdbSignaler === 'function') tdbSignaler('produits'); // v7.5.138
     })
     .subscribe();
 }

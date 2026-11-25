@@ -121,6 +121,9 @@ test('collab : aucun montant (ni CA, ni encaissé, ni valeur, ni marge)', !/1.03
 test('collab : mêmes cartes en nombres (livrées, ventes, livraisons, stock, zones)', hC.includes('Commandes livrées') && hC.includes('5 / 6') && hC.includes('Ruptures') && hC.includes('Top zones du mois') && hC.includes('2 livraisons'));
 test('collab : pas de lien vers la page Zones (réservée à l’admin)', !hC.includes("tdbAller('zones')"));
 test('noms échappés (zone, livreur)', !bac.tdbHtml(Object.assign(entree(true, sv), { zones: [{ id: 'x', nom: '<img src=x>', couleur: 'red', nb: 1, ca: 1 }] })).includes('<img'));
+test('bloc « Paiements — mois » retiré du tableau de bord (et sa fonction, sans autre appelant)', !/dash-paiements|paiRenderDash|paiOuvrirFiltre/.test(html));
+test('admin : carte Encaissé cliquable → page Encaissements', /tdb-carte tdb-lien" role="link"[^>]*onclick="tdbAller\('finance'\)"[^>]*><div class="tdb-carte-l">Encaissé/.test(hA), hA.match(/.{80}Encaissé.{20}/));
+test('collab : aucune carte vers Encaissements', !hC.includes("tdbAller('finance')"));
 test('Commandes récentes : colonne Montant pour l’admin seulement', /var A = role === 'admin'[\s\S]*?\(A \? '<th>Montant<\/th>' : ''\)/.test(fonction('function tdbRecentes() {')));
 test('lecture de la base : SELECT seulement, limitée à la période, par pages de 1 000', (() => { const f = tranche('async function tdbLire(filtre) {', 'async function tdbCharger'); return /Range/.test(f) && !/method|POST|PATCH|DELETE/.test(f) && f.includes("'/rest/v1/commandes?select='"); })());
 test('aucune écriture dans le bloc TDB', !/sbSave|rpcPin|method:\s*'(POST|PATCH|DELETE)'|localStorage\.setItem|\.insert\(|\.update\(/.test(tranche('// TDB-DEBUT', '// TDB-FIN')));
@@ -142,7 +145,16 @@ test('livreur : inchangé (Ma tournée, Mon camion)', egal(roles.livreur.nav.map
   test('JARVIS : chaque page de l’ancre reste joignable par l’admin (menu, « Plus » ou hors menu)', liste.every((x) => admin.includes(x)), liste.filter((x) => !admin.includes(x)));
 }
 test('« Plus » : vraies entrées .ni[data-p] (trouvées par l’ancre JARVIS même repliées), bouton sans data-p', /function navItemHtml\(n\) \{[\s\S]*?'<div class="ni" data-p="' \+ n\.p/.test(html) && /id="nav-plus-btn" role="button"/.test(html) && !/class="ni ni-plus"[^>]*data-p=/.test(html));
-test('« Plus » s’ouvre quand la page affichée y est rangée', html.includes("if(el && el.closest && el.closest('#nav-plus')) navPlusOuvrir(true);"));
+test('« Plus » ouvert seulement si la page affichée y est rangée, refermé sinon (v7.5.138)', html.includes("navPlusOuvrir(!!(el && el.closest && el.closest('#nav-plus')));") && !html.includes('navPlusOuvrir(true)') && !html.includes('mx_nav_plus'));
+{ // le vrai goTo : « Plus » suit la page affichée
+  const g = fonction('function goTo(p, el) {'); const appels = [];
+  const ni = (dansPlus) => ({ classList: { add() {} }, getAttribute: () => null, closest: (s) => (s === '#nav-plus' && dansPlus ? {} : null) });
+  const doc = { querySelectorAll: () => [], getElementById: () => ({ classList: { add() {}, remove() {} } }), querySelector: () => null };
+  const bg = { document: doc, role: 'admin', NAV_PARENT: {}, closeSidebarMobile() {}, renderCmds() {}, suiviInit() {}, santeRender() {}, navPlusOuvrir: (o) => appels.push(o), showFinTab() {} };
+  vm.createContext(bg); vm.runInContext(g, bg);
+  bg.goTo('suivi', ni(true)); bg.goTo('commandes', ni(false)); bg.goTo('sante', null);
+  test('goTo : page de « Plus » → ouvert ; page principale → refermé ; page hors menu → refermé', egal(appels, [true, false, false]), appels);
+}
 test('badge des notifications recopié sur « Plus »', html.includes("document.getElementById('plus-nav-badge')"));
 test('Zones : onglet de la page Encaissements, ouvert depuis « Plus »', /function navVers\(p, el\) \{[\s\S]*?goTo\('finance', el\);[\s\S]*?showFinTab\('zones'/.test(html));
 
@@ -154,6 +166,56 @@ test('analyse par canal (renderCanauxVente) gardée, repliée, admin seulement',
 test('sélecteur Jour / Semaine / Mois / Année (sans « Tout »)', /id="dash-periode-seg"[^\n]*data-v="jour"[^\n]*data-v="semaine"[^\n]*data-v="mois"[^\n]*data-v="annee"/.test(html) && !/segDashPeriode\('all'\)/.test(html));
 test('id de page conservé pour JARVIS (p-dashboard)', html.includes('<div class="page on" id="p-dashboard">'));
 
-console.log('\n8. MISE EN LIGNE');
-test('CACHE_VERSION augmentée (v7-5-139 ou plus)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 139; })());
+console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
+(async () => {
+  // bac à sable : vraie lecture par période (tdbCharger / tdbRendre) avec une fausse base et de faux minuteurs
+  const minuteurs = []; let rendus = 0, lectures = 0; const enAttente = [];
+  const pageOn = { on: true };
+  const elContenu = { innerHTML: '' };
+  const b4 = { console, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, Promise, zones: [],
+    role: 'admin', commandes: [{ id: '#1' }], cmdTotalCount: 5000, produits: [], SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
+    setTimeout: (f, ms) => { minuteurs.push({ f, ms }); return minuteurs.length; }, clearTimeout: () => {},
+    renderDash: () => { rendus++; }, getZoneFromAdresse: () => null, arrChargerRevients: () => Promise.resolve(),
+    document: { getElementById: (id) => (id === 'tdb-contenu' ? elContenu : id === 'p-dashboard' ? { classList: { contains: () => pageOn.on } } : id === 'dash-periode' ? { value: 'mois' } : null) },
+    fetch: () => { lectures++; return new Promise((ok) => { enAttente.push(() => ok({ ok: true, json: async () => [] })); }); } };
+  vm.createContext(b4); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b4);
+  const attendre = () => new Promise((r) => setImmediate(r));
+  b4.tdbRendre(); // base incomplète → lecture par période (3 requêtes)
+  const n1 = lectures;
+  b4.tdbSignaler('commandes'); // une commande change PENDANT la lecture
+  enAttente.splice(0).forEach((l) => l()); await attendre(); await attendre(); await attendre();
+  test('lecture par période lancée (base non chargée en entier ; Mois = 2 requêtes)', n1 === 2, n1);
+  test('commande changée pendant la lecture : résultat périmé, relecture relancée aussitôt', b4.TDB_ETAT.gen === 1 && b4.TDB_ETAT.at === 0 && lectures === 4, [b4.TDB_ETAT.at, lectures]);
+  for (let k = 0; k < 10 && enAttente.length; k++) { enAttente.splice(0).forEach((l) => l()); await attendre(); await attendre(); }
+  await attendre();
+  test('lecture terminée sans changement : gardée (at posé)', b4.TDB_ETAT.at > 0);
+  const l2 = lectures; minuteurs.length = 0; b4.tdbRendre();
+  test('lecture fraîche : pas de nouvelle requête', lectures === l2);
+  const exp = minuteurs.filter((m) => m.ms > 50000);
+  test('relecture programmée à l’expiration (≈ 60 s)', exp.length === 1 && exp[0].ms <= 60200, minuteurs.map((m) => m.ms));
+  b4.TDB_ETAT.at = Date.now() - 61000; exp[0].f();
+  test('à l’expiration, tableau affiché : nouvelle lecture', lectures > l2, [l2, lectures]);
+  for (let k = 0; k < 10 && enAttente.length; k++) { enAttente.splice(0).forEach((l) => l()); await attendre(); await attendre(); }
+  minuteurs.length = 0; b4.tdbSignaler('commandes');
+  test('signal « commandes » : cache périmé (at = 0)', b4.TDB_ETAT.at === 0);
+  const sig = minuteurs.find((m) => m.ms === 800); rendus = 0; sig.f();
+  test('signal : tableau affiché redessiné une fois (regroupé)', rendus === 1);
+  pageOn.on = false; rendus = 0; b4.tdbSignaler('produits'); minuteurs[minuteurs.length - 1].f();
+  test('signal : tableau non affiché → rien (recalculé à l’ouverture)', rendus === 0);
+  b4.TDB_ETAT.revientsDemandes = true; b4.tdbSignaler('revients');
+  test('signal « revients » : prix de revient relus au prochain rendu', b4.TDB_ETAT.revientsDemandes === false);
+  // branchements dans l'appli
+  const f = (e) => fonction(e);
+  test('sauvegarde locale d’une commande → signal', /tdbSignaler\('commandes'\)[^\n]*\n\}$/.test(f('async function sbSaveCommande(cmd) {')));
+  test('temps réel commandes → signal', /table:'commandes'\}, function\(payload\) \{[\s\S]*?tdbSignaler\('commandes'\)[\s\S]*?renderDash\(\); renderCmds\(\)/.test(html));
+  test('relève périodique (polling) → signal', /if \(updated\) \{\n\s*if \(typeof tdbSignaler === 'function'\) tdbSignaler\('commandes'\);/.test(f('function startPolling() {')));
+  test('ajustement de stock → signal produits', f('function sauvegarderAjustement() {').includes("tdbSignaler('produits')"));
+  test('chargement des produits → signal produits', f('async function sbLoadProduits() {').includes("tdbSignaler('produits')"));
+  test('temps réel produits → signal produits', /table:'produits'\}, function\(payload\) \{[\s\S]*?tdbSignaler\('produits'\)[\s\S]*?\.subscribe\(\);/.test(html));
+  test('réception d’arrivage → produits relus + revient relu', /await sbLoadProduits\(\); \} catch\(e\) \{\}\n\s*if \(typeof tdbSignaler === 'function'\) tdbSignaler\('revients'\);/.test(f('async function arrValider() {')));
+  test('ouverture de la page Tableau de bord → recalcul', f('function goTo(p, el) {').includes("if(p==='dashboard') renderDash();"));
+  console.log('\n8. MISE EN LIGNE');
+
+test('CACHE_VERSION augmentée (v7-5-140 ou plus)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 140; })());
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
+})().catch((e) => { console.error(e); process.exit(1); });
