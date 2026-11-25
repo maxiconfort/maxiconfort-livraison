@@ -258,8 +258,13 @@ function nouveauBac(opts) {
   const valO = sql.slice(sql.indexOf('create or replace function public.valider_reception_arrivage'), sql.indexOf('create or replace function public.recalculer_revient_arrivage'));
   test('ordre de réception tiré par séquence APRÈS les verrous produits et produits_revient, enregistré sur l\'arrivage',
     valO.indexOf("v_ordre := nextval('public.arrivages_ordre_reception_seq');") > valO.indexOf('perform 1 from public.produits_revient where produit_id in')
-    && valO.indexOf('perform 1 from public.produits_revient where produit_id in') > 0 && valO.includes('recu_le = clock_timestamp(), ordre_reception = v_ordre')
+    && valO.indexOf('perform 1 from public.produits_revient where produit_id in') > 0 && valO.includes('recu_le = v_instant, ordre_reception = v_ordre')
     && sql.includes('ordre_reception bigint unique,') && sql.includes('create sequence if not exists public.arrivages_ordre_reception_seq;'));
+  test('stock_entrees.date_entree = instant RÉEL pris après les verrous (clock_timestamp, même moment que ordre_reception), jamais now()',
+    valO.indexOf('v_instant := clock_timestamp();') > valO.indexOf("v_ordre := nextval('public.arrivages_ordre_reception_seq');")
+    && valO.indexOf("v_ordre := nextval('public.arrivages_ordre_reception_seq');") > valO.indexOf('perform 1 from public.produits_revient where produit_id in')
+    && valO.includes("values (v_instant, l.produit_id, v_rec, 'arrivage:' || a.reference_interne") && !/insert into public\.stock_entrees[\s\S]{0,200}values \(now\(\)/.test(valO)
+    && valO.indexOf('insert into public.stock_entrees') > valO.indexOf('v_instant := clock_timestamp();'));
   test('historique jamais réécrit : une ligne de correction par lot finalisé, reliée à l\'original', M.hist.filter(x => x.source === 'recalcul_taux').length === 1 && M.hist.find(x => x.a === 'A' && x.source === 'arrivage').remplace !== null);
   console.log('\n8 bis. REVIENT PROVISOIRE, STOCK_ENTREES, ORDRE DES VERROUS (revue Codex P2)');
   test('CUMP qui intègre un revient précédent provisoire = provisoire (lot OU ancien)', sql.includes("else coalesce(p_prov_lot, false) or coalesce(p_prov_avant, false)")
@@ -270,7 +275,7 @@ function nouveauBac(opts) {
     && rec.includes('v_prov := interne.revient_provisoire_apres(x.methode, x.stock_avant, v_cur, x.quantite, v_prov, x.provisoire_effectif);'));
   const val = sql.slice(sql.indexOf('create or replace function public.valider_reception_arrivage'), sql.indexOf('create or replace function public.recalculer_revient_arrivage'));
   test('réception : entrée écrite aussi dans stock_entrees (motif « arrivage:<réf> »), reçus bons seulement',
-    /insert into public\.stock_entrees \(date_entree, app_produit_id, quantite, motif, cmd_id, saisi_par, remarque\)\s+values \(now\(\), l\.produit_id, v_rec, 'arrivage:' \|\| a\.reference_interne/.test(val)
+    /insert into public\.stock_entrees \(date_entree, app_produit_id, quantite, motif, cmd_id, saisi_par, remarque\)\s+values \(v_instant, l\.produit_id, v_rec, 'arrivage:' \|\| a\.reference_interne/.test(val)
     && val.indexOf('insert into public.stock_entrees') > val.indexOf('if v_rec > 0 then'));
   test('stock_entrees accepte le motif « arrivage:… » (contrainte élargie, motifs existants gardés)', sql.includes("check (motif in ('reassort', 'retour_gls', 'reprise_sav', 'correction') or motif like 'arrivage:%')"));
   test('pas de double comptage : l\'appli lit produits.stock et jamais stock_entrees', !html.includes('stock_entrees'));
