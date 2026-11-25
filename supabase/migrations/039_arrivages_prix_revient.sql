@@ -29,6 +29,7 @@
 -- RETOUR ARRIÈRE (sans perte de données, à faire AVANT toute réception validée) :
 --   drop trigger if exists commandes_produit_vendable_garde on public.commandes;
 --   drop trigger if exists stock_correspondance_vendable_garde on public.stock_correspondance;
+--   drop trigger if exists produits_correspondance_garde on public.produits;
 --   drop trigger if exists produits_vente_garde on public.produits;
 --   (les tables et colonnes ajoutées peuvent rester : elles sont inoffensives) ; revenir à l'application v7.5.135.
 --   Après une réception validée : le stock ajouté est tracé dans mouvements_stock (type 'entree', source 'arrivage:<réf>') et dans
@@ -107,32 +108,73 @@ create trigger produits_vente_garde before insert or update on public.produits
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 -- 2. Commandes et correspondance Shopify : un produit non vendable est REFUSÉ
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
--- Seules les lignes NOUVELLES sont contrôlées (une commande déjà prise qui contient un produit retiré de la vente reste
--- modifiable). Aucune commande existante n'est touchée par cette migration. Les déclencheurs de paiement et d'annulation
--- ne changent pas.
+-- Une commande déjà prise qui contient un produit retiré de la vente reste modifiable, MAIS ses lignes de produits non vendables
+-- sont FIGÉES (revue Codex sur 82a9b09) : pour chaque produit non vendable présent dans les lignes proposées, elles doivent être
+-- exactement les lignes existantes de ce produit — même nombre d'occurrences, mêmes quantités, mêmes prix et remises (ordre libre).
+-- Ajouter une ligne, changer une quantité, un prix ou une remise d'un produit non vendable est refusé ; retirer TOUTES ses lignes
+-- reste permis. Un produit non vendable absent de la commande d'origine (ou dans une commande nouvelle) est refusé.
+-- Aucune commande existante n'est touchée par cette migration. Les déclencheurs de paiement et d'annulation ne changent pas.
+-- Nombre lu sans erreur (texte non numérique → NULL, comparé tel quel).
+create or replace function interne.l039_nombre(p jsonb) returns numeric
+language plpgsql immutable as $$
+begin
+  if p is null or jsonb_typeof(p) = 'null' then return null; end if;
+  return (p #>> '{}')::numeric;
+exception when others then return null;
+end $$;
+-- Signature d'une ligne : quantité (absente ou 0 = 1, comme l'application : l.qte || 1), prix et remises.
+create or replace function interne.l039_signature_ligne(e jsonb) returns jsonb
+language sql immutable as $$
+  select jsonb_build_object(
+    'qte', coalesce(nullif(interne.l039_nombre(e -> 'qte'), 0), 1),
+    'prixUnit', interne.l039_nombre(e -> 'prixUnit'),
+    'prixBrut', interne.l039_nombre(e -> 'prixBrut'),
+    'remiseLigne', interne.l039_nombre(e -> 'remiseLigne'),
+    'remiseVal', interne.l039_nombre(e -> 'remiseVal'),
+    'remiseType', e -> 'remiseType',
+    'sousTotal', interne.l039_nombre(e -> 'sousTotal'))
+$$;
+-- PURE (aucune lecture de table) : produits de p_non_vendables dont les lignes proposées (p_new) diffèrent des lignes existantes
+-- (p_old ; NULL = commande nouvelle). Comparaison ligne à ligne : multiensembles TRIÉS de signatures, produit par produit.
+-- NULL = aucune modification interdite.
+create or replace function interne.lignes_non_vendables_modifiees(p_new jsonb, p_old jsonb, p_non_vendables text[]) returns text[]
+language sql immutable as $$
+  with nv as (select case when jsonb_typeof(p_new) = 'array' then p_new else '[]'::jsonb end as js),
+       ov as (select case when jsonb_typeof(p_old) = 'array' then p_old else '[]'::jsonb end as js),
+       pids as (select distinct e ->> 'produitId' as pid from nv, jsonb_array_elements(nv.js) e
+                 where e ->> 'produitId' = any(coalesce(p_non_vendables, '{}'::text[])))
+  select array_agg(pid order by pid) from pids
+   where (select coalesce(jsonb_agg(interne.l039_signature_ligne(e) order by interne.l039_signature_ligne(e)), '[]'::jsonb)
+            from nv, jsonb_array_elements(nv.js) e where e ->> 'produitId' = pids.pid)
+         is distinct from
+         (select coalesce(jsonb_agg(interne.l039_signature_ligne(o) order by interne.l039_signature_ligne(o)), '[]'::jsonb)
+            from ov, jsonb_array_elements(ov.js) o where o ->> 'produitId' = pids.pid)
+$$;
+revoke all on function interne.lignes_non_vendables_modifiees(jsonb, jsonb, text[]) from public, anon, authenticated;
+
 create or replace function interne.commandes_produit_vendable_garde() returns trigger
 language plpgsql security definer set search_path = public, interne, pg_catalog as $$
-declare v_ids text[]; v_refus text; v_new jsonb := to_jsonb(new.lignes); v_old jsonb;
+declare v_nv text[]; v_modif text[]; v_refus text; v_new jsonb := to_jsonb(new.lignes); v_old jsonb;
 begin
   if jsonb_typeof(v_new) is distinct from 'array' then return new; end if;
   if tg_op = 'UPDATE' then v_old := to_jsonb(old.lignes);
   else
     -- enregistrement « upsert » de l'application (INSERT … ON CONFLICT) : le déclencheur INSERT voit la ligne proposée AVANT
-    -- la détection du conflit ; si la commande existe déjà, ses lignes actuelles servent de référence (comme pour un UPDATE)
+    -- la détection du conflit ; si la commande existe déjà, ses lignes actuelles servent de référence (comme pour un UPDATE).
+    -- Commande nouvelle : v_old reste NULL, toute ligne d'un produit non vendable est donc refusée.
     select to_jsonb(c.lignes) into v_old from public.commandes c where c.id = new.id;
   end if;
-  select array_agg(distinct e ->> 'produitId') into v_ids
-    from jsonb_array_elements(v_new) e
-   where coalesce(e ->> 'produitId', '') <> ''
-     and (jsonb_typeof(v_old) is distinct from 'array'
-          or not exists (select 1 from jsonb_array_elements(v_old) o where o ->> 'produitId' = e ->> 'produitId'));
-  if v_ids is null then return new; end if;
-  select string_agg(p.nom, ', ' order by p.nom) into v_refus
-    from public.produits p where p.id = any(v_ids) and interne.produit_non_vendable(p.id);
-  if v_refus is not null then
-    raise exception 'PRODUIT NON VENDABLE (prix de vente à définir) : %', v_refus using errcode = 'P0001';
-  end if;
-  return new;
+  -- produits non vendables présents dans les lignes proposées (TOUTES les lignes, pas seulement les « nouvelles »)
+  select array_agg(distinct p.id) into v_nv
+    from public.produits p
+   where p.id in (select e ->> 'produitId' from jsonb_array_elements(v_new) e where coalesce(e ->> 'produitId', '') <> '')
+     and interne.produit_non_vendable(p.id);
+  if v_nv is null then return new; end if;
+  v_modif := interne.lignes_non_vendables_modifiees(v_new, v_old, v_nv);
+  if v_modif is null then return new; end if;
+  select string_agg(p.nom, ', ' order by p.nom) into v_refus from public.produits p where p.id = any(v_modif);
+  raise exception 'PRODUIT NON VENDABLE (prix de vente à définir) : % — ligne ajoutée, quantité ou prix modifié : refusé', v_refus
+    using errcode = 'P0001';
 end $$;
 drop trigger if exists commandes_produit_vendable_garde on public.commandes;
 create trigger commandes_produit_vendable_garde before insert or update of lignes on public.commandes
@@ -152,6 +194,33 @@ end $$;
 drop trigger if exists stock_correspondance_vendable_garde on public.stock_correspondance;
 create trigger stock_correspondance_vendable_garde before insert or update of app_produit_id, fiabilite on public.stock_correspondance
   for each row execute function interne.stock_correspondance_vendable_garde();
+
+-- Un produit qui DEVIENT non vendable (vendable → false, prix « à définir », ensemble dont la composition change) alors qu'une
+-- variante Shopify « certaine » pointe vers lui, ou vers un ENSEMBLE qui le contient (devenu non vendable par ce composant), est
+-- REFUSÉ (revue Codex sur 82a9b09) : sinon la correspondance resterait utilisée pour importer des commandes et publier le stock.
+-- L'administrateur retire d'abord la correspondance (ou la passe en non certaine), puis retire le produit de la vente.
+-- Déclencheur AFTER : produit_non_vendable lit l'état NOUVEAU du produit (et de l'ensemble).
+create or replace function interne.produits_correspondance_garde() returns trigger
+language plpgsql security definer set search_path = public, interne, pg_catalog as $$
+declare v_refus text;
+begin
+  select string_agg(distinct sc.shopify_variant_id::text || ' → ' || sc.app_produit_id, ', ') into v_refus
+    from public.stock_correspondance sc
+   where sc.fiabilite = 'certaine'
+     and (sc.app_produit_id = new.id
+          or sc.app_produit_id in (select q.id from public.produits q
+                                    where jsonb_typeof(q.composants) = 'array'
+                                      and exists (select 1 from jsonb_array_elements(q.composants) c where c ->> 'id' = new.id)))
+     and interne.produit_non_vendable(sc.app_produit_id);
+  if v_refus is not null then
+    raise exception 'PRODUIT NON VENDABLE : « % » est relié à des variantes Shopify « certaines » (%) ; retirer d''abord ces correspondances',
+      new.nom, v_refus using errcode = 'P0001';
+  end if;
+  return null;
+end $$;
+drop trigger if exists produits_correspondance_garde on public.produits;
+create trigger produits_correspondance_garde after update of vendable, prix_vente_defini, composants on public.produits
+  for each row execute function interne.produits_correspondance_garde();
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 -- 3. Arrivages, lignes, prix de revient, historique
@@ -531,4 +600,38 @@ begin
       raise exception 'mouvements_stock refuse une entrée d''arrivage (%). Migration annulée : adapter l''insertion de valider_reception_arrivage.', sqlerrm;
     end if;
   end;
+end $$;
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 9. Auto-contrôle à l'application : lignes figées des produits non vendables (fonction PURE, valeurs fictives, rien n'est écrit)
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+do $$
+declare
+  o jsonb := '[{"produitId":"nv","qte":2,"prixUnit":10,"prixBrut":20,"remiseLigne":0,"sousTotal":20},
+               {"produitId":"nv","qte":1,"prixUnit":10,"prixBrut":10,"remiseLigne":0,"sousTotal":10},
+               {"produitId":"ok","qte":1,"prixUnit":5,"prixBrut":5,"remiseLigne":0,"sousTotal":5}]';
+  nv text[] := array['nv'];
+  f text;
+begin
+  -- [cas, lignes proposées, lignes existantes, résultat attendu (NULL = accepté)]
+  if interne.lignes_non_vendables_modifiees(o, o, nv) is not null then f := 'identique'; end if;
+  if interne.lignes_non_vendables_modifiees(
+       '[{"produitId":"ok","qte":3,"prixUnit":5,"prixBrut":15,"remiseLigne":0,"sousTotal":15},
+         {"produitId":"nv","qte":1,"prixUnit":10,"prixBrut":10,"remiseLigne":0,"sousTotal":10},
+         {"produitId":"nv","qte":2,"prixUnit":10,"prixBrut":20,"remiseLigne":0,"sousTotal":20}]', o, nv) is not null then f := 'ordre / produit vendable modifié'; end if;
+  if interne.lignes_non_vendables_modifiees('[{"produitId":"ok","qte":1,"prixUnit":5}]', o, nv) is not null then f := 'retrait total'; end if;
+  if interne.lignes_non_vendables_modifiees(
+       '[{"produitId":"nv","qte":3,"prixUnit":10,"prixBrut":30,"remiseLigne":0,"sousTotal":30},
+         {"produitId":"nv","qte":1,"prixUnit":10,"prixBrut":10,"remiseLigne":0,"sousTotal":10}]', o, nv) is distinct from nv then f := 'quantité'; end if;
+  if interne.lignes_non_vendables_modifiees(
+       '[{"produitId":"nv","qte":2,"prixUnit":9,"prixBrut":18,"remiseLigne":0,"sousTotal":18},
+         {"produitId":"nv","qte":1,"prixUnit":10,"prixBrut":10,"remiseLigne":0,"sousTotal":10}]', o, nv) is distinct from nv then f := 'prix'; end if;
+  if interne.lignes_non_vendables_modifiees(o || '[{"produitId":"nv","qte":1,"prixUnit":10,"prixBrut":10,"remiseLigne":0,"sousTotal":10}]'::jsonb, o, nv)
+       is distinct from nv then f := 'ligne en double ajoutée'; end if;
+  if interne.lignes_non_vendables_modifiees('[{"produitId":"nv","qte":1,"prixUnit":10,"prixBrut":10,"remiseLigne":0,"sousTotal":10}]', o, nv)
+       is distinct from nv then f := 'une occurrence retirée'; end if;
+  if interne.lignes_non_vendables_modifiees(o, null, nv) is distinct from nv then f := 'commande nouvelle'; end if;
+  if f is not null then
+    raise exception 'Auto-contrôle 039 (lignes figées) en échec : cas « % ». Migration annulée.', f;
+  end if;
 end $$;
