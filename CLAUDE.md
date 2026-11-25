@@ -133,6 +133,13 @@ Le journal détaillé du projet (historique des versions, cas clients, SAV) est 
 - v7.5.127 (09/11/2026, « filtre les commandes de TikTok ») : origine facultative en 5e partie (liste fermée = ORIGINES_APPLI), ex. `commandes:all:::TikTok Shop`, `commandes:week::en-attente:LeBonCoin` ; option ajoutée au menu Origine si absente.
 - Tests : `node outils/test-vue-jarvis.js` (sans connexion).
 
+## Validation livreur simplifiée et Retour de tournée (v7.5.129, 25/11/2026 — lot 1 de la simplification)
+- Demande de Borhen : chaque arrêt reçoit un résultat fiable (**Livré / Reporté / Client absent**), et un point de caisse par tournée au retour du livreur.
+- **Livreur** : trois gros boutons par arrêt (valeurs de statut EXISTANTES `livré`, `reporté`, `absent` — aucune nouvelle valeur), les autres statuts (en route, arrivé, annulé…) repliés. Reporté = date proposée FACULTATIVE (notée sur l'arrêt `reportAu` et dans les instructions de la commande ; la date de livraison n'est PAS changée : le bureau ou JARVIS replanifie, sinon `reconcilierTournees` retirerait l'arrêt de la tournée avant le point de caisse). Client absent = simple confirmation. Bouton « Clôturer ma tournée » refusé tant qu'un arrêt n'a pas de résultat.
+- **Signature** : Espèces / Carte bleue / Déjà payé, RIEN de présélectionné ; montant pré-rempli avec le reste dû, modifiable seulement à la baisse avec un motif (5 caractères au moins) → « Partiel » (ou « Non payé » à 0 €), trace dans les instructions + alerte au bureau. Commande déjà soldée : Espèces / CB refusés (choisir « Déjà payé »). « Autres cas » : Espèces + CB, virement, non payé. Commandes du site : écrans v7.5.113 inchangés.
+- **Administrateur** (Encaissements → À traiter) : carte « Retour de tournée — point de caisse » pour chaque tournée passée ou du jour non validée : espèces attendues (à comparer à l'argent remis), CB, déjà payées, reportées, absents, reste à encaisser, arrêts sans résultat. Le bouton « Valider le point de caisse » réutilise `validerRemiseCaisse` (table `caisse_remises`, écart + explication). Aucune migration.
+- Code : bloc pur `RT-DEBUT … RT-FIN` (`rtPeutCloturer`, `rtResteDu`, `rtControleMontant`, `rtStatutApres`, `rtDateReportValide`, `rtPointCaisse`). Tests : `node outils/test-retour-tournee.js` (sans connexion), à relancer avec les autres `outils/test-*.js` (hors `*-base.js`, qui touchent la vraie base).
+
 ## Pièges connus
 - PATCH Supabase via PowerShell : encoder le corps en UTF-8 (`[Text.Encoding]::UTF8.GetBytes`) et URL-encoder `#` en `%23`.
 - Variables PowerShell insensibles à la casse (`$p` = `$P`) : ne pas réutiliser un nom pour deux valeurs (incident du 27/09 : chemin local publié à la place de la clé pendant 2 min).

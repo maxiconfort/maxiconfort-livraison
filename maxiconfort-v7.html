@@ -897,6 +897,26 @@ textarea{resize:vertical;min-height:65px}
       .lv-stbtn.a-green  { background:var(--gl);color:var(--gd);border-color:var(--green); }
       .lv-stbtn.a-violet { background:var(--vl);color:var(--vd);border-color:var(--violet); }
       .lv-stbtn.a-red    { background:var(--rl);color:var(--rd);border-color:var(--red); }
+      /* v7.5.129 : trois gros boutons de résultat, autres statuts repliés, clôture de tournée */
+      .lv-resultats-grid { display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px; }
+      .lv-resbtn { padding:16px 6px;border-radius:14px;border:2.5px solid var(--brd2);background:var(--bg);color:var(--text);font-size:14px;font-weight:900;font-family:var(--font);cursor:pointer;text-align:center;line-height:1.25;min-height:72px; }
+      .lv-resbtn:active { transform:scale(.95); }
+      .lv-resbtn .sticon { font-size:22px;display:block;margin-bottom:4px; }
+      .lv-resbtn.lv-res-livre { border-color:var(--green);color:var(--gd); }
+      .lv-resbtn.lv-res-reporte { border-color:var(--violet);color:var(--vd); }
+      .lv-resbtn.lv-res-absent { border-color:var(--red);color:var(--rd); }
+      .lv-resbtn.lv-res-livre.actif { background:var(--gl); }
+      .lv-resbtn.lv-res-reporte.actif { background:var(--vl); }
+      .lv-resbtn.lv-res-absent.actif { background:var(--rl); }
+      .lv-resultat-bandeau { border-radius:12px;padding:10px 12px;margin-bottom:10px;font-size:14px;font-weight:900; }
+      .lv-resultat-bandeau.lv-res-reporte { background:var(--vl);color:var(--vd);border:1.5px solid var(--violet); }
+      .lv-resultat-bandeau.lv-res-absent { background:var(--rl);color:var(--rd);border:1.5px solid var(--red); }
+      .lv-autres-statuts summary { font-size:12px;font-weight:700;color:var(--t3);cursor:pointer;padding:4px 0; }
+      .lv-cloture { background:var(--card);border:2px solid var(--brd2);border-radius:16px;padding:16px;margin:6px 0 18px; }
+      .lv-cloture-ok { background:var(--gl);border-color:var(--green);color:var(--gd); }
+      .lv-cloture-btn { width:100%;padding:16px;border-radius:14px;border:none;background:var(--green);color:#fff;font-size:16px;font-weight:900;font-family:var(--font);cursor:pointer; }
+      .lv-cloture-btn:disabled { background:var(--t3);cursor:not-allowed;opacity:.8; }
+      .sig-simple-btn { padding:14px 4px;border-radius:12px;border:2px solid var(--brd);background:var(--bg);font-size:14px;font-weight:900;cursor:pointer;font-family:var(--font);color:var(--text);line-height:1.3;min-height:64px; }
 
       /* Done banner */
       .lv-done-banner { margin:0 18px 16px;padding:12px 16px;background:var(--gl);border:1.5px solid var(--green);border-radius:14px;font-size:13px;color:var(--gd);font-weight:700;display:flex;align-items:center;gap:8px; }
@@ -2743,6 +2763,21 @@ Maxiconfort — {TEL_CONTACT}</textarea>
     </div>
   </div>
 
+  <!-- v7.5.129 : « Reporté » -> nouvelle date facultative -->
+  <div id="m-report" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;align-items:center;justify-content:center;padding:20px">
+    <div style="background:var(--card);border-radius:20px;padding:24px;width:100%;max-width:420px">
+      <div style="font-size:17px;font-weight:800;margin-bottom:4px">📅 Livraison reportée</div>
+      <div id="report-client-info" style="font-size:13px;color:var(--t2);margin-bottom:14px"></div>
+      <label for="report-date" style="font-size:13px;font-weight:700;color:var(--t2);display:block;margin-bottom:6px">Nouvelle date proposée par le client (facultatif)</label>
+      <input type="date" id="report-date" style="width:100%;padding:12px;border:1.5px solid var(--brd);border-radius:12px;font-size:16px;font-family:var(--font);box-sizing:border-box;background:var(--bg);color:var(--text)">
+      <div style="font-size:11px;color:var(--t3);margin-top:6px">Le bureau replanifie la livraison ; la date est notée sur la commande.</div>
+      <div style="display:flex;gap:10px;margin-top:14px">
+        <button onclick="lvFermerReport()" style="flex:1;padding:13px;border-radius:12px;border:1.5px solid var(--brd);background:var(--bg);font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">Annuler</button>
+        <button onclick="lvValiderReport()" style="flex:1;padding:13px;border-radius:12px;border:none;background:var(--violet);color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">📅 Valider le report</button>
+      </div>
+    </div>
+  </div>
+
   <div class="sigbd" id="m-sig">
   <div class="sigsheet">
     <div style="font-size:17px;font-weight:800;margin-bottom:4px">✍️ Signature client</div>
@@ -2764,13 +2799,32 @@ Maxiconfort — {TEL_CONTACT}</textarea>
     <div style="background:var(--bg);border-radius:12px;padding:14px;margin-bottom:12px;border:1.5px solid var(--brd)">
       <!-- v7.5.56 : bandeau commande marketplace deja payee en ligne -->
       <div id="sig-prepaye-banner" style="display:none;background:var(--gl);color:var(--gd);border:1.5px solid var(--green);border-radius:10px;padding:12px;font-size:13px;font-weight:700;line-height:1.5"></div>
+      <!-- v7.5.129 : choix simple Espèces / Carte bleue / Déjà payé (rien de présélectionné) ; montant pré-rempli
+           avec ce qui reste dû, modifiable seulement à la baisse avec un motif -->
       <div id="sig-paie-question">
-        <div style="font-size:13px;font-weight:800;margin-bottom:10px;color:var(--text)">💰 Paiement ?</div>
-        <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">
-          <button id="sig-paie-oui" onclick="sigTogglePaie(true)" style="flex:1;min-width:86px;padding:10px 6px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">✅ Encaissé</button>
-          <button id="sig-paie-deja" onclick="sigDejaPaye()" style="flex:1;min-width:86px;padding:10px 6px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">📦 Déjà payé</button>
-          <button id="sig-paie-non" onclick="sigTogglePaie(false)" style="flex:1;min-width:86px;padding:10px 6px;border-radius:10px;border:2px solid var(--brd);background:var(--bg);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">❌ Non payé</button>
+        <div style="font-size:14px;font-weight:800;margin-bottom:10px;color:var(--text)">💰 Comment le client a-t-il payé ?</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
+          <button id="sig-lv-esp" class="sig-simple-btn" onclick="sigChoixSimple('esp')">💵<br>Espèces</button>
+          <button id="sig-lv-cb" class="sig-simple-btn" onclick="sigChoixSimple('cb')">💳<br>Carte bleue</button>
+          <button id="sig-paie-deja" class="sig-simple-btn" onclick="sigChoixSimple('deja')">📦<br>Déjà payé</button>
         </div>
+        <div id="sig-montant-wrap" style="display:none;margin-bottom:10px">
+          <label for="sig-montant" style="font-size:12px;font-weight:700;color:var(--t2);display:block;margin-bottom:4px">Montant encaissé (€)</label>
+          <input id="sig-montant" type="number" inputmode="decimal" min="0" step="0.01" oninput="sigMontantMaj()" style="width:100%;padding:11px;border:1.5px solid var(--green);border-radius:10px;font-size:18px;font-weight:800;font-family:var(--font);text-align:right;box-sizing:border-box">
+          <div id="sig-montant-info" style="font-size:12px;font-weight:700;margin-top:4px;color:var(--t2)"></div>
+          <div id="sig-motif-wrap" style="display:none;margin-top:8px">
+            <label for="sig-montant-motif" style="font-size:12px;font-weight:700;color:var(--rd);display:block;margin-bottom:4px">Motif (obligatoire si le montant est plus bas)</label>
+            <input id="sig-montant-motif" type="text" autocomplete="off" placeholder="Ex : remise accordée, client paiera le reste par virement" style="width:100%;padding:11px;border:1.5px solid var(--red);border-radius:10px;font-size:14px;font-family:var(--font);box-sizing:border-box">
+          </div>
+        </div>
+        <details id="sig-autres-cas" style="margin-bottom:6px">
+          <summary style="font-size:12px;font-weight:700;color:var(--t3);cursor:pointer;padding:4px 0">Autres cas : espèces + carte, virement, non payé</summary>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+            <button class="sig-mode-btn" onclick="sigAutreCas('Mixte')" data-mode="Mixte" style="padding:8px 14px;border-radius:20px;border:1.5px solid #BA7517;background:#FFF7E6;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);color:#7A4A00">🔀 Espèces + CB</button>
+            <button class="sig-mode-btn" onclick="sigAutreCas('Virement')" data-mode="Virement" style="padding:8px 14px;border-radius:20px;border:1.5px solid var(--brd);background:var(--bg);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">🏦 Virement</button>
+            <button id="sig-paie-non" onclick="sigAutreCas('non')" style="padding:8px 14px;border-radius:20px;border:1.5px solid var(--brd);background:var(--bg);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">❌ Non payé</button>
+          </div>
+        </details>
       </div>
       <!-- v7.5.113 : commande du site en PAIEMENT À LA LIVRAISON — 3 choix, AUCUN présélectionné -->
       <div id="sig-cod-wrap" style="display:none">
@@ -2786,13 +2840,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
         </div>
       </div>
       <div id="sig-paie-mode-wrap" style="display:none">
-        <div style="font-size:12px;color:var(--t2);margin-bottom:6px">Mode de règlement :</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="sig-mode-btn" onclick="sigSelectMode('Espèces')" data-mode="Espèces" style="padding:8px 14px;border-radius:20px;border:1.5px solid var(--brd);background:var(--bg);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">💵 Espèces</button>
-          <button class="sig-mode-btn" onclick="sigSelectMode('CB')" data-mode="CB" style="padding:8px 14px;border-radius:20px;border:1.5px solid var(--brd);background:var(--bg);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">💳 CB (TPE)</button>
-          <button class="sig-mode-btn" onclick="sigSelectMode('Virement')" data-mode="Virement" style="padding:8px 14px;border-radius:20px;border:1.5px solid var(--brd);background:var(--bg);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">🏦 Virement</button>
-          <button class="sig-mode-btn" onclick="sigSelectMode('Mixte')" data-mode="Mixte" style="padding:8px 14px;border-radius:20px;border:1.5px solid #BA7517;background:#FFF7E6;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);color:#7A4A00">🔀 Espèces + CB</button>
-        </div>
+        <!-- v7.5.129 : les boutons de mode sont dans le choix simple et « Autres cas » ci-dessus -->
         <!-- v7.5.114 : référence du ticket CB, obligatoire dès qu'une carte est encaissée -->
         <div id="sig-ticket-wrap" style="display:none;margin-top:10px">
           <label style="font-size:12px;font-weight:700;color:var(--t2);display:block;margin-bottom:4px">N° ou référence du ticket CB (obligatoire)</label>
@@ -9434,6 +9482,183 @@ function renderTournees() {
 // ════════════════════════════════════════
 let currentLvTourneeId = null; // tournée actuellement affichée dans vue livreur
 
+// ── RT-DEBUT — Validation simple des arrêts et Retour de tournée (v7.5.129, 25/11/2026) ──
+// Demande de Borhen (« vue livreur et encaissement : ESSENTIEL ») :
+//  - côté livreur, chaque arrêt reçoit l'un des trois résultats : Livré, Reporté ou Client absent
+//    (valeurs de statut EXISTANTES : « livré », « reporté », « absent » — aucune nouvelle valeur) ;
+//    la tournée ne se clôture pas tant qu'un arrêt n'a pas de résultat ;
+//  - à la livraison : Espèces, Carte bleue ou Déjà payé ; montant pré-rempli avec ce qui reste dû,
+//    modifiable seulement à la BAISSE, avec un motif ;
+//  - côté administrateur, un point de caisse par tournée : espèces, carte, déjà payé, reportés,
+//    absents, reste à encaisser (la remise réutilise caisse_remises / validerRemiseCaisse).
+// Fonctions PURES (aucun accès à la page ni à la base) : testées par outils/test-retour-tournee.js.
+var RT_RESULTATS = ['livré', 'reporté', 'absent'];
+var RT_MOTIF_MIN = 5;
+function rtArrondi(n) { return Math.round((parseFloat(n) || 0) * 100) / 100; }
+// Un arrêt est « validé » quand il a un résultat (ou qu'il a été annulé, avec son motif).
+function rtArretValide(s) { return !!s && (RT_RESULTATS.indexOf(s.statut) >= 0 || s.statut === 'annulé'); }
+// Arrêts sans résultat : [{ idx, client, statut }]
+function rtArretsAValider(stops) {
+  var liste = [];
+  (stops || []).forEach(function(s, i) { if (s && !rtArretValide(s)) liste.push({ idx: i, client: s.client || '', statut: s.statut || 'en-attente' }); });
+  return liste;
+}
+// La tournée peut-elle être clôturée ? Il faut au moins un arrêt, et un résultat sur chacun.
+function rtPeutCloturer(t) {
+  var stops = (t && t.stops) || [];
+  if (!stops.length) return { ok: false, raison: 'aucun arrêt', restants: [] };
+  var restants = rtArretsAValider(stops);
+  if (restants.length) return { ok: false, raison: restants.length + ' arrêt' + (restants.length > 1 ? 's' : '') + ' sans résultat (Livré, Reporté ou Client absent)', restants: restants };
+  return { ok: true, raison: '', restants: [] };
+}
+// Ce qui reste dû sur une commande (prix moins ce qui est déjà encaissé ; « Payé » = 0).
+function rtResteDu(prix, montantEnc, stpaie) {
+  if (stpaie === 'Payé') return 0;
+  return Math.max(0, rtArrondi((parseFloat(prix) || 0) - (stpaie === 'Partiel' ? (parseFloat(montantEnc) || 0) : 0)));
+}
+// Montant saisi par le livreur. Vide = le reste dû. Jamais plus que le reste dû ; moins = motif obligatoire.
+function rtControleMontant(resteDu, saisie, motif) {
+  var reste = rtArrondi(resteDu);
+  var brut = String(saisie == null ? '' : saisie).trim();
+  if (brut === '') return { ok: true, montant: reste, baisse: false, erreur: '' };
+  var m = parseFloat(brut.replace(',', '.').replace(/[^0-9.\-]/g, ''));
+  if (isNaN(m) || m < 0) return { ok: false, montant: 0, baisse: false, erreur: 'Montant invalide' };
+  m = rtArrondi(m);
+  if (m > reste + 0.005) return { ok: false, montant: m, baisse: false, erreur: 'Le montant ne peut pas dépasser ce qui reste dû (' + reste + ' €)' };
+  var baisse = m < reste - 0.005;
+  if (baisse && String(motif || '').trim().length < RT_MOTIF_MIN) return { ok: false, montant: m, baisse: true, erreur: 'Montant plus bas que le reste dû : motif obligatoire (' + RT_MOTIF_MIN + ' caractères au moins)' };
+  return { ok: true, montant: m, baisse: baisse, erreur: '' };
+}
+// Statut de paiement après l'encaissement du jour (déjà encaissé avant + montant du jour).
+function rtStatutApres(prix, dejaEnc, montant) {
+  var total = rtArrondi((parseFloat(dejaEnc) || 0) + (parseFloat(montant) || 0));
+  if (total >= rtArrondi(prix) - 0.005) return 'Payé';
+  return total > 0 ? 'Partiel' : 'Non payé';
+}
+// Date de report facultative : vide = acceptée ; sinon AAAA-MM-JJ, après la date de la tournée.
+function rtDateReportValide(date, dateTournee) {
+  var d = String(date || '').trim();
+  if (!d) return { ok: true, date: '' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || isNaN(Date.parse(d + 'T12:00:00'))) return { ok: false, date: '', erreur: 'Date invalide' };
+  if (dateTournee && d <= String(dateTournee)) return { ok: false, date: '', erreur: 'La nouvelle date doit être après le ' + dateTournee };
+  return { ok: true, date: d };
+}
+// Point de caisse d'une tournée. `cmdsLivrees` = commandes livrées DANS cette tournée
+// (getCmdsLivresParTournee), `depEspeces` = dépenses payées en espèces par le livreur,
+// `outils` = { especes(c), cb(c), horsCaisse(c), prepaye(c) } — en page : getMontantEspecesCmd,
+// getMontantCBCmd, paiHorsCaisse et les modes « déjà payé » (mêmes calculs que les retours de caisse).
+function rtPointCaisse(t, cmdsLivrees, depEspeces, outils) {
+  var o = outils || {};
+  var esp = o.especes || function() { return 0; }, cb = o.cb || function() { return 0; };
+  var hors = o.horsCaisse || function() { return false; }, prep = o.prepaye || function() { return false; };
+  var stops = (t && t.stops) || [];
+  var p = { especes: 0, cb: 0, nbCb: 0, depEspeces: 0, aRemettre: 0,
+            dejaPaye: { nb: 0, montant: 0 }, resteAEncaisser: { nb: 0, montant: 0, liste: [] },
+            livres: 0, reportes: [], absents: [], annules: 0, aValider: rtArretsAValider(stops).length, arrets: stops.length };
+  stops.forEach(function(s) {
+    if (!s) return;
+    if (s.statut === 'livré') p.livres++;
+    else if (s.statut === 'reporté') p.reportes.push({ cmdId: s.cmdId || '', client: s.client || '', reportAu: s.reportAu || '' });
+    else if (s.statut === 'absent') p.absents.push({ cmdId: s.cmdId || '', client: s.client || '' });
+    else if (s.statut === 'annulé') p.annules++;
+  });
+  (cmdsLivrees || []).forEach(function(c) {
+    if (!c) return;
+    var e = rtArrondi(esp(c)), k = rtArrondi(cb(c));
+    p.especes += e; p.cb += k; if (k > 0) p.nbCb++;
+    if (hors(c) || (prep(c) && c.stpaie === 'Payé')) { p.dejaPaye.nb++; p.dejaPaye.montant += rtArrondi(c.prix); return; }
+    var reste = rtResteDu(c.prix, c.montantEnc, c.stpaie);
+    if (reste > 0) { p.resteAEncaisser.nb++; p.resteAEncaisser.montant += reste; p.resteAEncaisser.liste.push({ cmdId: c.id || '', client: c.client || '', reste: reste }); }
+  });
+  p.depEspeces = rtArrondi((depEspeces || []).reduce(function(s, d) { return s + (parseFloat(d && d.montant) || 0); }, 0));
+  p.especes = rtArrondi(p.especes); p.cb = rtArrondi(p.cb);
+  p.dejaPaye.montant = rtArrondi(p.dejaPaye.montant); p.resteAEncaisser.montant = rtArrondi(p.resteAEncaisser.montant);
+  p.aRemettre = Math.max(0, rtArrondi(p.especes - p.depEspeces));
+  return p;
+}
+// RT-FIN
+
+// v7.5.129 : outils de calcul de la page pour rtPointCaisse (mêmes fonctions que les retours de caisse)
+function rtOutilsPage() {
+  var modesPrepaye = MODES_PAIE.filter(function(m){ return m.cat === 'prepaye'; }).map(function(m){ return m.id; });
+  return { especes: getMontantEspecesCmd, cb: getMontantCBCmd, horsCaisse: paiHorsCaisse,
+           prepaye: function(c){ return modesPrepaye.indexOf(c.paie) >= 0 || c.paie === PAI_MODE_SITE; } };
+}
+// v7.5.129 : dépenses en espèces d'un livreur pour une tournée (même règle que les retours de caisse)
+function rtDepensesEspecesTournee(t, liste) {
+  var lv = String((t && t.livreur) || '').toLowerCase();
+  return (liste || []).filter(function(d){
+    var memeTournee = d.tourneeId ? d.tourneeId === t.id : d.date === t.date;
+    return (d.livreur || '').toLowerCase() === lv && (d.livreur || '').toUpperCase() !== 'CAISSE' && d.modePaie !== 'CB' && memeTournee;
+  });
+}
+// v7.5.129 : bloc de clôture en bas de « Ma tournée » (livreur seulement, jamais en aperçu)
+function lvClotureHtml(t) {
+  if (!t || role !== 'livreur' || LV_APERCU_ACTIF) return '';
+  var p = rtPointCaisse(t, getCmdsLivresParTournee(t), rtDepensesEspecesTournee(t, depenses), rtOutilsPage());
+  var resume = p.livres + ' livré' + (p.livres > 1 ? 's' : '') + ' · ' + p.reportes.length + ' reporté' + (p.reportes.length > 1 ? 's' : '') + ' · ' + p.absents.length + ' absent' + (p.absents.length > 1 ? 's' : '');
+  if (t.statut === 'terminée') {
+    return '<div class="lv-cloture lv-cloture-ok"><div style="font-size:16px;font-weight:900">✅ Tournée clôturée</div>' +
+      '<div style="font-size:13px;margin-top:4px">' + resume + '</div>' +
+      '<div style="font-size:18px;font-weight:900;margin-top:8px">💵 Espèces à remettre : ' + paiEur(p.aRemettre) + '</div></div>';
+  }
+  var c = rtPeutCloturer(t);
+  var liste = c.restants.slice(0, 6).map(function(r){ return '<li>' + (r.idx + 1) + '. ' + String(r.client).replace(/</g, '&lt;') + '</li>'; }).join('');
+  return '<div class="lv-cloture">' +
+    '<div style="font-size:15px;font-weight:900;margin-bottom:6px">🏁 Fin de tournée</div>' +
+    '<div style="font-size:13px;color:var(--t2);margin-bottom:10px">' + resume + '</div>' +
+    (c.ok ? '' : '<div style="font-size:13px;color:var(--rd);font-weight:700;margin-bottom:8px">⚠️ ' + c.raison + '</div>' + (liste ? '<ul style="margin:0 0 10px 18px;padding:0;font-size:13px;color:var(--rd)">' + liste + '</ul>' : '')) +
+    '<button class="lv-cloture-btn" ' + (c.ok ? '' : 'disabled ') + 'onclick="lvCloturerTournee(\'' + t.id + '\')">' + (c.ok ? '🏁 Clôturer ma tournée' : '🔒 Clôture impossible : un résultat par arrêt') + '</button></div>';
+}
+function lvCloturerTournee(tid) {
+  var t = tournees.find(function(x){ return x.id === tid; });
+  if (!t) return;
+  var c = rtPeutCloturer(t);
+  if (!c.ok) { toast('Clôture impossible : ' + c.raison, 'err'); renderLivreur(); return; }
+  var p = rtPointCaisse(t, getCmdsLivresParTournee(t), rtDepensesEspecesTournee(t, depenses), rtOutilsPage());
+  if (!confirm('Clôturer la tournée ' + t.id + ' ?\n\n' + p.livres + ' livré(s), ' + p.reportes.length + ' reporté(s), ' + p.absents.length + ' absent(s).\nEspèces à remettre : ' + paiEur(p.aRemettre) + '\nCarte bleue : ' + paiEur(p.cb))) return;
+  t.statut = 'terminée';
+  sbSaveTournee(t);
+  try { localStorage.setItem('mx_tournees_cache', JSON.stringify(tournees)); } catch(e) {}
+  toast('🏁 Tournée clôturée — espèces à remettre : ' + paiEur(p.aRemettre), 'ok');
+  renderLivreur(); if (typeof renderTournees === 'function') renderTournees();
+}
+// v7.5.129 : « Reporté » -> nouvelle date FACULTATIVE (notée sur l'arrêt et dans les instructions de la
+// commande ; la date de livraison n'est PAS changée ici : c'est le bureau ou JARVIS qui replanifie,
+// sinon l'arrêt quitterait la tournée avant le point de caisse — cf. reconcilierTournees).
+var lvReportCible = null;
+function lvReporter(tid, idx) {
+  var t = tournees.find(function(x){ return x.id === tid; });
+  if (!t || !t.stops[idx]) return;
+  lvReportCible = { tid: tid, idx: idx };
+  var s = t.stops[idx];
+  var info = document.getElementById('report-client-info'); if (info) info.textContent = (s.client || '') + ' · ' + (s.produit || '');
+  var d = document.getElementById('report-date');
+  if (d) { d.value = s.reportAu || ''; var dm = new Date((t.date || new Date().toISOString().slice(0, 10)) + 'T12:00:00'); dm.setDate(dm.getDate() + 1); d.min = dm.getFullYear() + '-' + String(dm.getMonth() + 1).padStart(2, '0') + '-' + String(dm.getDate()).padStart(2, '0'); }
+  var m = document.getElementById('m-report'); if (m) m.style.display = 'flex';
+}
+function lvFermerReport() { var m = document.getElementById('m-report'); if (m) m.style.display = 'none'; lvReportCible = null; }
+function lvValiderReport() {
+  if (!lvReportCible) return;
+  var t = tournees.find(function(x){ return x.id === lvReportCible.tid; });
+  if (!t || !t.stops[lvReportCible.idx]) { lvFermerReport(); return; }
+  var s = t.stops[lvReportCible.idx];
+  var v = rtDateReportValide((document.getElementById('report-date') || {}).value, t.date);
+  if (!v.ok) { toast(v.erreur, 'err'); return; }
+  var cible = lvReportCible;
+  s.reportAu = v.date || '';
+  var c = s.cmdId ? commandes.find(function(x){ return x.id === s.cmdId; }) : null;
+  if (c && v.date) c.instr = (String(c.instr || '') + ' 📅 Report demandé par le client au ' + fmtDate(v.date) + ' (' + (livNom || role || '') + ', ' + new Date().toLocaleDateString('fr-FR') + ').').trim();
+  lvFermerReport();
+  setLvSt(cible.tid, cible.idx, 'reporté');
+}
+function lvAbsent(tid, idx) {
+  var t = tournees.find(function(x){ return x.id === tid; });
+  if (!t || !t.stops[idx]) return;
+  if (!confirm('Client absent : ' + (t.stops[idx].client || '') + ' ?')) return;
+  setLvSt(tid, idx, 'absent');
+}
+
 // Resume caisse du livreur — extrait de renderLivreur() pour lisibilite (refactor 2026-05-28)
 // Affiche la caisse uniquement si le role est 'livreur' ET qu'il a au moins 1 livraison.
 function renderLivreurCaisse(t) {
@@ -9457,6 +9682,10 @@ function renderLivreurCaisse(t) {
   // v7.3.3 : prend en compte les paiements Mixte (Espèces + CB) via s.paie_especes / s.paie_cb
   var caisseEsp = 0, caisseCB = 0;
   stopsLivres.forEach(function(s){
+    // v7.5.129 : commande connue -> même calcul que le point de caisse de l'administrateur
+    // (montant réellement encaissé, payé en ligne exclu) ; sinon calcul d'origine sur l'arrêt.
+    var _cRt = (typeof findCmdForStop === 'function') ? findCmdForStop(s) : null;
+    if (_cRt) { caisseEsp += getMontantEspecesCmd(_cRt); caisseCB += getMontantCBCmd(_cRt); return; }
     if (s.stpaie !== 'Payé' && s.stpaie !== 'Partiel') return;
     if (s.paie === 'Mixte') {
       caisseEsp += parseFloat(s.paie_especes) || 0;
@@ -9673,7 +9902,7 @@ function renderLivreur() {
 
   // ── Calcul stats ──
   var livrees  = t.stops.filter(function(s){ return s.statut==='livré'; }).length;
-  var restants = t.stops.filter(function(s){ return !['livré','annulé'].includes(s.statut); }).length;
+  var restants = rtArretsAValider(t.stops).length; // v7.5.129 : reporté / absent = arrêt qui a son résultat
   var montant  = t.stops.filter(function(s){ return !['livré','annulé'].includes(s.statut); }).reduce(function(s,x){ return s+x.prix; }, 0);
   var pct      = t.stops.length ? Math.round(livrees/t.stops.length*100) : 0;
 
@@ -9749,7 +9978,11 @@ function renderLivreur() {
     // Statut badge label
     var stLbl = {'en-attente':'En attente','en-route':'🚚 En route','arrivé':'📍 Arrivé','livré':'✅ Livré','reporté':'📅 Reporté','absent':'🔔 Absent','problème':'⚠️ Problème'}[st] || st;
 
-    var stBtns = stDefs.map(function(sd) {
+    // v7.5.129 : trois gros boutons de résultat ; les autres statuts sont repliés sous « Autres statuts »
+    var resBtns = [{k:'livré',ico:'✅',lbl:'Livré',cls:'lv-res-livre',act:'lv-st-action'},{k:'reporté',ico:'📅',lbl:'Reporté',cls:'lv-res-reporte',act:'lv-report-action'},{k:'absent',ico:'🔔',lbl:'Client absent',cls:'lv-res-absent',act:'lv-absent-action'}].map(function(r){
+      return '<button class="lv-resbtn '+r.cls+(st===r.k?' actif':'')+' '+r.act+'" data-tid="'+t.id+'" data-idx="'+i+'" data-statut="'+r.k+'"><span class="sticon">'+r.ico+'</span>'+r.lbl+'</button>';
+    }).join('');
+    var stBtns = stDefs.filter(function(sd){ return RT_RESULTATS.indexOf(sd.k) < 0; }).map(function(sd) {
       var isA = st === sd.k;
       var ac  = isA ? (stColors[sd.k]?.btn || '') : '';
       return '<button class="lv-stbtn '+ac+' lv-st-action" data-tid="'+t.id+'" data-idx="'+i+'" data-statut="'+sd.k+'">'+
@@ -9812,6 +10045,7 @@ function renderLivreur() {
             // Prendre le prix depuis la commande liée si disponible (mise à jour admin)
             var linkedCmd = findCmdForStop(s); // v7.5.70 : repli homonyme sûr
             if (linkedCmd && paiEstEnLigne(linkedCmd)) return 0; // v7.5.113 : payé en ligne -> rien à encaisser
+            if (linkedCmd && !done) return rtResteDu(linkedCmd.prix, linkedCmd.montantEnc, linkedCmd.stpaie); // v7.5.129 : ce qui reste dû
             return (linkedCmd ? linkedCmd.prix : s.prix) || s.prix;
           })()+' €</div>'+
           // v7.5.113 : commande du site -> pas de menu de mode sur la carte (payée en ligne :
@@ -9821,11 +10055,7 @@ function renderLivreur() {
               (s.stpaie !== 'Payé'
                 ? '<button class="lv-enc-btn btn btn-sm" style="background:var(--orange);color:#fff;border:none" data-tid="'+t.id+'" data-idx="'+i+'">💵 Encaisser</button>'
                 : '<button class="lv-enc-btn btn btn-sm btn-ghost" data-tid="'+t.id+'" data-idx="'+i+'">✏️</button>')
-            : '<select class="lv-paie-sel lv-paie-change" data-tid="'+t.id+'" data-idx="'+i+'">'+
-                ['Espèces','CB','Virement','Déjà payé'].map(function(m){
-                  return '<option '+(s.paie===m?'selected':'')+'>'+m+'</option>';
-                }).join('')+
-              '</select>'
+            : '<span style="font-size:12px;font-weight:700;color:var(--t2);text-align:right">À encaisser<br><span style="font-weight:600;color:var(--t3)">mode choisi à la livraison</span></span>' // v7.5.129
           )+
         '</div>'+
       '</div>'+
@@ -9844,10 +10074,12 @@ function renderLivreur() {
             '<button class="lv-cbtn lv-cbtn-note lv-note-btn" data-tid="'+t.id+'" data-idx="'+i+'">📝 Note</button>'+
           '</div>'+
 
-          // ── Statuts tactiles ──
+          // ── v7.5.129 : résultat de l'arrêt (Livré / Reporté / Client absent) + autres statuts repliés ──
           '<div class="lv-statuts-wrap">'+
-            '<div class="lv-statuts-lbl">Changer le statut</div>'+
-            '<div class="lv-statuts-grid">'+stBtns+'</div>'+
+            (st === 'reporté' || st === 'absent' ? '<div class="lv-resultat-bandeau '+(st === 'absent' ? 'lv-res-absent' : 'lv-res-reporte')+'">'+(st === 'absent' ? '🔔 Client absent' : '📅 Reporté'+(s.reportAu ? ' — le client propose le '+fmtDate(s.reportAu) : ''))+'<span style="font-weight:600;font-size:11px;display:block;opacity:.8">Vous pouvez encore changer le résultat</span></div>' : '')+
+            '<div class="lv-statuts-lbl">Résultat de la livraison</div>'+
+            '<div class="lv-resultats-grid">'+resBtns+'</div>'+
+            '<details class="lv-autres-statuts"><summary>Autres statuts (en route, arrivé, annulé…)</summary><div class="lv-statuts-grid" style="margin-top:8px">'+stBtns+'</div></details>'+
           '</div>'
       )+
     '<div style="display:flex;gap:6px;margin-top:8px">' +
@@ -9858,6 +10090,9 @@ function renderLivreur() {
       '</div>' +
     '</div>';
   }).join('');
+
+  // v7.5.129 : fin de tournée (clôture impossible tant qu'un arrêt n'a pas de résultat)
+  document.getElementById('lv-list').insertAdjacentHTML('beforeend', lvClotureHtml(t));
 
   // ── Attach events via delegation (no inline onclick) ──
   // v7.1 : Checklist chargement camion
@@ -9905,6 +10140,13 @@ function renderLivreur() {
     btn.addEventListener('click', function() {
       setLvSt(btn.dataset.tid, parseInt(btn.dataset.idx), btn.dataset.statut);
     });
+  });
+  // v7.5.129 : Reporté (date facultative) et Client absent
+  document.querySelectorAll('.lv-report-action').forEach(function(btn) {
+    btn.addEventListener('click', function() { lvReporter(btn.dataset.tid, parseInt(btn.dataset.idx)); });
+  });
+  document.querySelectorAll('.lv-absent-action').forEach(function(btn) {
+    btn.addEventListener('click', function() { lvAbsent(btn.dataset.tid, parseInt(btn.dataset.idx)); });
   });
   // Mode paiement
   document.querySelectorAll('.lv-paie-change').forEach(function(sel) {
@@ -10759,6 +11001,7 @@ function setLvSt(tid, idx, st, _annOk) {
       // v7.5.113 : commande du SITE -> l'application connaît le paiement venu de Shopify.
       //  - payée en ligne : aucune question, 0 € à encaisser ;
       //  - paiement à la livraison : montant affiché + 3 choix sans présélection.
+      sigChoixFait = null;       // v7.5.129 : remis à zéro à chaque ouverture
       if (paiSigPreparer(cmdSig, banner)) return;
       if (banner) {
         if (sigCmdMarketplace) {
@@ -10776,6 +11019,9 @@ function setLvSt(tid, idx, st, _annOk) {
       // ÉCRASAIT le CB choisi sur la carte -> tout remontait en Espèces en base (bug caisse).
       var _modeInit = (s.paie === 'CB' || s.paie === 'Mixte') ? s.paie : 'Espèces';
       sigSelectMode(_modeInit);  // le livreur peut encore changer (CB / Mixte / Déjà payé / Non payé)
+      // v7.5.129 (demande Borhen) : plus rien n'est présélectionné — le livreur choisit Espèces, Carte
+      // bleue ou Déjà payé ; le montant est pré-rempli avec ce qui reste dû.
+      sigChoixReinit(cmdSig, s);
     }, 100);
     setTimeout(initSig,80);
     return;
@@ -10864,6 +11110,64 @@ var sigCmdMarketplace = null;
 // (LeBonCoin IDF peut être payé à la livraison — confirmé Borhen). Sert UNIQUEMENT à
 // afficher un rappel à la signature ; le livreur décide (Encaissé / Déjà payé / Non payé).
 // v7.5.113 : signature d'une commande du site.
+// v7.5.129 : choix simple Espèces / Carte bleue / Déjà payé. false = le livreur n'a pas encore choisi
+// (la validation est refusée) ; null = pas de contrôle (commande du site : écran dédié).
+var sigChoixFait = null;
+var sigResteDu = 0;
+function sigSurligner(ch) {
+  var coul = { esp: ['#D6F0E0', '#2E9E5B', '#1F5A36'], cb: ['#DCEBFA', '#185FA5', '#0F3D6B'], deja: ['var(--bl)', 'var(--blue)', 'var(--bd)'] };
+  [['esp', 'sig-lv-esp'], ['cb', 'sig-lv-cb'], ['deja', 'sig-paie-deja']].forEach(function(p) {
+    var b = document.getElementById(p[1]); if (!b) return;
+    if (p[0] === ch) { b.style.background = coul[ch][0]; b.style.borderColor = coul[ch][1]; b.style.color = coul[ch][2]; }
+    else { b.style.background = 'var(--bg)'; b.style.borderColor = 'var(--brd)'; b.style.color = 'var(--text)'; }
+  });
+}
+function sigMontantMaj() {
+  var inp = document.getElementById('sig-montant'), info = document.getElementById('sig-montant-info'), mw = document.getElementById('sig-motif-wrap');
+  if (!inp) return;
+  var ctl = rtControleMontant(sigResteDu, inp.value, 'motif-provisoire');
+  if (mw) mw.style.display = ctl.baisse ? 'block' : 'none';
+  if (info) {
+    info.textContent = (sigResteDu <= 0) ? '⚠️ Rien à encaisser sur cette commande : choisissez « Déjà payé »' : !ctl.ok ? ('⚠️ ' + ctl.erreur) : ctl.baisse ? ('⚠️ Il manquera ' + paiEur(sigResteDu - ctl.montant) + ' : motif obligatoire') : ('Reste dû : ' + paiEur(sigResteDu));
+    info.style.color = (sigResteDu <= 0 || !ctl.ok || ctl.baisse) ? 'var(--rd)' : 'var(--t2)';
+  }
+}
+function sigMontantAfficher(visible) {
+  var w = document.getElementById('sig-montant-wrap'); if (w) w.style.display = visible ? 'block' : 'none';
+  if (visible) sigMontantMaj();
+}
+function sigChoixSimple(ch) {
+  sigChoixFait = true;
+  if (ch === 'deja') sigDejaPaye();
+  else { sigTogglePaie(true); sigSelectMode(ch === 'cb' ? 'CB' : 'Espèces'); }
+  sigSurligner(ch);
+  var nonB = document.getElementById('sig-paie-non'); if (nonB) { nonB.style.background = 'var(--bg)'; nonB.style.borderColor = 'var(--brd)'; nonB.style.color = 'var(--text)'; }
+  sigMontantAfficher(ch !== 'deja');
+}
+// « Autres cas » : Espèces + CB, virement, non payé
+function sigAutreCas(m) {
+  sigChoixFait = true;
+  sigSurligner(null);
+  if (m === 'non') { sigTogglePaie(false); sigMontantAfficher(false); return; }
+  sigTogglePaie(true); sigSelectMode(m);
+  sigMontantAfficher(m === 'Virement');
+}
+function sigChoixReinit(cmdSig, s) {
+  sigChoixFait = false; sigPaieEncaisse = false; sigPrepaidMode = null;
+  sigResteDu = cmdSig ? rtResteDu(cmdSig.prix, cmdSig.montantEnc, cmdSig.stpaie) : rtArrondi(s && s.prix);
+  sigSurligner(null);
+  ['sig-paie-oui', 'sig-paie-non'].forEach(function(id){ var b = document.getElementById(id); if (b) { b.style.background = 'var(--bg)'; b.style.borderColor = 'var(--brd)'; b.style.color = 'var(--text)'; } });
+  var inp = document.getElementById('sig-montant'); if (inp) { inp.value = String(sigResteDu); inp.max = String(sigResteDu); }
+  var mo = document.getElementById('sig-montant-motif'); if (mo) mo.value = '';
+  var mw = document.getElementById('sig-motif-wrap'); if (mw) mw.style.display = 'none';
+  var tk = document.getElementById('sig-ticket'); if (tk) tk.value = '';
+  var wrap = document.getElementById('sig-paie-mode-wrap'); if (wrap) wrap.style.display = 'none';
+  var mx = document.getElementById('sig-mixte-wrap'); if (mx) mx.style.display = 'none';
+  var tw = document.getElementById('sig-ticket-wrap'); if (tw) tw.style.display = 'none';
+  var det = document.getElementById('sig-autres-cas'); if (det) det.open = false;
+  document.querySelectorAll('.sig-mode-btn').forEach(function(b){ b.style.background = (b.dataset.mode === 'Mixte') ? '#FFF7E6' : 'var(--bg)'; b.style.color = (b.dataset.mode === 'Mixte') ? '#7A4A00' : 'var(--text)'; });
+  sigMontantAfficher(false);
+}
 var sigCodActif = false;   // true = paiement à la livraison : le livreur DOIT déclarer l'encaissement
 var sigCodChoix = null;    // 'esp' | 'cb' | 'non' — jamais présélectionné
 var sigCodMontant = 0;     // montant exact à encaisser
@@ -10939,6 +11243,8 @@ function validerSig(){
   const nom=document.getElementById('sig-nom').value.trim();
   if(!nom){toast('Entrez le nom du signataire','err');return;}
   if(!sigStopId) return;
+  // v7.5.129 : hors commande du site, le livreur doit choisir Espèces, Carte bleue ou Déjà payé (rien n'est présélectionné)
+  if (typeof sigChoixFait !== 'undefined' && sigChoixFait === false && !sigCodActif && !sigPrepaidMode) { toast('Choisissez : Espèces, Carte bleue ou Déjà payé', 'err'); return; }
   // v7.5.113 : paiement à la livraison -> la déclaration d'encaissement est obligatoire
   if (sigCodActif) {
     if (!sigCodChoix) { toast('Paiement à la livraison : indiquez ESPÈCES, CB ou NON ENCAISSÉ', 'err'); return; }
@@ -10958,6 +11264,18 @@ function validerSig(){
   const t=tournees.find(x=>x.id===tid);
   if(!t) return;
   const s=t.stops[idx];
+  // v7.5.129 : montant encaissé = ce qui reste dû par défaut ; seulement à la baisse, avec un motif
+  var _rtCtl = null, _rtCmd = null, _rtReste = 0, _rtDeja = 0, _rtMotif = '';
+  if (!sigCodActif && sigPaieEncaisse && !sigPrepaidMode && sigPaieMode !== 'Mixte' && typeof rtControleMontant === 'function') {
+    _rtCmd = commandes.find(function(c){ return c.id === s.cmdId; }) || null;
+    _rtReste = _rtCmd ? rtResteDu(_rtCmd.prix, _rtCmd.montantEnc, _rtCmd.stpaie) : rtArrondi(s.prix);
+    _rtDeja = (_rtCmd && _rtCmd.stpaie === 'Partiel') ? (parseFloat(_rtCmd.montantEnc) || 0) : 0;
+    _rtMotif = String((document.getElementById('sig-montant-motif') || {}).value || '').trim();
+    _rtCtl = rtControleMontant(_rtReste, (document.getElementById('sig-montant') || {}).value, _rtMotif);
+    if (!_rtCtl.ok) { toast(_rtCtl.erreur, 'err'); return; }
+    // rien à encaisser (déjà soldée) : un encaissement en plus compterait deux fois dans la caisse
+    if (_rtReste <= 0) { toast('Rien à encaisser sur cette commande : choisissez « Déjà payé »', 'err'); return; }
+  }
   const heure=new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
   s.statut='livré'; s.heure=heure; s.signataire=nom;
   // v7.3.4 : recuperer les montants Mixte si applicable
@@ -10972,6 +11290,11 @@ function validerSig(){
     var prixStop = parseFloat(s.prix) || 0;
     var diffStop = (sigPaieEsp + sigPaieCb) - prixStop;
     sigStatut = (Math.abs(diffStop) < 0.01) ? 'Payé' : 'Partiel';
+  }
+  // v7.5.129 : montant plus bas que le reste dû -> « Partiel » (ou « Non payé » à 0 €)
+  if (_rtCtl && _rtCtl.baisse) {
+    sigStatut = rtStatutApres(_rtCmd ? _rtCmd.prix : s.prix, _rtDeja, _rtCtl.montant);
+    if (sigStatut === 'Non payé') sigPaieEncaisse = false;
   }
   // Enregistrer paiement
   if (sigPrepaidMode) {
@@ -11015,7 +11338,7 @@ function validerSig(){
         cmd.paie_especes = sigPaieEsp;
         cmd.paie_cb      = sigPaieCb;
       } else {
-        cmd.montantEnc = (sigStatut === 'Payé') ? cmd.prix : 0;
+        cmd.montantEnc = (sigStatut === 'Payé') ? cmd.prix : ((_rtCtl && _rtCtl.baisse) ? rtArrondi(_rtDeja + _rtCtl.montant) : 0); // v7.5.129
         delete cmd.paie_especes;
         delete cmd.paie_cb;
       }
@@ -11033,7 +11356,7 @@ function validerSig(){
       // v7.5.114 : encaissement ordinaire (Leboncoin, téléphone…) -> colonnes dédiées
       var _avecCb = sigPaieMode === 'CB' || sigPaieMode === 'Mixte';
       cmd.ticketCb = _avecCb ? _tkStd : ''; cmd.encaissePar = _livCod; cmd.encaisseAt = new Date().toISOString(); cmd.encaisseTournee = t.id || ''; cmd._enc = true;
-      s.enc = { choix: sigPaieMode, montant: (sigPaieMode === 'Mixte' ? sigPaieEsp + sigPaieCb : (parseFloat(cmd.prix) || 0)), ticket: _avecCb ? _tkStd : null, par: _livCod, at: cmd.encaisseAt };
+      s.enc = { choix: sigPaieMode, montant: (sigPaieMode === 'Mixte' ? sigPaieEsp + sigPaieCb : ((_rtCtl && _rtCtl.baisse) ? _rtCtl.montant : (parseFloat(cmd.prix) || 0))), ticket: _avecCb ? _tkStd : null, par: _livCod, at: cmd.encaisseAt };
     }
     if (sigCodActif) {
       var _tkCod = String((document.getElementById('sig-cod-ticket') || {}).value || '').trim();
@@ -11043,6 +11366,12 @@ function validerSig(){
       if (sigCodChoix === 'non' && typeof notifAjout === 'function') {
         try { notifAjout('err', 'commande', '🚨 NON ENCAISSÉ — ' + cmd.id, paiEur(sigCodMontant) + ' restent dus (paiement à la livraison).', 'Voir', 'commandes'); } catch(e) {}
       }
+    }
+    // v7.5.129 : montant plus bas que le reste dû -> trace dans la fiche (montant, motif, livreur, heure) + alerte au bureau
+    if (_rtCtl && _rtCtl.baisse) {
+      cmd.instr = (String(cmd.instr || '') + ' ⚠️ Encaissé ' + paiEur(_rtCtl.montant) + ' (' + sigPaieMode + ') au lieu de ' + paiEur(_rtReste) + ' — motif : ' + _rtMotif + ' (' + _livCod + ', ' + new Date().toLocaleString('fr-FR') + ').').trim();
+      if (s.enc) s.enc.motif = _rtMotif;
+      if (typeof notifAjout === 'function') { try { notifAjout('err', 'commande', '⚠️ Encaissement incomplet — ' + cmd.id, paiEur(_rtReste - _rtCtl.montant) + ' restent dus. Motif : ' + _rtMotif, 'Voir', 'commandes'); } catch(e) {} }
     }
     stkDeduireStock(cmd.id);
     sbSaveCommande(cmd); // ✅ Sync commande Supabase → Realtime admin
@@ -11686,17 +12015,21 @@ function finRender() {
         var aRemettre = Math.max(0, especes - depEspLv);
         return { t:t, lv:lv, cmdsLv:cmdsLv, especes:especes, cb:cb, virement:virement, prepaye:prepaye, nonEnc:nonEnc,
                  depEspDetail:depEspDetail, depEspLv:depEspLv, caisseKey:caisseKey, remiseInfo:remiseInfo,
-                 dejaRemis:!!remiseInfo, aRemettre:aRemettre, totalLv: cmdsLv.reduce(function(s,c){ return s+c.prix; },0) };
+                 dejaRemis:!!remiseInfo, aRemettre:aRemettre, totalLv: cmdsLv.reduce(function(s,c){ return s+c.prix; },0),
+                 point: rtPointCaisse(t, cmdsLv, depEspDetail, rtOutilsPage()) }; // v7.5.129 : point de caisse complet
       });
 
       // v7.5.114 : montants attendus par tournée, repris à la validation de la remise
       window._paiRemisesAttendu = {};
       retInfos.forEach(function(r){ window._paiRemisesAttendu[r.caisseKey] = { especes: r.aRemettre, cb: r.cb, tournee: r.t.id, livreur: r.lv }; });
-      var aTraiter = retInfos.filter(function(r){ return !r.dejaRemis && r.aRemettre > 0; })
+      // v7.5.129 : toute tournée passée ou du jour non validée a son point de caisse (même sans espèces :
+      // carte bleue, déjà payés, reportés, absents à vérifier) ; les tournées à venir restent en ligne compacte.
+      var _rtAuj = (function(){ var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })();
+      var aTraiter = retInfos.filter(function(r){ return !r.dejaRemis && (r.aRemettre > 0 || ((r.t.date || '') <= _rtAuj && r.point.arrets > 0)); })
                              .sort(function(a,b){ return (b.t.date||'').localeCompare(a.t.date||''); });
       var traitees = retInfos.filter(function(r){ return r.dejaRemis; })
                              .sort(function(a,b){ return (b.t.date||'').localeCompare(a.t.date||''); });
-      var rienARem = retInfos.filter(function(r){ return !r.dejaRemis && r.aRemettre <= 0; })
+      var rienARem = retInfos.filter(function(r){ return !r.dejaRemis && aTraiter.indexOf(r) < 0; })
                              .sort(function(a,b){ return (b.t.date||'').localeCompare(a.t.date||''); });
       var totalARem = aTraiter.reduce(function(s,r){ return s + r.aRemettre; }, 0);
       function dFr(d){ return d ? new Date(d).toLocaleDateString('fr-FR') : '—'; }
@@ -11706,8 +12039,8 @@ function finRender() {
       // En-tête récap (seulement s'il y a des retours à traiter)
       if (aTraiter.length > 0) {
         html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding:0 2px">' +
-          '<div><div style="font-size:16px;font-weight:800">💵 Retours de tournée à traiter</div>' +
-          '<div style="font-size:12px;color:var(--t2)">Compte les espèces que RANOU te rend, puis valide.</div></div>' +
+          '<div><div style="font-size:16px;font-weight:800">🧾 Retour de tournée — point de caisse</div>' +
+          '<div style="font-size:12px;color:var(--t2)">Pour chaque tournée : compte les espèces remises, vérifie la carte bleue, puis valide le point de caisse.</div></div>' +
           '<div style="text-align:right"><div style="font-size:24px;font-weight:900;color:var(--od)">' + eur(totalARem) + '</div>' +
           '<div style="font-size:11px;color:var(--t2)">' + aTraiter.length + ' à remettre</div></div></div>';
       }
@@ -11730,12 +12063,12 @@ function finRender() {
             '<div style="display:flex;justify-content:space-between;padding:5px 0"><span style="color:var(--t2)">🧾 Dépenses payées en espèces</span><span style="color:' + (r.depEspLv>0?'var(--red)':'var(--t3)') + ';font-weight:700">' + (r.depEspLv>0?('− '+eur(r.depEspLv)):'0 €') + '</span></div>' +
             (r.depEspLv>0 ? '<div style="padding:0 0 6px 22px;font-size:11px;color:var(--t3)">' + depLignes + '</div>' : '') +
             '<div style="border-top:1px solid var(--brd);margin-top:4px;padding-top:10px;display:flex;align-items:center;justify-content:space-between">' +
-              '<span style="font-weight:800">ESPÈCES ATTENDUES</span>' +
+              '<span style="font-weight:800">ESPÈCES ATTENDUES<br><span style="font-size:11px;font-weight:600;color:var(--t3)">à comparer à l\'argent remis</span></span>' +
               '<span style="font-size:24px;font-weight:900;color:var(--gd)">' + eur(r.aRemettre) + '</span>' +
             '</div>' +
             (dejaEnc.length ? '<div style="font-size:11px;color:var(--t3);margin:6px 0 12px">ℹ️ Déjà encaissé, rien à rendre : ' + dejaEnc.join(' · ') + '</div>' : '<div style="margin-bottom:12px"></div>') +
-            '<div style="display:flex;justify-content:space-between;padding:0 0 10px;font-size:13px"><span style="color:var(--t2)">💳 CB ENCAISSÉ LIVREUR</span><span style="font-weight:800;color:var(--bd)">' + eur(r.cb) + '</span></div>' +
-            '<button onclick="validerRemiseCaisse(\'' + r.caisseKey + '\')" style="width:100%;padding:13px;border-radius:12px;border:none;background:var(--green);color:#fff;font-size:14px;font-weight:800;cursor:pointer;font-family:var(--font)">✅ Compter les espèces remises et valider</button>' +
+            rtLignesPoint(r.point, eur) + // v7.5.129 : CB encaissé livreur, déjà payés, reportés, absents, reste à encaisser
+            '<button onclick="validerRemiseCaisse(\'' + r.caisseKey + '\')" style="width:100%;padding:13px;border-radius:12px;border:none;background:var(--green);color:#fff;font-size:14px;font-weight:800;cursor:pointer;font-family:var(--font)">✅ Valider le point de caisse (espèces remises)</button>' +
           '</div></div>';
       }).join('');
       // Tournées sans espèces à remettre (non validées) — lignes compactes discrètes
@@ -11749,7 +12082,7 @@ function finRender() {
         html += traitees.map(function(r){
           var rDate = (r.remiseInfo && r.remiseInfo.date) ? new Date(r.remiseInfo.date).toLocaleDateString('fr-FR') : '';
           return '<div style="background:var(--gl);border-radius:10px;padding:9px 12px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">' +
-            '<span style="font-size:13px;color:var(--gd)">✓ Tournée du ' + dFr(r.t.date) + ' — ' + paiRemiseTexte(r) + (rDate?(' · validée le '+rDate):'') + '</span>' +
+            '<span style="font-size:13px;color:var(--gd)">✓ Tournée du ' + dFr(r.t.date) + ' — ' + paiRemiseTexte(r) + (rDate?(' · validée le '+rDate):'') + '<br><span style="font-size:11px;color:var(--t2)">' + rtResumeCourt(r.point) + '</span></span>' +
             '<button onclick="annulerRemiseCaisse(\'' + r.caisseKey + '\')" style="padding:4px 10px;border-radius:8px;border:1px solid var(--brd2);background:var(--card);color:var(--t2);font-size:11px;cursor:pointer;font-family:var(--font)">↩ Annuler</button></div>';
         }).join('');
       }
@@ -11859,6 +12192,31 @@ function finRender() {
 // v7.5.114 : la remise de caisse enregistre les espèces ATTENDUES, les espèces RÉELLEMENT
 // REMISES (montant compté, saisi), l'ÉCART (explication obligatoire s'il n'est pas nul) et le
 // total CB encaissé par le livreur.
+// v7.5.129 : lignes du point de caisse d'une tournée (Retour de tournée, page Encaissements)
+function rtEchapper(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function rtLignesPoint(p, eur) {
+  if (!p) return '';
+  var ligne = function(lbl, val, coul, detail) {
+    return '<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px"><span style="color:var(--t2)">' + lbl + '</span><span style="font-weight:800;color:' + (coul || 'var(--text)') + '">' + val + '</span></div>' +
+      (detail ? '<div style="padding:0 0 6px 22px;font-size:11px;color:var(--t3)">' + detail + '</div>' : '');
+  };
+  var noms = function(l, f) { return l.slice(0, 8).map(f).join(' · ') + (l.length > 8 ? ' …' : ''); };
+  var h = '<div style="border-top:1px dashed var(--brd);margin:2px 0 10px;padding-top:8px">';
+  if (p.aValider > 0) h += '<div style="background:var(--rl);color:var(--rd);border-radius:8px;padding:8px 10px;font-size:12px;font-weight:800;margin-bottom:8px">⚠️ ' + p.aValider + ' arrêt' + (p.aValider > 1 ? 's' : '') + ' sans résultat (ni livré, ni reporté, ni absent) : la tournée n\'est pas finie</div>';
+  h += ligne('💳 CB encaissé par le livreur', eur(p.cb) + (p.nbCb ? ' (' + p.nbCb + ' paiement' + (p.nbCb > 1 ? 's' : '') + ')' : ''), 'var(--bd)');
+  h += ligne('📦 Déjà payées', p.dejaPaye.nb + ' commande' + (p.dejaPaye.nb > 1 ? 's' : '') + (p.dejaPaye.nb ? ' · ' + eur(p.dejaPaye.montant) : ''), 'var(--gd)');
+  h += ligne('📅 Reportées', String(p.reportes.length), p.reportes.length ? 'var(--vd)' : 'var(--t3)',
+    p.reportes.length ? noms(p.reportes, function(x){ return rtEchapper(x.client) + (x.reportAu ? ' (proposé le ' + fmtDate(x.reportAu) + ')' : ''); }) : '');
+  h += ligne('🔔 Absents', String(p.absents.length), p.absents.length ? 'var(--rd)' : 'var(--t3)',
+    p.absents.length ? noms(p.absents, function(x){ return rtEchapper(x.client); }) : '');
+  h += ligne('⏳ Reste à encaisser', eur(p.resteAEncaisser.montant) + (p.resteAEncaisser.nb ? ' (' + p.resteAEncaisser.nb + ')' : ''), p.resteAEncaisser.montant > 0 ? 'var(--red)' : 'var(--t3)',
+    p.resteAEncaisser.nb ? noms(p.resteAEncaisser.liste, function(x){ return rtEchapper(x.client) + ' ' + eur(x.reste); }) : '');
+  return h + '</div>';
+}
+function rtResumeCourt(p) {
+  if (!p) return '';
+  return p.livres + ' livré(s) · CB ' + paiEur(p.cb) + ' · déjà payé ' + p.dejaPaye.nb + ' · reporté(s) ' + p.reportes.length + ' · absent(s) ' + p.absents.length + (p.resteAEncaisser.montant > 0 ? ' · reste à encaisser ' + paiEur(p.resteAEncaisser.montant) : '');
+}
 function paiRemiseTexte(r) {
   var i = r.remiseInfo || {};
   if (i.remis == null) return Math.round(r.aRemettre).toLocaleString('fr-FR') + ' € remis';   // remises validées avant la v7.5.114

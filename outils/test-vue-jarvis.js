@@ -2,7 +2,7 @@
 // Extrait le vrai bloc JVUE de maxiconfort-v7.html et l'exécute dans un bac à sable (aucune connexion, aucune donnée réelle).
 const fs = require('fs'), path = require('path'), vm = require('vm');
 const racine = path.join(__dirname, '..');
-const html = fs.readFileSync(path.join(racine, 'maxiconfort-v7.html'), 'utf8');
+const html = fs.readFileSync(path.join(racine, 'maxiconfort-v7.html'), 'utf8').replace(/\r\n/g, '\n'); // fins de ligne Windows (CRLF) tolérées
 let ok = 0, ko = 0;
 const test = (nom, cond, det) => { if (cond) { ok++; console.log('  OK    ' + nom); } else { ko++; console.log('  ÉCHEC ' + nom + (det ? ' — ' + JSON.stringify(det).slice(0, 200) : '')); } };
 const i = html.indexOf('// JVUE-DEBUT'), j = html.indexOf('// JVUE-FIN');
@@ -91,5 +91,5 @@ test('aucune écriture dans le bloc', !/sbSave|rpcPin|fetch\(|sessionEcrire|loca
 test('v7.5.128 : enregistrer l’ordre — une fois par tournée en 2 min, seulement sur l’ordre déjà calculé de CETTE tournée', /Date\.now\(\) - deja < 120000/.test(html) && /optimTourneeId === lo\[0\]\.id && typeof optimStops/.test(html) && /optimCalculeFini === lo\[0\]\.id/.test(html) && /optimCalculeFini = optimTourneeId;/.test(html) && /async function optimCharger\(\) \{\n  optimCalculeFini = null;/.test(html) && !/optimLancer\(\)/.test(html.slice(html.indexOf('// JVUE-DEBUT'), html.indexOf('// JVUE-FIN'))));
 test('v7.5.128 : plus aucun caractère invisible « retour arrière » dans l’appli (code postal de l’optimiseur)', !/\x08/.test(html) && /a\.match\(\/\\b\(75\|77/.test(html));
 console.log('\n3. MISE EN LIGNE');
-test('CACHE_VERSION augmentée (v7-5-128)', /CACHE_VERSION = 'maxiconfort-v7-5-128'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
+test('CACHE_VERSION augmentée (v7-5-128 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(2[89]|[3-9]\d)'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
