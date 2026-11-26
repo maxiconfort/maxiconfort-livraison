@@ -67,7 +67,8 @@ function nouveauBac(opts) {
   const bac = { crypto: require('crypto').webcrypto, Uint8Array, console: { log() {}, warn() {} }, Math, Date, JSON, parseFloat, parseInt, String, Array, Object, Number, isNaN, encodeURIComponent, Promise, Set,
     SUPABASE_URL: 'https://exemple.invalid', SUPABASE_KEY: 'cle-de-test', role: o.role || 'admin', produits: catalogue(), window: {},
     document: { getElementById: el, querySelectorAll: () => [], querySelector: () => null },
-    localStorage: { setItem() {}, getItem() { return null; } },
+    // v7.5.198 : stockage de l'appareil SIMULÉ (en mémoire) ; o.stockage = Map partagée entre deux bacs pour simuler un rechargement de page
+    localStorage: o.localStorage || ((m) => ({ setItem(k, v) { m.set(k, String(v)); }, getItem(k) { return m.has(k) ? m.get(k) : null; }, removeItem(k) { m.delete(k); } }))(o.stockage || new Map()),
     confirm: () => o.confirmer !== false, toast: (m, t) => toasts.push({ m, t }), paiEur: (n) => (Math.round(n * 100) / 100) + ' €',
     stkRender() {}, stkApplyRoleVisibility() {}, sbLoadProduits: async () => {}, sbSaveEchec() {},
     fetch: async (url, init) => { appels.push({ url, methode: (init && init.method) || 'GET', body: init && init.body ? JSON.parse(init.body) : null });
@@ -1124,15 +1125,15 @@ function nouveauBac(opts) {
         tentative: etat.tentativeRenvoyee !== undefined ? etat.tentativeRenvoyee : t, etat_tentative: etat.etatTentative !== undefined ? etat.etatTentative : (st === 'recu' ? 'appliquee' : 'abandonnee') } };
     };
     const HIST = [{ id: 1, arrivage_id: 7, produit_id: 'pr-a', quantite: 30 }, { id: 2, arrivage_id: 7, produit_id: 'pr-n', quantite: 40 }], MVT = [{ id: 11, quantite: 30 }, { id: 12, quantite: 40 }];
-    const bacPerdu = (rpc, etat) => { const o = { relectures: 0, pendant: null };
-      const x = nouveauBac({ repondre: (url, init) => {
+    const bacPerdu = (rpc, etat, plus) => { const o = { relectures: 0, pendant: null };
+      const x = nouveauBac(Object.assign({}, plus || {}, { repondre: (url, init) => {
         if (url.includes('/rpc/valider_reception_arrivage')) return rpc(o);
         if (url.includes('/rpc/statut_reception_arrivage')) { o.relectures++; if (o.surRelecture) o.surRelecture(); }
         const rr = relecture(url, typeof etat === 'function' ? etat(o) : etat, init); if (rr) return rr;
         if (url.includes('/arrivages?')) return { ok: true, status: 200, corps: paginer(url, [arrivage((typeof etat === 'function' ? etat(o) : etat).statut || 'recu')]) };
         if (url.includes('/arrivage_lignes?')) return { ok: true, status: 200, corps: paginer(url, lignesArr()) };
         return { ok: true, status: 200, corps: [] };
-      } });
+      } }));
       x.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; x.bac.ARR_ETAT.lignes = lignesArr(); x.bac.arrOuvrir(7);
       return Object.assign(x, { o, nbRpc: () => x.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage')).length,
         nbRelectures: () => x.appels.filter(a => a.url.includes('/rpc/statut_reception_arrivage')).length }); };
@@ -1304,6 +1305,65 @@ function nouveauBac(opts) {
       test('« Vérifier dans la base » ultérieur : MÊME tentative relue (gardée par arrivage), abandon confirmé, puis bouton libéré',
         UUID.test(tGardee) && rels.length === 2 && rels.every(a => a.body.p_tentative === tGardee) && tGardee === T.appels.find(a => a.url.includes('/rpc/valider_reception_arrivage')).body.p_tentative
         && !T.bac.arrAVerifierDe(7) && T.elts['arr-btn-valider'].disabled === false, rels.map(a => a.body));
+    }
+    // ══ v7.5.198 (revue Codex PR 26 sur cf60684 et 992a943) : TENTATIVE GARDÉE SUR L'APPAREIL, restaurée après un RECHARGEMENT ══
+    {
+      const CLE = 'mx_arr_tentatives', lire = (m) => JSON.parse(m.get(CLE) || '{}');
+      // R1. réponse perdue, vérification impossible, puis la page est RECHARGÉE (nouveau bac, même stockage de l'appareil)
+      const stockage = new Map();
+      const A = bacPerdu(() => { throw new Error('Failed to fetch'); }, { arrivages: { ok: false, status: 503, corps: [] }, statut: 'en_attente' }, { stockage });
+      await A.bac.arrValider();
+      const tA = A.appels.find(a => a.url.includes('/rpc/valider_reception_arrivage')).body.p_tentative;
+      test('rechargement : tentative de l\'envoi sans réponse GARDÉE sur l\'appareil (même identifiant, par arrivage)', !!lire(stockage)['7'] && lire(stockage)['7'].tentative === tA && lire(stockage)['7'].id === 7, lire(stockage));
+      const B = bacPerdu(() => ({ ok: true, status: 200, corps: { ok: true, total_recu: 70 } }), { statut: 'en_attente' }, { stockage });
+      B.bac.ARR_ETAT.aVerifier = {}; B.bac.ARR_ETAT.ouvert = null; // page neuve : rien en mémoire
+      await B.bac.arrInit(); B.bac.arrOuvrir(7);
+      const vB = B.bac.arrAVerifierDe(7);
+      test('… après rechargement : arrivage de nouveau « à vérifier » avec la MÊME tentative, message affiché, bouton Valider bloqué, « Vérifier dans la base » visible',
+        !!vB && vB.tentative === tA && vB.restauree === true && B.toasts.some(t => /resté sans réponse avant le rechargement/.test(t.m))
+        && B.elts['arr-btn-valider'].disabled === true && B.elts['arr-btn-verifier'].style.display === '', { vB, toasts: B.toasts });
+      await B.bac.arrValider();
+      test('… aucun nouvel envoi possible avant la vérification (Valider refusé, rien envoyé)', B.nbRpc() === 0 && B.toasts.some(t => /vérifiez d'abord dans la base/.test(t.m)), B.toasts);
+      await B.bac.arrVerifierClic();
+      const relB = B.appels.filter(a => a.url.includes('/rpc/statut_reception_arrivage'));
+      test('… « Vérifier dans la base » relit avec la tentative RESTAURÉE ; abandon confirmé -> tentative effacée de l\'appareil, bouton libéré',
+        relB.length === 1 && relB[0].body.p_tentative === tA && !B.bac.arrAVerifierDe(7) && !lire(stockage)['7'] && B.elts['arr-btn-valider'].disabled === false, { rel: relB.map(a => a.body), st: lire(stockage) });
+      await B.bac.arrValider();
+      const envB = B.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage'));
+      test('… puis nouvel envoi avec une NOUVELLE tentative ; réponse définitive (validée) -> plus rien gardé sur l\'appareil',
+        envB.length === 1 && envB[0].body.p_tentative !== tA && !lire(stockage)['7'], { env: envB.map(a => a.body.p_tentative), st: lire(stockage) });
+      // R2. page FERMÉE pendant l'envoi : la tentative est déjà écrite AU MOMENT de l'envoi ; une page rouverte pendant ce temps la restaure
+      const st2 = new Map(); let auMoment = null, pendant = null;
+      const C = bacPerdu(() => { auMoment = lire(st2)['7'] || null; throw new Error('Failed to fetch'); }, { statut: 'en_attente', etatTentative: null }, { stockage: st2 });
+      C.o.surRelecture = () => { if (!pendant) { const D = nouveauBac({ stockage: st2 }); D.bac.arrRestaurerTentatives([arrivage('en_attente')]); pendant = D.bac.arrAVerifierDe(7); } };
+      await C.bac.arrValider();
+      const tC = C.appels.find(a => a.url.includes('/rpc/valider_reception_arrivage')).body.p_tentative;
+      test('page fermée pendant l\'envoi : tentative écrite sur l\'appareil AVANT l\'envoi (lue au moment où la requête part)', !!auMoment && auMoment.tentative === tC, auMoment);
+      test('… une page rouverte pendant l\'envoi la restaure « à vérifier » (même tentative) ; abandon non confirmé -> toujours gardée',
+        !!pendant && pendant.tentative === tC && !!lire(st2)['7'] && lire(st2)['7'].tentative === tC, { pendant, st: lire(st2) });
+      // R3. réponses DÉFINITIVES : rien ne reste sur l'appareil
+      const st3 = new Map();
+      let E = bacPerdu(() => ({ ok: true, status: 200, corps: { ok: true, total_recu: 70 } }), { statut: 'en_attente' }, { stockage: st3 });
+      await E.bac.arrValider();
+      test('réponse « validée » : tentative effacée de l\'appareil', E.nbRpc() === 1 && !lire(st3)['7'], lire(st3));
+      E = bacPerdu(() => ({ ok: true, status: 200, corps: { ok: false, erreur: 'une_saisie_par_ligne_requise' } }), { statut: 'en_attente' }, { stockage: st3 });
+      await E.bac.arrValider();
+      test('réponse « refusée » par la base : tentative effacée de l\'appareil, bouton réactivé', E.nbRpc() === 1 && !lire(st3)['7'] && E.elts['arr-btn-valider'].disabled === false, lire(st3));
+      // R4. stockage de l'appareil indisponible : rien n'est envoyé
+      const F = bacPerdu(() => ({ ok: true, status: 200, corps: { ok: true, total_recu: 70 } }), { statut: 'en_attente' }, { localStorage: { getItem() { return null; }, setItem() { throw new Error('QuotaExceededError'); }, removeItem() {} } });
+      await F.bac.arrValider();
+      test('stockage de l\'appareil indisponible : « NON validée … rien n\'a été envoyé », AUCUN envoi, bouton réactivé',
+        F.nbRpc() === 0 && F.toasts.some(t => /NON validée : cet appareil ne peut pas garder la trace de l'envoi/.test(t.m)) && F.bac.ARR_ETAT.envoi === false && F.elts['arr-btn-valider'].disabled === false, F.toasts);
+      // R5. arrivage devenu « recu » : la base refusera toute requête retardée -> tentative oubliée au chargement
+      const st5 = new Map([[CLE, JSON.stringify({ 7: { id: 7, ref: 'ARR-TEST-1', tentative: tA }, 8: { id: 8, ref: 'X', tentative: tC }, 9: { id: 9, tentative: 'pas-un-uuid' } })]]);
+      const G = nouveauBac({ stockage: st5 });
+      const nG = G.bac.arrRestaurerTentatives([arrivage('recu'), Object.assign(arrivage('en_attente'), { id: 8 })]);
+      test('chargement : arrivage déjà reçu -> tentative oubliée ; arrivage en attente -> « à vérifier » ; entrée illisible ignorée',
+        nG === 1 && !G.bac.arrAVerifierDe(7) && !lire(st5)['7'] && !!G.bac.arrAVerifierDe(8) && G.bac.arrAVerifierDe(8).tentative === tC && !G.bac.arrAVerifierDe(9), { nG, st: lire(st5) });
+      // R6. une tentative plus récente n'est jamais effacée par la conclusion d'une ancienne
+      const st6 = new Map(), H = nouveauBac({ stockage: st6 });
+      H.bac.arrGarderTentative(arrivage('en_attente'), tC); H.bac.arrOublierTentative(7, tA);
+      test('effacement ciblé : seule la tentative indiquée est retirée (une plus récente reste gardée)', !!lire(st6)['7'] && lire(st6)['7'].tentative === tC, lire(st6));
     }
     // code : plus de « pas de connexion » transformé en « Réception NON validée »
     const env = extraireFonction('async function arrValiderEnvoi(a, ls, saisies, vue)');

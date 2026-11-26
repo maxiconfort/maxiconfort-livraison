@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.198 - Arrivage (revue Codex PR 26 sur cf60684 et 992a943) : tentative de reception gardee sur l'appareil avant l'envoi, restauree au rechargement, verification imposee avant tout nouvel envoi (27/11/2026)
 // v7.5.197 - Arrivage : fusion de la PR 25 (v7.5.196, PR 24 v7.5.195 incluse : validation de la remise recontrolee par la base, arrets figes) (27/11/2026)
 // v7.5.196 - Habillage style D : fusion de la PR 24 (v7.5.195, derniere correction ciblee : validation recontrolee par la base, arrets figes) (27/11/2026)
 // v7.5.195 - Caisse (revue Codex PR 24 sur 59f3a26, derniere correction ciblee) : validation de la remise recontrolee par la base apres le verrou (depenses et arrets), arrets d'une tournee validee figes pour la caisse (27/11/2026)
@@ -32,7 +33,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-197';
+const CACHE_VERSION = 'maxiconfort-v7-5-198';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
