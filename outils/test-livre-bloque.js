@@ -1,4 +1,4 @@
-// Banc de test du correctif v7.5.191 / v7.5.192 (26/11/2026) : le « livré » du livreur ne remontait plus depuis le 24/11.
+// Banc de test du correctif v7.5.191 / v7.5.192 / v7.5.193 (26/11/2026) : le « livré » du livreur ne remontait plus depuis le 24/11.
 // Usage : node outils/test-livre-bloque.js
 // Il EXTRAIT le vrai code de maxiconfort-v7.html (file d'attente hors ligne, sbSaveProduit, validerSig, contrôle
 // admin des livraisons non remontées) et l'exécute dans un bac à sable : aucune connexion à la base, aucune
@@ -417,13 +417,215 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     test(r + ' : pas de contrôle ni de lecture (administrateur seulement)', bac._notifs.length === 0 && bac._envois.length === 0);
   }
 
+  console.log('\n8. (P2, v7.5.193) LE « LIVRÉ » VALIDÉ N\'EST JAMAIS ANNULÉ PAR UNE RELÈVE PÉRIMÉE');
+  function bacLivraison() {
+    const { bac } = bacSignature('normal');
+    Object.assign(bac, { produits: [PROD('p1', 5, 'Matelas P')], stkMouvements: [], finRender() {}, stkRender() {} });
+    bac.stkTrouverProduit = () => bac.produits[0];
+    vm.runInContext(CODE_STK, bac); // vraie fonction stkDeduireStock
+    bac.sbSaveProduit = async () => {};
+    bac.commandes[0].produit = 'Matelas P'; bac.commandes[0].stockDeduit = false;
+    const saves = []; let finir = null;
+    bac.sbSaveCommande = (c) => { saves.push({ statut: c.statut, stockDeduit: !!c.stockDeduit, stpaie: c.stpaie, montantEnc: c.montantEnc });
+      if (saves.length === 1) return new Promise(r => { finir = r; }); return Promise.resolve(); };
+    return { bac, saves, finirPremier: () => finir && finir() };
+  }
+  const ANCIEN = (min) => new Date(Date.now() - (min || 1) * 60000).toISOString();
+  const perimee = (extra) => Object.assign({ id: '#T10', client: 'Client Test', prix: 100, statut: 'en-route', paie: 'Espèces', stpaie: 'Non payé', montantEnc: 0, stockDeduit: true, updatedAt: ANCIEN(1) }, extra || {});
+  {
+    // scénario exact de la revue : une relève lit l'ancien statut pendant le premier enregistrement
+    const { bac, saves, finirPremier } = bacLivraison();
+    bac.validerSig();
+    await new Promise(r => setImmediate(r));
+    const valide = bac.commandes[0];
+    test('pendant le 1er enregistrement : 1 seule sauvegarde {livré, stockDeduit:false}', saves.length === 1 && saves[0].statut === 'livré' && saves[0].stockDeduit === false, saves);
+    const changé = bac.cmdPollingAppliquer(perimee());
+    test('relève périmée (en-route) pendant l\'enregistrement : refusée, la liste garde l\'objet validé', changé === false && bac.commandes[0] === valide && bac.commandes[0].statut === 'livré', [changé, bac.commandes[0].statut]);
+    test('Realtime pendant l\'enregistrement : même une version « plus récente » est refusée (verrou)', bac.cmdDistanteAcceptable(valide, perimee({ updatedAt: new Date(Date.now() + 60000).toISOString() })) === false);
+    finirPremier();
+    for (let k = 0; k < 10; k++) await new Promise(r => setImmediate(r));
+    test('2e sauvegarde = {livré, stockDeduit:true} (et non {en-route, stockDeduit:true})', saves.length === 2 && saves[1].statut === 'livré' && saves[1].stockDeduit === true, saves);
+    test('l\'encaissement est conservé dans la 2e sauvegarde (Payé, 100)', saves[1].stpaie === 'Payé' && saves[1].montantEnc === 100, saves[1]);
+    test('stock déduit une fois (5 → 4)', bac.produits[0].stock === 4, bac.produits[0].stock);
+    test('verrou relâché à la fin', !bac._livEnCours['#T10']);
+    test('après la fin : relève périmée (updated_at antérieur au « livré ») toujours refusée', bac.cmdPollingAppliquer(perimee()) === false && bac.commandes[0].statut === 'livré');
+    test('après la fin : version sans updated_at et non livrée refusée', bac.cmdPollingAppliquer(perimee({ updatedAt: '' })) === false && bac.commandes[0].statut === 'livré');
+    const plusRecente = perimee({ statut: 'reporté', updatedAt: new Date(Date.now() + 60000).toISOString() });
+    test('après la fin : version PLUS RÉCENTE (correction admin) acceptée', bac.cmdPollingAppliquer(plusRecente) === true && bac.commandes[0].statut === 'reporté');
+  }
+  {
+    // ceinture et bretelles : même si la liste a été remplacée pendant l'enregistrement, la déduction
+    // travaille sur l'objet validé, et la liste le récupère à la fin
+    const { bac, saves, finirPremier } = bacLivraison();
+    bac.validerSig();
+    await new Promise(r => setImmediate(r));
+    const valide = bac.commandes[0];
+    bac.commandes[0] = perimee(); bac.commandes[0].stockDeduit = false; // remplacement forcé (ancien comportement)
+    finirPremier();
+    for (let k = 0; k < 10; k++) await new Promise(r => setImmediate(r));
+    test('liste remplacée de force : la 2e sauvegarde reste {livré, stockDeduit:true}', saves.length === 2 && saves[1].statut === 'livré' && saves[1].stockDeduit === true, saves);
+    test('liste remplacée de force : l\'objet validé y est remis à la fin', bac.commandes[0] === valide && bac.commandes[0].statut === 'livré');
+  }
+  {
+    // témoin : l'ancien appel (recherche dans la liste) reproduisait bien le bug
+    const { bac, saves } = bacLivraison();
+    bac.commandes[0] = perimee({ stockDeduit: false });
+    bac.stkDeduireStock('#T10');
+    test('témoin : sans l\'objet validé, la déduction réenregistrait {en-route, stockDeduit:true}', saves.length === 1 && saves[0].statut === 'en-route' && saves[0].stockDeduit === true, saves);
+  }
+  {
+    // rechargement complet (sbLoadAll) : la version locale livrée est gardée si la version lue est périmée
+    const bac = nouveauBac({ role: 'livreur' });
+    const loc = { id: '#R1', statut: 'livré' }, autre = { id: '#R2', statut: 'en-attente' };
+    bac.livMarquer('#R1');
+    const res = bac.cmdFusionnerChargees([{ id: '#R1', statut: 'en-route', updatedAt: ANCIEN(5) }, { id: '#R2', statut: 'confirmé', updatedAt: ANCIEN(5) }], [loc, autre]);
+    test('rechargement : commande livrée localement gardée face à une version périmée', res[0] === loc, res[0]);
+    test('rechargement : les autres commandes sont bien remplacées par la base', res[1].statut === 'confirmé');
+    const res2 = bac.cmdFusionnerChargees([{ id: '#R1', statut: 'annulé', updatedAt: new Date(Date.now() + 1000).toISOString() }], [loc]);
+    test('rechargement : version plus récente acceptée', res2[0].statut === 'annulé');
+  }
+  {
+    // aucune livraison locale : la relève fonctionne comme avant
+    const bac = nouveauBac({ role: 'admin' });
+    bac.commandes = [{ id: '#N1', statut: 'en-attente', stpaie: 'Non payé', livreur: '', montantEnc: 0, paie: 'Espèces' }];
+    test('sans « livré » local : un changement distant remplace la commande', bac.cmdPollingAppliquer({ id: '#N1', statut: 'en-route', stpaie: 'Non payé', livreur: '', montantEnc: 0, paie: 'Espèces', updatedAt: ANCIEN(10) }) === true && bac.commandes[0].statut === 'en-route');
+    test('sans changement : rien n\'est remplacé', bac.cmdPollingAppliquer({ id: '#N1', statut: 'en-route', stpaie: 'Non payé', livreur: '', montantEnc: 0, paie: 'Espèces' }) === false);
+    test('nouvelle commande : ajoutée en tête', bac.cmdPollingAppliquer({ id: '#N2', statut: 'en-attente' }) === true && bac.commandes[0].id === '#N2');
+  }
+
+  console.log('\n9. (réserve 1, v7.5.193) REJEU CONCURRENT : LA MODIFICATION LA PLUS RÉCENTE GAGNE');
+  for (const mode of ['remise en file', 'exception']) {
+    const bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'commande', data: { id: '#C1', v: 1 }, ts: 1, oqv: 2, role: 'admin' }] });
+    bac.sbSaveCommande = async (c) => {
+      if (c.v !== 1) return;
+      await new Promise(r => setImmediate(r));
+      bac.offlineQueueAdd('commande', { id: '#C1', v: 2 }); // un autre écran modifie la commande pendant le rejeu
+      if (mode === 'exception') throw new Error('échec');
+      bac.offlineQueueAdd('commande', c); // comme sbSaveCommande : l'échec remet l'ancienne version en file
+    };
+    await bac.offlineQueueFlush();
+    const cs = bac.offlineQueue.filter(i => i.type === 'commande');
+    test('commande, échec par ' + mode + ' : une seule entrée, la PLUS RÉCENTE (v2)', cs.length === 1 && cs[0].data.v === 2, cs.map(i => [i.data.v, i.ts]));
+    test('commande, échec par ' + mode + ' : la file enregistrée contient v2', JSON.parse(bac._stockage.mx_offline_queue).filter(i => i.type === 'commande').map(i => i.data.v).join(',') === '2');
+  }
+  {
+    let n = 0;
+    const bac = nouveauBac({ role: 'livreur', fileStockee: [{ type: 'produit', data: PROD('p1', 5), ts: 1, oqv: 2, role: 'livreur' }],
+      reponse: () => { if (++n === 1) bac.offlineQueueAdd('produit', PROD('p1', 3)); return 'reseau'; } });
+    await bac.offlineQueueFlush();
+    const ps = bac.offlineQueue.filter(i => i.type === 'produit');
+    test('produit : coupure pendant le rejeu de l\'ancien stock (5) + nouvelle valeur (3) → seule la nouvelle reste', ps.length === 1 && ps[0].data.stock === 3, ps.map(i => [i.data.stock, i.ts]));
+  }
+  {
+    const bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'commande', data: { id: '#C2', v: 1 }, ts: 1, oqv: 2 }] });
+    bac.sbSaveCommande = async (c) => { bac.offlineQueueAdd('commande', c); };
+    await bac.offlineQueueFlush();
+    test('élément remis en file par son propre rejeu : garde sa date d\'origine (ts 1)', bac.offlineQueue.length === 1 && bac.offlineQueue[0].ts === 1, bac.offlineQueue.map(i => i.ts));
+  }
+  {
+    const bac = nouveauBac({ role: 'admin' });
+    const r = bac.oqDedoublonner([{ type: 'produit', data: { id: 'x', s: 'récent' }, ts: 50, oqv: 2 }, { type: 'tournee', data: { id: 'T' }, ts: 2 }, { type: 'produit', data: { id: 'x', s: 'ancien' }, ts: 10, oqv: 2 }]);
+    test('dédoublonnage par date : la plus récente gagne même placée avant', r.length === 2 && r[0].data.s === 'récent' && r[1].type === 'tournee', r.map(i => i.data.s || i.type));
+  }
+
+  console.log('\n10. (réserve 2, v7.5.193) RÔLE D\'ORIGINE RESPECTÉ AU REJEU (CHANGEMENT DE SESSION)');
+  for (const rOrig of ['admin', 'collab']) {
+    const bac = nouveauBac({ role: 'livreur', fileStockee: [{ type: 'produit', data: PROD('p1', 5, 'Matelas F'), ts: 1, oqv: 2, role: rOrig }, { type: 'commande', data: { id: '#L1' }, ts: 2, oqv: 2, role: 'livreur' }] });
+    let nCmd = 0; bac.sbSaveCommande = async () => { nCmd++; };
+    await bac.offlineQueueFlush();
+    test('fiche ' + rOrig + ' en file, session livreur : rien n\'est envoyé pour le produit', !bac._envois.some(e => /produits/.test(e.url)), bac._envois.map(e => e.method));
+    test('fiche ' + rOrig + ', session livreur : elle reste en file (et la commande part)', bac.offlineQueue.length === 1 && bac.offlineQueue[0].type === 'produit' && bac.offlineQueue[0].role === rOrig && nCmd === 1, bac.offlineQueue.map(i => i.type));
+    test('fiche ' + rOrig + ', session livreur : toujours enregistrée dans le téléphone', JSON.parse(bac._stockage.mx_offline_queue).some(i => i.type === 'produit' && i.role === rOrig));
+    bac.role = rOrig === 'admin' ? 'collab' : 'admin'; // nouvelle session admin / collab sur l'appareil
+    await bac.offlineQueueFlush();
+    const e = bac._envois.find(x => /produits/.test(x.url)) || {};
+    test('fiche ' + rOrig + ', puis session ' + bac.role + ' : fiche complète envoyée (POST), file vide', e.method === 'POST' && e.body && e.body.nom === 'Matelas F' && bac.offlineQueue.length === 0, [e.method, bac.offlineQueue.length]);
+  }
+  for (const rSess of ['admin', 'collab']) {
+    const bac = nouveauBac({ role: rSess, fileStockee: [{ type: 'produit', data: PROD('p2', 4, 'Sommier L'), ts: 1, oqv: 2, role: 'livreur' }] });
+    await bac.offlineQueueFlush();
+    const e = bac._envois[0] || {};
+    test('élément du livreur rejoué en session ' + rSess + ' : PATCH { stock, updated_at } seulement', e.method === 'PATCH' && /produits\?id=eq\.p2/.test(e.url) && Object.keys(e.body || {}).sort().join(',') === 'stock,updated_at' && e.body.stock === 4 && bac.offlineQueue.length === 0, [e.method, e.body]);
+  }
+  {
+    const bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p3', 2), ts: 7, oqv: 2, role: 'livreur' }], reponse: () => 'reseau' });
+    await bac.offlineQueueFlush();
+    test('élément du livreur, coupure au rejeu en session admin : remis en file avec rôle livreur et date d\'origine', bac.offlineQueue.length === 1 && bac.offlineQueue[0].role === 'livreur' && bac.offlineQueue[0].ts === 7, bac.offlineQueue.map(i => [i.role, i.ts]));
+  }
+  {
+    const bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p4', 2, 'Matelas Z'), ts: 1, oqv: 2, role: 'livreur' }], reponse: () => ({ status: 403 }) });
+    await bac.offlineQueueFlush();
+    test('élément du livreur refusé au rejeu en session admin : traité comme le livreur (pas de fiche gardée)', !('mx_produits_refuses' in bac._stockage) && bac._notifs.length === 1 && bac._notifs[0][2] === 'Stock non mis à jour : Matelas Z — à vérifier', bac._notifs.map(n => n[2]));
+  }
+
+  console.log('\n11. (réserve 3, v7.5.193) CONTRÔLE ADMIN : UN NOUVEL ÉCART EST DE NOUVEAU CONTRÔLÉ');
+  {
+    const bac = nouveauBac({ role: 'admin', reponse: () => ({ status: 200, json: [{ id: '#A1', statut: 'livré' }] }) });
+    bac.tournees = [{ id: 'T-A', stops: [{ cmdId: '#A1', statut: 'livré' }] }]; bac.commandes = [];
+    await bac.livControleNonRemontees(1000); await bac.livControleNonRemontees(130000);
+    test('absente, lue « livré » en base : pas d\'alerte', bac._notifs.length === 0 && bac._envois.length === 1);
+    await bac.livControleNonRemontees(200000);
+    test('tant que cet écart dure : plus de lecture', bac._envois.length === 1);
+    bac.commandes = [{ id: '#A1', statut: 'en-route' }]; // la relève la fait entrer dans la liste, rétrogradée
+    await bac.livControleNonRemontees(210000);
+    test('nouvel écart (dans la liste, « en-route ») : pas d\'alerte avant 2 min', bac._notifs.length === 0);
+    await bac.livControleNonRemontees(340000);
+    test('nouvel écart après 2 min : alerte « Livraison non remontée : #A1 — vérifier »', bac._notifs.length === 1 && bac._notifs[0][2] === 'Livraison non remontée : #A1 — vérifier', bac._notifs.map(n => n[2]));
+  }
+  {
+    const bac = nouveauBac({ role: 'admin' });
+    bac.tournees = [{ id: 'T-B', stops: [{ cmdId: '#B1', statut: 'livré' }] }]; bac.commandes = [{ id: '#B1', statut: 'en-route' }];
+    await bac.livControleNonRemontees(1000); await bac.livControleNonRemontees(130000);
+    test('écart dans la liste : 1re alerte', bac._notifs.length === 1);
+    bac.commandes[0].statut = 'livré'; await bac.livControleNonRemontees(140000);
+    bac.commandes[0].statut = 'en-route'; await bac.livControleNonRemontees(150000);
+    test('écart résorbé puis revenu : pas de nouvelle alerte avant 2 min', bac._notifs.length === 1);
+    await bac.livControleNonRemontees(280000);
+    test('écart revenu, après 2 min : 2e alerte', bac._notifs.length === 2, bac._notifs.length);
+    await bac.livControleNonRemontees(600000);
+    test('puis une seule fois tant qu\'il dure', bac._notifs.length === 2);
+  }
+  {
+    let st = 'livré';
+    const bac = nouveauBac({ role: 'admin', reponse: () => ({ status: 200, json: [{ id: '#C9', statut: st }] }) });
+    bac.tournees = [{ id: 'T-C', stops: [{ cmdId: '#C9', statut: 'livré' }] }]; bac.commandes = [];
+    await bac.livControleNonRemontees(1000); await bac.livControleNonRemontees(130000);
+    bac.commandes = [{ id: '#C9', statut: 'livré' }]; await bac.livControleNonRemontees(140000); // écart résorbé
+    bac.commandes = []; st = 'en-route'; // de nouveau absente de la liste, et rétrogradée en base
+    await bac.livControleNonRemontees(150000); await bac.livControleNonRemontees(280000);
+    test('absente de nouveau : nouvelle lecture en base, puis alerte', bac._envois.length === 2 && bac._notifs.length === 1 && bac._notifs[0][2] === 'Livraison non remontée : #C9 — vérifier', [bac._envois.length, bac._notifs.map(n => n[2])]);
+  }
+
+  console.log('\n12. (réserve 4, v7.5.193) RÉCAPITULATIF NON ÉCRIT : AUCUNE PURGE');
+  {
+    const bac = nouveauBac({ role: null, fileStockee: ANCIENNE() });
+    const vraiSet = bac.localStorage.setItem; let panne = true;
+    bac.localStorage.setItem = (k, v) => { if (panne && k === 'mx_oq_purge_recap') throw new Error('QuotaExceededError'); return vraiSet(k, v); };
+    bac.role = 'livreur';
+    const r = bac.oqAppliquerRole('livreur');
+    test('écriture du récapitulatif en échec : tri non appliqué', r === false && bac.offlineQueue.length === 5, [r, bac.offlineQueue.length]);
+    test('la file enregistrée garde les anciens éléments (trace durable)', JSON.parse(bac._stockage.mx_offline_queue).filter(i => i.type === 'produit').length === 3);
+    let nCmd = 0; bac.sbSaveCommande = async () => { nCmd++; };
+    await bac.offlineQueueFlush();
+    test('rejeu pendant la panne : le « livré » part, aucun ancien stock envoyé', nCmd === 1 && !bac._envois.some(e => /produits/.test(e.url)), [nCmd, bac._envois.map(e => e.url)]);
+    test('rejeu pendant la panne : les 3 anciens éléments restent en file et dans le téléphone', bac.offlineQueue.filter(i => i.type === 'produit').length === 3 && JSON.parse(bac._stockage.mx_offline_queue).filter(i => i.type === 'produit').length === 3);
+    test('aucune notification de purge sans récapitulatif', bac._notifs.length === 0);
+    panne = false;
+    await bac.offlineQueueFlush();
+    test('stockage revenu : purge faite au rejeu suivant, récapitulatif écrit puis notifié', bac.offlineQueue.filter(i => i.type === 'produit').length === 0 && bac._notifs.length === 1 && /^3 mises à jour de stock anciennes/.test(bac._notifs[0][3]) && !bac._envois.some(e => /produits/.test(e.url)), [bac.offlineQueue.length, bac._notifs.map(n => n[3])]);
+  }
+
   console.log('\n7. TEXTE DU CODE');
   test('un refus définitif de produit ne passe pas par sbSaveEchec (seulement si httpTemporaire)', (CODE_PRODUIT.match(/sbSaveEchec\('produit', p, 'Produit', resp(L)?\.status/g) || []).length === 2 && (CODE_PRODUIT.match(/if \(httpTemporaire\(resp(L)?\.status\)\) \{ sbSaveEchec/g) || []).length === 2);
   test('le rejeu lit une copie (_aRejouer), pas la file qui grandit', /_aRejouer\.length/.test(CODE_REJEU) && !/i < offlineQueue\.length/.test(CODE_REJEU));
   test('loginOk trie les anciens éléments dès que le rôle est connu', /function loginOk\(r\) \{\s*role=r;\s*\/\/[^\n]*\n\s*try \{ oqAppliquerRole\(r\); \}/.test(html));
   test('le bouton « Relancer » existe sur la page Stock', /id="stk-refus-btn"[^>]*onclick="produitsRefusesRelancer\(\)"/.test(html));
+  test('relève (polling) : passe par cmdPollingAppliquer et lit updated_at', /select=' \+ CMD_SELECT_COLS \+ ',updated_at&order=updated_at\.desc/.test(html) && /if \(cmdPollingAppliquer\(mapped\)\) updated = true;/.test(html));
+  test('Realtime : une version périmée ne remplace pas la commande (cmdDistanteAcceptable)', /if \(!cmdDistanteAcceptable\(commandes\[idx\], mapped\)\) return;/.test(html));
+  test('rechargement complet : cmdFusionnerChargees + updated_at lu', /commandes = cmdFusionnerChargees\(commandes, _cmdsAvant\)/.test(html) && /select=' \+ CMD_SELECT_COLS \+ ',updated_at&order=created_at\.desc'/.test(html));
+  test('setLvSt : « livré » marqué et déduction sur l\'objet validé', /livMarquer\(cLv\.id\);[^\n]*\n[^\n]*\n\s*try \{ stkDeduireStock\(cLv\.id, cLv\); \}/.test(html));
   const sw = fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8');
-  test('CACHE_VERSION augmenté (v7-5-192 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-(19[2-9]|[2-9]\d\d)'/.test(sw));
+  test('CACHE_VERSION augmenté (v7-5-193 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-(19[3-9]|[2-9]\d\d)'/.test(sw));
 
   console.log('\n' + ok + ' réussi(s), ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
