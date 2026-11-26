@@ -1,5 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.176 - Habillage style D : fusion de la caisse v7.5.175 (verrou du point de caisse tenu par la base, migration 038b) (26/11/2026)
+// v7.5.175 - Caisse (revue Codex sur 437ec1e) : verrou du point de caisse valide tenu par la base (migration 038b, declencheur sur depenses), message clair au livreur en cas de refus (26/11/2026)
 // v7.5.172 - Habillage style D : texte des montants positifs lisible en mode nuit (var(--sur-vert)) (revue Codex sur a12696a) ; fusion de la caisse v7.5.171 (26/11/2026)
 // v7.5.171 - Caisse (revue Codex sur 3c3aa05) : "Deja paye" reserve aux commandes soldees (admin : motif journalise), livraisons terminees != tournee cloturee, verrou du point de caisse valide sur la liste Finance (26/11/2026)
 // v7.5.136 - Habillage style D : tests du selecteur de periode et du mode nuit (revue Codex sur d9c4e2a) (26/11/2026)
@@ -12,7 +14,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-172';
+const CACHE_VERSION = 'maxiconfort-v7-5-176';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
