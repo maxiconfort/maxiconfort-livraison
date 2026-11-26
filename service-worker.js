@@ -1,5 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.156 - Fusion des corrections arrivages v7.5.155 (commande sans lignes controlee par son produit principal) dans tableau de bord + menus (26/11/2026)
+// v7.5.155 - Produits non vendables : commande sans lignes controlee par son produit principal (base, appli, JARVIS) (26/11/2026)
 // v7.5.154 - Tableau de bord : lecture jusqu'a une page vide (plafond de la base), preuve de chargement complet retiree si la synchronisation n'est plus garantie, valeur au revient partielle signalee (26/11/2026)
 // v7.5.153 - Fusion des corrections arrivages v7.5.152 (composant introuvable ou inactif = ensemble non vendable, lignes figees au centime) dans tableau de bord + menus (26/11/2026)
 // v7.5.152 - Produits non vendables : composant introuvable ou inactif = ensemble non vendable ; lignes figees gardees telles quelles, comparees au centime (26/11/2026)
@@ -21,7 +23,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-154';
+const CACHE_VERSION = 'maxiconfort-v7-5-156';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

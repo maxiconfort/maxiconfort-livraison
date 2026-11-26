@@ -4044,7 +4044,19 @@ function venLigneOrigine(div) {
   if (venSaisieLigne(div) !== div._saisieOrigine) return null;
   return JSON.parse(JSON.stringify(div._ligneOrigine));
 }
-function venLignesRefusees(lignes, liste, ancienne) {
+// v7.5.155 (revue Codex PR 26 sur cf58971) : commande SANS LIGNES (lignes absentes, vides ou d'un autre format : commande ancienne, SAV)
+// = son PRODUIT PRINCIPAL (produit, qte, prix) devient une ligne de comparaison, comme la base (interne.l039_lignes_effectives) : une
+// commande nouvelle sans lignes au nom d'un produit non vendable est refusée ; une commande existante dont ce produit est inchangé
+// reste modifiable. Lignes présentes (tableau non vide) : prises telles quelles. Libellé vide : rien à comparer.
+function venLignesEffectives(lignes, produit, qte, prix) {
+  if (Array.isArray(lignes) && lignes.length) return lignes;
+  if (!venNorm(produit)) return [];
+  return [{ produit: produit, qte: qte === undefined ? null : qte, prixUnit: prix === undefined ? null : prix, principal: true }];
+}
+// principal (facultatif) : { produit, qte, prix } de la commande proposée, utilisé seulement si elle n'a pas de lignes (SAV).
+function venLignesRefusees(lignes, liste, ancienne, principal) {
+  lignes = venLignesEffectives(lignes, principal && principal.produit, principal && principal.qte, principal && principal.prix);
+  if (ancienne) ancienne = { lignes: venLignesEffectives(ancienne.lignes, ancienne.produit, ancienne.qte, ancienne.prix) };
   var pidDe = function(l) { var p = venProduitDeLigne(l, liste); return p ? p.id : (l && l.produitId); };
   var sigs = function(ls, pid) { return JSON.stringify((ls || []).filter(function(l) { return pidDe(l) === pid; }).map(venSignature).sort()); };
   var refus = [], vus = {};
@@ -9949,6 +9961,10 @@ async function savCreer() {
     montantEncCmd = 0;
     produitFinalLabel = produitLabel || (typeLabel + ' — ' + (produitReprisInput || ''));
   }
+
+  // v7.5.155 (revue Codex PR 26 sur cf58971) : même contrôle que la base — produit à livrer, ou produit principal d'un SAV sans lignes
+  var _venSav = venLignesRefusees(lignes, produits, null, { produit: produitFinalLabel, qte: 1, prix: prixCmd });
+  if (_venSav.length) { toast('Produit non vendable (prix de vente à définir) : ' + _venSav.join(', '), 'err'); return; }
 
   // Construire la nouvelle commande SAV
   var newCmd = {

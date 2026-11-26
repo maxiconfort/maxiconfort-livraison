@@ -545,6 +545,17 @@ export function lignesCommande(lignes: Ligne[], catalogue: Catalogue): { lignes:
   return { lignes: out, erreur: null, ...(rapproches.length ? { rapproches } : {}) };
 }
 
+/** v2.22 (revue Codex PR 26 sur cf58971) — commande SANS LIGNES (SAV : lignes NULL ; lignes vides ou d'un autre format) : son PRODUIT
+ *  PRINCIPAL (colonne produit) est contrôlé comme une ligne. Nom ou référence interne d'un produit NON VENDABLE (normalisés, même règle
+ *  que interne.l039_lignes_effectives + l039_designe et venLignesEffectives) → ce produit (refusé) ; sinon null. Lignes présentes
+ *  (tableau non vide) : null, elles sont contrôlées ligne par ligne (lignesCommande, base). Pure. */
+export function produitPrincipalNonVendable(lignes: unknown, produit: unknown, catalogue: Catalogue): CatalogueProduit | null {
+  if (Array.isArray(lignes) && lignes.length) return null;
+  const n = nomNormalise(produit); if (!n) return null;
+  for (const x of catalogue.values()) if (x.non_vendable && (nomNormalise(x.nom) === n || (!!x.ref && nomNormalise(x.ref) === n))) return x;
+  return null;
+}
+
 /** Nouvelle commande (mêmes colonnes que sbSaveCommande de l'appli). Paiement à la livraison par défaut : Espèces / Non payé. */
 export function construireCommande(d: Demande, id: string, lignes: Record<string, unknown>[], maintenant = Date.now()): Record<string, unknown> {
   const total = lignes.reduce((s, l) => s + (Number(l.sousTotal) || 0), 0);
