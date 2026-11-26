@@ -6823,6 +6823,9 @@ function tdbJ(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padSt
 function tdbPlus(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n); }
 function tdbCourt(s) { var p = String(s).split('-'); return parseInt(p[2], 10) + ' ' + TDB_MOIS[parseInt(p[1], 10) - 1]; }
 function tdbEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+// v7.5.151 (revue Codex PR 27 sur a46f8aa) : couleur d'une zone insérée dans un attribut style — seulement un code « #rgb » à
+// « #rrggbbaa » ou un nom de couleur (lettres) ; toute autre valeur (« red;background:url(…) », guillemets…) → couleur neutre.
+function tdbCouleur(c) { var s = String(c == null ? '' : c).trim(); return /^#[0-9a-fA-F]{3,8}$|^[a-zA-Z]{3,20}$/.test(s) ? s : '#a39b90'; }
 function tdbEur(n) { var v = Math.round((parseFloat(n) || 0) * 100) / 100; return v.toLocaleString('fr-FR', { minimumFractionDigits: (v % 1 ? 2 : 0), maximumFractionDigits: 2 }) + ' €'; }
 /** Période choisie → bornes AAAA-MM-JJ (heure de l'appareil, jamais UTC) de la période en cours ENTIÈRE (du → au) et de la
  *  période précédente À DATE ÉGALE (pdu → pau : même nombre de jours écoulés). Jour : même jour de la semaine précédente. */
@@ -6985,7 +6988,7 @@ function tdbHtml(e) {
   h += '<section class="tdb-liste"><div class="tdb-ligne tdb-ligne-t"><span>Top zones du mois</span>' + (A ? '<a href="#" onclick="tdbAller(\'zones\');return false">Toutes les zones</a>' : '') + '</div>' +
     (zs.length ? zs.map(function (z, i) {
       var v = A ? z.ca : z.nb;
-      return '<div class="tdb-ligne tdb-zone"><span><em>' + (i + 1) + '</em>' + tdbEsc(z.nom) + '<i style="width:' + Math.max(4, Math.round(v / maxZ * 100)) + '%;background:' + tdbEsc(z.couleur) + '"></i></span><b>' + (A ? tdbEur(z.ca) + ' <small>' + pl(z.nb, 'livraison') + '</small>' : pl(z.nb, 'livraison')) + '</b></div>';
+      return '<div class="tdb-ligne tdb-zone"><span><em>' + (i + 1) + '</em>' + tdbEsc(z.nom) + '<i style="width:' + Math.max(4, Math.round(v / maxZ * 100)) + '%;background:' + tdbCouleur(z.couleur) + '"></i></span><b>' + (A ? tdbEur(z.ca) + ' <small>' + pl(z.nb, 'livraison') + '</small>' : pl(z.nb, 'livraison')) + '</b></div>';
     }).join('') : '<div class="tdb-ligne vide"><span>Aucune livraison ce mois-ci</span></div>') + '</section>';
   var lv = e.livreurs || [];
   h += '<section class="tdb-liste"><div class="tdb-ligne tdb-ligne-t"><span>Livreurs — ' + tdbEsc(P.titre.toLowerCase()) + '</span></div>' +
@@ -6998,7 +7001,9 @@ function tdbHtml(e) {
 
 // ── Données et affichage ──
 var TDB_COLS = 'id,prix,date_commande,date_livraison,statut,stpaie,montant_enc,origine,adresse,livreur';
-var TDB_ETAT = { cle: '', lignes: null, at: 0, enCours: '', erreur: '', revientsDemandes: false, gen: 0, req: 0, echecs: 0, reessaiA: 0 };
+// v7.5.151 (revue Codex PR 27 sur a46f8aa) : lectures suivies PAR PÉRIODE — vols[clé] = numéro de la lecture EN COURS pour cette
+// période (plus une seule « enCours » globale) ; cache[clé] = lecture réussie d'une période qui n'était plus affichée à son arrivée.
+var TDB_ETAT = { cle: '', lignes: null, at: 0, vols: {}, cache: {}, erreur: '', revientsDemandes: false, gen: 0, req: 0, echecs: 0, reessaiA: 0 };
 var TDB_DUREE = 60000; // durée de vie de la lecture « par période » (ms)
 // v7.5.149 (revue Codex PR 27 sur 5cca91d) : après un ÉCHEC de lecture, l'avertissement reste affiché et AUCUNE relecture immédiate
 // n'est relancée (avant : tdbRendre relançait aussitôt la lecture, l'erreur était remplacée par « Mise à jour… » et, base injoignable,
@@ -7047,10 +7052,17 @@ async function tdbLire(filtre) {
   }
   return out;
 }
+/** Clé d'une période (mode + bornes) et clé de la période AFFICHÉE (sélecteur Jour / Semaine / Mois / Année). */
+function tdbCleDe(mode, P) { return mode + ':' + P.du + ':' + P.pdu + ':' + P.pau; }
+function tdbCleAffichee() { var sel = document.getElementById('dash-periode'), mode = (sel && sel.value) || 'jour'; return tdbCleDe(mode, tdbPeriodes(mode)); }
 async function tdbCharger(P, cle) {
-  // v7.5.139 (revue Codex de 8705c41) : chaque lecture a son numéro (req) ; seule la DERNIÈRE lancée est gardée, une réponse
-  // plus ancienne arrivée après (changement rapide de période) est ignorée sans rien toucher ni relancer.
-  if (TDB_ETAT.enCours === cle) return; TDB_ETAT.enCours = cle; var gen = TDB_ETAT.gen, req = ++TDB_ETAT.req, lignes = null, erreur = '';
+  // v7.5.151 (revue Codex PR 27 sur a46f8aa) : lectures suivies PAR PÉRIODE. Une période déjà en cours de lecture n'est JAMAIS relue
+  // en double (Mois → Semaine → Mois : la lecture Mois déjà partie est attendue, aucune autre ne part). À l'arrivée, la réponse est
+  // prise si sa période est celle AFFICHÉE à ce moment, quel que soit l'ordre des réponses ; sinon rien n'est remplacé ni relancé
+  // (une lecture réussie et à jour est gardée en cache pour un retour sur cette période). Avant : seule la dernière lecture lancée
+  // comptait — la réponse Mois arrivée en premier était jetée et une lecture Mois redondante relancée.
+  if (TDB_ETAT.vols[cle]) return;
+  var gen = TDB_ETAT.gen, req = ++TDB_ETAT.req, lignes = null, erreur = ''; TDB_ETAT.vols[cle] = req;
   var per = function (du, au) { return '&statut=neq.annul%C3%A9&or=(and(date_livraison.gte.' + du + ',date_livraison.lte.' + au + '),and(date_commande.gte.' + du + ',date_commande.lte.' + au + '))'; };
   try {
     var lots = await Promise.all([tdbLire(per(P.du, P.au)), tdbLire(per(P.pdu, P.pau)),
@@ -7058,9 +7070,14 @@ async function tdbCharger(P, cle) {
     var vu = {}; lignes = [];
     lots.forEach(function (l) { l.forEach(function (c) { if (!vu[c.id]) { vu[c.id] = 1; lignes.push(tdbLigne(c)); } }); });
   } catch (e) { lignes = null; erreur = String(e && e.message || e); }
-  if (req !== TDB_ETAT.req) return; // réponse obsolète : une lecture plus récente a été lancée
+  if (TDB_ETAT.vols[cle] === req) delete TDB_ETAT.vols[cle];
+  if (cle !== tdbCleAffichee()) { // période plus affichée : rien remplacé, aucune relecture
+    if (!erreur && gen === TDB_ETAT.gen) TDB_ETAT.cache[cle] = { lignes: lignes, at: Date.now(), gen: gen };
+    return;
+  }
+  delete TDB_ETAT.cache[cle];
   TDB_ETAT.lignes = lignes; TDB_ETAT.erreur = erreur;
-  TDB_ETAT.cle = cle; TDB_ETAT.enCours = '';
+  TDB_ETAT.cle = cle;
   // une commande a changé pendant la lecture : résultat affiché mais aussitôt périmé (relu au prochain affichage)
   TDB_ETAT.at = gen === TDB_ETAT.gen ? Date.now() : 0;
   // v7.5.149 : échec → nouvelle tentative différée (60 s, doublée, plafond 10 min) ; succès → compteur remis à zéro
@@ -7085,10 +7102,16 @@ function tdbRendre() {
   var locales = function () { return (Array.isArray(commandes) ? commandes : []).map(tdbLigne); };
   if (tdbLocalComplet()) lignes = locales();
   else {
-    var cle = mode + ':' + P.du + ':' + P.pdu + ':' + P.pau;
+    var cle = tdbCleDe(mode, P);
+    // v7.5.151 : retour sur une période lue pendant qu'elle n'était pas affichée — lecture reprise si elle est encore à jour
+    var c0 = TDB_ETAT.cache[cle];
+    if (c0 && TDB_ETAT.cle !== cle) {
+      delete TDB_ETAT.cache[cle];
+      if (c0.gen === TDB_ETAT.gen && Date.now() - c0.at < TDB_DUREE) { TDB_ETAT.cle = cle; TDB_ETAT.lignes = c0.lignes; TDB_ETAT.at = c0.at; TDB_ETAT.erreur = ''; TDB_ETAT.echecs = 0; TDB_ETAT.reessaiA = 0; }
+    }
     var frais = TDB_ETAT.cle === cle && Date.now() - TDB_ETAT.at < TDB_DUREE;
     var echec = TDB_ETAT.cle === cle && !!TDB_ETAT.erreur, patiente = echec && Date.now() < TDB_ETAT.reessaiA;
-    if (!frais && !patiente && TDB_ETAT.enCours !== cle) tdbCharger(P, cle);
+    if (!frais && !patiente && !TDB_ETAT.vols[cle]) tdbCharger(P, cle);
     else if (frais) tdbProgrammerExpiration(TDB_ETAT.at + TDB_DUREE - Date.now());
     if (patiente) tdbProgrammerExpiration(TDB_ETAT.reessaiA - Date.now()); // nouvelle tentative différée (tableau affiché)
     if (TDB_ETAT.cle === cle && TDB_ETAT.lignes) lignes = TDB_ETAT.lignes;
@@ -7096,7 +7119,7 @@ function tdbRendre() {
       lignes = locales(); reessayer = true;
       var quand = new Date(TDB_ETAT.reessaiA), hm = String(quand.getHours()).padStart(2, '0') + ':' + String(quand.getMinutes()).padStart(2, '0');
       note = 'Lecture de la base impossible (' + TDB_ETAT.erreur + ') : chiffres calculés sur les ' + lignes.length + ' commandes chargées dans l’appli (peut-être incomplets). '
-        + (TDB_ETAT.enCours === cle ? 'Nouvelle tentative en cours…' : 'Nouvelle tentative automatique vers ' + hm + '.');
+        + (TDB_ETAT.vols[cle] ? 'Nouvelle tentative en cours…' : 'Nouvelle tentative automatique vers ' + hm + '.');
     }
     else { lignes = locales(); note = 'Mise à jour depuis la base…'; }
   }
@@ -7108,17 +7131,25 @@ function tdbRendre() {
 }
 // TDB-FIN
 // Commandes récentes (collaboratrice : sans la colonne Montant)
+// v7.5.151 (revue Codex PR 27 sur a46f8aa) : nom, téléphone, produit, montant, canal, livreur et statut ÉCHAPPÉS (tdbEsc) — ils
+// viennent de commandes importées (site, TikTok, WhatsApp, LeBonCoin) ; l'identifiant n'est plus interpolé dans un onclick : il est
+// porté par l'attribut data-cmd-id (échappé) et lu par UN écouteur posé sur le tableau.
 function tdbRecentes() {
   var recEl = document.getElementById('dash-recent'); if (!recEl) return;
   var A = role === 'admin', recent = (commandes || []).slice(0, 8);
   recEl.innerHTML = '<table><thead><tr><th>Client</th><th>Produit</th>' + (A ? '<th>Montant</th>' : '') + '<th>Canal</th><th>Livreur</th><th>Statut</th></tr></thead><tbody>' +
     recent.map(function (c) {
-      return '<tr onclick="ouvrirCmd(\'' + c.id + '\')" style="cursor:pointer"><td><div class="td-m">' + c.client + '</div><div class="td-s">' + c.tel + '</div></td>' +
-        '<td style="font-size:12px">' + c.produit + '</td>' + (A ? '<td><strong>' + c.prix + ' €</strong></td>' : '') +
-        '<td>' + (c.origine ? origineBadge(c.origine) : '<span style="color:var(--t3);font-size:11px">—</span>') + '</td>' +
-        '<td style="font-size:12px">' + (c.livreur || (c.transporteur === 'GLS' ? '<span style="font-weight:800;color:var(--od)">GLS</span>' : '—')) + '</td>' +
-        '<td>' + stBdg(c.statut) + '</td></tr>';
+      return '<tr data-cmd-id="' + tdbEsc(c.id) + '" style="cursor:pointer"><td><div class="td-m">' + tdbEsc(c.client) + '</div><div class="td-s">' + tdbEsc(c.tel) + '</div></td>' +
+        '<td style="font-size:12px">' + tdbEsc(c.produit) + '</td>' + (A ? '<td><strong>' + tdbEsc(c.prix) + ' €</strong></td>' : '') +
+        '<td>' + (c.origine ? origineBadge(tdbEsc(c.origine)) : '<span style="color:var(--t3);font-size:11px">—</span>') + '</td>' +
+        '<td style="font-size:12px">' + (c.livreur ? tdbEsc(c.livreur) : (c.transporteur === 'GLS' ? '<span style="font-weight:800;color:var(--od)">GLS</span>' : '—')) + '</td>' +
+        '<td>' + stBdg(tdbEsc(c.statut)) + '</td></tr>';
     }).join('') + '</tbody></table>';
+  // un seul écouteur (propriété remplacée à chaque rendu, jamais cumulé) : la ligne cliquée donne l'identifiant, lu tel quel
+  recEl.onclick = function (ev) {
+    var t = ev && ev.target, tr = t && t.closest ? t.closest('tr[data-cmd-id]') : null;
+    if (tr && recEl.contains(tr)) ouvrirCmd(tr.getAttribute('data-cmd-id'));
+  };
 }
 // Analyse par canal de vente (administrateur), repliée sous le tableau de bord
 function tdbCanaux() {

@@ -287,9 +287,9 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
     periode.value = 'annee'; b5.TDB_ETAT.at = 0; b5.tdbRendre(); const an = enCours.splice(0);
     periode.value = 'jour'; b5.tdbRendre(); const jr = enCours.splice(0);
     an.forEach((r) => r([ligne('#A')])); await attendre();
-    test('ancienne réponse (Année) arrivée la première : ignorée, lecture Jour toujours attendue', b5.TDB_ETAT.enCours.indexOf('jour:') === 0 && !b5.TDB_ETAT.lignes.some((l) => l.id === '#A') && enCours.length === 0, b5.TDB_ETAT.enCours);
+    test('ancienne réponse (Année) arrivée la première : ignorée, lecture Jour toujours attendue', egal(Object.keys(b5.TDB_ETAT.vols).map((k) => k.split(':')[0]), ['jour']) && !b5.TDB_ETAT.lignes.some((l) => l.id === '#A') && enCours.length === 0, b5.TDB_ETAT.vols);
     jr.forEach((r) => r([ligne('#J')])); await attendre();
-    test('puis la récente (Jour) : gardée et affichée', b5.TDB_ETAT.cle.indexOf('jour:') === 0 && egal(b5.TDB_ETAT.lignes.map((l) => l.id), ['#J']) && b5.TDB_ETAT.enCours === '');
+    test('puis la récente (Jour) : gardée et affichée', b5.TDB_ETAT.cle.indexOf('jour:') === 0 && egal(b5.TDB_ETAT.lignes.map((l) => l.id), ['#J']) && Object.keys(b5.TDB_ETAT.vols).length === 0);
   }
   { // 4. pagination complète, garde-fou explicite
     let pages = 0;
@@ -383,8 +383,79 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
     test('cmdTotalDepuisEntete : « 0-999/1001 » → 1001, « */0 » → 0, « 0-9/* » ou absent → inconnu', b.cmdTotalDepuisEntete('0-999/1001') === 1001 && b.cmdTotalDepuisEntete('*/0') === 0 && b.cmdTotalDepuisEntete('0-9/*') === null && b.cmdTotalDepuisEntete(null) === null);
     test('tableau : plus aucune comparaison commandes.length ≥ cmdTotalCount', !/commandes\.length >= cmdTotalCount/.test(tranche('// TDB-DEBUT', '// TDB-FIN')));
   }
+  console.log('\n7 quinquies. REVUE CODEX PR 27 SUR a46f8aa (lectures suivies par période, champs échappés)');
+  { // a) Mois → Semaine → Mois : la réponse de la période AFFICHÉE est toujours prise, aucune lecture redondante, quel que soit l'ordre
+    const banc = () => {
+      const s = { enCours: [], lectures: 0, periode: { value: 'mois' }, el: { innerHTML: '' } };
+      s.b = { console, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, Promise, zones: [],
+        role: 'admin', commandes: [{ id: '#1' }], cmdTotalCount: 5000, produits: [], SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
+        setTimeout: () => 0, clearTimeout: () => {}, renderDash: () => {}, getZoneFromAdresse: () => null, arrChargerRevients: () => new Promise(() => {}),
+        document: { getElementById: (id) => (id === 'tdb-contenu' ? s.el : id === 'p-dashboard' ? { classList: { contains: () => true } } : id === 'dash-periode' ? s.periode : null) },
+        fetch: () => { s.lectures++; return new Promise((ok) => { s.enCours.push((rows) => ok({ ok: true, json: async () => rows })); }); } };
+      vm.createContext(s.b); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), s.b);
+      s.aller = (v) => { s.periode.value = v; s.b.tdbRendre(); return s.enCours.splice(0); };
+      return s;
+    };
+    const attendre = async () => { for (let k = 0; k < 8; k++) await new Promise((r) => setImmediate(r)); };
+    const ligne = (id) => ({ id, prix: 1, statut: 'livré', stpaie: '', montant_enc: 0, date_commande: '2026-11-01', date_livraison: '2026-11-01', origine: '', adresse: '', livreur: '' });
+    const ids = (s) => (s.b.TDB_ETAT.lignes || []).map((l) => l.id);
+    // ordre 1 : retour sur Mois, puis Mois répond, puis Semaine
+    let s = banc(); let m = s.aller('mois'), w = s.aller('semaine'), m2 = s.aller('mois');
+    test('Mois → Semaine → Mois : aucune lecture Mois redondante (2 + 3 requêtes seulement)', m.length === 2 && w.length === 3 && m2.length === 0 && s.lectures === 5, [m.length, w.length, m2.length, s.lectures]);
+    test('… pendant l\'attente : « Mise à jour depuis la base… » (rien d\'une autre période affiché)', /Mise à jour depuis la base/.test(s.el.innerHTML) && s.b.TDB_ETAT.lignes === null);
+    m.forEach((r) => r([ligne('#M')])); await attendre();
+    test('ordre 1 : la réponse Mois (période affichée) est prise', s.b.TDB_ETAT.cle.indexOf('mois:') === 0 && egal(ids(s), ['#M']) && s.b.TDB_ETAT.at > 0, [s.b.TDB_ETAT.cle, ids(s)]);
+    w.forEach((r) => r([ligne('#W')])); await attendre();
+    test('ordre 1 : la réponse Semaine arrivée ensuite est ignorée (rien remplacé, aucune relecture)', egal(ids(s), ['#M']) && s.lectures === 5 && s.enCours.length === 0, [ids(s), s.lectures]);
+    // ordre 2 : retour sur Mois, Semaine répond d'abord, puis Mois
+    s = banc(); m = s.aller('mois'); w = s.aller('semaine'); m2 = s.aller('mois');
+    w.forEach((r) => r([ligne('#W')])); await attendre();
+    test('ordre 2 : Semaine répond d\'abord (Mois affiché) → ignorée, Mois toujours attendu, aucune relecture', s.b.TDB_ETAT.lignes === null && egal(Object.keys(s.b.TDB_ETAT.vols).map((k) => k.split(':')[0]), ['mois']) && s.lectures === 5, [s.b.TDB_ETAT.vols, s.lectures]);
+    m.forEach((r) => r([ligne('#M')])); await attendre();
+    test('ordre 2 : puis Mois répond → prise et affichée', s.b.TDB_ETAT.cle.indexOf('mois:') === 0 && egal(ids(s), ['#M']) && s.lectures === 5);
+    // ordre 3 : Mois répond PENDANT que Semaine est affichée, puis retour sur Mois → reprise de cette lecture, aucune requête
+    s = banc(); m = s.aller('mois'); w = s.aller('semaine');
+    m.forEach((r) => r([ligne('#M')])); await attendre();
+    test('ordre 3 : Mois répond pendant que Semaine est affichée → rien remplacé', s.b.TDB_ETAT.lignes === null && !!s.b.TDB_ETAT.cache[Object.keys(s.b.TDB_ETAT.cache)[0]]);
+    m2 = s.aller('mois');
+    test('ordre 3 : retour sur Mois → lecture déjà reçue reprise, aucune requête', m2.length === 0 && s.lectures === 5 && egal(ids(s), ['#M']) && s.b.TDB_ETAT.cle.indexOf('mois:') === 0, [m2.length, s.lectures, ids(s)]);
+    w.forEach((r) => r([ligne('#W')])); await attendre();
+    test('ordre 3 : la réponse Semaine arrivée après est ignorée', egal(ids(s), ['#M']) && s.lectures === 5);
+    // ordre 4 : une commande change entre-temps → la lecture mise de côté est périmée, relue
+    s = banc(); m = s.aller('mois'); w = s.aller('semaine');
+    m.forEach((r) => r([ligne('#M')])); await attendre();
+    s.b.tdbSignaler('commandes'); m2 = s.aller('mois');
+    test('ordre 4 : commande changée depuis la lecture mise de côté → Mois relu (2 requêtes), ancienne réponse jamais affichée', m2.length === 2 && s.b.TDB_ETAT.lignes === null, [m2.length, ids(s)]);
+    test('code : plus d\'« enCours » global, lectures suivies par période (vols)', !/TDB_ETAT\.enCours/.test(tranche('// TDB-DEBUT', '// TDB-FIN')) && tranche('// TDB-DEBUT', '// TDB-FIN').includes('if (TDB_ETAT.vols[cle]) return;'));
+  }
+  { // b) commandes récentes et autres insertions du tableau : valeurs échappées, plus d'identifiant dans un onclick
+    const recEl = { innerHTML: '', onclick: null, contains: () => true }; const ouverts = [];
+    const b9 = { console, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, role: 'admin', ORIGINE_CONFIG: {}, ouvrirCmd: (id) => ouverts.push(id),
+      document: { getElementById: (id) => (id === 'dash-recent' ? recEl : null) } };
+    vm.createContext(b9);
+    vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN') + '\n' + fonction('function tdbRecentes() {') + '\n' + fonction('function origineBadge(o) {') + '\n' + fonction('function stBdg(s){'), b9);
+    const mal = '<img src=x onerror=alert(1)>';
+    b9.commandes = [{ id: "#1'); alert('x", client: mal, tel: "06' onmouseover='x", produit: mal, prix: '<b>9</b>', origine: mal, livreur: mal, statut: mal }];
+    b9.tdbRecentes();
+    const h = recEl.innerHTML;
+    test('récentes : nom, téléphone, produit, montant, canal, livreur, statut échappés (<img onerror>, apostrophe)', !/<img/i.test(h) && !h.includes('<b>9</b>') && h.includes('&lt;img src=x onerror=alert(1)&gt;') && h.includes('06&#39; onmouseover=&#39;x'), h.slice(0, 400));
+    test('récentes : aucun onclick dans le tableau, identifiant porté par data-cmd-id échappé', !/onclick=/i.test(h) && h.includes('data-cmd-id="#1&#39;); alert(&#39;x"'), h.slice(0, 200));
+    const tr = { getAttribute: (k) => (k === 'data-cmd-id' ? "#1'); alert('x" : null) };
+    recEl.onclick({ target: { closest: (sel) => (sel === 'tr[data-cmd-id]' ? tr : null) } });
+    recEl.onclick({ target: { closest: () => null } });
+    test('récentes : clic sur une ligne → ouvrirCmd(identifiant tel quel), clic ailleurs → rien', egal(ouverts, ["#1'); alert('x"]), ouverts);
+    b9.tdbRecentes();
+    test('récentes : un seul écouteur (propriété remplacée, jamais cumulée)', typeof recEl.onclick === 'function');
+    // autres insertions : zones (nom, couleur dans style), livreurs, stock, titre, note
+    const P = bac.tdbPeriodes('mois', mer);
+    const hZ = bac.tdbHtml({ P, admin: true, cur: bac.tdbDonnees([], P, true, () => null).cur, prev: bac.tdbDonnees([], P, true, () => null).prev, stock: { ruptures: 0, bas: 0 },
+      zones: [{ nom: mal, couleur: 'red;background:url(https://x.invalid/a)"><img src=x onerror=alert(2)>', nb: 1, ca: 10 }], livreurs: [{ nom: mal, nb: 1, ca: 10 }], note: mal });
+    test('zones / livreurs / note : noms échappés, couleur hors liste blanche remplacée (aucune injection dans style)', !/<img/i.test(hZ) && !hZ.includes('url(') && hZ.includes('background:#a39b90') && hZ.includes('&lt;img src=x onerror=alert(1)&gt;'), hZ.slice(0, 300));
+    test('couleur de zone : codes #rgb / #rrggbb et noms gardés, le reste neutralisé', bac.tdbCouleur('#1a2B3c') === '#1a2B3c' && bac.tdbCouleur('#abc') === '#abc' && bac.tdbCouleur('teal') === 'teal'
+      && bac.tdbCouleur('red;x:y') === '#a39b90' && bac.tdbCouleur('"') === '#a39b90' && bac.tdbCouleur(null) === '#a39b90');
+  }
   console.log('\n8. MISE EN LIGNE');
 
-test('CACHE_VERSION augmentée (v7-5-149 ou plus)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 149; })());
+test('CACHE_VERSION augmentée (v7-5-151 ou plus, au-dessus de la PR 26)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 151; })());
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
