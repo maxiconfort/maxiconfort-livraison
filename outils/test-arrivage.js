@@ -64,7 +64,7 @@ function pagesSuivantes(url) {
 function nouveauBac(opts) {
   const o = opts || {}, appels = [], toasts = [], elts = {};
   const el = (id) => elts[id] || (elts[id] = { id, innerHTML: '', textContent: '', disabled: false, style: {}, value: '' });
-  const bac = { console: { log() {}, warn() {} }, Math, Date, JSON, parseFloat, parseInt, String, Array, Object, Number, isNaN, encodeURIComponent, Promise, Set,
+  const bac = { crypto: require('crypto').webcrypto, Uint8Array, console: { log() {}, warn() {} }, Math, Date, JSON, parseFloat, parseInt, String, Array, Object, Number, isNaN, encodeURIComponent, Promise, Set,
     SUPABASE_URL: 'https://exemple.invalid', SUPABASE_KEY: 'cle-de-test', role: o.role || 'admin', produits: catalogue(), window: {},
     document: { getElementById: el, querySelectorAll: () => [], querySelector: () => null },
     localStorage: { setItem() {}, getItem() { return null; } },
@@ -167,7 +167,7 @@ function nouveauBac(opts) {
   B = nouveauBac({ repondre: (url) => url.includes('/rpc/') ? { ok: true, status: 200, corps: { ok: false, erreur: 'arrivage_deja_traite', statut: 'recu' } }
     : url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: paginer(url, lignesArr()) } : { ok: true, status: 200, corps: [] } });
   B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.arrOuvrir(7); await B.bac.arrValider();
-  test('la base refuse (validé ailleurs entre-temps) : message clair, rien n\'est compté comme reçu', B.toasts.some(t => t.t === 'err' && /NON validée : arrivage_deja_traite/.test(t.m)), B.toasts);
+  test('la base refuse (validé ailleurs entre-temps) : « Réception déjà validée », rien n\'est compté comme reçu', B.toasts.some(t => /^Réception déjà validée \(par un autre envoi\) : rien n'a été ajouté une seconde fois/.test(t.m)) && !B.toasts.some(t => t.t === 'ok'), B.toasts);
   B = nouveauBac({ confirmer: false }); B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.arrOuvrir(7); await B.bac.arrValider();
   test('sans confirmation : rien n\'est envoyé', !B.appels.some(a => a.url.includes('/rpc/')));
   B = nouveauBac(); B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.arrOuvrir(7); B.bac.arrSaisie(71, 'recue', '29'); await B.bac.arrValider();
@@ -769,10 +769,11 @@ function nouveauBac(opts) {
     // base : empreinte obligatoire, comparée APRÈS les verrous et AVANT toute écriture
     const valE = sql.slice(sql.indexOf('create or replace function public.valider_reception_arrivage'), sql.indexOf('create or replace function public.recalculer_revient_arrivage'));
     const iCmp = valE.indexOf('if p_empreinte is distinct from interne.l039_empreinte_valorisation(a.id, v_methode) then');
-    test('base : empreinte obligatoire (empreinte_requise), signature à 3 arguments, ancienne signature supprimée',
-      valE.includes('valider_reception_arrivage(p_arrivage_id bigint, p_lignes jsonb, p_empreinte text) returns json') && valE.includes("if coalesce(p_empreinte, '') = '' then return json_build_object('ok', false, 'erreur', 'empreinte_requise'); end if;")
-      && sql.includes('drop function if exists public.valider_reception_arrivage(bigint, jsonb);') && sql.includes('grant execute on function public.valider_reception_arrivage(bigint, jsonb, text) to anon;')
-      && !/valider_reception_arrivage\(bigint, jsonb\) (to|from)/.test(sql));
+    test('base : empreinte obligatoire (empreinte_requise), signature à 4 arguments (tentative), anciennes signatures supprimées',
+      valE.includes('valider_reception_arrivage(p_arrivage_id bigint, p_lignes jsonb, p_empreinte text, p_tentative uuid) returns json') && valE.includes("if coalesce(p_empreinte, '') = '' then return json_build_object('ok', false, 'erreur', 'empreinte_requise'); end if;")
+      && sql.includes('drop function if exists public.valider_reception_arrivage(bigint, jsonb);') && sql.includes('drop function if exists public.valider_reception_arrivage(bigint, jsonb, text);')
+      && sql.includes('grant execute on function public.valider_reception_arrivage(bigint, jsonb, text, uuid) to anon;')
+      && !/valider_reception_arrivage\(bigint, jsonb\) (to|from)/.test(sql) && !/valider_reception_arrivage\(bigint, jsonb, text\) (to|from)/.test(sql));
     test('base : empreinte comparée APRÈS les verrous produits / produits_revient et AVANT le numéro d\'ordre et toute écriture',
       iCmp > valE.indexOf('perform 1 from public.produits_revient where produit_id in') && iCmp < valE.indexOf('v_ordre := nextval(') && iCmp < valE.indexOf('update public.') && valE.includes("'erreur', 'valorisation_modifiee'"));
     const empF = sql.slice(sql.indexOf('create or replace function interne.l039_empreinte_valorisation'), sql.indexOf('revoke all on function interne.l039_fmt'));
@@ -1102,26 +1103,32 @@ function nouveauBac(opts) {
     test('issue : pas de réponse (coupure) = INDÉTERMINÉE', I(true, 0, null) === 'indeterminee');
     test('issue : corps illisible, 5xx, 408 / 425 / 429, réponse sans « ok » = INDÉTERMINÉE', I(false, 200, null) === 'indeterminee' && [500, 502, 503, 504, 408, 425, 429].every(s => I(false, s, { message: 'x' }) === 'indeterminee') && I(false, 200, { total_recu: 70 }) === 'indeterminee');
     const C = bac.arrConclureRelecture;
-    test('relecture : « recu » = validée (même sans mouvement : tout endommagé)', C('recu', 2, 2) === 'validee' && C('recu', 0, 0) === 'validee');
-    test('relecture : en attente (ou annulé) SANS mouvement = non validée', C('en_attente', 0, 0) === 'non_validee' && C('annule', 0, 0) === 'non_validee');
-    test('relecture : en attente AVEC des mouvements de cet arrivage = incohérente (pas de nouvel envoi)', C('en_attente', 1, 0) === 'incoherente' && C('en_attente', 0, 1) === 'incoherente');
+    test('relecture : « recu » + tentative « appliquee » = validée par CET envoi (même sans mouvement : tout endommagé)', C('recu', 2, 2, 'appliquee') === 'validee' && C('recu', 0, 0, 'appliquee') === 'validee');
+    test('relecture : « recu » + tentative « abandonnee » = DÉJÀ validée (par un autre envoi)', C('recu', 2, 2, 'abandonnee') === 'deja_validee');
+    test('relecture : en attente (ou annulé) SANS mouvement + tentative ABANDONNÉE = non validée', C('en_attente', 0, 0, 'abandonnee') === 'non_validee' && C('annule', 0, 0, 'abandonnee') === 'non_validee');
+    test('relecture : en attente SANS abandon confirmé de la tentative = JAMAIS « non validée » (indéterminée)', C('en_attente', 0, 0) === 'indeterminee' && C('en_attente', 0, 0, 'inconnu') === 'indeterminee');
+    test('relecture : en attente + tentative « appliquee » = incohérente', C('en_attente', 0, 0, 'appliquee') === 'incoherente');
+    test('relecture : en attente AVEC des mouvements de cet arrivage = incohérente (pas de nouvel envoi)', C('en_attente', 1, 0, 'abandonnee') === 'incoherente' && C('en_attente', 0, 1, 'abandonnee') === 'incoherente');
   }
   {
     // v7.5.177 (revue Codex PR 26 sur ce01159) : réponse de la fonction serveur statut_reception_arrivage (relecture SOUS LE VERROU
     // de la réception : statut, historique des revients et mouvements de stock de CET arrivage, comptés par la base)
-    const relecture = (url, etat) => {
+    // v7.5.191 (revue Codex PR 26 sur 8adccd6) : la fonction renvoie la tentative relue et son état (« appliquee » si la réception est
+    // celle de cet envoi, sinon « abandonnee », inscrit par la base)
+    const relecture = (url, etat, init) => {
       if (!url.includes('/rpc/statut_reception_arrivage')) return null;
       if (etat.arrivages) return etat.arrivages;
-      const h = etat.historique || [], m = etat.mouvements || [];
-      return { ok: true, status: 200, corps: { ok: true, id: 7, statut: etat.statut || 'recu', recu_le: (etat.statut || 'recu') === 'recu' ? '2026-11-26T10:00:00Z' : null,
-        historique: h.length, mouvements: m.length, quantite: h.reduce((s, x) => s + x.quantite, 0) } };
+      const h = etat.historique || [], m = etat.mouvements || [], st = etat.statut || 'recu', t = init && init.body ? JSON.parse(init.body).p_tentative : undefined;
+      return { ok: true, status: 200, corps: { ok: true, id: 7, statut: st, recu_le: st === 'recu' ? '2026-11-26T10:00:00Z' : null,
+        historique: h.length, mouvements: m.length, quantite: h.reduce((s, x) => s + x.quantite, 0),
+        tentative: etat.tentativeRenvoyee !== undefined ? etat.tentativeRenvoyee : t, etat_tentative: etat.etatTentative !== undefined ? etat.etatTentative : (st === 'recu' ? 'appliquee' : 'abandonnee') } };
     };
     const HIST = [{ id: 1, arrivage_id: 7, produit_id: 'pr-a', quantite: 30 }, { id: 2, arrivage_id: 7, produit_id: 'pr-n', quantite: 40 }], MVT = [{ id: 11, quantite: 30 }, { id: 12, quantite: 40 }];
     const bacPerdu = (rpc, etat) => { const o = { relectures: 0, pendant: null };
-      const x = nouveauBac({ repondre: (url) => {
+      const x = nouveauBac({ repondre: (url, init) => {
         if (url.includes('/rpc/valider_reception_arrivage')) return rpc(o);
         if (url.includes('/rpc/statut_reception_arrivage')) { o.relectures++; if (o.surRelecture) o.surRelecture(); }
-        const rr = relecture(url, typeof etat === 'function' ? etat(o) : etat); if (rr) return rr;
+        const rr = relecture(url, typeof etat === 'function' ? etat(o) : etat, init); if (rr) return rr;
         if (url.includes('/arrivages?')) return { ok: true, status: 200, corps: paginer(url, [arrivage((typeof etat === 'function' ? etat(o) : etat).statut || 'recu')]) };
         if (url.includes('/arrivage_lignes?')) return { ok: true, status: 200, corps: paginer(url, lignesArr()) };
         return { ok: true, status: 200, corps: [] };
@@ -1208,7 +1215,8 @@ function nouveauBac(opts) {
           if (!base.joignable) return { ok: false, status: 503, corps: [] };
           const id = JSON.parse(init.body).p_arrivage_id, st = base.statut[id];
           return { ok: true, status: 200, corps: { ok: true, id, statut: st, recu_le: st === 'recu' ? '2026-11-26T10:00:00Z' : null,
-            historique: st === 'recu' ? 2 : 0, mouvements: st === 'recu' ? 2 : 0, quantite: st === 'recu' ? 70 : 0 } };
+            historique: st === 'recu' ? 2 : 0, mouvements: st === 'recu' ? 2 : 0, quantite: st === 'recu' ? 70 : 0,
+            tentative: JSON.parse(init.body).p_tentative, etat_tentative: st === 'recu' ? 'appliquee' : 'abandonnee' } };
         }
         if (url.includes('/arrivages?')) return { ok: true, status: 200, corps: paginer(url, [Object.assign(arrivage(base.statut[7]), {}), Object.assign({}, arrB, { statut: base.statut[8] })]) };
         if (url.includes('/arrivage_lignes?')) return { ok: true, status: 200, corps: paginer(url, lignesAB()) };
@@ -1241,15 +1249,65 @@ function nouveauBac(opts) {
     }
     // réponses douteuses de la fonction : jamais de conclusion
     const L = bac.arrLectureStatut;
-    test('lecture du statut : réponse correcte acceptée', L(200, { ok: true, id: 7, statut: 'en_attente', recu_le: null, historique: 0, mouvements: 0, quantite: 0 }, 7).ok === true);
+    const TT = '0f0e0d0c-0b0a-4908-8706-050403020100';
+    test('lecture du statut : réponse correcte acceptée (tentative renvoyée, abandon confirmé)', L(200, { ok: true, id: 7, statut: 'en_attente', recu_le: null, historique: 0, mouvements: 0, quantite: 0, tentative: TT, etat_tentative: 'abandonnee' }, 7, TT).ok === true
+      && L(200, { ok: true, id: 7, statut: 'en_attente', recu_le: null, historique: 0, mouvements: 0, quantite: 0, tentative: TT, etat_tentative: 'abandonnee' }, 7, TT).etat_tentative === 'abandonnee');
+    test('lecture du statut : tentative absente, différente, état inconnu ou relecture sans tentative = échec (abandon non confirmé)',
+      [L(200, { ok: true, id: 7, statut: 'en_attente', historique: 0, mouvements: 0, quantite: 0 }, 7, TT),
+       L(200, { ok: true, id: 7, statut: 'en_attente', historique: 0, mouvements: 0, quantite: 0, tentative: '11111111-1111-4111-8111-111111111111', etat_tentative: 'abandonnee' }, 7, TT),
+       L(200, { ok: true, id: 7, statut: 'en_attente', historique: 0, mouvements: 0, quantite: 0, tentative: TT, etat_tentative: null }, 7, TT),
+       L(200, { ok: true, id: 7, statut: 'en_attente', historique: 0, mouvements: 0, quantite: 0, tentative: TT, etat_tentative: 'abandonnee' }, 7)].every(x => x.ok === false && /non confirmé/.test(x.status)));
     test('lecture du statut : HTTP 500 / 401, corps vide, tableau, ok absent, refus, champs manquants ou faux, autre arrivage = échec (indéterminé)',
       [L(500, { ok: true }, 7), L(401, null, 7), L(200, null, 7), L(200, [], 7), L(200, { statut: 'recu', historique: 0, mouvements: 0, quantite: 0 }, 7),
        L(200, { ok: false, erreur: 'session_admin_requise' }, 7), L(200, { ok: true, statut: 'recu', historique: '2', mouvements: 0, quantite: 0 }, 7),
        L(200, { ok: true, statut: 'recu', historique: -1, mouvements: 0, quantite: 0 }, 7), L(200, { ok: true, statut: null, historique: 0, mouvements: 0, quantite: 0 }, 7),
        L(200, { ok: true, id: 8, statut: 'recu', historique: 0, mouvements: 0, quantite: 0 }, 7)].every(x => x.ok === false));
+    // ══ v7.5.191 (revue Codex PR 26 sur 8adccd6) : IDENTIFIANT DE TENTATIVE, abandon confirmé par la base avant tout nouvel envoi ══
+    {
+      const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+      test('tentative : uuid v4 tiré à chaque appel, jamais deux fois le même', UUID.test(bac.arrNouvelleTentative()) && bac.arrNouvelleTentative() !== bac.arrNouvelleTentative());
+      const bSans = nouveauBac(); bSans.bac.crypto = undefined;
+      test('tentative : uuid v4 valide même sans crypto.randomUUID (navigateur ancien)', UUID.test(bSans.bac.arrNouvelleTentative()));
+      // T. réponse perdue, base NON validée : la relecture porte la MÊME tentative, abandon confirmé -> nouvel envoi avec une AUTRE tentative
+      let T = bacPerdu((o) => { o.n = (o.n || 0) + 1; if (o.n === 1) throw new Error('Failed to fetch'); return { ok: true, status: 200, corps: { ok: true, total_recu: 70 } }; },
+        (o) => ({ statut: o.n >= 2 ? 'recu' : 'en_attente' }));
+      await T.bac.arrValider();
+      const env1 = T.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage'))[0], rel1 = T.appels.filter(a => a.url.includes('/rpc/statut_reception_arrivage'))[0];
+      test('envoi : identifiant de tentative (uuid v4) joint à valider_reception_arrivage', !!env1 && UUID.test(env1.body.p_tentative), env1 && env1.body);
+      test('relecture après réponse perdue : statut_reception_arrivage reçoit la MÊME tentative (abandon inscrit par la base)', !!rel1 && rel1.body.p_tentative === env1.body.p_tentative && rel1.body.p_arrivage_id === 7, rel1 && rel1.body);
+      test('… abandon confirmé : « NON validée … l\'envoi précédent est annulé dans la base et ne pourra plus être appliqué », bouton libéré',
+        T.toasts.some(t => /NON validée \(vérifié dans la base.*l'envoi précédent est annulé dans la base et ne pourra plus être appliqué/.test(t.m)) && T.elts['arr-btn-valider'].disabled === false && !T.bac.arrAVerifierDe(7), T.toasts);
+      await T.bac.arrValider();
+      const envs = T.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage'));
+      test('… nouvel envoi avec une NOUVELLE tentative (jamais l\'ancienne, abandonnée)', envs.length === 2 && UUID.test(envs[1].body.p_tentative) && envs[1].body.p_tentative !== envs[0].body.p_tentative);
+      // U. relecture « en attente » SANS confirmation de l'abandon (état de tentative absent) : bouton reste bloqué, aucun nouvel envoi
+      T = bacPerdu(() => { throw new Error('Failed to fetch'); }, { statut: 'en_attente', etatTentative: null });
+      await T.bac.arrValider(); await T.bac.arrValider();
+      test('abandon NON confirmé (état de tentative absent) : jamais « NON validée », reste INDÉTERMINÉ, bouton bloqué, aucun second envoi',
+        !T.toasts.some(t => /NON validée/.test(t.m)) && !!T.bac.arrAVerifierDe(7) && T.elts['arr-btn-valider'].disabled === true && T.nbRpc() === 1, T.toasts);
+      T = bacPerdu(() => { throw new Error('Failed to fetch'); }, { statut: 'en_attente', tentativeRenvoyee: '11111111-1111-4111-8111-111111111111' });
+      await T.bac.arrValider();
+      test('abandon confirmé pour une AUTRE tentative : refusé comme preuve, reste INDÉTERMINÉ', !T.toasts.some(t => /NON validée/.test(t.m)) && !!T.bac.arrAVerifierDe(7) && T.nbRpc() === 1, T.toasts);
+      // V. « recu » mais tentative abandonnée : un AUTRE envoi a validé -> « Réception déjà validée »
+      T = bacPerdu(() => { throw new Error('Failed to fetch'); }, { statut: 'recu', historique: HIST, mouvements: MVT, etatTentative: 'abandonnee' });
+      await T.bac.arrValider();
+      test('« recu » + tentative abandonnée : « Réception déjà validée (… validée par un autre envoi …) », plus rien à vérifier, bouton retiré',
+        T.toasts.some(t => /^Réception déjà validée \(vérifié dans la base : validée par un autre envoi/.test(t.m)) && !T.toasts.some(t => /NON validée/.test(t.m)) && !T.bac.arrAVerifierDe(7)
+        && T.bac.ARR_ETAT.arrivages[0].statut === 'recu' && !T.elts['arr-contenu'].innerHTML.includes('arr-btn-valider'), T.toasts);
+      // W. « Vérifier dans la base » plus tard : la tentative gardée pour CET arrivage est réutilisée pour la relecture
+      let joignable = false;
+      T = bacPerdu(() => { throw new Error('Failed to fetch'); }, () => joignable ? { statut: 'en_attente' } : { arrivages: { ok: false, status: 503, corps: [] } });
+      await T.bac.arrValider();
+      const tGardee = T.bac.arrAVerifierDe(7) && T.bac.arrAVerifierDe(7).tentative;
+      joignable = true; await T.bac.arrVerifierClic();
+      const rels = T.appels.filter(a => a.url.includes('/rpc/statut_reception_arrivage'));
+      test('« Vérifier dans la base » ultérieur : MÊME tentative relue (gardée par arrivage), abandon confirmé, puis bouton libéré',
+        UUID.test(tGardee) && rels.length === 2 && rels.every(a => a.body.p_tentative === tGardee) && tGardee === T.appels.find(a => a.url.includes('/rpc/valider_reception_arrivage')).body.p_tentative
+        && !T.bac.arrAVerifierDe(7) && T.elts['arr-btn-valider'].disabled === false, rels.map(a => a.body));
+    }
     // code : plus de « pas de connexion » transformé en « Réception NON validée »
     const env = extraireFonction('async function arrValiderEnvoi(a, ls, saisies, vue)');
-    test('code : une coupure après l\'envoi n\'est plus traduite en « NON validée » (plus de j = { ok: false, erreur: \'pas de connexion\' })', !/j = \{ ok: false, erreur: 'pas de connexion' \}/.test(env) && /arrIssueValidation\(sansReponse, http, j\)/.test(env) && /if \(issue === 'indeterminee'\) \{ await arrVerifierReception\(a\); return; \}/.test(env));
+    test('code : une coupure après l\'envoi n\'est plus traduite en « NON validée » (plus de j = { ok: false, erreur: \'pas de connexion\' })', !/j = \{ ok: false, erreur: 'pas de connexion' \}/.test(env) && /arrIssueValidation\(sansReponse, http, j\)/.test(env) && /if \(issue === 'indeterminee'\) \{ await arrVerifierReception\(a, tentative\); return; \}/.test(env));
   }
 
   console.log('\n9. VERSION');
