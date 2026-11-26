@@ -42,13 +42,17 @@ export async function lireCatalogueComplet(
   lireParIds: (ids: string[]) => Promise<LigneProduit[]>,
   taillePage = 1000,
 ): Promise<LigneProduit[]> {
+  // Revue Codex PR 26 sur 4ec0313 : la base peut renvoyer MOINS de lignes que demandé alors qu'il en reste (plafond du serveur
+  // inférieur à la page demandée, ex. 300 pour 1 000). On avance donc du nombre de lignes RÉELLEMENT reçues et on ne s'arrête que sur
+  // une page VIDE (même logique que arrLireTout dans l'application), jamais sur une page « incomplète ».
   const rows: LigneProduit[] = [];
-  for (let debut = 0; ; debut += taillePage) {
+  for (let n = 0; ; n++) {
+    if (n > 10_000 || rows.length > 1_000_000) throw new Error('catalogue anormalement grand');
+    const debut = rows.length;
     const page = await lirePage(debut, debut + taillePage - 1);
     if (!Array.isArray(page)) throw new Error('lecture du catalogue impossible');
+    if (!page.length) break;
     rows.push(...page);
-    if (page.length < taillePage) break;
-    if (debut > 1_000_000) throw new Error('catalogue anormalement grand');
   }
   const connus = new Set(rows.map((r) => String(r.id)));
   const manquants = new Set<string>();

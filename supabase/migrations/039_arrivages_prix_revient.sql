@@ -168,21 +168,37 @@ language sql immutable as $$
            translate(lower(coalesce(p, '')), 'àâäáãåçéèêëíìîïñóòôöõúùûüýÿ×', 'aaaaaaceeeeiiiinooooouuuuyyx'),
            '\s+', ' ', 'g')), '(\d) ?x ?(\d)', '\1x\2', 'g'), '')
 $$;
+-- La ligne e DÉSIGNE-t-elle le produit (nom p_nom, référence p_ref) ? Nom (« produit » ou « nom ») égal au nom normalisé, ou référence
+-- (« reference », « sku », « _ugs » ou le nom lui-même) égale à la référence normalisée. Jamais NULL (false si rien à comparer). Pure.
+-- Même règle que venDesigne (application).
+create or replace function interne.l039_designe(e jsonb, p_nom text, p_ref text) returns boolean
+language sql immutable as $$
+  select coalesce(
+           (interne.l039_norm(p_nom) is not null
+            and interne.l039_norm(p_nom) in (interne.l039_norm(e ->> 'produit'), interne.l039_norm(e ->> 'nom')))
+        or (interne.l039_norm(p_ref) is not null
+            and interne.l039_norm(p_ref) in (interne.l039_norm(e ->> 'reference'), interne.l039_norm(e ->> 'sku'),
+                                             interne.l039_norm(e ->> '_ugs'), interne.l039_norm(e ->> 'produit'))), false)
+$$;
+revoke all on function interne.l039_designe(jsonb, text, text) from public, anon, authenticated;
 -- Lignes avec leur produit IDENTIFIÉ (produitId remplacé par l'identifiant du produit non vendable reconnu par nom ou référence).
 -- Sert seulement à la COMPARAISON : les lignes enregistrées ne sont jamais modifiées. NULL → NULL.
+-- Revue Codex PR 26 sur 4ec0313 : un produitId EXISTANT n'est plus fiable à lui seul. Il est gardé si le nom ou la référence de la
+-- ligne DÉSIGNE ce produit ; sinon, si le nom ou la référence désigne un produit NON VENDABLE, la ligne est CONTRADICTOIRE (ex.
+-- identifiant d'un produit vendable + nom d'un produit interdit) et rapportée à ce produit non vendable : refusée dans une commande
+-- nouvelle (insertion comme upsert) ou si elle est ajoutée ou modifiée ; sinon (ni nom ni référence, ou nom libre) → inchangée.
+-- Appliqué aux lignes proposées ET aux lignes actuelles : une commande déjà prise inchangée reste modifiable comme avant.
 create or replace function interne.l039_lignes_identifiees(p jsonb) returns jsonb
 language sql stable security definer set search_path = public, interne, pg_catalog as $$
   select case when p is null then null else (
     select coalesce(jsonb_agg(
       case
-        when coalesce(e ->> 'produitId', '') <> '' and exists (select 1 from public.produits q where q.id = e ->> 'produitId') then e
+        when coalesce(e ->> 'produitId', '') <> '' and exists (select 1 from public.produits q where q.id = e ->> 'produitId'
+                                                                  and interne.l039_designe(e, q.nom, q.reference_interne)) then e
         else coalesce((
           select e || jsonb_build_object('produitId', q.id)
             from public.produits q
-           where (interne.l039_norm(q.nom) in (interne.l039_norm(e ->> 'produit'), interne.l039_norm(e ->> 'nom'))
-                  or (q.reference_interne is not null
-                      and interne.l039_norm(q.reference_interne) in (interne.l039_norm(e ->> 'reference'), interne.l039_norm(e ->> 'sku'),
-                                                                     interne.l039_norm(e ->> '_ugs'), interne.l039_norm(e ->> 'produit'))))
+           where interne.l039_designe(e, q.nom, q.reference_interne)
              and interne.produit_non_vendable(q.id)
            order by q.id limit 1), e)
       end order by t.ord), '[]'::jsonb)
@@ -719,6 +735,12 @@ begin
   if interne.l039_revient_coherent(21, null) then f := 'calcul impossible refusé'; end if;
   if interne.l039_norm('  Matelas  Fictif ÉTÉ 140 × 190 x 25 ') is distinct from 'matelas fictif ete 140x190x25' then f := 'nom normalisé'; end if;
   if interne.l039_norm('   ') is not null then f := 'nom vide'; end if;
+  -- désignation d'un produit par une ligne (revue Codex sur 4ec0313 : produitId et nom contradictoires)
+  if not interne.l039_designe('{"produitId":"pr-a","produit":"matelas fictif a 140 x 190"}', 'Matelas Fictif A 140×190', null) then f := 'nom désignant le produit de l''identifiant'; end if;
+  if interne.l039_designe('{"produitId":"pr-a","produit":"Matelas Nouveau N (fictif)"}', 'Matelas Fictif A 140×190', null) then f := 'nom désignant un autre produit'; end if;
+  if not interne.l039_designe('{"produit":"Article TikTok","_ugs":"mc-test-1"}', 'Matelas Nouveau N (fictif)', 'MC-TEST-1') then f := 'référence désignant le produit'; end if;
+  if interne.l039_designe('{"produitId":"pr-a"}', 'Matelas Fictif A 140×190', null) then f := 'ligne sans nom ni référence'; end if;
+  if interne.l039_designe('{"produit":"  "}', '  ', '') then f := 'nom et référence vides'; end if;
   if f is not null then
     raise exception 'Auto-contrôle 039 (revient / identification) en échec : cas « % ». Migration annulée.', f;
   end if;

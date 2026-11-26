@@ -4008,16 +4008,24 @@ function venNorm(s) {
 // Produit d'une ligne de commande : produitId d'un produit connu (fiable) ; sinon produit NON VENDABLE dont le nom normalisé est celui
 // de la ligne (« produit » ou « nom »), ou dont la référence interne est celle de la ligne (« reference », « sku », « _ugs » ou le nom) :
 // la ligne est ambiguë et rapportée à ce produit. Sinon null (hors catalogue). Même règle que interne.l039_lignes_identifiees.
-function venProduitDeLigne(l, liste) {
-  if (!l) return null;
-  if (l.produitId) { var parId = (liste || []).find(function(x) { return x.id === l.produitId; }); if (parId) return parId; }
+// v7.5.144 (revue Codex PR 26 sur 4ec0313) : un produitId EXISTANT n'est plus fiable à lui seul. Si le nom ou la référence de la ligne
+// ne désigne PAS ce produit mais désigne un produit NON VENDABLE (ex. identifiant d'un produit vendable + nom d'un produit interdit),
+// la ligne est CONTRADICTOIRE et rapportée au produit non vendable (donc refusée si elle est nouvelle). Une ligne dont le nom (ou la
+// référence) désigne bien le produit de son identifiant, ou qui n'a ni nom ni référence, reste à ce produit (inchangé).
+// Même règle que interne.l039_designe / interne.l039_lignes_identifiees (migration 039).
+function venDesigne(l, x) {
+  if (!l || !x) return false;
   var noms = [venNorm(l.produit), venNorm(l.nom)].filter(Boolean);
   var refs = [venNorm(l.reference), venNorm(l.sku), venNorm(l._ugs), venNorm(l.produit)].filter(Boolean);
-  if (!noms.length && !refs.length) return null;
-  var cands = (liste || []).filter(function(x) {
-    return !venEst(x, liste) && (noms.indexOf(venNorm(x.nom)) > -1 || (!!x.refInterne && refs.indexOf(venNorm(x.refInterne)) > -1));
-  }).sort(function(a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; });
-  return cands[0] || null;
+  return (!!venNorm(x.nom) && noms.indexOf(venNorm(x.nom)) > -1) || (!!venNorm(x.refInterne) && refs.indexOf(venNorm(x.refInterne)) > -1);
+}
+function venProduitDeLigne(l, liste) {
+  if (!l) return null;
+  var parId = l.produitId ? ((liste || []).find(function(x) { return x.id === l.produitId; }) || null) : null;
+  if (parId && venDesigne(l, parId)) return parId;
+  var cands = (liste || []).filter(function(x) { return !venEst(x, liste) && venDesigne(l, x); })
+    .sort(function(a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; });
+  return cands[0] || parId;
 }
 function venBadge() { return '<span style="display:inline-block;margin-top:3px;padding:2px 7px;border-radius:4px;background:var(--ol,#fff4e5);color:var(--od,#9a3412);border:1px solid var(--orange,#f59e0b);font-size:10px;font-weight:800;letter-spacing:.3px">' + VEN_LIBELLE + '</span>'; }
 
