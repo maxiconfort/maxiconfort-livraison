@@ -397,16 +397,16 @@ textarea{resize:vertical;min-height:65px}
   --text:var(--texte);--t1:var(--texte);--t2:var(--gris);--t3:#a39b90;
   --brd:#ebe5dc;--brd2:#e2dbd0;
   --blue:#0a5fd1;--bl:#e9f1fd;--bd:#084aa3;
-  --green:#2f9e6b;--gl:#e8f5ee;--gd:#1f6e49;
+  --green:#1f7a52;--gl:#e8f5ee;--gd:#1f6e49; /* v7.5.176 (revue Codex PR 25, P2) : vert de jour foncé, texte blanc 5,30:1 (avant #2f9e6b : 3,37:1) */
   --orange:#c98a1e;--ol:#fbecd2;--od:#7a4a06;
   --red:#c4452f;--rl:#f8e1dd;--rd:#8a2a1c;
   --violet:#6a5fc4;--vl:#eeebfb;--vd:#43398f;
-  --teal:#2f9e6b;--tl:#e8f5ee;--td:#1f6e49;
+  --teal:#1f7a52;--tl:#e8f5ee;--td:#1f6e49;
   --gray:#a39b90;--grl:#f1ece4;--grd:#5c554c;
   --font:-apple-system,BlinkMacSystemFont,Inter,'Segoe UI',system-ui,sans-serif;
   --r:12px;--rl2:18px;--sh:var(--ombre);--shm:0 2px 6px rgba(28,26,23,.06),0 18px 48px rgba(28,26,23,.14);
-  --vert-plein:#2f9e6b;--sur-vert:#ffffff;--bouton-fonce:#1c1a17;--sur-fonce:#ffffff;
-  --sur-bleu:#ffffff;--sur-rouge:#ffffff;--sur-orange:#ffffff;--sur-violet:#ffffff; /* v7.5.172 : texte sur fond bleu / rouge / orange / violet */
+  --vert-plein:#1f7a52;--sur-vert:#ffffff;--bouton-fonce:#1c1a17;--sur-fonce:#ffffff;
+  --sur-bleu:#ffffff;--sur-rouge:#ffffff;--sur-orange:#2a1c05;--sur-violet:#ffffff; /* v7.5.172 : texte sur fond bleu / rouge / orange / violet ; v7.5.176 : encre foncée sur l'orange de jour (blanc 2,94:1 -> 5,63:1) */
   color-scheme:light;
 }
 @media (prefers-color-scheme: dark){
@@ -10926,6 +10926,10 @@ function rtDepenseVerrou(etats, listeTournees, estValidee) {
   if (!bloquees.length) return { ok: true, erreur: '', tournees: [] };
   return { ok: false, tournees: bloquees, erreur: 'Point de caisse déjà validé (tournée ' + bloquees.join(', ') + ') : annulez d\'abord la validation de la remise pour ajouter, corriger ou supprimer cette dépense' };
 }
+// v7.5.175 (revue Codex PR 24 sur 437ec1e, P2) : le verrou est aussi tenu PAR LA BASE (migration 038b, déclencheur
+// depenses_verrou_caisse), car le téléphone du livreur ne peut pas lire caisse_remises. Refus = erreur « POINT_CAISSE_VALIDE ».
+var RT_MSG_CAISSE_VALIDEE = '⛔ Point de caisse déjà validé par le bureau : cette dépense ne peut plus être ajoutée, corrigée ni supprimée. Demandez au bureau d\'annuler la validation s\'il faut la changer.';
+function rtRefusCaisseValidee(status, texte) { return Number(status) >= 400 && Number(status) < 500 && /POINT_CAISSE_VALIDE/.test(String(texte || '')); }
 // v7.5.135 (revue Codex sur f09037c, point 5) : journal des corrections d'une dépense, gardé dans son commentaire
 // (colonne existante, aucune migration) après un séparateur. Chaque ligne : date, auteur, valeurs avant → après, motif.
 var RT_JOURNAL_SEP = '\n— Journal des corrections —\n';
@@ -14221,7 +14225,7 @@ function sauvegarderDepense() {
   finRender();
   // Sync Supabase
   var lastDep = depenses[0];
-  if (lastDep) sbSaveDepense(lastDep).then(function(){ showSync('✅ Dépense sauvegardée', 'ok'); }).catch(function(){ showSync('⚠️ Erreur sync', 'err'); });
+  if (lastDep) sbSaveDepense(lastDep).then(function(r){ if (r && r.refuse) { depenses = depenses.filter(function(x){ return x !== lastDep; }); finRender(); showSync('⛔ Dépense refusée (point de caisse validé)', 'err'); return; } showSync('✅ Dépense sauvegardée', 'ok'); }).catch(function(){ showSync('⚠️ Erreur sync', 'err'); });
   toast('Dépense ajoutée ✓ (' + depModePaie + ')', 'ok');
 }
 
@@ -14290,6 +14294,7 @@ async function sauvegarderDepenseEdit() {
   var _vrEdit = depVerrouCaisse([depenses[idx], _apresEdit]);
   if (!_vrEdit.ok) { toast(_vrEdit.erreur, 'err'); return; }
   // Update local en mémoire
+  var _avantEdit = depenses[idx];
   depenses[idx] = _apresEdit;
   // PATCH Supabase
   try {
@@ -14298,7 +14303,12 @@ async function sauvegarderDepenseEdit() {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({ date_depense: date, cat: cat, montant: montant, livreur: livreur, comment: comment, mode_paie: modePaie })
     });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    if (!resp.ok) {
+      var _txtEdit = await resp.text();
+      // v7.5.175 : verrou de la base (point de caisse validé) -> la dépense locale reprend sa valeur d'avant
+      if (rtRefusCaisseValidee(resp.status, _txtEdit)) { depenses[idx] = _avantEdit; closeModal('m-depense'); window._depEditMode = null; finRender(); toast(RT_MSG_CAISSE_VALIDEE, 'err'); return; }
+      throw new Error('HTTP ' + resp.status);
+    }
     showSync('✅ Dépense mise à jour', 'ok');
   } catch(e) {
     console.warn('PATCH depense fail:', e.message);
@@ -16833,7 +16843,12 @@ async function sbSaveDepense(d) {
         tournee_id: d.tourneeId || null,
       })
     });
-    if (!resp.ok) { var e = await resp.text(); sbSaveEchec('depense', d, 'Dépense', resp.status, e); return; }
+    if (!resp.ok) {
+      var e = await resp.text();
+      // v7.5.175 : refus du verrou de la base (point de caisse validé) = définitif : pas de file de réessai, message clair
+      if (rtRefusCaisseValidee(resp.status, e)) { toast(RT_MSG_CAISSE_VALIDEE, 'err'); return { refuse: true }; }
+      sbSaveEchec('depense', d, 'Dépense', resp.status, e); return;
+    }
     try { localStorage.setItem('mx_depenses_cache', JSON.stringify(depenses)); } catch(ex) {}
   } catch(e) { sbSaveEchec('depense', d, 'Dépense', '', e.message); }
 }
@@ -16849,10 +16864,12 @@ async function sbDeleteCommande(id) {
 
 async function sbDeleteDepense(id) {
   try {
-    await fetch(SUPABASE_URL + '/rest/v1/depenses?id=eq.' + encodeURIComponent(id), {
+    var _rDel = await fetch(SUPABASE_URL + '/rest/v1/depenses?id=eq.' + encodeURIComponent(id), {
       method: 'DELETE',
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
     });
+    // v7.5.175 : verrou de la base (point de caisse validé) : la dépense n'est PAS supprimée -> liste rechargée, message clair
+    if (_rDel && !_rDel.ok && rtRefusCaisseValidee(_rDel.status, await _rDel.text())) { toast(RT_MSG_CAISSE_VALIDEE, 'err'); await sbLoadDepenses(); finRender(); return { refuse: true }; }
   } catch(e) { console.warn('sbDeleteDepense:', e.message); }
 }
 
@@ -21148,14 +21165,21 @@ function lvModifierDepense(depId) {
     if (!_corrLv.ok) { toast(_corrLv.erreur, 'err'); return; }
     s.remove();
     if (!_corrLv.change) return;
+    var _avantLv = { modePaie: d2.modePaie, comment: d2.comment };
     d2.modePaie = newMode; d2.comment = _corrLv.comment;
     // Sync Supabase
     try {
-      await fetch(SUPABASE_URL + '/rest/v1/depenses?id=eq.' + encodeURIComponent(dId), {
+      var _rPatchLv = await fetch(SUPABASE_URL + '/rest/v1/depenses?id=eq.' + encodeURIComponent(dId), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
         body: JSON.stringify({ mode_paie: newMode, comment: d2.comment })
       });
+      // v7.5.175 (revue Codex PR 24, P2) : la base refuse si le bureau a validé le point de caisse (le téléphone du livreur
+      // ne peut pas le savoir avant) -> valeurs d'avant remises, message clair, aucun « Mode mis à jour »
+      if (_rPatchLv && !_rPatchLv.ok && rtRefusCaisseValidee(_rPatchLv.status, await _rPatchLv.text())) {
+        d2.modePaie = _avantLv.modePaie; d2.comment = _avantLv.comment;
+        renderLivreur(); toast(RT_MSG_CAISSE_VALIDEE, 'err'); return;
+      }
       // Recharger les dépenses depuis Supabase pour s'assurer de la cohérence
       var rDep = await fetch(SUPABASE_URL + '/rest/v1/depenses?select=*&order=date_depense.desc', {
         headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
@@ -21232,11 +21256,12 @@ async function validerDepenseLivreur() {
   };
   dep.cat = depLvCatSelected; dep.montant = montantVal; dep.comment = _commentFinal; dep.modePaie = modePaieLv;
 
+  var _avantDep = _existante ? Object.assign({}, _existante) : null;
   if (!_existante) depenses.unshift(dep);
   depLvCible = null;
 
   try {
-    await fetch(SUPABASE_URL + '/rest/v1/depenses', {
+    var _rDepLv = await fetch(SUPABASE_URL + '/rest/v1/depenses', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -21251,6 +21276,15 @@ async function validerDepenseLivreur() {
         tournee_id: dep.tourneeId || null
       })
     });
+    // v7.5.175 (revue Codex PR 24 sur 437ec1e, P2) : verrou de la BASE (migration 038b) — le point de caisse a été validé
+    // par le bureau ; le téléphone du livreur ne lit pas caisse_remises, c'est donc la base qui tranche. Rien n'est gardé.
+    if (_rDepLv && !_rDepLv.ok && rtRefusCaisseValidee(_rDepLv.status, await _rDepLv.text())) {
+      if (_avantDep) Object.assign(dep, _avantDep); else depenses = depenses.filter(function(x){ return x !== dep; });
+      document.getElementById('m-dep-livreur').style.display='none';
+      toast(RT_MSG_CAISSE_VALIDEE, 'err');
+      if (document.getElementById('p-livreur') && document.getElementById('p-livreur').classList.contains('on')) renderLivreur();
+      return;
+    }
   } catch(e) { console.warn('Depense save error:', e.message); }
 
   document.getElementById('m-dep-livreur').style.display='none';
