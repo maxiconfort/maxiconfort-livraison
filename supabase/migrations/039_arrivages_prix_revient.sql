@@ -212,8 +212,16 @@ begin
   -- par ce déclencheur et par les contraintes AVANT la détection du conflit. Elle reprend donc l'état de vente ACTUEL du produit
   -- (« à définir », non vendable, prix NULL) : la modification ordinaire (stock, emplacement…) reste possible et ne fixe pas de prix ;
   -- le déclencheur UPDATE garde ensuite les mêmes règles qu'avant.
-  if tg_op = 'INSERT' and v_existe and v_ex.prix_vente_defini = false then
-    new.prix_vente_defini := false; new.vendable := v_ex.vendable; new.prix := v_ex.prix;
+  -- CONDITIONS IMBRIQUÉES, jamais « tg_op = 'INSERT' and v_existe and v_ex… » (défaut trouvé le 26/11 par un essai pglite) :
+  -- PL/pgSQL ne garantit pas l'arrêt au premier « false » d'un AND ; v_ex n'est rempli que pour un INSERT, donc la lecture de
+  -- v_ex.prix_vente_defini pendant un UPDATE levait « record "v_ex" is not assigned yet » (connexion neuve, ou après la création
+  -- d'une table) : toute modification de produit et la réception d'arrivage échouaient. v_ex n'est lu QU'APRÈS les deux tests.
+  if tg_op = 'INSERT' then
+    if v_existe then
+      if v_ex.prix_vente_defini = false then
+        new.prix_vente_defini := false; new.vendable := v_ex.vendable; new.prix := v_ex.prix;
+      end if;
+    end if;
   end if;
   if not new.prix_vente_defini then
     if tg_op = 'UPDATE' and old.prix_vente_defini = false then new.prix := old.prix;  -- reste « à définir »

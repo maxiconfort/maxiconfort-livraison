@@ -126,7 +126,7 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
     console.error('ÉCHEC DU BANC 039 PGLITE : @electric-sql/pglite ' + pkg.version + ' installé, version exigée ' + VERSION_ATTENDUE + ' (package.json) — migration 039 NON testée.');
     process.exit(2);
   }
-  const db = new PGlite();
+  let db = new PGlite();  // let : la section 10 rebranche les mêmes aides sur des connexions NEUVES (copies de la base)
   const ver = (await db.query('select version() as v')).rows[0].v;
   console.log('Base jetable en mémoire : ' + ver.split(' on ')[0] + ' (@electric-sql/pglite ' + pkg.version + ')');
 
@@ -651,6 +651,55 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   test('variante « certaine » vers un ensemble non vendable au 2e niveau → refusée', !!e && /NON VENDABLE/i.test(e), e);
   e = await echec('anon', "select interne.l039_composants_non_vendables('[]'::jsonb, null)");
   test('anon ne peut pas appeler interne.l039_composants_non_vendables', !!e, e);
+
+  // =========================================================================================================================
+  console.log('\n10. CONNEXION NEUVE : modification de produit SANS insertion préalable (défaut « record v_ex is not assigned yet »)');
+  // Défaut trouvé par un essai pglite local le 26/11 : dans produits_vente_garde, v_ex n'était rempli que pour un INSERT, mais la
+  // condition « tg_op = 'INSERT' and v_existe and v_ex.prix_vente_defini = false » était aussi évaluée pour un UPDATE (PL/pgSQL ne
+  // garantit pas l'arrêt au premier « false » d'un AND) : erreur sur TOUTE modification de produit dans une connexion neuve, ou
+  // après la création d'une table (même temporaire), tant qu'aucune insertion de produit n'avait eu lieu dans la connexion. Les
+  // sections 2 à 9 ne le voyaient pas : elles insèrent des produits avant de les modifier. Ici, la base est COPIÉE (dumpDataDir)
+  // dans une nouvelle instance = une connexion neuve où AUCUNE insertion de produit n'a encore eu lieu.
+  const arrCx = (await un('service_role', "insert into public.arrivages (reference_interne, taux_change, taux_provisoire, frais_import_ht) values ('ARR-TEST-NEUVE', 1.1, false, 0) returning id")).id;
+  await q('service_role', "insert into public.arrivage_lignes (arrivage_id, produit_id, quantite_attendue, fob_unitaire) values ($1, 'pr-c', 3, 5)", [arrCx]);
+  const lCx = (await un('proprio', 'select id from public.arrivage_lignes where arrivage_id = $1', [arrCx])).id;
+  // table temporaire créée par le superutilisateur de pglite (anon n'a pas le droit TEMPORARY) : seule compte l'invalidation des plans
+  const tempo = async (nom) => { await db.exec('reset role'); try { await db.exec('create temp table ' + nom + ' (x int)'); return null; } catch (x) { return String(x && x.message || x); } };
+  const copie = await db.dumpDataDir();
+  const dbPrincipale = db;
+  const neuve = async () => { const d = new PGlite({ loadDataDir: copie }); await d.waitReady; return d; };
+  try {
+    db = await neuve();
+    const st0 = Number((await produit('pr-c')).stock);
+    e = await echec('admin', "update public.produits set stock = stock + 1 where id = 'pr-c'");
+    test('connexion neuve : l\'administrateur MODIFIE le stock d\'un produit (aucune insertion avant) → accepté', e === null && Number((await produit('pr-c')).stock) === st0 + 1, e);
+    await db.close();
+    db = await neuve();
+    e = await echec('collab', "update public.produits set stock = stock + 1 where id = 'pr-c'");
+    test('connexion neuve : la collaboratrice MODIFIE le stock d\'un produit → accepté', e === null, e);
+    await db.close();
+    db = await neuve();
+    e = await echec('admin', "update public.produits set prix = 31 where id = 'pr-c'");
+    test('connexion neuve : l\'administrateur MODIFIE le prix d\'un produit → accepté', e === null && (await produit('pr-c')).prix === 31, e);
+    await db.close();
+    db = await neuve();
+    try { r = await rpc('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3) as r', [arrCx, JSON.stringify([{ ligne_id: Number(lCx), recue: 3, endommagee: 0, manquante: 0 }]), await empreinte(arrCx)]); } catch (x) { r = { erreur: String(x && x.message || x) }; }
+    test('connexion neuve : valider_reception_arrivage (réception du conteneur) → réussie, stock + 3', r && r.ok === true && Number((await produit('pr-c')).stock) === st0 + 3, r);
+    await db.close();
+    db = await neuve();
+    e = await tempo('l26_tmp');
+    test('connexion neuve : création d\'une table temporaire', e === null, e);
+    e = await echec('admin', "update public.produits set stock = stock + 1 where id = 'pr-c'");
+    test('… puis modification d\'un produit → acceptée', e === null, e);
+    await db.close();
+  } finally { db = dbPrincipale; }
+  // connexion principale (insertions déjà faites) : création d'une table temporaire, puis modification et enregistrement « upsert »
+  e = await tempo('l26_tmp2');
+  test('connexion principale : création d\'une table temporaire', e === null, e);
+  e = await echec('admin', "update public.produits set stock = stock + 1 where id = 'pr-c'");
+  test('… puis modification d\'un produit → acceptée', e === null, e);
+  e = await echec('collab', "insert into public.produits (id, nom, prix, stock) values ('pr-c', 'Oreiller Fictif C', 29, 4) on conflict (id) do update set stock = excluded.stock");
+  test('… et l\'enregistrement « upsert » d\'un produit existant fonctionne toujours (stock 4)', e === null && Number((await produit('pr-c')).stock) === 4, e);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   await db.close();

@@ -801,7 +801,9 @@ function nouveauBac(opts) {
     test('base : upsert de l\'application (sbSaveProduit) d\'un produit « à définir » existant : état de vente actuel repris AVANT les contraintes',
       garde.indexOf("select p.prix_vente_defini, p.vendable, p.prix into v_ex from public.produits p where p.id = new.id;") < garde.indexOf("if tg_op = 'INSERT' and r is not null and r <> 'admin' then")
       && garde.includes('v_existe := found;')
-      && garde.includes("if tg_op = 'INSERT' and v_existe and v_ex.prix_vente_defini = false then")
+      // conditions IMBRIQUÉES (défaut du 26/11 « record "v_ex" is not assigned yet ») : v_ex n'est lu qu'après tg_op = 'INSERT' et v_existe
+      && /if tg_op = 'INSERT' then\s+if v_existe then\s+if v_ex\.prix_vente_defini = false then/.test(garde)
+      && !/and\s+v_ex\./.test(garde)
       && garde.includes('new.prix_vente_defini := false; new.vendable := v_ex.vendable; new.prix := v_ex.prix;')
       && garde.indexOf('new.prix := v_ex.prix;') < garde.indexOf('v_refus := interne.l039_etat_vente_refus('));
     // --- 1 bis. CRÉATION (revue Codex PR 26 sur a0c1bf8, puis DÉCISION DE BORHEN du 26/11 « A ») : seul l'administrateur rend vendable ---
