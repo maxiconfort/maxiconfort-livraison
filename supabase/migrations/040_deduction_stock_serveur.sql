@@ -66,9 +66,13 @@
 --
 -- GARDE stock_deduit (déclencheur commandes_stock_deduit_garde) : une sauvegarde ordinaire de l'application (POST
 -- merge-duplicates d'une commande, file rejouée, ancien téléphone) ne peut plus REMETTRE stock_deduit à faux après la
--- déduction faite par la base (sinon une demande renvoyée déduirait une deuxième fois). Seule exception : le recrédit de
--- l'administrateur (stkReCrediterStock), qui remet stock_deduit à faux quand une commande livrée est annulée, reportée ou
--- remise en attente (statut qui n'est plus « livré »). Les programmes serveur (sans session de l'application) ne sont pas
+-- déduction faite par la base (sinon une demande renvoyée déduirait une deuxième fois). Seule exception : le RECRÉDIT
+-- EXPLICITE de l'administrateur (stkReCrediterStock, application v7.5.197 et suivantes), qui remet stock_deduit à faux quand
+-- une commande livrée est annulée, reportée ou remise en attente : la sauvegarde qui suit le recrédit porte l'en-tête HTTP
+-- x-stock-recredit: 1 (lu dans request.headers, comme x-session-token) ; il faut les TROIS : session administrateur, statut
+-- qui n'est plus « livré », en-tête de recrédit. Une sauvegarde PÉRIMÉE de l'administrateur (copie d'avant le « livré »,
+-- statut en-route, stock_deduit faux, sans recrédit) ne remet donc PAS stock_deduit à faux (réserve Codex n° 5 sur 9473d23 :
+-- sinon une relivraison déduirait deux fois). Les programmes serveur (sans session de l'application) ne sont pas
 -- concernés. Passer stock_deduit à vrai reste permis (anciennes versions de l'application, qui l'envoient après leur
 -- propre déduction ; ce passage ne peut qu'empêcher une déduction, jamais en provoquer une).
 -- POURQUOI IL EST INDISPENSABLE : stock_deduit est le SEUL repère « déjà déduite » de la fonction. Or toute sauvegarde de
@@ -78,7 +82,7 @@
 -- perdue, reprise au démarrage) déduirait alors une DEUXIÈME fois.
 -- COMPATIBILITÉ (vérifiée par le banc outils/test-040-pglite.js, ancienne et nouvelle façon de sauvegarder) : le déclencheur
 -- ne REFUSE JAMAIS une écriture (aucune erreur, aucun code HTTP nouveau pour les téléphones déjà installés) ; il ne corrige
--- qu'UNE valeur, dans UN cas : stock_deduit vrai → faux par une session de l'application, hors recrédit de
+-- qu'UNE valeur, dans UN cas : stock_deduit vrai → faux par une session de l'application, hors recrédit explicite de
 -- l'administrateur. Tout le reste de la sauvegarde (statut, paiement, prix…) est enregistré comme avant ; une création de
 -- commande, une écriture qui laisse stock_deduit inchangé ou qui le passe à vrai ne sont pas touchées.
 --
@@ -328,11 +332,13 @@ grant execute on function public.deduire_stock_livraison(text) to anon;   -- ses
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 create or replace function interne.l040_stock_deduit_garde() returns trigger
 language plpgsql security definer set search_path = public, interne, pg_catalog as $$
-declare r text;
+declare r text; h json; v_recredit boolean := false;
 begin
   if coalesce(old.stock_deduit, false) and not coalesce(new.stock_deduit, false) then
     r := public.session_role();
-    if r is not null and not (r = 'admin' and coalesce(new.statut, '') not in ('livré', 'livre')) then
+    begin h := current_setting('request.headers', true)::json; v_recredit := coalesce(h ->> 'x-stock-recredit', '') = '1';
+    exception when others then v_recredit := false; end;
+    if r is not null and not (r = 'admin' and v_recredit and coalesce(new.statut, '') not in ('livré', 'livre')) then
       new.stock_deduit := true;   -- valeur périmée d'un téléphone : ignorée (le reste de l'écriture est conservé)
     end if;
   end if;

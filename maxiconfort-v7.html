@@ -3931,16 +3931,21 @@ async function sbSaveCommande(cmd, oqCtx) { // v7.5.195 : oqCtx = { ts, role } a
     // v7.5.113 : verrou paiement — commande payée en ligne : mode, statut et montant
     // payé ne sont jamais réécrits par une sauvegarde ordinaire (la base garde ses valeurs).
     paiVerrouBody(cmd, body);
-    // UPSERT — POST avec Prefer: resolution=merge-duplicates
-    // Crée si n'existe pas, met à jour si existe → une seule opération fiable
-    var resp = await fetch(SUPABASE_URL + '/rest/v1/commandes', {
-      method: 'POST',
-      headers: {
+    // v7.5.197 : sauvegarde qui suit un recrédit de l'administrateur (stkReCrediterStock) : en-tête x-stock-recredit,
+    // seul moyen de remettre stock_deduit à faux en base (déclencheur de la migration 040) ; une copie périmée ne l'a pas
+    var _recredit = !!(cmd._recredit && !cmd.stockDeduit);
+    var _entetes = {
         'Content-Type': 'application/json',
         'apikey': SUPABASE_KEY,
         'Authorization': 'Bearer ' + SUPABASE_KEY,
         'Prefer': 'resolution=merge-duplicates,return=minimal',
-      },
+      };
+    if (_recredit) _entetes['x-stock-recredit'] = '1';
+    // UPSERT — POST avec Prefer: resolution=merge-duplicates
+    // Crée si n'existe pas, met à jour si existe → une seule opération fiable
+    var resp = await fetch(SUPABASE_URL + '/rest/v1/commandes', {
+      method: 'POST',
+      headers: _entetes,
       body: JSON.stringify(body)
     });
     if (!resp.ok) {
@@ -3950,6 +3955,7 @@ async function sbSaveCommande(cmd, oqCtx) { // v7.5.195 : oqCtx = { ts, role } a
       showSync('⚠️ Sync en attente', 'pending');
     } else {
       try { oqSucces('commande', cmd, tsVersion, null); } catch(e) {} // v7.5.196
+      if (_recredit && !cmd.stockDeduit) { try { delete cmd._recredit; } catch(e) {} } // v7.5.197 : recrédit enregistré
       showSync('✅ Commande sauvegardée', 'ok');
     }
     try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(ex) {}
@@ -13190,6 +13196,9 @@ function stkReCrediterStock(cmdId) {
 
   // v7.5.79 : stock remis -> marquer non déduit + persister (évite un double recrédit)
   cmd.stockDeduit = false;
+  // v7.5.197 (réserve Codex n° 5 sur 9473d23) : recrédit EXPLICITE — la sauvegarde porte l'en-tête x-stock-recredit
+  // (gardé avec la commande dans la file jusqu'au succès) ; sans lui, la base garde stock_deduit = vrai (migration 040)
+  cmd._recredit = true;
   sbSaveCommande(cmd);
 
   var pStock = document.getElementById('p-stock');

@@ -105,8 +105,11 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
 
   // admin / collab / livreur (LIVREUR-A) / livreurB (LIVREUR-B) = navigateur (rôle anon) avec une session de ce rôle
   const ROLES_PG = { admin: 'anon', collab: 'anon', livreur: 'anon', livreurB: 'anon', anon: 'anon', authenticated: 'authenticated', service_role: 'service_role', proprio: 'l26_postgres' };
+  // en-têtes HTTP de la requête (PostgREST les expose dans request.headers) : ENTETES = '' par défaut
+  let ENTETES = '';
   async function contexte(qui) {
     await db.exec('reset role');
+    await db.query("select set_config('request.headers', $1, false)", [ENTETES]);
     const sess = { admin: 'admin', collab: 'collab', livreur: 'livreur', livreurB: 'livreur' }[qui] || '';
     const nom = qui === 'livreur' ? 'livreur-a' : (qui === 'livreurB' ? 'livreur-b' : '');
     await db.query("select set_config('l26.session_role', $1, false), set_config('l26.session_livreur', $2, false)", [sess, nom]);
@@ -303,8 +306,28 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   test('collaboratrice : remise à faux ignorée', e === null && (await deduit('#C1')) === true, e);
   e = await echec('admin', "update public.commandes set stock_deduit = false where id = '#C1'");
   test('administrateur, commande encore « livré » : remise à faux ignorée', e === null && (await deduit('#C1')) === true, e);
+  // réserve Codex n° 5 sur 9473d23 : sauvegarde PÉRIMÉE de l'administrateur (copie d'avant le « livré » : statut
+  // en-route, stock_deduit faux, SANS recrédit) → stock_deduit reste vrai ; seule la sauvegarde qui suit un recrédit
+  // (en-tête x-stock-recredit: 1) le remet à faux
+  e = await echec('admin', "update public.commandes set statut = 'en-route', stock_deduit = false where id = '#C1'");
+  test('administrateur, sauvegarde PÉRIMÉE (en-route, stock_deduit faux, sans en-tête de recrédit) : stock_deduit reste VRAI', e === null && (await deduit('#C1')) === true, e);
+  await q('proprio', "update public.commandes set statut = 'livré' where id = '#C1'");
+  r = await deduire('livreur', '#C1');
+  test('… la commande relivrée ensuite ne déduit pas une 2e fois (deja)', r.deja === true && (await stock('pa')) === 1, r);
+  ENTETES = JSON.stringify({ 'x-stock-recredit': '1' });
+  e = await echec('collab', "update public.commandes set statut = 'annulé', stock_deduit = false where id = '#C1'");
+  test('collaboratrice avec l\'en-tête de recrédit : refusé (administrateur seulement), stock_deduit reste VRAI', e === null && (await deduit('#C1')) === true, e);
+  await q('proprio', "update public.commandes set statut = 'livré' where id = '#C1'");
+  e = await echec('admin', "update public.commandes set stock_deduit = false where id = '#C1'");
+  test('administrateur avec l\'en-tête mais commande encore « livré » : stock_deduit reste VRAI', e === null && (await deduit('#C1')) === true, e);
+  ENTETES = 'pas du json';
   e = await echec('admin', "update public.commandes set statut = 'annulé', stock_deduit = false where id = '#C1'");
-  test('administrateur, recrédit (commande annulée) : stock_deduit = faux accepté', e === null && (await deduit('#C1')) === false, e);
+  test('en-têtes illisibles : aucune erreur, stock_deduit reste VRAI', e === null && (await deduit('#C1')) === true, e);
+  await q('proprio', "update public.commandes set statut = 'livré' where id = '#C1'");
+  ENTETES = JSON.stringify({ 'x-stock-recredit': '1' });
+  e = await echec('admin', "update public.commandes set statut = 'annulé', stock_deduit = false where id = '#C1'");
+  ENTETES = '';
+  test('administrateur, recrédit EXPLICITE (commande annulée + en-tête x-stock-recredit) : stock_deduit = faux accepté', e === null && (await deduit('#C1')) === false, e);
   await q('proprio', "update public.commandes set statut = 'livré' where id = '#C1'");
   await q('service_role', "update public.produits set stock = 10 where id in ('pa', 'pb')");
   r = await deduire('livreur', '#C1');

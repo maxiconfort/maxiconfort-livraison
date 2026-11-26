@@ -51,7 +51,7 @@ function nouveauBac({ role = 'livreur', fileStockee = null, stockage = {}, repon
         if (rl === 'reseau') throw new Error('Failed to fetch');
         return { ok: rl.status >= 200 && rl.status < 300, status: rl.status, text: async () => '', json: async () => rl.json };
       }
-      bac._envois.push({ url, method: opt.method || 'GET', body: opt.body ? JSON.parse(opt.body) : null, prefer: opt.headers && opt.headers.Prefer });
+      bac._envois.push({ url, method: opt.method || 'GET', body: opt.body ? JSON.parse(opt.body) : null, prefer: opt.headers && opt.headers.Prefer, entetes: opt.headers || {} });
       if (bac._envois.length > 500) throw new Error('trop d\'envois : boucle ?');
       const r = reponse(url, opt);
       if (r === 'reseau') throw new Error('Failed to fetch');
@@ -1172,6 +1172,25 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     await bac.offlineQueueFlush();
     test('« livré » pas encore enregistré : demande gardée, AUCUN appel à la base', rpcs(bac).length === 0 && bac.offlineQueue.map(i => i.type).sort().join() === 'commande,deduction', bac.offlineQueue.map(i => i.type));
   }
+  {
+    // réserve Codex n° 5 sur 9473d23 : seule la sauvegarde qui suit un RECRÉDIT porte l'en-tête x-stock-recredit
+    let panne = true;
+    const bac = bacCommandeReelle({ role: 'admin', reponse: () => (panne ? { status: 503 } : { status: 201 }) });
+    const cmds = (b) => b._envois.filter(e => /\/rest\/v1\/commandes$/.test(e.url));
+    await bac.sbSaveCommande({ id: '#V1', statut: 'en-route', stockDeduit: false });
+    test('sauvegarde ordinaire (même avec stock_deduit faux) : PAS d\'en-tête de recrédit', cmds(bac).length === 1 && !('x-stock-recredit' in cmds(bac)[0].entetes), cmds(bac)[0] && cmds(bac)[0].entetes);
+    const c = { id: '#V2', statut: 'annulé', stockDeduit: false, _recredit: true };
+    await bac.sbSaveCommande(c);
+    test('sauvegarde après recrédit : en-tête x-stock-recredit: 1 ; échec (503) → gardée en file avec la marque', cmds(bac)[1].entetes['x-stock-recredit'] === '1' && bac.offlineQueue.some(i => i.data.id === '#V2' && i.data._recredit === true));
+    const st = JSON.parse(bac._stockage.mx_offline_queue || '[]');
+    test('… la marque survit au rechargement (file écrite sur l\'appareil)', st.some(i => i.data && i.data.id === '#V2' && i.data._recredit === true), st);
+    panne = false; await bac.offlineQueueFlush();
+    const der = cmds(bac)[cmds(bac).length - 1];
+    test('rejeu : en-tête toujours présent, puis marque effacée après le succès', der.body.id === '#V2' && der.entetes['x-stock-recredit'] === '1' && !('_recredit' in c), [der.entetes, c]);
+    await bac.sbSaveCommande(c);
+    test('sauvegarde suivante de la même commande : plus d\'en-tête de recrédit', !('x-stock-recredit' in cmds(bac)[cmds(bac).length - 1].entetes));
+    test('l\'en-tête ne part que si stock_deduit est faux (marque ignorée sinon)', (await bac.sbSaveCommande({ id: '#V3', statut: 'annulé', stockDeduit: true, _recredit: true }), !('x-stock-recredit' in cmds(bac)[cmds(bac).length - 1].entetes)));
+  }
 
   console.log('\n7. TEXTE DU CODE');
   // v7.5.196 : chaque mise en file d'un produit est sur une ligne de coupure réseau (catch) ou d'erreur temporaire
@@ -1194,6 +1213,7 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
   for (const [nom, re] of [['stkDeduireStock(', /stkDeduireStock\(/], ['mx_deductions_attente', /mx_deductions_attente/], ['PATCH conditionnel &stock=eq.', /&stock=eq\./],
     ['delta en file (oqCtx.delta / item.delta)', /\.delta\b/], ['uid / inclut des deltas', /oqUid\(|oqInclut\(|\.inclut\b/], ['sbPatchStockLivreur / sbLireStockProduit', /sbPatchStockLivreur|sbLireStockProduit/]])
     test('supprimé de l\'appli : ' + nom, !re.test(code), (code.match(re) || [])[0]);
+  test('recrédit de l\'administrateur : marque _recredit posée avant sa sauvegarde', /cmd\.stockDeduit = false;[\s\S]{0,300}cmd\._recredit = true;\s*\n\s*sbSaveCommande\(cmd\);/.test(html));
   test('un seul point d\'appel à la base pour la déduction (rpc/deduire_stock_livraison)', (code.match(/rpc\/deduire_stock_livraison/g) || []).length === 1);
 
   console.log('\n' + ok + ' réussi(s), ' + ko + ' échec(s)');
