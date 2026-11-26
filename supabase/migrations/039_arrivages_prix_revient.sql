@@ -67,20 +67,70 @@ alter table public.produits drop constraint if exists produits_vendable_prix_def
 alter table public.produits add constraint produits_vendable_prix_defini check (not vendable or prix_vente_defini);
 
 -- Un produit est NON VENDABLE s'il est marqué non vendable, sans prix de vente défini (ou sans prix), ou si c'est un ensemble dont
--- un composant est non vendable (un niveau, comme getStockDispo dans l'application). Revue Codex PR 26 sur fd751b8 : un composant
--- INTROUVABLE (identifiant qui ne désigne aucun produit) rend l'ensemble NON VENDABLE — même règle que les fonctions serveur, qui
--- refusent un catalogue où un composant manque (lireCatalogueComplet) ; avant, il était ignoré, donc vendable par défaut.
+-- la composition contient un composant non vendable. Revue Codex PR 26 sur fd751b8 : un composant INTROUVABLE (identifiant qui ne
+-- désigne aucun produit) rend l'ensemble NON VENDABLE — même règle que les fonctions serveur, qui refusent un catalogue où un
+-- composant manque (lireCatalogueComplet) ; avant, il était ignoré, donc vendable par défaut.
+-- Revue Codex PR 26 sur ce01159 (point 2) : la composition est contrôlée EN ENTIER, à tous les niveaux (avant : un seul niveau, un
+-- ensemble A contenant un ensemble B lui-même composé d'un produit non vendable restait vendable). Récursion protégée :
+--   * CYCLE (A contient B qui contient A, ou A se contient lui-même) : la boucle est arrêtée et l'ensemble est NON VENDABLE ;
+--   * PROFONDEUR plafonnée à interne.l039_profondeur_max() niveaux : un ensemble plus profond est NON VENDABLE (jamais vendable par
+--     défaut). MÊME règle (et même plafond, 8) dans l'application (venEst) et les fonctions serveur (produits-vendables.ts).
+create or replace function interne.l039_profondeur_max() returns integer language sql immutable as $$ select 8 $$;
+revoke all on function interne.l039_profondeur_max() from public, anon, authenticated;
+
+-- Une composition (jsonb) contient-elle, à un niveau quelconque, un composant non vendable, introuvable, un cycle ou une profondeur
+-- excessive ? p_racine = identifiant de l'ensemble lui-même (pour reconnaître qu'il se contient), NULL si inconnu.
+drop function if exists interne.l039_composants_non_vendables(jsonb);
+create or replace function interne.l039_composants_non_vendables(p_composants jsonb, p_racine text default null) returns boolean
+language sql stable security definer set search_path = public, pg_catalog as $$
+  with recursive arbre(id, chemin, prof) as (
+    select c ->> 'id', case when coalesce(p_racine, '') <> '' then array[p_racine] else array[]::text[] end, 1
+      from jsonb_array_elements(case when jsonb_typeof(p_composants) = 'array' then p_composants else '[]'::jsonb end) c
+     where coalesce(c ->> 'id', '') <> ''
+    union all
+    select c ->> 'id', a.chemin || a.id, a.prof + 1
+      from arbre a
+      join public.produits q on q.id = a.id
+      cross join lateral jsonb_array_elements(case when jsonb_typeof(q.composants) = 'array' then q.composants else '[]'::jsonb end) c
+     where coalesce(c ->> 'id', '') <> ''
+       and not (a.id = any(a.chemin))                 -- cycle : on ne descend pas plus loin (signalé ci-dessous)
+       and a.prof < interne.l039_profondeur_max()      -- profondeur plafonnée
+  )
+  select exists (
+    select 1 from arbre a left join public.produits q on q.id = a.id
+     where q.id is null or not q.vendable or not q.prix_vente_defini or q.prix is null
+        or a.id = any(a.chemin)
+        or (a.prof >= interne.l039_profondeur_max() and jsonb_typeof(q.composants) = 'array'
+            and exists (select 1 from jsonb_array_elements(q.composants) c2 where coalesce(c2 ->> 'id', '') <> '')));
+$$;
+revoke all on function interne.l039_composants_non_vendables(jsonb, text) from public, anon, authenticated;
+
+-- Identifiants de TOUS les produits contenus dans un ensemble, à tous les niveaux (mêmes protections : cycle, profondeur).
+create or replace function interne.l039_composition_ids(p_racine text) returns text[]
+language sql stable security definer set search_path = public, pg_catalog as $$
+  with recursive arbre(id, chemin, prof) as (
+    select c ->> 'id', array[p_racine], 1
+      from public.produits p
+      cross join lateral jsonb_array_elements(case when jsonb_typeof(p.composants) = 'array' then p.composants else '[]'::jsonb end) c
+     where p.id = p_racine and coalesce(c ->> 'id', '') <> ''
+    union all
+    select c ->> 'id', a.chemin || a.id, a.prof + 1
+      from arbre a
+      join public.produits q on q.id = a.id
+      cross join lateral jsonb_array_elements(case when jsonb_typeof(q.composants) = 'array' then q.composants else '[]'::jsonb end) c
+     where coalesce(c ->> 'id', '') <> '' and not (a.id = any(a.chemin)) and a.prof < interne.l039_profondeur_max()
+  )
+  select coalesce(array_agg(distinct id), array[]::text[]) from arbre;
+$$;
+revoke all on function interne.l039_composition_ids(text) from public, anon, authenticated;
+
 create or replace function interne.produit_non_vendable(p_id text) returns boolean
 language sql stable security definer set search_path = public, pg_catalog as $$
   select exists (
     select 1 from public.produits p
      where p.id = p_id
        and (not p.vendable or not p.prix_vente_defini or p.prix is null
-            or (jsonb_typeof(p.composants) = 'array' and exists (
-                  select 1 from jsonb_array_elements(p.composants) c
-                    left join public.produits q on q.id = c ->> 'id'
-                   where coalesce(c ->> 'id', '') <> ''
-                     and (q.id is null or not q.vendable or not q.prix_vente_defini or q.prix is null)))));
+            or interne.l039_composants_non_vendables(p.composants, p.id)));
 $$;
 revoke all on function interne.produit_non_vendable(text) from public, anon, authenticated;
 
@@ -129,16 +179,6 @@ returns boolean language sql immutable as $$
   select p_admin is not true and p_ancien_non_vendable is true and p_nouveau_non_vendable is false
 $$;
 revoke all on function interne.l039_rend_vendable_refuse(boolean, boolean, boolean) from public, anon, authenticated;
--- Une composition (jsonb) contient-elle un composant non vendable ou introuvable ? Même règle que interne.produit_non_vendable.
-create or replace function interne.l039_composants_non_vendables(p_composants jsonb) returns boolean
-language sql stable security definer set search_path = public, pg_catalog as $$
-  select coalesce(jsonb_typeof(p_composants) = 'array', false) and exists (
-           select 1 from jsonb_array_elements(p_composants) c
-             left join public.produits q on q.id = c ->> 'id'
-            where coalesce(c ->> 'id', '') <> ''
-              and (q.id is null or not q.vendable or not q.prix_vente_defini or q.prix is null));
-$$;
-revoke all on function interne.l039_composants_non_vendables(jsonb) from public, anon, authenticated;
 
 create or replace function interne.produits_vente_garde() returns trigger
 language plpgsql security definer set search_path = public, interne, pg_catalog as $$
@@ -198,7 +238,7 @@ begin
   -- vendable un produit non vendable (décision PURE interne.l039_rend_vendable_refuse, auto-contrôle section 10). Le déclencheur
   -- BEFORE lit encore l'état ANCIEN dans la table (interne.produit_non_vendable(old.id)).
   if tg_op = 'UPDATE' and interne.l039_rend_vendable_refuse(r is null or r = 'admin', interne.produit_non_vendable(old.id),
-       (not new.vendable or not new.prix_vente_defini or new.prix is null or interne.l039_composants_non_vendables(new.composants))) then
+       (not new.vendable or not new.prix_vente_defini or new.prix is null or interne.l039_composants_non_vendables(new.composants, new.id))) then
     raise exception 'PRIX DE VENTE : « % » n''est pas vendable ; seul l''administrateur le rend vendable (modification refusée)', new.nom using errcode = 'P0001';
   end if;
   return new;
@@ -443,9 +483,9 @@ begin
     from public.stock_correspondance sc
    where sc.fiabilite = 'certaine'
      and (sc.app_produit_id = new.id
-          or sc.app_produit_id in (select q.id from public.produits q
-                                    where jsonb_typeof(q.composants) = 'array'
-                                      and exists (select 1 from jsonb_array_elements(q.composants) c where c ->> 'id' = new.id)))
+          or sc.app_produit_id in (select q.id from public.produits q   -- revue Codex sur ce01159 : à tous les niveaux
+                                    where jsonb_typeof(q.composants) = 'array' and jsonb_array_length(q.composants) > 0
+                                      and new.id = any(interne.l039_composition_ids(q.id))))
      and interne.produit_non_vendable(sc.app_produit_id);
   if v_refus is not null then
     raise exception 'PRODUIT NON VENDABLE : « % » est relié à des variantes Shopify « certaines » (%) ; retirer d''abord ces correspondances',

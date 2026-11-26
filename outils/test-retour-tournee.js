@@ -843,11 +843,63 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     await bac.sbSaveDepense({ id: 'dq2', tourneeId: 'T-V', montant: 3, modePaie: 'Espèces' });
     test('coupure ou panne (503) : toujours remise dans la file de réessai', file === 1);
   }
+  // ══════════ 10. Revue Codex PR 24 sur 26dcf5b (v7.5.179) ══════════
+  console.log('\n10. REVUE CODEX SUR 26dcf5b : copie de la dépense avant modification (P2), contrôle doux du verrou, dépense sans tournée en base');
+  { const { bac, els, envois } = nouveauBac();
+    bac.tournees = [{ id: 'T-V', livreur: 'RANOU', date: AUJ7, statut: 'en cours', stops: [] }];
+    bac.depenses = [{ id: 'dv5', livreur: 'RANOU', tourneeId: 'T-V', date: AUJ7, cat: 'Péage', modePaie: 'Espèces', montant: 5, comment: 'Ticket A6' }];
+    bac.caissesRemises = {}; // téléphone du livreur : caisse_remises illisible, c'est la base qui refuse
+    vm.runInContext('currentLvTourneeId = "T-V";', bac);
+    bac.fetch = async (url, opt) => { envois.push({ url, body: JSON.parse(opt.body) }); return REFUS; };
+    const objetAvant = bac.depenses[0];
+    bac.ouvrirDepenseLivreur({ tid: 'T-V', depId: 'dv5' });
+    els['dep-lv-montant'].value = '50'; els['dep-lv-motif'].value = 'Erreur de saisie du montant';
+    await bac.validerDepenseLivreur();
+    const d = bac.depenses[0];
+    test('P2 : correction 5 € -> 50 € envoyée une fois (la base reçoit bien 50 €)', envois.length === 1 && envois[0].body.id === 'dv5' && envois[0].body.montant === 50, envois[0] && envois[0].body);
+    test('P2 : refus POINT_CAISSE_VALIDE -> la dépense locale REVIENT à 5 € (copie prise avant la modification)', bac.depenses.length === 1 && d === objetAvant && d.montant === 5, d);
+    test('P2 : … commentaire, catégorie et mode d\'avant remis aussi (aucune ligne de journal gardée)', d.comment === 'Ticket A6' && d.cat === 'Péage' && d.modePaie === 'Espèces', d);
+    test('P2 : message clair, pas de « Dépense corrigée »', /Point de caisse déjà validé par le bureau/.test((bac._toasts[bac._toasts.length - 1] || [])[0]) && !bac._toasts.some((t) => /Dépense corrigée/.test(t[0])), bac._toasts);
+    const src = extraireFonction('async function validerDepenseLivreur()');
+    test('P2 (lecture du code) : la copie _avantDep est prise AVANT « dep.cat = … »', src.indexOf('var _avantDep') > 0 && src.indexOf('var _avantDep') < src.indexOf('dep.cat = depLvCatSelected'));
+  }
+  { const { bac } = nouveauBac('admin');
+    test('contrôle doux : 200 « true » -> verrou en place', bac.rtVerrouBaseEtat(200, 'true') === true);
+    test('contrôle doux : 404 (fonction absente, 038b non appliquée) -> verrou ABSENT', bac.rtVerrouBaseEtat(404, '{"code":"PGRST202"}') === false);
+    test('contrôle doux : 200 « false » (déclencheur désactivé) -> verrou ABSENT', bac.rtVerrouBaseEtat(200, 'false') === false);
+    test('contrôle doux : coupure / panne / session (0, 500, 401, réponse illisible) -> inconnu, aucune alerte', [bac.rtVerrouBaseEtat(0, ''), bac.rtVerrouBaseEtat(500, 'x'), bac.rtVerrouBaseEtat(401, ''), bac.rtVerrouBaseEtat(200, '')].every((v) => v === null));
+    test('contrôle doux : le message dit « verrou de la base absent » et « 038b »', /Verrou de la base absent/.test(bac.RT_MSG_VERROU_ABSENT) && /038b/.test(bac.RT_MSG_VERROU_ABSENT));
+    const env = []; const bv = { console, Number, String, SUPABASE_URL: 'https://exemple.invalid', SUPABASE_KEY: 'k', _t: [], toast(m, t) { bv._t.push([m, t]); },
+      rtVerrouBaseEtat: bac.rtVerrouBaseEtat, RT_MSG_VERROU_ABSENT: bac.RT_MSG_VERROU_ABSENT, fetch: async (u, o) => { env.push({ u, o }); return bv._rep; } };
+    vm.createContext(bv); vm.runInContext('var rtVerrouBase = null; ' + extraireFonction('async function rtVerifierVerrouBase()'), bv);
+    bv._rep = { status: 404, text: async () => '{"code":"PGRST202"}' };
+    let v = await bv.rtVerifierVerrouBase();
+    test('rtVerifierVerrouBase : appelle /rpc/verrou_caisse_actif (POST), 404 -> faux + alerte à l\'admin', v === false && /\/rest\/v1\/rpc\/verrou_caisse_actif$/.test(env[0].u) && env[0].o.method === 'POST' && bv._t.length === 1 && bv._t[0][1] === 'err');
+    await bv.rtVerifierVerrouBase();
+    test('rtVerifierVerrouBase : pas d\'alerte répétée tant que l\'état ne change pas', bv._t.length === 1);
+    bv._rep = { status: 503, text: async () => '' };
+    v = await bv.rtVerifierVerrouBase();
+    test('rtVerifierVerrouBase : panne passagère -> garde le dernier état connu', v === false);
+    bv.fetch = async () => { throw new Error('hors ligne'); }; vm.runInContext('rtVerrouBase = null;', bv);
+    v = await bv.rtVerifierVerrouBase();
+    test('rtVerifierVerrouBase : hors ligne -> inconnu (null), pas d\'exception', v === null);
+    bv.fetch = async () => ({ status: 200, text: async () => 'true' });
+    test('rtVerifierVerrouBase : 200 « true » -> en place', (await bv.rtVerifierVerrouBase()) === true);
+    test('démarrage : contrôle lancé pour l\'administrateur seulement', /if \(role === 'admin'\) rtVerifierVerrouBase\(\)/.test(html));
+    test('Encaissements : bandeau « verrou absent » affiché quand rtVerrouBase === false', /if \(rtVerrouBase === false\) html \+= '<div id="rt-verrou-absent"/.test(html));
+  }
+  { const mig = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'migrations', '038b_depenses_verrou_caisse_validee.sql'), 'utf8');
+    test('038b : dépense sans tournee_id rattachée par la base (date + livreur, première tournée, ordre binaire)', /interne\.l038b_tournee_attribuee\(old\.tournee_id::text, old\.livreur::text, old\.date_depense::text\)/.test(mig) && /interne\.l038b_tournee_attribuee\(new\.tournee_id::text, new\.livreur::text, new\.date_depense::text\)/.test(mig) && /order by t\.id::text collate "C" limit 1/.test(mig));
+    test('038b : fonction publique verrou_caisse_actif (contrôle doux), exécutable par anon', /create or replace function public\.verrou_caisse_actif\(\) returns boolean/.test(mig) && /grant execute on function public\.verrou_caisse_actif\(\) to anon/.test(mig));
+    test('038b : ORDRE DE MISE EN SERVICE écrit en tête (038b avant le code de la PR 24, 039 avant celui de la PR 26)', /ORDRE DE MISE EN SERVICE[\s\S]{0,200}038b est appliquée AVANT la mise en ligne du code de la\s*\n?--\s*PR 24/.test(mig) && /039 \(PR 26\)/.test(mig));
+    const claude = fs.readFileSync(path.join(__dirname, '..', 'CLAUDE.md'), 'utf8');
+    test('CLAUDE.md : ordre de mise en service (038b puis code PR 24 ; 039 puis code PR 26)', /Ordre de mise en service/.test(claude) && /038b[^\n]*AVANT[^\n]*PR 24/.test(claude) && /039[^\n]*AVANT[^\n]*PR 26/.test(claude));
+  }
   { const mig = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'migrations', '038b_depenses_verrou_caisse_validee.sql'), 'utf8');
     test('migration 038b : déclencheur avant ajout, modification et suppression sur depenses', /create trigger depenses_verrou_caisse before insert or update or delete on public\.depenses/.test(mig));
     test('migration 038b : clé « t_ » + tournée, ancienne ET nouvelle tournée contrôlées', /'t_' \|\| v_tid/.test(mig) && /old\.tournee_id/.test(mig) && /new\.tournee_id/.test(mig));
     test('migration 038b : erreur POINT_CAISSE_VALIDE (celle que l\'appli reconnaît), retour arrière en tête, auto-contrôle', /POINT_CAISSE_VALIDE/.test(mig) && /^-- 038b[\s\S]{0,400}RETOUR ARRIÈRE/.test(mig) && /Auto-contrôle 038b/.test(mig));
-    test('migration 038b : aucune nouvelle lecture ouverte sur caisse_remises (pas de politique, pas de grant)', !/create policy/i.test(mig) && !/\bgrant\b/i.test(mig));
+    test('migration 038b : aucune nouvelle lecture ouverte sur caisse_remises (pas de politique ; seul grant : verrou_caisse_actif, qui ne renvoie que vrai/faux)', !/create policy/i.test(mig) && (mig.match(/\bgrant\b[^;]*;/gi) || []).every((g) => /^grant execute on function public\.verrou_caisse_actif\(\) to anon;$/i.test(g)) && !/grant[^;]*caisse_remises/i.test(mig));
   }
 
   // ══════════ 6. Garde-fous (lecture du code) ══════════
@@ -862,7 +914,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
   test('Retour de tournée : bouton « Valider le point de caisse » branché sur validerRemiseCaisse (caisse_remises)', /validerRemiseCaisse\(\\'' \+ r\.caisseKey \+ '\\'\)"[^>]*>✅ Valider le point de caisse/.test(html));
   test('validerRemiseCaisse écrit toujours dans caisse_remises (mécanisme existant)', /rest\/v1\/caisse_remises', \{\s*method: 'POST'/.test(extraireFonction('async function validerRemiseCaisse(key)')));
   test('ancre JARVIS (bloc JVUE) présente', html.indexOf('// JVUE-DEBUT') > 0 && html.indexOf('// JVUE-FIN') > html.indexOf('// JVUE-DEBUT'));
-  test('CACHE_VERSION augmentée (v7-5-175 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(7[5-9]|[89]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
+  test('CACHE_VERSION augmentée (v7-5-179 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(79|[89]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

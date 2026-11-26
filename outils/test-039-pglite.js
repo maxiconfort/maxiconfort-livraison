@@ -597,6 +597,61 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   e = await echec('service_role', "insert into public.stock_correspondance (shopify_variant_id, app_produit_id, fiabilite) values (1004, 'pr-n', 'certaine')");
   test('… et relié à une variante Shopify « certaine »', e === null, e);
 
+  // =========================================================================================================================
+  console.log('\n9. ENSEMBLES IMBRIQUÉS ET CYCLES : composition contrôlée EN ENTIER (revue Codex PR 26 sur ce01159, point 2)');
+  const nv = async (id) => (await un('proprio', 'select interne.produit_non_vendable($1) as nv', [id])).nv;
+  const J = (ids) => JSON.stringify(ids.map((id) => ({ id, qte: 1 })));
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, prix_vente_defini, vendable) values ('pr-zx', 'Matelas Fictif ZX à définir', 'Matelas', null, 0, false, false)");
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, composants) values ('pr-zb', 'Ensemble Fictif ZB', 'Ensemble', 300, 0, $1::jsonb)", [J(['pr-zx', 'pr-b'])]);
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, composants) values ('pr-za', 'Ensemble Fictif ZA', 'Ensemble', 500, 0, $1::jsonb)", [J(['pr-a', 'pr-zb'])]);
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, composants) values ('pr-zb2', 'Ensemble Fictif ZB2', 'Ensemble', 300, 0, $1::jsonb)", [J(['pr-a', 'pr-c'])]);
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, composants) values ('pr-zok', 'Ensemble Fictif ZOK', 'Ensemble', 520, 0, $1::jsonb)", [J(['pr-c', 'pr-zb2'])]);
+  test('A contient B qui contient un produit NON vendable : B non vendable ET A non vendable (avant : A vendable)', (await nv('pr-zb')) === true && (await nv('pr-za')) === true);
+  test('A contient B dont toute la composition est vendable : A vendable', (await nv('pr-zb2')) === false && (await nv('pr-zok')) === false);
+  e = await echec('collab', insCmd, ['#TEST-Z1', 'Ensemble Fictif ZA', JSON.stringify([L('pr-za', 'Ensemble Fictif ZA', 1, 500)]), 500]);
+  test('nouvelle commande de A (non vendable au 2e niveau) : REFUSÉE par la base', !!e && /PRODUIT NON VENDABLE/.test(e), e);
+  e = await echec('collab', insCmd, ['#TEST-Z2', 'Ensemble Fictif ZOK', JSON.stringify([L('pr-zok', 'Ensemble Fictif ZOK', 1, 520)]), 520]);
+  test('nouvelle commande d\'un ensemble imbriqué entièrement vendable : acceptée', e === null, e);
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, composants) values ('pr-zi', 'Ensemble Fictif ZI', 'Ensemble', 400, 0, $1::jsonb)", [J(['pr-a', 'pr-zinconnu-interne'])]);
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, composants) values ('pr-zj', 'Ensemble Fictif ZJ', 'Ensemble', 450, 0, $1::jsonb)", [J(['pr-zi'])]);
+  test('composant INTROUVABLE au 2e niveau : l\'ensemble du dessus est non vendable', (await nv('pr-zj')) === true);
+  // cycles
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, composants) values ('pr-zc1', 'Ensemble Fictif ZC1', 'Ensemble', 100, 0, $1::jsonb)", [J(['pr-a', 'pr-zc2'])]);
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, composants) values ('pr-zc2', 'Ensemble Fictif ZC2', 'Ensemble', 100, 0, $1::jsonb)", [J(['pr-b', 'pr-zc1'])]);
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, composants) values ('pr-zs', 'Ensemble Fictif ZS', 'Ensemble', 100, 0, $1::jsonb)", [J(['pr-a', 'pr-zs'])]);
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, composants) values ('pr-zcy', 'Ensemble Fictif ZCY', 'Ensemble', 100, 0, $1::jsonb)", [J(['pr-zc1'])]);
+  const t0 = Date.now(); const cyc = [await nv('pr-zc1'), await nv('pr-zc2'), await nv('pr-zs'), await nv('pr-zcy')];
+  test('CYCLE A ↔ B, ensemble qui se contient lui-même, ensemble au-dessus d\'un cycle : tous NON vendables, réponse immédiate', cyc.every((v) => v === true) && Date.now() - t0 < 5000, cyc);
+  e = await echec('collab', insCmd, ['#TEST-Z3', 'Ensemble Fictif ZC1', JSON.stringify([L('pr-zc1', 'Ensemble Fictif ZC1', 1, 100)]), 100]);
+  test('nouvelle commande d\'un ensemble en cycle : REFUSÉE (pas de boucle infinie)', !!e && /PRODUIT NON VENDABLE/.test(e), e);
+  test('composition à tous les niveaux (interne.l039_composition_ids) : cycle arrêté, chaque produit une fois',
+    JSON.stringify((await un('proprio', "select interne.l039_composition_ids('pr-zc1') as ids")).ids.sort()) === JSON.stringify(['pr-a', 'pr-b', 'pr-zc1', 'pr-zc2']));
+  // profondeur plafonnée (8 niveaux)
+  for (let n = 9; n >= 0; n--) {
+    await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, composants) values ($1, $2, 'Ensemble', 100, 0, $3::jsonb)",
+      ['pr-zd' + n, 'Ensemble Fictif ZD' + n, J([n === 9 ? 'pr-a' : 'pr-zd' + (n + 1)])]);
+  }
+  test('chaîne de 7 niveaux (ZD3 → … → ZD9 → A) : vendable', (await nv('pr-zd3')) === false);
+  test('chaîne de 10 niveaux (ZD0 → … → A) : au-delà du plafond de 8 niveaux → NON vendable (jamais vendable par défaut)', (await nv('pr-zd0')) === true && (await un('proprio', 'select interne.l039_profondeur_max() as m')).m === 8);
+  // garde collaboratrice : ne rend pas vendable un ensemble non vendable à cause d'un niveau profond
+  e = await echec('collab', "update public.produits set composants = $1::jsonb where id = 'pr-za'", [J(['pr-a'])]);
+  test('collaboratrice : recomposer A (non vendable au 2e niveau) pour le rendre vendable → refusé', !!e && /seul l'administrateur le rend vendable/.test(e), e);
+  e = await echec('collab', "update public.produits set composants = $1::jsonb where id = 'pr-zok'", [J(['pr-c', 'pr-za'])]);
+  test('collaboratrice : ajouter à un ensemble vendable un sous-ensemble non vendable (le rend non vendable) → accepté', e === null && (await nv('pr-zok')) === true, e);
+  await q('admin', "update public.produits set composants = $1::jsonb where id = 'pr-zok'", [J(['pr-c', 'pr-zb2'])]);
+  // correspondance Shopify « certaine » sur un ensemble qui contient le produit au 2e niveau
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock) values ('pr-zy', 'Oreiller Fictif ZY', 'Accessoire', 19, 5)");
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, composants) values ('pr-zw', 'Ensemble Fictif ZW', 'Ensemble', 60, 0, $1::jsonb)", [J(['pr-zy', 'pr-c'])]);
+  await q('service_role', "insert into public.produits (id, nom, cat, prix, stock, composants) values ('pr-zv', 'Ensemble Fictif ZV', 'Ensemble', 260, 0, $1::jsonb)", [J(['pr-a', 'pr-zw'])]);
+  e = await echec('service_role', "insert into public.stock_correspondance (shopify_variant_id, app_produit_id, fiabilite) values (1099, 'pr-zv', 'certaine')");
+  test('ensemble imbriqué vendable relié à une variante Shopify « certaine »', e === null, e);
+  e = await echec('admin', "update public.produits set vendable = false where id = 'pr-zy'");
+  test('produit retiré de la vente alors qu\'un ensemble le contient au 2e NIVEAU avec une variante « certaine » → refusé', !!e && /variantes Shopify/.test(e) && /pr-zv/.test(e), e);
+  e = await echec('service_role', "insert into public.stock_correspondance (shopify_variant_id, app_produit_id, fiabilite) values (1098, 'pr-za', 'certaine')");
+  test('variante « certaine » vers un ensemble non vendable au 2e niveau → refusée', !!e && /NON VENDABLE/i.test(e), e);
+  e = await echec('anon', "select interne.l039_composants_non_vendables('[]'::jsonb, null)");
+  test('anon ne peut pas appeler interne.l039_composants_non_vendables', !!e, e);
+
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   await db.close();
   process.exit(ko ? 1 : 0);

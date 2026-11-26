@@ -3997,7 +3997,7 @@ var VEN_LIBELLE = 'Prix à définir — non vendable';
 function venDepuisBase(r) {
   return { vendable: !(r && r.vendable === false), prixDefini: !!r && r.prix_vente_defini !== false && r.prix != null };
 }
-// Un produit est vendable s'il n'est ni marqué non vendable, ni sans prix de vente, ni un ensemble dont un composant l'est.
+// Un produit est vendable s'il n'est ni marqué non vendable, ni sans prix de vente, ni un ensemble dont un composant l'est (à tout niveau).
 function venEst(p, liste) {
   if (!p) return false;
   if (p.vendable === false || p.prixDefini === false) return false;
@@ -4006,16 +4006,37 @@ function venEst(p, liste) {
   // proposé alors que la base refusait la ligne. Le catalogue de l'appli ne charge que les produits ACTIFS (sbLoadProduits,
   // actif=eq.true) : un composant inactif y est absent (ou gardé avec actif = false après le temps réel) ; il est donc aussi traité
   // comme non vendable (règle plus stricte que la base, jamais plus permissive). Composant sans identifiant : ignoré, comme la base.
-  if (p.composants && Array.isArray(p.composants) && p.composants.length) {
-    for (var i = 0; i < p.composants.length; i++) {
-      var c = p.composants[i] || {};
-      var cid = (c.id == null) ? '' : String(c.id);
-      if (!cid) continue;
-      var cp = (liste || []).find(function(x) { return x && String(x.id) === cid; });
-      if (!cp || cp.actif === false || cp.vendable === false || cp.prixDefini === false) return false;
-    }
+  // v7.5.182 (revue Codex PR 26 sur ce01159, point 2) : la composition est contrôlée EN ENTIER, à tous les niveaux (avant : un seul
+  // niveau — A contenant B composé d'un produit non vendable restait proposé). Même règle que la base (interne.produit_non_vendable,
+  // l039_composants_non_vendables) et les fonctions serveur (produits-vendables.ts) : cycle (A contient B qui contient A, ou A se
+  // contient) = NON vendable ; au-delà de VEN_PROFONDEUR_MAX niveaux = NON vendable (jamais vendable par défaut).
+  return !venCompositionBloquee(p, liste);
+}
+var VEN_PROFONDEUR_MAX = 8; // doit rester égal à interne.l039_profondeur_max() (migration 039) et PROFONDEUR_MAX (produits-vendables.ts)
+function venCompositionBloquee(p, liste) {
+  var parId = {};
+  (liste || []).forEach(function(x) { if (x && x.id != null && !Object.prototype.hasOwnProperty.call(parId, String(x.id))) parId[String(x.id)] = x; });
+  function idsDe(prod) {
+    var compos = (prod && Array.isArray(prod.composants)) ? prod.composants : [];
+    return compos.map(function(c) { return (c && c.id != null) ? String(c.id) : ''; }).filter(function(id) { return id !== ''; });
   }
-  return true;
+  // chemin = ensembles au-dessus (racine comprise) ; niveau = niveau des composants de « prod » (1 pour la racine)
+  function bloque(prod, chemin, niveau) {
+    var ids = idsDe(prod);
+    for (var i = 0; i < ids.length; i++) {
+      var cid = ids[i];
+      if (chemin.indexOf(cid) >= 0) return true; // cycle
+      var cp = Object.prototype.hasOwnProperty.call(parId, cid) ? parId[cid] : null;
+      if (!cp || cp.actif === false || cp.vendable === false || cp.prixDefini === false) return true;
+      if (idsDe(cp).length) {
+        if (niveau >= VEN_PROFONDEUR_MAX) return true; // trop profond
+        if (bloque(cp, chemin.concat([cid]), niveau + 1)) return true;
+      }
+    }
+    return false;
+  }
+  var racine = (p && p.id != null) ? String(p.id) : '';
+  return bloque(p, racine ? [racine] : [], 1);
 }
 function venSelectionnables(liste) { return (liste || []).filter(function(p) { return venEst(p, liste); }); }
 // Lignes d'une commande à refuser : produit du catalogue non vendable, NOUVEAU dans la commande (une commande déjà prise qui le
@@ -4342,7 +4363,16 @@ function arrRevientTexte(v) { return (v == null || isNaN(parseFloat(v))) ? '—'
 
 // ── Données et écran (administrateur) ──
 var ARR_ETAT = { arrivages: [], lignes: [], revients: {}, stocks: {}, entrant: {}, ouvert: null, saisies: {}, envoi: false, erreur: '', vue: null,
-  aVerifier: null, verification: false }; // v7.5.173 : aVerifier = { id, ref } tant que le résultat d'un envoi n'est pas relu dans la base
+  aVerifier: {}, verification: false, verificationId: null };
+// v7.5.173 : un arrivage est « à vérifier » tant que le résultat d'un envoi n'est pas relu dans la base.
+// v7.5.182 (revue Codex PR 26 sur 33a314f) : l'état « à vérifier » est gardé POUR CHAQUE ARRIVAGE (aVerifier[id] = { id, ref }) — avant,
+// un seul arrivage était mémorisé : une 2e réponse indéterminée (arrivage B) remplaçait A, dont le bouton Valider redevenait
+// disponible sans vérification. L'état survit à la navigation (ouvrir B puis revenir à A) ; il n'est retiré que par une relecture
+// qui conclut (validée ou non validée) pour CET arrivage.
+function arrAVerifierDe(id) {
+  if (id == null || !ARR_ETAT.aVerifier) return null;
+  return Object.prototype.hasOwnProperty.call(ARR_ETAT.aVerifier, String(id)) ? ARR_ETAT.aVerifier[String(id)] : null;
+}
 function arrEntetes() { return { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }; }
 // v7.5.150 (revue Codex PR 26 sur fd751b8, P2) : revients lus EN ENTIER, par pages, ordre stable (produit_id) — avant, une seule
 // requête plafonnée par la base (1 000 lignes) pouvait en perdre. Échec de lecture : revients VIDÉS (jamais d'anciennes valeurs
@@ -4552,8 +4582,8 @@ function arrMajControle() {
     ' (total ' + (t.recue + t.endommagee + t.manquante) + ')' +
     (c.erreurs.length ? '<ul style="margin:6px 0 0 18px;font-size:12px">' + c.erreurs.map(function(e) { var l = ls.find(function(x) { return x.id === e.ligne; }); var p = l && arrProduit(l.produit_id); return '<li>' + arrEsc((p ? p.nom : 'Arrivage') + ' : ' + e.texte) + '</li>'; }).join('') + '</ul>' : '') + '</div>';
   var b = document.getElementById('arr-btn-valider');
-  var aVerif = !!(ARR_ETAT.aVerifier && ARR_ETAT.aVerifier.id === a.id); // v7.5.173
-  if (b) { b.disabled = !attente || !c.ok || ARR_ETAT.envoi || aVerif; b.textContent = ARR_ETAT.verification ? '⏳ Résultat indéterminé — vérification en cours…' : aVerif ? '⛔ Résultat indéterminé : vérifiez dans la base' : ARR_ETAT.envoi ? '⏳ Validation en cours…' : '✅ Valider la réception'; }
+  var aVerif = !!arrAVerifierDe(a.id); // v7.5.173 ; v7.5.182 : par arrivage
+  if (b) { b.disabled = !attente || !c.ok || ARR_ETAT.envoi || aVerif; b.textContent = (ARR_ETAT.verification && String(ARR_ETAT.verificationId) === String(a.id)) ? '⏳ Résultat indéterminé — vérification en cours…' : aVerif ? '⛔ Résultat indéterminé : vérifiez dans la base' : ARR_ETAT.envoi ? '⏳ Validation en cours…' : '✅ Valider la réception'; }
   var bv = document.getElementById('arr-btn-verifier'); if (bv) { bv.style.display = aVerif ? '' : 'none'; bv.disabled = !!ARR_ETAT.envoi; }
 }
 // v7.5.173 (revue Codex PR 26 sur 4e04efd) : issue d'un envoi de valider_reception_arrivage. « validee » ou « refusee » seulement sur une
@@ -4600,12 +4630,12 @@ function arrLectureStatut(http, j, id) {
 // Vérification d'un résultat INDÉTERMINÉ (verrou ARR_ETAT.envoi posé par l'appelant). Tant qu'elle n'a pas conclu, l'arrivage reste
 // « à vérifier » : aucun nouvel envoi n'est permis. Renvoie 'validee' | 'non_validee' | 'indeterminee'.
 async function arrVerifierReception(a) {
-  ARR_ETAT.aVerifier = { id: a.id, ref: a.reference_interne }; ARR_ETAT.verification = true;
+  ARR_ETAT.aVerifier[String(a.id)] = { id: a.id, ref: a.reference_interne }; ARR_ETAT.verification = true; ARR_ETAT.verificationId = a.id;
   toast('⏳ Réponse de la base non reçue : résultat INDÉTERMINÉ — vérification en cours…', 'info');
   arrMajControle();
   var rel = null;
   try { rel = await arrRelireReception(a); } catch(e) { rel = { ok: false, status: 'pas de connexion' }; }
-  ARR_ETAT.verification = false;
+  ARR_ETAT.verification = false; ARR_ETAT.verificationId = null;
   if (!rel || !rel.ok) {
     ARR_ETAT.envoi = false;
     toast('Résultat INDÉTERMINÉ : vérification impossible (' + ((rel && rel.status) || '?') + '). Rien n\'est renvoyé — touchez « Vérifier dans la base » pour relire.', 'err');
@@ -4617,7 +4647,7 @@ async function arrVerifierReception(a) {
     toast('Résultat INDÉTERMINÉ : la base montre l\'arrivage « ' + arrStatutLibelle(rel.statut) + ' » avec ' + (rel.historique + rel.mouvements) + ' mouvement(s). Ne revalidez pas : faites vérifier la base.', 'err');
     arrRendre(); return 'indeterminee';
   }
-  ARR_ETAT.aVerifier = null;
+  delete ARR_ETAT.aVerifier[String(a.id)]; // seul CET arrivage est conclu ; les autres restent à vérifier
   if (concl === 'validee') {
     a.statut = 'recu'; if (rel.recu_le) a.recu_le = rel.recu_le; ARR_ETAT.envoi = false;
     toast('✅ Réception validée (vérifié dans la base : ' + rel.quantite + ' article(s) ajoutés au stock)', 'ok');
@@ -4632,8 +4662,10 @@ async function arrVerifierReception(a) {
 }
 // Bouton « Vérifier dans la base » (résultat resté indéterminé) : même verrou que la validation.
 async function arrVerifierClic() {
-  if (ARR_ETAT.envoi || !ARR_ETAT.aVerifier) return;
-  var v = ARR_ETAT.aVerifier, a = ARR_ETAT.arrivages.find(function(x) { return x.id === v.id; });
+  // v7.5.182 : l'arrivage OUVERT (le bouton n'apparaît que sur son écran), s'il est à vérifier
+  var v = arrAVerifierDe(ARR_ETAT.ouvert);
+  if (ARR_ETAT.envoi || !v) return;
+  var a = ARR_ETAT.arrivages.find(function(x) { return String(x.id) === String(v.id); });
   if (!a) { toast('Arrivage introuvable : actualisez la liste', 'err'); return; }
   ARR_ETAT.envoi = true;
   try { await arrVerifierReception(a); }
@@ -4646,7 +4678,7 @@ async function arrValider() {
   var a = ARR_ETAT.arrivages.find(function(x) { return x.id === ARR_ETAT.ouvert; });
   if (!arrPeutValider(a)) { toast('Cet arrivage a déjà été traité', 'err'); return; }
   // v7.5.173 : résultat d'un envoi précédent encore INDÉTERMINÉ -> vérifier dans la base d'abord (jamais un second envoi à l'aveugle)
-  if (ARR_ETAT.aVerifier && ARR_ETAT.aVerifier.id === a.id) { toast('Résultat de la validation précédente INDÉTERMINÉ : vérifiez d\'abord dans la base', 'err'); arrMajControle(); return; }
+  if (arrAVerifierDe(a.id)) { toast('Résultat de la validation précédente INDÉTERMINÉ : vérifiez d\'abord dans la base', 'err'); arrMajControle(); return; }
   var ls = arrLignesDe(a.id);
   // v7.5.150 (revue Codex PR 26 sur fd751b8, P2) : quantités FIGÉES ici, avant toute attente — le contrôle, la confirmation et
   // l'envoi portent sur ces valeurs, même si une saisie changeait pendant les relectures (saisies d'ailleurs désactivées)
@@ -4925,6 +4957,22 @@ async function sbSaveTournee(t) {
 }
 
 var caissesRemises = {};
+// v7.5.179 : état du verrou de la base (null = inconnu, true = en place, false = absent) ; vérifié pour l'administrateur
+var rtVerrouBase = null;
+async function rtVerifierVerrouBase() {
+  try {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/verrou_caisse_actif', {
+      method: 'POST',
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    var txt = ''; try { txt = await r.text(); } catch (e) {}
+    var etat = rtVerrouBaseEtat(r.status, txt);
+    if (etat === false && rtVerrouBase !== false) toast(RT_MSG_VERROU_ABSENT, 'err');
+    if (etat !== null) rtVerrouBase = etat;
+  } catch (e) { /* coupure : état inconnu, aucune alerte */ }
+  return rtVerrouBase;
+}
 // ── v7.1 : CHECKLIST CHARGEMENT CAMION ──
 // Structure : chargements[cmdId][ligneIdx] = {charge: bool, charge_par: 'RANOU', charge_at: ISO}
 var chargements = {};
@@ -6882,6 +6930,8 @@ function buildUI(r) {
       sbLoadDepenses().then(function() {
         finRender(); renderDash();
       });
+      // v7.5.179 : contrôle doux du verrou de la base (038b) pour l'administrateur ; absent -> alerte + bandeau Encaissements
+      if (role === 'admin') rtVerifierVerrouBase().then(function(v) { if (v === false) finRender(); });
       // v7.1.7 : Charger stock camion au démarrage
       sbLoadStockCamion().then(function() {
         if (typeof renderLivreur === 'function') renderLivreur();
@@ -11191,6 +11241,17 @@ function rtDepenseVerrou(etats, listeTournees, estValidee) {
 // v7.5.175 (revue Codex PR 24 sur 437ec1e, P2) : le verrou est aussi tenu PAR LA BASE (migration 038b, déclencheur
 // depenses_verrou_caisse), car le téléphone du livreur ne peut pas lire caisse_remises. Refus = erreur « POINT_CAISSE_VALIDE ».
 var RT_MSG_CAISSE_VALIDEE = '⛔ Point de caisse déjà validé par le bureau : cette dépense ne peut plus être ajoutée, corrigée ni supprimée. Demandez au bureau d\'annuler la validation s\'il faut la changer.';
+// v7.5.179 (revue Codex PR 24 sur 26dcf5b, point 2) : contrôle DOUX du verrou de la base. L'appli demande à la base
+// (public.verrou_caisse_actif, migration 038b) si le déclencheur est en place. 404 = fonction absente (038b non appliquée)
+// ou réponse « false » = verrou absent -> l'administrateur est prévenu (au lieu de prétendre protéger). 200 « true » = en
+// place. Autre réponse (coupure, panne, session) : inconnu (null), aucune alerte.
+var RT_MSG_VERROU_ABSENT = '⚠️ Verrou de la base absent (migration 038b non appliquée) : après la validation d\'un point de caisse, le téléphone du livreur peut encore ajouter ou modifier ses dépenses. Faites appliquer la 038b.';
+function rtVerrouBaseEtat(status, corps) {
+  var st = Number(status);
+  if (st === 404) return false;
+  if (st >= 200 && st < 300) { var t = String(corps == null ? '' : corps).trim(); if (t === 'true') return true; if (t === 'false') return false; }
+  return null;
+}
 function rtRefusCaisseValidee(status, texte) { return Number(status) >= 400 && Number(status) < 500 && /POINT_CAISSE_VALIDE/.test(String(texte || '')); }
 // v7.5.135 (revue Codex sur f09037c, point 5) : journal des corrections d'une dépense, gardé dans son commentaire
 // (colonne existante, aucune migration) après un séparateur. Chaque ligne : date, auteur, valeurs avant → après, motif.
@@ -13829,6 +13890,8 @@ function finRender() {
       var eur = function(n){ return paiEur(n); }; // v7.5.131 : centimes affichés (avant : arrondi à l'euro, « 232 € » pour 231,60 €)
 
       var html = '';
+      // v7.5.179 : verrou de la base absent (038b non appliquée) -> dit clairement, au lieu de prétendre protéger
+      if (rtVerrouBase === false) html += '<div id="rt-verrou-absent" style="background:var(--bg);border:1.5px solid var(--red);border-radius:12px;padding:12px;margin-bottom:12px;font-size:13px;font-weight:700;color:var(--red)">' + RT_MSG_VERROU_ABSENT + '</div>';
       // En-tête récap (seulement s'il y a des retours à traiter)
       if (aTraiter.length > 0) {
         html += '<div class="rt-tete-d">' +
@@ -21526,9 +21589,11 @@ async function validerDepenseLivreur() {
     tourneeId: _activeTournee ? _activeTournee.id : null,
     source: _cible ? 'admin' : 'livreur'
   };
+  // v7.5.179 (revue Codex PR 24 sur 26dcf5b, P2) : copie de la dépense existante prise AVANT toute modification
+  // (dep et _existante sont le même objet ; avant, la copie était faite après -> un refus de la base gardait la valeur modifiée)
+  var _avantDep = _existante ? Object.assign({}, _existante) : null;
   dep.cat = depLvCatSelected; dep.montant = montantVal; dep.comment = _commentFinal; dep.modePaie = modePaieLv;
 
-  var _avantDep = _existante ? Object.assign({}, _existante) : null;
   if (!_existante) depenses.unshift(dep);
   depLvCible = null;
 
