@@ -1,8 +1,8 @@
 // Banc de test RÉEL de la migration 038b (verrou du point de caisse validé sur les dépenses) sur une base PostgreSQL JETABLE,
 // EN MÉMOIRE (@electric-sql/pglite = PostgreSQL 16 compilé en WebAssembly, rien n'est écrit sur le disque, aucune connexion).
 // Usage : node outils/test-038b-pglite.js
-// Prérequis : @electric-sql/pglite, version EXACTE 0.2.17, installée à part dans cette branche (aucun téléchargement fait par le banc) :
-//   npm install --no-save @electric-sql/pglite@0.2.17   (ou NODE_PATH vers un dossier qui l'a déjà ; la PR 26 la déclare dans package.json)
+// Prérequis : la dépendance de développement déclarée dans package.json (@electric-sql/pglite, version EXACTE 0.2.17) : npm install
+//   (déclarée à partir de la PR 26 ; sur la branche de la PR 24 seule : npm install --no-save @electric-sql/pglite@0.2.17)
 //   Sans ce paquet, ou avec une autre version, le banc ÉCHOUE (code 2). Pour le sauter VOLONTAIREMENT (machine sans dépendances) :
 //   SAUTER_PGLITE=1 node outils/test-038b-pglite.js   (message « SAUTÉ », code 0 ; ne vaut jamais preuve que la 038b est testée).
 // VALEURS FICTIVES uniquement (dépôt PUBLIC) : aucun livreur réel, aucun montant réel.
@@ -25,7 +25,7 @@ let PGlite;
 try { ({ PGlite } = require('@electric-sql/pglite')); } catch (e) {
   if (process.env.SAUTER_PGLITE === '1') { console.log('BANC 038b PGLITE SAUTÉ VOLONTAIREMENT (SAUTER_PGLITE=1) : la migration 038b n\'a PAS été testée.'); process.exit(0); }
   console.error('ÉCHEC DU BANC 038b PGLITE : dépendance @electric-sql/pglite absente — la migration 038b n\'a PAS été testée.');
-  console.error('Installer à part : npm install --no-save @electric-sql/pglite@' + VERSION_ATTENDUE + ' (ou NODE_PATH vers un dossier qui l\'a déjà)');
+  console.error('Installer les dépendances déclarées (package.json, devDependencies : @electric-sql/pglite ' + VERSION_ATTENDUE + ') : npm install');
   process.exit(2);
 }
 const lireMigration = (n) => fs.readFileSync(path.join(racine, 'supabase', 'migrations', n), 'utf8');

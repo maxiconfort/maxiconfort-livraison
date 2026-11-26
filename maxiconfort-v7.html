@@ -4533,17 +4533,24 @@ function arrConclureRelecture(statut, nbHistorique, nbMouvements) {
 }
 // Relecture dans la base : statut de l'arrivage, historique des revients de CET arrivage et mouvements de stock « arrivage:<réf.> ».
 // { ok: true, statut, recu_le, historique, mouvements, quantite } | { ok: false, status } (jamais de conclusion sur une lecture ratée).
+// v7.5.177 (revue Codex PR 26 sur ce01159, P2) : relecture par la fonction serveur statut_reception_arrivage, qui prend le MÊME
+// premier verrou que la réception (select … for update sur l'arrivage) : elle ATTEND la fin d'une réception encore en cours, puis
+// relit. Avant : trois SELECT ordinaires pouvaient lire « en_attente » avant le commit de la transaction d'origine -> « NON
+// validée » et nouvel envoi permis. Tant que cette fonction n'a pas répondu proprement, le résultat reste INDÉTERMINÉ.
 async function arrRelireReception(a) {
-  var b = SUPABASE_URL + '/rest/v1/', id = encodeURIComponent(a.id);
-  var rs = await Promise.all([
-    arrLireTout(b + 'arrivages?select=id,statut,recu_le&id=eq.' + id + '&order=id.asc'),
-    arrLireTout(b + 'prix_revient_historique?select=id,produit_id,quantite&arrivage_id=eq.' + id + '&source=eq.arrivage&order=id.asc'),
-    arrLireTout(b + 'mouvements_stock?select=id,quantite&source=eq.' + encodeURIComponent('arrivage:' + a.reference_interne) + '&order=id.asc')
-  ]);
-  for (var i = 0; i < rs.length; i++) if (!rs[i] || !rs[i].ok) return { ok: false, status: (rs[i] && rs[i].status) || '?' };
-  if (rs[0].rows.length !== 1) return { ok: false, status: 'arrivage introuvable' };
-  var q = rs[1].rows.reduce(function(s, x) { return s + (parseInt(x.quantite, 10) || 0); }, 0);
-  return { ok: true, statut: rs[0].rows[0].statut, recu_le: rs[0].rows[0].recu_le, historique: rs[1].rows.length, mouvements: rs[2].rows.length, quantite: q };
+  var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/statut_reception_arrivage', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()),
+    body: JSON.stringify({ p_arrivage_id: a.id }) });
+  var j = null; try { j = await r.json(); } catch(e) {}
+  return arrLectureStatut(r.status, j, a.id);
+}
+// Réponse de statut_reception_arrivage -> relecture exploitable, ou échec (jamais de conclusion sur une réponse douteuse).
+function arrLectureStatut(http, j, id) {
+  if (!(http >= 200 && http < 300)) return { ok: false, status: http || '?' };
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return { ok: false, status: 'réponse illisible' };
+  if (j.ok !== true) return { ok: false, status: j.erreur === 'verification_occupee' ? 'réception encore en cours dans la base' : (j.erreur || 'réponse invalide') };
+  var nb = function(v) { return typeof v === 'number' && isFinite(v) && v >= 0 && Math.floor(v) === v; };
+  if (typeof j.statut !== 'string' || !nb(j.historique) || !nb(j.mouvements) || !nb(j.quantite) || (id != null && j.id != null && String(j.id) !== String(id))) return { ok: false, status: 'réponse incomplète' };
+  return { ok: true, statut: j.statut, recu_le: j.recu_le || null, historique: j.historique, mouvements: j.mouvements, quantite: j.quantite };
 }
 // Vérification d'un résultat INDÉTERMINÉ (verrou ARR_ETAT.envoi posé par l'appelant). Tant qu'elle n'a pas conclu, l'arrivage reste
 // « à vérifier » : aucun nouvel envoi n'est permis. Renvoie 'validee' | 'non_validee' | 'indeterminee'.
