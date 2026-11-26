@@ -4929,11 +4929,24 @@ function arrRevientInitialApproxime(methode, stockAvant, revientAvant, qte) {
 function arrAvertissementApproxime(x) {
   return (x && x.approxime) ? '<div class="td-s" style="color:var(--od,#9a3412);font-weight:700">⚠ ' + x.stockAvant + ' unités déjà en stock sans prix de revient : le coût de ce lot leur est appliqué (décision du 26/11)</div>' : '';
 }
-function arrCorpsValidation(arrivageId, lignes, saisies, empreinte) {
+function arrCorpsValidation(arrivageId, lignes, saisies, empreinte, tentative) {
   return { p_arrivage_id: arrivageId, p_lignes: (lignes || []).map(function(l) {
     var s = (saisies || {})[l.id] || {};
     return { ligne_id: l.id, recue: arrEntier(s.recue), endommagee: arrEntier(s.endommagee), manquante: arrEntier(s.manquante) };
-  }), p_empreinte: empreinte || '' };
+  }), p_empreinte: empreinte || '', p_tentative: tentative || null };
+}
+// v7.5.191 (revue Codex PR 26 sur 8adccd6) : IDENTIFIANT DE TENTATIVE (uuid v4) tiré pour CHAQUE envoi de valider_reception_arrivage.
+// Si la réponse se perd, la relecture (statut_reception_arrivage avec cet identifiant) fait inscrire par la base que la tentative
+// est ABANDONNÉE : une requête retardée qui arriverait ensuite est refusée (« tentative_abandonnee »). Jamais réutilisé.
+function arrNouvelleTentative() {
+  var c = (typeof crypto !== 'undefined') ? crypto : null;
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  var o = new Array(16), i;
+  if (c && typeof c.getRandomValues === 'function') { var t = new Uint8Array(16); c.getRandomValues(t); for (i = 0; i < 16; i++) o[i] = t[i]; }
+  else { for (i = 0; i < 16; i++) o[i] = Math.floor(Math.random() * 256); }
+  o[6] = (o[6] & 0x0f) | 0x40; o[8] = (o[8] & 0x3f) | 0x80;
+  var h = o.map(function(b) { return (b + 0x100).toString(16).slice(1); }).join('');
+  return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
 }
 // v7.5.147 (revue Codex PR 26 sur 17f631a) — EMPREINTE des valeurs de valorisation VUES dans l'aperçu : méthode, taux, frais, taux
 // provisoire, et par ligne (triées par id) identifiant, produit, quantité attendue, FOB, revient chargé, revient actuel du produit et
@@ -5230,10 +5243,17 @@ function arrIssueValidation(sansReponse, http, j) {
 // Conclusion d'une relecture : la base écrit le statut « recu », l'historique des revients et les mouvements de stock dans la MÊME
 // opération. « recu » = validée ; toujours en attente (ou annulé) sans aucun mouvement de cet arrivage = non validée ; tout autre
 // cas (en attente AVEC des mouvements) = incohérent : on n'autorise pas de nouvel envoi.
-function arrConclureRelecture(statut, nbHistorique, nbMouvements) {
-  if (statut === 'recu') return 'validee';
-  if ((statut === 'en_attente' || statut === 'annule') && !nbHistorique && !nbMouvements) return 'non_validee';
-  return 'incoherente';
+// v7.5.191 (revue Codex PR 26 sur 8adccd6) : l'ÉTAT DE LA TENTATIVE inscrit par la base fait foi. « appliquee » + « recu » = CET envoi a
+// validé ; « abandonnee » + « recu » = validée par un AUTRE envoi (« déjà validée ») ; « abandonnee » + en attente sans mouvement = non
+// validée, et CET envoi ne pourra plus jamais être appliqué : seul ce cas libère le bouton. Sans abandon confirmé : jamais « non validée ».
+function arrConclureRelecture(statut, nbHistorique, nbMouvements, etatTentative) {
+  if (etatTentative === 'appliquee') return statut === 'recu' ? 'validee' : 'incoherente';
+  if (etatTentative === 'abandonnee') {
+    if (statut === 'recu') return 'deja_validee';
+    if ((statut === 'en_attente' || statut === 'annule') && !nbHistorique && !nbMouvements) return 'non_validee';
+    return 'incoherente';
+  }
+  return statut === 'recu' ? 'deja_validee' : 'indeterminee';
 }
 // Relecture dans la base : statut de l'arrivage, historique des revients de CET arrivage et mouvements de stock « arrivage:<réf.> ».
 // { ok: true, statut, recu_le, historique, mouvements, quantite } | { ok: false, status } (jamais de conclusion sur une lecture ratée).
@@ -5241,42 +5261,61 @@ function arrConclureRelecture(statut, nbHistorique, nbMouvements) {
 // premier verrou que la réception (select … for update sur l'arrivage) : elle ATTEND la fin d'une réception encore en cours, puis
 // relit. Avant : trois SELECT ordinaires pouvaient lire « en_attente » avant le commit de la transaction d'origine -> « NON
 // validée » et nouvel envoi permis. Tant que cette fonction n'a pas répondu proprement, le résultat reste INDÉTERMINÉ.
-async function arrRelireReception(a) {
+// v7.5.191 : la relecture porte l'identifiant de la tentative restée sans réponse : la base inscrit son ABANDON (sous le même verrou).
+async function arrRelireReception(a, tentative) {
+  if (!tentative) return { ok: false, status: 'tentative inconnue' };
   var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/statut_reception_arrivage', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()),
-    body: JSON.stringify({ p_arrivage_id: a.id }) });
+    body: JSON.stringify({ p_arrivage_id: a.id, p_tentative: tentative }) });
   var j = null; try { j = await r.json(); } catch(e) {}
-  return arrLectureStatut(r.status, j, a.id);
+  return arrLectureStatut(r.status, j, a.id, tentative);
 }
 // Réponse de statut_reception_arrivage -> relecture exploitable, ou échec (jamais de conclusion sur une réponse douteuse).
-function arrLectureStatut(http, j, id) {
+function arrLectureStatut(http, j, id, tentative) {
   if (!(http >= 200 && http < 300)) return { ok: false, status: http || '?' };
   if (!j || typeof j !== 'object' || Array.isArray(j)) return { ok: false, status: 'réponse illisible' };
   if (j.ok !== true) return { ok: false, status: j.erreur === 'verification_occupee' ? 'réception encore en cours dans la base' : (j.erreur || 'réponse invalide') };
   var nb = function(v) { return typeof v === 'number' && isFinite(v) && v >= 0 && Math.floor(v) === v; };
   if (typeof j.statut !== 'string' || !nb(j.historique) || !nb(j.mouvements) || !nb(j.quantite) || (id != null && j.id != null && String(j.id) !== String(id))) return { ok: false, status: 'réponse incomplète' };
-  return { ok: true, statut: j.statut, recu_le: j.recu_le || null, historique: j.historique, mouvements: j.mouvements, quantite: j.quantite };
+  // v7.5.191 : tentative EXIGÉE, renvoyée telle quelle, avec un état connu ; sinon aucune conclusion (l'abandon n'est pas confirmé)
+  if (!tentative || String(j.tentative || '').toLowerCase() !== String(tentative).toLowerCase() || ['appliquee', 'abandonnee'].indexOf(j.etat_tentative) < 0) return { ok: false, status: 'abandon de la tentative non confirmé' };
+  return { ok: true, statut: j.statut, recu_le: j.recu_le || null, historique: j.historique, mouvements: j.mouvements, quantite: j.quantite, etat_tentative: j.etat_tentative };
 }
 // Vérification d'un résultat INDÉTERMINÉ (verrou ARR_ETAT.envoi posé par l'appelant). Tant qu'elle n'a pas conclu, l'arrivage reste
 // « à vérifier » : aucun nouvel envoi n'est permis. Renvoie 'validee' | 'non_validee' | 'indeterminee'.
-async function arrVerifierReception(a) {
-  ARR_ETAT.aVerifier[String(a.id)] = { id: a.id, ref: a.reference_interne }; ARR_ETAT.verification = true; ARR_ETAT.verificationId = a.id;
+async function arrVerifierReception(a, tentative) {
+  var dejaV = arrAVerifierDe(a.id);
+  tentative = tentative || (dejaV && dejaV.tentative) || null; // v7.5.191 : l'identifiant de l'envoi resté sans réponse est gardé
+  ARR_ETAT.aVerifier[String(a.id)] = { id: a.id, ref: a.reference_interne, tentative: tentative }; ARR_ETAT.verification = true; ARR_ETAT.verificationId = a.id;
   toast('⏳ Réponse de la base non reçue : résultat INDÉTERMINÉ — vérification en cours…', 'info');
   arrMajControle();
   var rel = null;
-  try { rel = await arrRelireReception(a); } catch(e) { rel = { ok: false, status: 'pas de connexion' }; }
+  try { rel = await arrRelireReception(a, tentative); } catch(e) { rel = { ok: false, status: 'pas de connexion' }; }
   ARR_ETAT.verification = false; ARR_ETAT.verificationId = null;
   if (!rel || !rel.ok) {
     ARR_ETAT.envoi = false;
     toast('Résultat INDÉTERMINÉ : vérification impossible (' + ((rel && rel.status) || '?') + '). Rien n\'est renvoyé — touchez « Vérifier dans la base » pour relire.', 'err');
     arrRendre(); return 'indeterminee';
   }
-  var concl = arrConclureRelecture(rel.statut, rel.historique, rel.mouvements);
+  var concl = arrConclureRelecture(rel.statut, rel.historique, rel.mouvements, rel.etat_tentative);
+  if (concl === 'indeterminee') {
+    ARR_ETAT.envoi = false;
+    toast('Résultat INDÉTERMINÉ : l\'abandon de l\'envoi précédent n\'est pas confirmé par la base. Rien n\'est renvoyé — touchez « Vérifier dans la base » pour relire.', 'err');
+    arrRendre(); return 'indeterminee';
+  }
   if (concl === 'incoherente') {
     ARR_ETAT.envoi = false;
     toast('Résultat INDÉTERMINÉ : la base montre l\'arrivage « ' + arrStatutLibelle(rel.statut) + ' » avec ' + (rel.historique + rel.mouvements) + ' mouvement(s). Ne revalidez pas : faites vérifier la base.', 'err');
     arrRendre(); return 'indeterminee';
   }
   delete ARR_ETAT.aVerifier[String(a.id)]; // seul CET arrivage est conclu ; les autres restent à vérifier
+  if (concl === 'deja_validee') {
+    a.statut = 'recu'; if (rel.recu_le) a.recu_le = rel.recu_le; ARR_ETAT.envoi = false;
+    toast('Réception déjà validée (vérifié dans la base : validée par un autre envoi ; celui-ci est annulé et n\'a rien ajouté)', 'ok');
+    arrRendre();
+    await arrCharger(); arrRendre();
+    try { await sbLoadProduits(); } catch(e) {}
+    return 'deja_validee';
+  }
   if (concl === 'validee') {
     a.statut = 'recu'; if (rel.recu_le) a.recu_le = rel.recu_le; ARR_ETAT.envoi = false;
     toast('✅ Réception validée (vérifié dans la base : ' + rel.quantite + ' article(s) ajoutés au stock)', 'ok');
@@ -5286,7 +5325,7 @@ async function arrVerifierReception(a) {
     return 'validee';
   }
   a.statut = rel.statut; ARR_ETAT.envoi = false;
-  toast('Réception NON validée (vérifié dans la base : arrivage « ' + arrStatutLibelle(rel.statut) + ' », aucun mouvement)' + (rel.statut === 'en_attente' ? ' — vous pouvez valider de nouveau' : ''), 'err');
+  toast('Réception NON validée (vérifié dans la base : arrivage « ' + arrStatutLibelle(rel.statut) + ' », aucun mouvement)' + (rel.statut === 'en_attente' ? ' — vous pouvez valider de nouveau' : '') + ' ; l\'envoi précédent est annulé dans la base et ne pourra plus être appliqué', 'err');
   arrRendre(); return 'non_validee';
 }
 // Bouton « Vérifier dans la base » (résultat resté indéterminé) : même verrou que la validation.
@@ -5359,16 +5398,17 @@ async function arrValiderEnvoi(a, ls, saisies, vue) {
     arrRendre(); return;
   }
   var j = null, http = 0, sansReponse = false;
+  var tentative = arrNouvelleTentative(); // v7.5.191 : identifiant de CET envoi (jamais réutilisé)
   try {
     var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/valider_reception_arrivage', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()),
-      body: JSON.stringify(arrCorpsValidation(a.id, ls, saisies, vue.empreinte)) });
+      body: JSON.stringify(arrCorpsValidation(a.id, ls, saisies, vue.empreinte, tentative)) });
     http = r.status; try { j = await r.json(); } catch(e) {}
   } catch(e) { sansReponse = true; }
   // v7.5.173 (revue Codex PR 26 sur 4e04efd) : réponse perdue (coupure, délai, corps illisible, 5xx) APRÈS l'envoi : la base a pu valider.
   // Avant : « Réception NON validée » et bouton réactivé (risque de croire à un échec, ou de renvoyer). Maintenant : résultat
   // INDÉTERMINÉ, statut et mouvements relus dans la base, et seulement ensuite « validée » ou « non validée ».
   var issue = arrIssueValidation(sansReponse, http, j);
-  if (issue === 'indeterminee') { await arrVerifierReception(a); return; }
+  if (issue === 'indeterminee') { await arrVerifierReception(a, tentative); return; }
   if (issue !== 'validee') {
     ARR_ETAT.envoi = false;
     var msg = (j && (j.erreur || j.message)) || ('HTTP ' + http);
@@ -5378,8 +5418,12 @@ async function arrValiderEnvoi(a, ls, saisies, vue) {
       toast('Réception NON validée : taux, frais, FOB, revient ou stock modifiés depuis l\'aperçu — vérifiez le nouvel aperçu puis validez de nouveau', 'err');
       await arrCharger(); arrRendre(); return;
     }
+    // v7.5.191 : arrivage déjà reçu (validé par un autre envoi ou un autre poste) -> « Réception déjà validée », rien n'a été ajouté
+    if (j && j.erreur === 'arrivage_deja_traite') {
+      toast(j.statut === 'recu' ? 'Réception déjà validée (par un autre envoi) : rien n\'a été ajouté une seconde fois' : 'Réception NON validée : arrivage déjà traité (« ' + arrStatutLibelle(j.statut) + ' »)', j.statut === 'recu' ? 'info' : 'err');
+      await arrCharger(); arrRendre(); return;
+    }
     toast('Réception NON validée : ' + msg, 'err');
-    if (j && j.erreur === 'arrivage_deja_traite') { await arrCharger(); arrRendre(); return; }
     arrMajControle(); return;
   }
   toast('✅ Réception validée : ' + (j.total_recu || 0) + ' article(s) ajoutés au stock', 'ok');
@@ -9555,6 +9599,11 @@ var CMDF_CLE = 'mx_cmd_filtres_v1';
 var CMDF_DEFAUT = { du: '', au: '', champ: 'livraison', tri: '', sens: 'desc', ouvert: false };
 var CMDF_FILTRES = ['cmd-filter-transporteur', 'cmd-filter-origine', 'cmd-filter-ville', 'cmd-filter-produit', 'cmd-filter-paiement'];
 var cmdfEtat = null;
+// v7.5.194 (revue Codex PR 28 sur 096b938) : période MÉMORISÉE mise de côté pendant une vue JARVIS ({ du, au }), sinon null.
+// Tant qu'elle est posée, toute écriture des réglages (tri, panneau « Filtres », date de prise / livraison) garde CETTE période dans
+// localStorage : la période vidée à l'écran pour JARVIS n'est jamais enregistrée. Seul un choix EXPLICITE de période (Du / Au,
+// « Effacer ») la remplace. Au prochain chargement de la page, la période mémorisée revient d'elle-même.
+var cmdfPeriodeMemo = null;
 function cmdfDateOk(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s); }
 // Réglages relus (ou reçus) → toujours un état valide ; toute valeur inattendue retombe sur le défaut.
 function cmdfNormaliser(o) {
@@ -9571,7 +9620,13 @@ function cmdfNormaliser(o) {
   return e;
 }
 function cmdfLire() { try { var s = localStorage.getItem(CMDF_CLE); return cmdfNormaliser(s ? JSON.parse(s) : null); } catch (e) { return cmdfNormaliser(null); } }
-function cmdfEcrire(e) { try { localStorage.setItem(CMDF_CLE, JSON.stringify(cmdfNormaliser(e))); } catch (x) {} }
+// Réglages à enregistrer : ceux de l'écran, sauf la période mise de côté pour JARVIS (cmdfPeriodeMemo), remise telle quelle.
+function cmdfAEnregistrer(e) {
+  var n = cmdfNormaliser(e);
+  if (cmdfPeriodeMemo) { n.du = cmdfPeriodeMemo.du; n.au = cmdfPeriodeMemo.au; n = cmdfNormaliser(n); }
+  return n;
+}
+function cmdfEcrire(e) { try { localStorage.setItem(CMDF_CLE, JSON.stringify(cmdfAEnregistrer(e))); } catch (x) {} }
 function cmdfJour(v) { return v ? String(v).split('T')[0] : ''; }
 // Date de la commande utilisée par la période et le tri : prise = dateCmd, livraison = date.
 function cmdfDateDe(c, champ) { return cmdfJour(champ === 'prise' ? c.dateCmd : c.date); }
@@ -9662,14 +9717,21 @@ function cmdfPeriodeChange() {
   var e = cmdfEtatCourant();
   e.du = (document.getElementById('cmdf-du') || {}).value || '';
   e.au = (document.getElementById('cmdf-au') || {}).value || '';
+  cmdfPeriodeMemo = null; // v7.5.194 : choix EXPLICITE de période → c'est lui qui est mémorisé
   cmdfEtat = cmdfNormaliser(e); cmdfEcrire(cmdfEtat); cmdAppliquerFiltres();
 }
 function cmdfChamp(v) { var e = cmdfEtatCourant(); e.champ = v; cmdfEtat = cmdfNormaliser(e); cmdfEcrire(cmdfEtat); cmdAppliquerFiltres(); }
 function cmdfTrierPar(col) { cmdfEtat = cmdfClicTri(cmdfEtatCourant(), col); cmdfEcrire(cmdfEtat); cmdAppliquerFiltres(); }
 // Bouton « Effacer » : la période est remise à zéro (et mémorisée vide) ; le tri et l'état du panneau sont des préférences, gardés.
-function cmdfEffacerPeriode() { var e = cmdfEtatCourant(); e.du = ''; e.au = ''; e.champ = CMDF_DEFAUT.champ; cmdfEtat = cmdfNormaliser(e); cmdfEcrire(cmdfEtat); }
+function cmdfEffacerPeriode() { var e = cmdfEtatCourant(); e.du = ''; e.au = ''; e.champ = CMDF_DEFAUT.champ; cmdfPeriodeMemo = null; cmdfEtat = cmdfNormaliser(e); cmdfEcrire(cmdfEtat); }
 // Vue JARVIS (#jarvis=commandes…) : montre EXACTEMENT ce qui est demandé → période ignorée pour cette vue, sans toucher au choix mémorisé.
-function cmdfViderPeriode() { var e = cmdfEtatCourant(); e.du = ''; e.au = ''; }
+// v7.5.194 (revue Codex PR 28 sur 096b938) : la période mémorisée est mise de côté (cmdfPeriodeMemo) AVANT d'être vidée à l'écran ;
+// un clic ultérieur sur le tri ou sur « Filtres » l'enregistre donc intacte. Plusieurs vues JARVIS d'affilée gardent la première.
+function cmdfViderPeriode() {
+  var e = cmdfEtatCourant();
+  if (!cmdfPeriodeMemo) cmdfPeriodeMemo = { du: e.du, au: e.au };
+  e.du = ''; e.au = '';
+}
 // CMDF-FIN
 
 function cmdFiltreRapide(preset) {
@@ -12820,7 +12882,8 @@ var RT_MSG_CAISSE_VALIDEE = '⛔ Point de caisse déjà validé par le bureau : 
 // v7.5.184 (revue Codex PR 24 sur 639f2f5, point 1) : la base protège aussi les TOURNÉES (déclencheur tournees_verrou_caisse) :
 // une tournée au point de caisse validé ne peut être ni supprimée ni changée de livreur, de date ou d'identifiant, et aucun
 // changement de tournée ne peut déplacer d'anciennes dépenses sans tournée vers ou depuis une tournée validée.
-var RT_MSG_TOURNEE_CAISSE_VALIDEE = '⛔ Point de caisse déjà validé : cette tournée ne peut être ni supprimée, ni changée de livreur ou de date (ses dépenses en dépendent). Annulez d\'abord la validation de la remise.';
+// v7.5.195 (revue Codex PR 24 sur 59f3a26, point 2) : les résultats et encaissements de ses arrêts sont aussi figés.
+var RT_MSG_TOURNEE_CAISSE_VALIDEE = '⛔ Point de caisse déjà validé : cette tournée ne peut être ni supprimée, ni changée de livreur ou de date, ni changée dans les résultats ou encaissements de ses arrêts (la remise en dépend). Annulez d\'abord la validation de la remise.';
 // v7.5.184 (revue Codex PR 24 sur 639f2f5, point 1) : la base FIGE la tournée d'une dépense à son écriture (tournee_id
 // renseigné). Une correction qui change la DATE ou le LIVREUR détache la dépense de cette tournée : l'appli vide alors
 // tournee_id et la base recalcule le rattachement (même règle que rtDepenseDeTournee).
@@ -12840,6 +12903,23 @@ function rtVerrouBaseEtat(status, corps) {
   return null;
 }
 function rtRefusCaisseValidee(status, texte) { return Number(status) >= 400 && Number(status) < 500 && /POINT_CAISSE_VALIDE/.test(String(texte || '')); }
+// v7.5.195 (revue Codex PR 24 sur 59f3a26, points 1 et 2) : relevé des données d'arrêt qui comptent pour la caisse (MÊME liste
+// que interne.l038b_arrets_caisse de la migration 038b) : un objet par arrêt, dans l'ordre, toujours les mêmes clés (absente
+// = null) ; le client n'est gardé que pour un arrêt sans commande (rattachement par le nom). Envoyé avec la validation de la
+// remise : la base le compare aux arrêts qu'elle a, après la prise du verrou, et refuse si la tournée a changé.
+var RT_ARRET_CAISSE_CLES = ['cmdId', 'client', 'statut', 'paie', 'stpaie', 'encAvant', 'encTournee', 'paie_especes', 'paie_cb', 'enc'];
+function rtArretsCaisse(stops) {
+  return (Array.isArray(stops) ? stops : []).map(function(s) {
+    var o = (s && typeof s === 'object' && !Array.isArray(s)) ? s : {};
+    var r = {};
+    RT_ARRET_CAISSE_CLES.forEach(function(k) { r[k] = o[k] === undefined ? null : o[k]; });
+    if (!(o.cmdId == null || o.cmdId === '')) r.client = null;
+    return r;
+  });
+}
+// Refus de la validation par la base : dépenses ou arrêts changés depuis le calcul du montant attendu (code CAISSE_CHANGEE).
+function rtRefusCaisseChangee(status, texte) { return Number(status) >= 400 && Number(status) < 500 && /CAISSE_CHANGEE/.test(String(texte || '')); }
+var RT_MSG_CAISSE_CHANGEE = '⚠️ Remise NON validée : les dépenses ou les arrêts de cette tournée ont changé depuis le calcul (par exemple une dépense ajoutée par le livreur). La page a été relue : vérifiez le nouveau montant attendu puis validez de nouveau.';
 // v7.5.135 (revue Codex sur f09037c, point 5) : journal des corrections d'une dépense, gardé dans son commentaire
 // (colonne existante, aucune migration) après un séparateur. Chaque ligne : date, auteur, valeurs avant → après, motif.
 var RT_JOURNAL_SEP = '\n— Journal des corrections —\n';
@@ -15492,7 +15572,9 @@ function finRender() {
         var prepaye  = cmdsLv.filter(function(c){ return MODES_PAIE.filter(function(m){return m.cat==='prepaye';}).map(function(m){ return m.id; }).includes(c.paie) && c.stpaie==='Payé'; }).reduce(function(s,c){ return s+(c.montantEnc||c.prix); },0);
         var nonEnc   = cmdsLv.filter(function(c){ return c.stpaie!=='Payé'; }).reduce(function(s,c){ return s+c.prix; },0);
         var tExact = t.date || '';
-        var depEspDetail = deps.filter(function(d){
+        // v7.5.195 (revue Codex PR 24 sur 59f3a26, point 1) : TOUTES les dépenses de la tournée (et non celles de la période
+        // affichée) : même total que celui que la base recalcule à la validation (interne.l038b_depenses_especes)
+        var depEspDetail = depenses.filter(function(d){
           var matchTournee = rtDepenseDeTournee(d, t, tournees); // v7.5.135 : attribution unique
           return (d.livreur||'').toLowerCase() === lv.toLowerCase() && (d.livreur||'').toUpperCase() !== 'CAISSE' && d.modePaie !== 'CB' && matchTournee;
         });
@@ -15508,7 +15590,9 @@ function finRender() {
 
       // v7.5.114 : montants attendus par tournée, repris à la validation de la remise
       window._paiRemisesAttendu = {};
-      retInfos.forEach(function(r){ window._paiRemisesAttendu[r.caisseKey] = { especes: r.aRemettre, cb: r.cb, tournee: r.t.id, livreur: r.lv }; });
+      // v7.5.195 (revue Codex PR 24 sur 59f3a26) : + ce sur quoi le montant est calculé (dépenses en espèces déduites, relevé
+      // des arrêts) : la base le recontrôle dans la transaction de la validation et refuse s'il a changé
+      retInfos.forEach(function(r){ window._paiRemisesAttendu[r.caisseKey] = { especes: r.aRemettre, cb: r.cb, tournee: r.t.id, livreur: r.lv, depEsp: rtArrondi(r.depEspLv), arrets: rtArretsCaisse(r.t.stops) }; });
       // v7.5.129 : toute tournée passée ou du jour non validée a son point de caisse (même sans espèces :
       // carte bleue, déjà payés, reportés, absents à vérifier) ; les tournées à venir restent en ligne compacte.
       var _rtAuj = (function(){ var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })();
@@ -15743,7 +15827,11 @@ async function validerRemiseCaisse(key) {
   // v7.5.184 (revue Codex PR 24 sur 639f2f5, point 2) : dépenses relues JUSTE AVANT la validation (une dépense ajoutée par le
   // livreur depuis le dernier affichage est comptée dans le reste à remettre) ; la base sérialise ensuite la validation et
   // l'écriture des dépenses (verrou consultatif de la 038b).
+  // v7.5.195 (revue Codex PR 24 sur 59f3a26) : la tournée est relue aussi (arrêts à jour) ; la base recontrôle ensuite
+  // dépenses et arrêts DANS la transaction de la validation, après le verrou, et refuse s'ils ont changé (CAISSE_CHANGEE).
   var _relu = false;
+  var _tidRem = /^t_/.test(String(key || '')) ? String(key).slice(2) : '';
+  if (_tidRem && typeof sbRechargerTournee === 'function') { try { await sbRechargerTournee(_tidRem); } catch (e) {} }
   if (typeof sbLoadDepenses === 'function') { try { await sbLoadDepenses(); finRender(); _relu = true; } catch (e) {} }
   if (_relu && !(window._paiRemisesAttendu || {})[key]) { toast('Point de caisse introuvable après relecture des dépenses : remise non validée', 'err'); return; }
   var att = (window._paiRemisesAttendu || {})[key] || { especes: 0, cb: 0 };
@@ -15786,10 +15874,26 @@ async function validerRemiseCaisse(key) {
         especes_remises: entry.remis,
         ecart: entry.ecart,
         cb_encaisse: entry.cb,
-        commentaire: entry.commentaire || null
+        commentaire: entry.commentaire || null,
+        // v7.5.195 (revue Codex PR 24 sur 59f3a26, point 1) : ce sur quoi le montant attendu a été calculé
+        controle_depenses: att.depEsp == null ? null : rtArrondi(att.depEsp),
+        controle_arrets: Array.isArray(att.arrets) ? att.arrets : null
       })
     });
-    if (_rRem && !_rRem.ok) throw new Error('HTTP ' + _rRem.status);
+    if (_rRem && !_rRem.ok) {
+      var _txtRem = ''; try { _txtRem = await _rRem.text(); } catch (_e) {}
+      if (rtRefusCaisseChangee(_rRem.status, _txtRem)) {
+        // la base a refusé : dépenses ou arrêts changés depuis le calcul -> rien de validé, page relue, nouveau montant affiché
+        delete caissesRemises[key];
+        try { localStorage.setItem('caissesRemises', JSON.stringify(caissesRemises)); } catch(_e){}
+        if (_tidRem && typeof sbRechargerTournee === 'function') { try { await sbRechargerTournee(_tidRem); } catch (_e) {} }
+        if (typeof sbLoadDepenses === 'function') { try { await sbLoadDepenses(); } catch (_e) {} }
+        finRender();
+        toast(RT_MSG_CAISSE_CHANGEE, 'err');
+        return;
+      }
+      throw new Error('HTTP ' + _rRem.status);
+    }
   } catch(e) {
     // v7.5.184 (relecture complète du verrou de caisse) : validation NON enregistrée par la base (coupure, session, refus) ->
     // elle n'est plus gardée seulement sur ce poste : la base ne verrouillerait pas les dépenses alors que l'écran dirait « validé ».

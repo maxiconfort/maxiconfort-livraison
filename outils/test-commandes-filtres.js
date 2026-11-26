@@ -186,6 +186,40 @@ console.log('\n6. VUE JARVIS (#jarvis=commandes…) : la période mémorisée ne
   const jv = tranche('// JVUE-DEBUT', '// JVUE-FIN');
   test('le bloc JVUE appelle cmdfViderPeriode avant le filtre rapide (et n’écrit rien lui-même)', /cmdfViderPeriode\(\);[\s\S]*cmdFiltreRapide\(v\.preset\)/.test(jv) && !/localStorage\.setItem/.test(jv));
 }
+// v7.5.194 (revue Codex PR 28 sur 096b938) : APRÈS la vue JARVIS, une interaction qui enregistre les réglages (cmdfEcrire : tri,
+// « Filtres », date de prise / livraison) ne doit pas mémoriser la période vidée ; la période revient au chargement suivant.
+{
+  const MEMO = JSON.stringify({ du: '2026-11-25', au: '2026-11-26' });
+  const lu = (x) => JSON.parse(x.stock.mx_cmd_filtres_v1);
+  const x = nouveauBac({ commandes: CMDS, stock: { mx_cmd_filtres_v1: MEMO } });
+  x.bac.cmdAppliquerFiltres(); x.bac.cmdfViderPeriode(); x.bac.cmdFiltreRapide('all');
+  x.bac.cmdfTrierPar('livraison');
+  test('vue JARVIS puis clic sur le tri : tri enregistré, période mémorisée INTACTE (25/11 → 26/11)', lu(x).tri === 'livraison' && lu(x).du === '2026-11-25' && lu(x).au === '2026-11-26', x.stock.mx_cmd_filtres_v1);
+  test('… l’écran garde la vue JARVIS : toutes les commandes, période toujours ignorée', x.dernier().length === CMDS.length && x.el('cmdf-btn-periode').textContent === 'Période');
+  x.bac.cmdfBasculer('filtres');
+  test('… puis clic sur « Filtres » : panneau mémorisé ouvert, période mémorisée INTACTE', lu(x).ouvert === true && lu(x).du === '2026-11-25' && lu(x).au === '2026-11-26', x.stock.mx_cmd_filtres_v1);
+  x.bac.cmdfViderPeriode(); x.bac.cmdfTrierPar('livraison');
+  test('… deuxième vue JARVIS d’affilée puis tri : toujours la période d’origine', lu(x).du === '2026-11-25' && lu(x).au === '2026-11-26' && lu(x).sens === 'asc', x.stock.mx_cmd_filtres_v1);
+  // rechargement de la page (même appareil) : la période revient et filtre de nouveau
+  const y = nouveauBac({ commandes: CMDS, stock: { mx_cmd_filtres_v1: x.stock.mx_cmd_filtres_v1 } });
+  y.bac.cmdAppliquerFiltres();
+  test('rechargement après la vue JARVIS : période RESTAURÉE et appliquée (#3 seule), bouton « Période » allumé', y.dernier().join() === '#3' && y.el('cmdf-btn-periode').classList.contains('on') && y.el('cmdf-btn-periode').textContent !== 'Période', y.dernier());
+  // date de prise / livraison changée pendant la vue JARVIS : le champ change, la période mémorisée reste
+  const z = nouveauBac({ commandes: CMDS, stock: { mx_cmd_filtres_v1: MEMO } });
+  z.bac.cmdAppliquerFiltres(); z.bac.cmdfViderPeriode(); z.bac.cmdfChamp('prise');
+  test('vue JARVIS puis « Date de prise » : champ enregistré, période mémorisée INTACTE', lu(z).champ === 'prise' && lu(z).du === '2026-11-25' && lu(z).au === '2026-11-26', z.stock.mx_cmd_filtres_v1);
+  // choix EXPLICITE d'une période après la vue JARVIS : c'est lui qui est mémorisé (et gardé par les clics suivants)
+  z.el('cmdf-du').value = '2026-11-01'; z.el('cmdf-au').value = ''; z.bac.cmdfPeriodeChange(); z.bac.cmdfTrierPar('prise');
+  test('période choisie à la main après la vue JARVIS : nouvelle période mémorisée (depuis 01/11), gardée après un tri', lu(z).du === '2026-11-01' && lu(z).au === '' && lu(z).tri === 'prise', z.stock.mx_cmd_filtres_v1);
+  // « Effacer » après la vue JARVIS : choix explicite → période mémorisée vide
+  const w = nouveauBac({ commandes: CMDS, stock: { mx_cmd_filtres_v1: MEMO } });
+  w.bac.cmdAppliquerFiltres(); w.bac.cmdfViderPeriode(); w.bac.cmdResetFiltres(); w.bac.cmdfTrierPar('prise');
+  test('« Effacer » après la vue JARVIS : période mémorisée VIDE (choix explicite), même après un tri', lu(w).du === '' && lu(w).au === '', w.stock.mx_cmd_filtres_v1);
+  // mémoire bloquée (navigation privée) : aucune erreur
+  const v = nouveauBac({ commandes: CMDS, sansStockage: true });
+  let err = null; try { v.bac.cmdfViderPeriode(); v.bac.cmdfTrierPar('livraison'); v.bac.cmdfBasculer('filtres'); } catch (e) { err = e; }
+  test('mémoire bloquée : vue JARVIS puis tri et « Filtres » sans erreur', err === null, err);
+}
 
 console.log('\n7. STRUCTURE DE LA PAGE');
 {
