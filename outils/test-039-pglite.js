@@ -188,10 +188,16 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
     test('… et la vraie décision est revenue après annulation', (await un('proprio', 'select interne.l039_creation_etat(false, 199) as e')).e === 'a_definir');
     // relecture SANS le verrou de la réception (simples SELECT) : la section 10 fait échouer la migration
     await db.exec('set role l26_postgres; begin;');
-    await db.exec("create or replace function public.statut_reception_arrivage(p_arrivage_id bigint) returns json language plpgsql volatile security definer set search_path = public, pg_catalog as $f$ begin if (select public.session_role()) is distinct from 'admin' then return null; end if; return (select json_build_object('ok', true, 'statut', statut) from public.arrivages where id = p_arrivage_id); end $f$");
+    await db.exec("create or replace function public.statut_reception_arrivage(p_arrivage_id bigint, p_tentative uuid default null) returns json language plpgsql volatile security definer set search_path = public, pg_catalog as $f$ begin if (select public.session_role()) is distinct from 'admin' then return null; end if; return (select json_build_object('ok', true, 'statut', statut) from public.arrivages where id = p_arrivage_id); end $f$");
     let e10b = null; try { await db.exec(bloc); } catch (e) { e10b = e.message; }
     await db.exec('rollback; reset role;');
     test('auto-contrôle section 10 : une relecture SANS le verrou de l\'arrivage (for update) fait ÉCHOUER la migration', !!e10b && /statut_reception_arrivage/.test(e10b), e10b);
+    // relecture sous verrou mais SANS inscrire l'abandon de la tentative (revue Codex PR 26 sur 8adccd6) : échec aussi
+    await db.exec('set role l26_postgres; begin;');
+    await db.exec("create or replace function public.statut_reception_arrivage(p_arrivage_id bigint, p_tentative uuid default null) returns json language plpgsql volatile security definer set search_path = public, pg_catalog as $f$ declare a public.arrivages%rowtype; begin if (select public.session_role()) is distinct from 'admin' then return null; end if; select * into a from public.arrivages where id = p_arrivage_id for update; return json_build_object('ok', true, 'statut', a.statut); end $f$");
+    let e10c = null; try { await db.exec(bloc); } catch (e) { e10c = e.message; }
+    await db.exec('rollback; reset role;');
+    test('auto-contrôle section 10 : une relecture qui N\'INSCRIT PAS l\'abandon de la tentative fait ÉCHOUER la migration', !!e10c && /abandon de la tentative/.test(e10c), e10c);
   }
 
   // ---------- catalogue FICTIF chargé côté serveur (service_role, session NULL = flux serveur / administrateur) ----------
@@ -402,11 +408,11 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   e = await echec('authenticated', 'select * from public.stock_entrant()');
   test('stock_entrant() authenticated : exécution refusée', !!e && /permission denied/.test(e), e);
   for (const qui of ['collab', 'livreur', 'anon', 'service_role']) {
-    const r1 = await rpc(qui, 'select public.valider_reception_arrivage($1, $2::jsonb, $3) as r', [arr1, '[]', 'x']);
+    const r1 = await rpc(qui, 'select public.valider_reception_arrivage($1, $2::jsonb, $3, gen_random_uuid()) as r', [arr1, '[]', 'x']);
     const r2 = await rpc(qui, 'select public.recalculer_revient_arrivage($1, 1.2) as r', [arr1]);
     test(qui + ' : valider_reception_arrivage et recalculer_revient_arrivage refusés (session_admin_requise)', r1.erreur === 'session_admin_requise' && r2.erreur === 'session_admin_requise', { r1, r2 });
   }
-  e = await echec('authenticated', 'select public.valider_reception_arrivage($1, $2::jsonb, $3)', [arr1, '[]', 'x']);
+  e = await echec('authenticated', 'select public.valider_reception_arrivage($1, $2::jsonb, $3, gen_random_uuid())', [arr1, '[]', 'x']);
   const e2 = await echec('authenticated', 'select public.recalculer_revient_arrivage($1, 1.2)', [arr1]);
   test('authenticated : les deux fonctions refusées à l\'exécution', /permission denied/.test(e || '') && /permission denied/.test(e2 || ''), { e, e2 });
   e = await echec('anon', "select interne.produit_non_vendable('pr-n')");
@@ -422,7 +428,7 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   console.log('\n6. RÉCEPTION valider_reception_arrivage (atomique, empreinte, revient calculé par la base)');
   const saisie = (o) => JSON.stringify(Object.entries(o).map(([pid, [r, d, m]]) => ({ ligne_id: idL[pid], recue: r, endommagee: d, manquante: m })));
   const bonne = { 'pr-a': [28, 1, 1], 'pr-c': [20, 0, 0], 'pr-n': [38, 2, 0] };
-  const valider = (qui, s, emp) => rpc(qui || 'admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3) as r', [arr1, s, emp]);
+  const valider = (qui, s, emp) => rpc(qui || 'admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3, gen_random_uuid()) as r', [arr1, s, emp]);
   let emp = await empreinte(arr1);
   test('empreinte v2 de l\'arrivage (aperçu) : stock actuel compris', /^v2\|CUMP\|1\.100000\|90\.00\|t\|/.test(emp) && emp.includes(':pr-a:30:10.5000:12.5540:12.0000:f:10'), emp);
   let avant = await photo();
@@ -439,21 +445,21 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   test('stock rétabli : l\'empreinte de l\'aperçu redevient valable', (await empreinte(arr1)) === emp);
   // ERREUR SUR LA DERNIÈRE LIGNE (ordre de traitement : produit_id ; pr-n est la dernière) : rien ne doit rester des deux premières
   avant = await photo();
-  e = await echec('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3)', [arr1, saisie({ 'pr-a': [28, 1, 1], 'pr-c': [20, 0, 0], 'pr-n': [38, 1, 0] }), emp]);
+  e = await echec('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3, gen_random_uuid())', [arr1, saisie({ 'pr-a': [28, 1, 1], 'pr-c': [20, 0, 0], 'pr-n': [38, 1, 0] }), emp]);
   test('total faux sur la DERNIÈRE ligne : exception (CONTRÔLE … ≠ attendu)', !!e && /CONTRÔLE : ligne/.test(e), e);
   test('… ATOMIQUE : aucun stock, mouvement, entrée, revient, historique ni statut écrit pour les lignes précédentes', (await photo()) === avant);
-  e = await echec('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3)', [arr1, JSON.stringify([{ ligne_id: idL['pr-a'], recue: 28, endommagee: 1, manquante: 1 }, { ligne_id: idL['pr-c'], recue: 20, endommagee: 0, manquante: 0 }, { ligne_id: idL['pr-n'], recue: 38, endommagee: 2 }]), emp]);
+  e = await echec('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3, gen_random_uuid())', [arr1, JSON.stringify([{ ligne_id: idL['pr-a'], recue: 28, endommagee: 1, manquante: 1 }, { ligne_id: idL['pr-c'], recue: 20, endommagee: 0, manquante: 0 }, { ligne_id: idL['pr-n'], recue: 38, endommagee: 2 }]), emp]);
   test('quantité « manquante » absente sur la dernière ligne : exception, aucune écriture', !!e && /trois quantités/.test(e) && (await photo()) === avant, e);
-  e = await echec('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3)', [arr1, JSON.stringify([{ ligne_id: idL['pr-a'], recue: 28, endommagee: 1, manquante: 1 }, { ligne_id: idL['pr-c'], recue: 20, endommagee: 0, manquante: 0 }, { ligne_id: 999999, recue: 38, endommagee: 2, manquante: 0 }]), emp]);
+  e = await echec('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3, gen_random_uuid())', [arr1, JSON.stringify([{ ligne_id: idL['pr-a'], recue: 28, endommagee: 1, manquante: 1 }, { ligne_id: idL['pr-c'], recue: 20, endommagee: 0, manquante: 0 }, { ligne_id: 999999, recue: 38, endommagee: 2, manquante: 0 }]), emp]);
   test('saisie de la dernière ligne sous un identifiant inconnu : exception, aucune écriture', !!e && /SAISIE MANQUANTE/.test(e) && (await photo()) === avant, e);
-  e = await echec('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3)', [arr1, JSON.stringify([{ ligne_id: idL['pr-a'], recue: 28, endommagee: 1, manquante: 1 }, { ligne_id: idL['pr-c'], recue: 20, endommagee: 0, manquante: 0 }, { ligne_id: idL['pr-n'], recue: 'beaucoup', endommagee: 2, manquante: 0 }]), emp]);
+  e = await echec('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3, gen_random_uuid())', [arr1, JSON.stringify([{ ligne_id: idL['pr-a'], recue: 28, endommagee: 1, manquante: 1 }, { ligne_id: idL['pr-c'], recue: 20, endommagee: 0, manquante: 0 }, { ligne_id: idL['pr-n'], recue: 'beaucoup', endommagee: 2, manquante: 0 }]), emp]);
   test('quantité non numérique sur la dernière ligne : exception, aucune écriture', !!e && /SAISIE INVALIDE/.test(e) && (await photo()) === avant, e);
   r = await valider('admin', saisie({ 'pr-a': [28, 1, 1], 'pr-c': [20, 0, 0] }), emp);
   test('une saisie manquante (2 lignes sur 3) : REFUS « une_saisie_par_ligne_requise »', r.erreur === 'une_saisie_par_ligne_requise' && (await photo()) === avant, r);
   // revient chargé qui contredit FOB × taux + frais (sur la DERNIÈRE ligne)
   await q('service_role', 'update public.arrivage_lignes set revient_unitaire_ht = 15 where id = $1', [idL['pr-n']]);
   const empInc = await empreinte(arr1); avant = await photo();
-  e = await echec('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3)', [arr1, saisie(bonne), empInc]);
+  e = await echec('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3, gen_random_uuid())', [arr1, saisie(bonne), empInc]);
   test('revient chargé incohérent sur la dernière ligne (15 ≠ 20 × 1,1 + 1) : exception, aucune écriture', !!e && /REVIENT INCOHÉRENT/.test(e) && (await photo()) === avant, e);
   await q('service_role', 'update public.arrivage_lignes set revient_unitaire_ht = null where id = $1', [idL['pr-n']]);
   test('revient de la ligne remis à vide : empreinte de l\'aperçu d\'origine valable', (await empreinte(arr1)) === emp);
@@ -519,6 +525,78 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   test('2e validation du même arrivage (même aperçu) : REFUS « arrivage_deja_traite », AUCUNE écriture', r.erreur === 'arrivage_deja_traite' && r.statut === 'recu' && (await photo()) === avant, r);
 
   // =========================================================================================================================
+  // TENTATIVES DE RÉCEPTION (revue Codex PR 26 sur 8adccd6) : une requête de validation RETARDÉE (partie du poste A, pas encore
+  // arrivée à la base) ne doit plus pouvoir valider d'anciennes quantités une fois que l'appli a relu l'arrivage et ABANDONNÉ cette
+  // tentative. pglite n'a qu'une connexion : l'envoi retardé est simulé en jouant son arrivée APRÈS la relecture (ordre réel des
+  // requêtes à la base) ; l'exclusion mutuelle des deux fonctions (même premier verrou : for update sur l'arrivage, puis lecture ou
+  // inscription de la tentative) est contrôlée par l'auto-contrôle de la section 10 de la migration.
+  console.log('\n6 bis. TENTATIVES : envoi retardé, abandon inscrit par la relecture, arrivée tardive refusée');
+  {
+    const T1 = '11111111-1111-4111-8111-111111111111', T2 = '22222222-2222-4222-8222-222222222222', T3 = '33333333-3333-4333-8333-333333333333',
+          T4 = '44444444-4444-4444-8444-444444444444';
+    await q('service_role', "insert into public.produits (id, nom, cat, prix, stock) values ('pr-t', 'Oreiller Fictif T', 'Accessoire', 25, 2)");
+    const arrT = (await un('service_role', "insert into public.arrivages (reference_interne, taux_change, taux_provisoire, frais_import_ht) values ('ARR-TEST-TENT', 1, false, 0) returning id")).id;
+    await q('service_role', "insert into public.arrivage_lignes (arrivage_id, produit_id, quantite_attendue, fob_unitaire) values ($1, 'pr-t', 4, 10)", [arrT]);
+    const lT = Number((await un('proprio', 'select id from public.arrivage_lignes where arrivage_id = $1', [arrT])).id);
+    const sT = (rec, end, man) => JSON.stringify([{ ligne_id: lT, recue: rec, endommagee: end, manquante: man }]);
+    const valT = async (s, t) => rpc('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3, $4::uuid) as r', [arrT, s, await empreinte(arrT), t]);
+    const statT = (t, id) => rpc('admin', 'select public.statut_reception_arrivage($1, $2::uuid) as r', [id || arrT, t]);
+    const nbTent = () => compte('public.arrivage_tentatives');
+    const stockT = async () => Number((await produit('pr-t')).stock);
+    // sans identifiant de tentative : refus, rien n'est écrit
+    avant = await photo(); let nT = await nbTent();
+    r = await valT(sT(4, 0, 0), null);
+    test('validation SANS identifiant de tentative : REFUS « tentative_requise », aucune écriture', r && r.erreur === 'tentative_requise' && (await photo()) === avant && (await nbTent()) === nT, r);
+    // poste A : envoi T1 (4 reçus) parti mais RETARDÉ ; la réponse n'arrive pas -> l'appli relit avec T1 : abandon inscrit
+    let st = await statT(T1);
+    test('relecture avec la tentative T1 (jamais arrivée) : « en_attente », aucun mouvement, T1 inscrite ABANDONNÉE',
+      st && st.ok === true && st.statut === 'en_attente' && st.historique === 0 && st.mouvements === 0 && st.tentative === T1 && st.etat_tentative === 'abandonnee'
+      && (await un('proprio', 'select etat, arrivage_id from public.arrivage_tentatives where tentative = $1', [T1])).etat === 'abandonnee', st);
+    st = await statT(T1);
+    test('… relecture répétée avec T1 : même réponse, aucune nouvelle inscription (ajout seul, idempotent)', st && st.etat_tentative === 'abandonnee' && (await nbTent()) === nT + 1, st);
+    // l'envoi RETARDÉ de T1 arrive enfin à la base, APRÈS l'abandon : refusé, rien n'est écrit
+    avant = await photo(); nT = await nbTent();
+    r = await valT(sT(4, 0, 0), T1);
+    test('ARRIVÉE TARDIVE de T1 après l\'abandon : REFUS « tentative_abandonnee », AUCUNE écriture (stock, historique, statut, tentatives)',
+      r && r.ok === false && r.erreur === 'tentative_abandonnee' && r.statut === 'en_attente' && (await photo()) === avant && (await nbTent()) === nT, r);
+    // nouvel envoi permis (T2, quantités CORRIGÉES : 3 reçus, 1 endommagé) : validé, tentative « appliquee »
+    const s0 = await stockT();
+    r = await valT(sT(3, 1, 0), T2);
+    test('nouvelle tentative T2 (quantités corrigées 3 + 1 endommagé) : réception validée, stock + 3 (pas + 4), T2 renvoyée', r && r.ok === true && r.tentative === T2 && (await stockT()) === s0 + 3, r);
+    test('… T2 inscrite « appliquee » pour CET arrivage, dans la même opération que la réception',
+      (await un('proprio', 'select etat, arrivage_id from public.arrivage_tentatives where tentative = $1', [T2])).etat === 'appliquee');
+    st = await statT(T2);
+    test('relecture avec T2 : « recu », etat_tentative « appliquee » (cet envoi a validé)', st && st.ok === true && st.statut === 'recu' && st.etat_tentative === 'appliquee' && st.quantite === 3, st);
+    // T1 arrive ENCORE (doublon réseau) : toujours refusée comme abandonnée, rien n'est écrit
+    avant = await photo(); nT = await nbTent();
+    r = await valT(sT(4, 0, 0), T1);
+    test('T1 rejouée après la réception par T2 : REFUS « tentative_abandonnee », aucune écriture', r && r.erreur === 'tentative_abandonnee' && (await photo()) === avant && (await nbTent()) === nT, r);
+    r = await valT(sT(3, 1, 0), T2);
+    test('T2 rejouée (déjà appliquée) : REFUS « tentative_deja_utilisee », aucune écriture', r && r.erreur === 'tentative_deja_utilisee' && (await photo()) === avant && (await nbTent()) === nT, r);
+    // poste B : sa tentative T3 n'a jamais atteint la base ; sa relecture voit « recu » et T3 abandonnée -> « Réception déjà validée »
+    st = await statT(T3);
+    test('poste B, relecture avec T3 (jamais arrivée) alors que T2 a validé : « recu » + T3 « abandonnee » (= déjà validée ailleurs)',
+      st && st.ok === true && st.statut === 'recu' && st.etat_tentative === 'abandonnee', st);
+    st = await statT(T2, arr1);
+    test('relecture d\'un AUTRE arrivage avec T2 : « tentative_autre_arrivage », sans statut', st && st.ok === false && st.erreur === 'tentative_autre_arrivage' && st.statut === undefined, st);
+    // une réception qui ÉCHOUE (contrôle des quantités : exception) n'inscrit pas sa tentative (annulée avec elle)
+    const arrT2 = (await un('service_role', "insert into public.arrivages (reference_interne, taux_change, taux_provisoire, frais_import_ht) values ('ARR-TEST-TENT2', 1, false, 0) returning id")).id;
+    await q('service_role', "insert into public.arrivage_lignes (arrivage_id, produit_id, quantite_attendue, fob_unitaire) values ($1, 'pr-t', 2, 10)", [arrT2]);
+    const lT2 = Number((await un('proprio', 'select id from public.arrivage_lignes where arrivage_id = $1', [arrT2])).id);
+    e = await echec('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3, $4::uuid)', [arrT2, JSON.stringify([{ ligne_id: lT2, recue: 5, endommagee: 0, manquante: 0 }]), await empreinte(arrT2), T4]);
+    test('réception refusée par le contrôle (5 ≠ 2 attendus) : tentative T4 NON inscrite (annulée avec la réception)', !!e && /CONTRÔLE/.test(e) && (await compte('public.arrivage_tentatives', 'tentative = $1', [T4])) === 0, e);
+    // droits : la table des tentatives n'est accessible qu'aux deux fonctions
+    for (const qui of ['admin', 'anon', 'authenticated']) {
+      e = await echec(qui, 'select * from public.arrivage_tentatives');
+      test('arrivage_tentatives : lecture directe refusée (' + qui + ')', !!e && /permission denied/i.test(e), e);
+    }
+    e = await echec('admin', "insert into public.arrivage_tentatives (tentative, arrivage_id, etat) values ($1, $2, 'appliquee')", [T4, arrT2]);
+    test('arrivage_tentatives : écriture directe refusée (admin via l\'appli)', !!e && /permission denied/i.test(e), e);
+    const xc = await rpc('collab', 'select public.statut_reception_arrivage($1, $2::uuid) as r', [arrT2, T4]);
+    test('statut_reception_arrivage avec tentative, hors administrateur : refus, AUCUNE inscription', xc && xc.erreur === 'session_admin_requise' && (await compte('public.arrivage_tentatives', 'tentative = $1', [T4])) === 0, xc);
+  }
+
+  // =========================================================================================================================
   console.log('\n7. CORRECTION DE TAUX recalculer_revient_arrivage (rejeu, historique, rupture de continuité)');
   // 2e lot de pr-a (ARR-TEST-2, taux provisoire 1,1, sans frais) reçu APRÈS ARR-TEST-1
   const arr2 = (await un('service_role', "insert into public.arrivages (reference_interne, taux_change, taux_provisoire, frais_import_ht) values ('ARR-TEST-2', 1.1, true, 0) returning id")).id;
@@ -526,7 +604,7 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   const l2 = (await un('proprio', 'select id from public.arrivage_lignes where arrivage_id = $1', [arr2])).id;
   { const st = await rpc('admin', 'select public.statut_reception_arrivage($1) as r', [arr2]);
     test('statut_reception_arrivage (admin) avant réception : « en_attente », aucun historique ni mouvement', st && st.ok === true && st.statut === 'en_attente' && st.historique === 0 && st.mouvements === 0 && st.quantite === 0 && st.recu_le === null, st); }
-  r = await rpc('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3) as r', [arr2, JSON.stringify([{ ligne_id: Number(l2), recue: 5, endommagee: 0, manquante: 0 }]), await empreinte(arr2)]);
+  r = await rpc('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3, gen_random_uuid()) as r', [arr2, JSON.stringify([{ ligne_id: Number(l2), recue: 5, endommagee: 0, manquante: 0 }]), await empreinte(arr2)]);
   const cumpA2 = r4((38 * cumpA + 5 * 22) / 43);
   test('2e lot pr-a : CUMP = (38 × ' + cumpA + ' + 5 × 22) / 43 = ' + cumpA2, r.ok && (await un('proprio', "select prix_revient_ht::float8 as v from public.produits_revient where produit_id = 'pr-a'")).v === cumpA2, r);
   r = await rpc('admin', 'select public.recalculer_revient_arrivage($1, 0) as r', [arr1]);
@@ -557,7 +635,7 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   const arr3 = (await un('service_role', "insert into public.arrivages (reference_interne, taux_change, taux_provisoire, frais_import_ht) values ('ARR-TEST-3', 1.1, true, 0) returning id")).id;
   await q('service_role', "insert into public.arrivage_lignes (arrivage_id, produit_id, quantite_attendue, fob_unitaire) values ($1, 'pr-c', 10, 4), ($1, 'pr-b', 4, 30)", [arr3]);
   const l3 = await q('proprio', 'select id from public.arrivage_lignes where arrivage_id = $1 order by produit_id', [arr3]);
-  r = await rpc('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3) as r', [arr3, JSON.stringify(l3.map((x, i) => ({ ligne_id: Number(x.id), recue: i ? 10 : 4, endommagee: 0, manquante: 0 }))), await empreinte(arr3)]);
+  r = await rpc('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3, gen_random_uuid()) as r', [arr3, JSON.stringify(l3.map((x, i) => ({ ligne_id: Number(x.id), recue: i ? 10 : 4, endommagee: 0, manquante: 0 }))), await empreinte(arr3)]);
   test('ARR-TEST-3 reçu (pr-b, pr-c)', r.ok === true, r);
   test('pr-b (stock VIDE, sans revient) : revient_initial_approxime FAUX', r.lignes.find(x => x.produit_id === 'pr-b').revient_initial_approxime === false, r.lignes);
   await q('service_role', "update public.produits_revient set prix_revient_ht = 99 where produit_id = 'pr-c'");
@@ -683,7 +761,7 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
     test('connexion neuve : l\'administrateur MODIFIE le prix d\'un produit → accepté', e === null && (await produit('pr-c')).prix === 31, e);
     await db.close();
     db = await neuve();
-    try { r = await rpc('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3) as r', [arrCx, JSON.stringify([{ ligne_id: Number(lCx), recue: 3, endommagee: 0, manquante: 0 }]), await empreinte(arrCx)]); } catch (x) { r = { erreur: String(x && x.message || x) }; }
+    try { r = await rpc('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3, gen_random_uuid()) as r', [arrCx, JSON.stringify([{ ligne_id: Number(lCx), recue: 3, endommagee: 0, manquante: 0 }]), await empreinte(arrCx)]); } catch (x) { r = { erreur: String(x && x.message || x) }; }
     test('connexion neuve : valider_reception_arrivage (réception du conteneur) → réussie, stock + 3', r && r.ok === true && Number((await produit('pr-c')).stock) === st0 + 3, r);
     await db.close();
     db = await neuve();
