@@ -7,7 +7,7 @@
 const fs = require('fs'), path = require('path'), vm = require('vm');
 const racine = path.join(__dirname, '..');
 const html = fs.readFileSync(path.join(racine, 'maxiconfort-v7.html'), 'utf8');
-const sql = fs.readFileSync(path.join(racine, 'supabase', 'migrations', '039_arrivages_prix_revient.sql'), 'utf8');
+const sql = fs.readFileSync(path.join(racine, 'supabase', 'migrations', '039_arrivages_prix_revient.sql'), 'utf8').replace(/\r\n/g, '\n'); // fins de ligne CRLF (copie Windows) ramenées à LF
 const sw = fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8');
 function extraireBloc(debut, fin) { const i = html.indexOf(debut), j = html.indexOf(fin, i); if (i < 0 || j < 0) throw new Error('bloc introuvable : ' + debut); return html.slice(i, j); }
 function extraireFonction(signature) { const i = html.indexOf(signature); if (i < 0) throw new Error('fonction introuvable : ' + signature);
