@@ -2744,6 +2744,13 @@ Maxiconfort — {TEL_CONTACT}</textarea>
           style="width:100%;padding:10px 12px;border:1px solid var(--brd);border-radius:10px;font-size:14px;background:var(--bg);color:var(--text);font-family:var(--font);box-sizing:border-box">
       </div>
 
+      <!-- v7.5.135 : correction d'une dépense -> motif obligatoire, gardé dans le journal de la dépense -->
+      <div id="dep-lv-motif-wrap" style="display:none;margin-bottom:16px">
+        <div style="font-size:12px;color:var(--rd);margin-bottom:6px;font-weight:700">Motif de la correction (obligatoire)</div>
+        <input type="text" id="dep-lv-motif" autocomplete="off" placeholder="Ex : ticket mal lu, montant corrigé"
+          style="width:100%;padding:10px 12px;border:1.5px solid var(--red);border-radius:10px;font-size:14px;background:var(--bg);color:var(--text);font-family:var(--font);box-sizing:border-box">
+      </div>
+
       <div style="display:flex;gap:10px">
         <button onclick="document.getElementById('m-dep-livreur').style.display='none'" style="flex:1;padding:13px;border-radius:12px;border:1.5px solid var(--brd);background:var(--bg);font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">Annuler</button>
         <button onclick="validerDepenseLivreur()" style="flex:2;padding:13px;border-radius:12px;border:none;background:var(--red);color:#fff;font-size:14px;font-weight:800;cursor:pointer;font-family:var(--font)">💸 Enregistrer la dépense</button>
@@ -2855,6 +2862,11 @@ Maxiconfort — {TEL_CONTACT}</textarea>
             <div><label style="font-size:10px;color:var(--t3);font-weight:700;display:block;margin-bottom:3px">💳 CB (€)</label><input type="number" inputmode="decimal" min="0" step="0.01" id="sig-paie-cb" value="0" oninput="sigMixteRecap()" style="width:100%;padding:9px;border:1.5px solid var(--blue);border-radius:8px;font-size:15px;font-weight:700;font-family:var(--font);text-align:right"></div>
           </div>
           <div id="sig-mixte-recap" style="font-size:12px;font-weight:700;text-align:center;padding:7px;border-radius:7px;background:var(--bg);color:var(--t2)">Saisir les 2 montants</div>
+          <!-- v7.5.135 : total plus bas que le reste dû -> motif obligatoire (comme le montant unique) -->
+          <div id="sig-mixte-motif-wrap" style="display:none;margin-top:8px">
+            <label for="sig-mixte-motif" style="font-size:12px;font-weight:700;color:var(--rd);display:block;margin-bottom:4px">Motif (obligatoire si le total est plus bas que le reste dû)</label>
+            <input id="sig-mixte-motif" type="text" autocomplete="off" placeholder="Ex : remise accordée, client paiera le reste par virement" style="width:100%;padding:11px;border:1.5px solid var(--red);border-radius:10px;font-size:14px;font-family:var(--font);box-sizing:border-box">
+          </div>
         </div>
       </div>
     </div>
@@ -3038,6 +3050,8 @@ try {
 } catch(e) {}
 
 function offlineQueueAdd(type, data) {
+  // v7.5.135 : une seule entrée par commande dans la file (la plus récente : l'enregistrement est complet)
+  if (type === 'commande' && data && data.id) offlineQueue = offlineQueue.filter(function(it) { return !(it && it.type === 'commande' && it.data && it.data.id === data.id); });
   offlineQueue.push({ type: type, data: data, ts: Date.now() });
   try { localStorage.setItem('mx_offline_queue', JSON.stringify(offlineQueue)); } catch(e) {}
   // Afficher indicateur
@@ -3060,11 +3074,12 @@ function sbSaveEchec(type, data, ctx, status, detail) {
 async function offlineQueueFlush() {
   if (!offlineQueue.length) return;
   var remaining = [];
-  var flushed = 0;
-  for (var i = 0; i < offlineQueue.length; i++) {
-    var item = offlineQueue[i];
+  var flushed = 0, refuses = 0;
+  var _aRejouer = offlineQueue.slice(); // v7.5.135 : copie (avant, la file pouvait grandir pendant le rejeu)
+  for (var i = 0; i < _aRejouer.length; i++) {
+    var item = _aRejouer[i];
     try {
-      if (item.type === 'commande') await sbSaveCommande(item.data);
+      if (item.type === 'commande') { var _rq = await sbSaveCommande(item.data, { depuisFile: true }); if (_rq && _rq.definitif) { refuses++; continue; } } // refus définitif : retiré de la file
       else if (item.type === 'tournee') await sbSaveTournee(item.data);
       else if (item.type === 'depense') await sbSaveDepense(item.data);
       else if (item.type === 'produit') await sbSaveProduit(item.data);
@@ -3076,8 +3091,10 @@ async function offlineQueueFlush() {
       remaining.push(item); // réessayer plus tard
     }
   }
-  offlineQueue = remaining;
+  // v7.5.135 : garder aussi ce qui a été ajouté à la file PENDANT le rejeu (autres écrans)
+  offlineQueue = remaining.concat(offlineQueue.filter(function(it) { return _aRejouer.indexOf(it) < 0; }));
   try { localStorage.setItem('mx_offline_queue', JSON.stringify(offlineQueue)); } catch(e) {}
+  if (refuses > 0) toast('⛔ ' + refuses + ' commande(s) refusée(s) par la base : retirée(s) de la file, voir les notifications', 'err');
   var ind = document.getElementById('offline-indicator');
   if (offlineQueue.length === 0) {
     if (ind) ind.style.display = 'none';
@@ -3562,7 +3579,20 @@ function aoLigne(prod, opt) {
 function aoBadge() { return '<span style="display:inline-block;margin-top:3px;padding:2px 7px;border-radius:4px;background:#b91c1c;color:#fff;font-size:10px;font-weight:800;letter-spacing:.3px">' + AO_LIBELLE + '</span>'; }
 // AO-FIN
 
-async function sbSaveCommande(cmd) {
+// v7.5.135 (constat du 26/11) : un refus de la base n'est pas une coupure réseau. Avant, TOUT refus (produit non
+// vendable, droits, contrôle de la base…) gardait la commande « ⚠️ Sync en attente » et la réessayait sans fin.
+// Refus DÉFINITIF = réponse 4xx de la base, sauf 408 (délai), 425 et 429 (trop de demandes) qui sont passagers.
+// Coupure / erreur passagère = pas de réponse, 408, 425, 429 ou 5xx : file d'attente et réessai, comme avant.
+function syncRefusDefinitif(status) { var st = parseInt(status, 10) || 0; return st >= 400 && st < 500 && [408, 425, 429].indexOf(st) < 0; }
+function syncMessageRefus(status, texte) {
+  try { var j = JSON.parse(texte); var m = j && (j.message || j.hint || j.details); if (m) return String(m).slice(0, 200); } catch(e) {}
+  var t = String(texte || '').trim(); return t ? t.slice(0, 200) : ('erreur ' + status);
+}
+// Renvoie { ok: true } | { ok: false, definitif: true, status, message } | { ok: false, definitif: false }.
+// `opts.depuisFile` (rejeu de la file d'attente) : une erreur passagère est LEVÉE (l'élément reste dans la file,
+// sans être ajouté une seconde fois) ; un refus définitif retire l'élément de la file.
+async function sbSaveCommande(cmd, opts) {
+  var _depuisFile = !!(opts && opts.depuisFile);
   // Toujours tenter Supabase d'abord, queue seulement si fetch échoue
   try {
     // Corps complet de la commande
@@ -3631,19 +3661,36 @@ async function sbSaveCommande(cmd) {
       },
       body: JSON.stringify(body)
     });
+    var _res = { ok: true };
     if (!resp.ok) {
       var errTxt = await resp.text();
       console.warn('sbSaveCommande UPSERT erreur', resp.status, errTxt);
-      offlineQueueAdd('commande', cmd);
-      showSync('⚠️ Sync en attente', 'pending');
+      if (syncRefusDefinitif(resp.status)) {
+        // v7.5.135 : refus DÉFINITIF -> jamais en file d'attente, message clair, alerte gardée dans les notifications
+        var _msgRefus = syncMessageRefus(resp.status, errTxt);
+        cmd._syncRefus = { status: resp.status, message: _msgRefus, at: new Date().toISOString() };
+        showSync('⛔ Commande refusée par la base', 'err');
+        toast('⛔ Commande ' + (cmd.id || '') + ' NON enregistrée : la base a refusé (' + _msgRefus + '). Corrigez-la puis enregistrez de nouveau.', 'err');
+        if (typeof notifAjout === 'function') { try { notifAjout('err', 'commande', '⛔ Refusée par la base — ' + (cmd.id || ''), _msgRefus + ' (rien n’a été enregistré ; la commande n’est PAS en attente de synchronisation)', 'Voir', 'commandes'); } catch(ex) {} }
+        _res = { ok: false, definitif: true, status: resp.status, message: _msgRefus };
+      } else {
+        if (_depuisFile) throw new Error('synchronisation passagère impossible (' + resp.status + ')');
+        offlineQueueAdd('commande', cmd);
+        showSync('⚠️ Sync en attente', 'pending');
+        _res = { ok: false, definitif: false, status: resp.status };
+      }
     } else {
+      delete cmd._syncRefus;
       showSync('✅ Commande sauvegardée', 'ok');
     }
     try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(ex) {}
+    return _res;
   } catch(e) {
+    if (_depuisFile) throw e; // v7.5.135 : rejeu de la file -> l'élément reste dans la file (pas de doublon)
     console.warn('Supabase save commande:', e.message);
     offlineQueueAdd('commande', cmd);
     toast('📵 Sauvegarde hors ligne — sync au retour réseau', 'info');
+    return { ok: false, definitif: false, reseau: true };
   }
 }
 
@@ -7553,7 +7600,7 @@ function santeCalculerCaisseEspeces() {
     var cmdsTP = getCmdsLivresParTournee(tP);
     var espTP = (cmdsTP||[]).reduce(function(s,c){ return s + getMontantEspecesCmd(c); }, 0);
     var depEspTP = depAll.filter(function(d){
-      var matchTP = d.tourneeId ? d.tourneeId === tP.id : d.date === tP.date;
+      var matchTP = rtDepenseDeTournee(d, tP, tournees); // v7.5.135 : attribution unique
       return (d.livreur||'').toLowerCase() === (tP.livreur||'').toLowerCase()
              && (d.livreur||'').toUpperCase() !== 'CAISSE'
              && d.modePaie !== 'CB' && matchTP;
@@ -8241,7 +8288,7 @@ function saveCmd() {
     lockBtn(_btnSaveCmd, 3000);
     showSync('⏳ Sauvegarde commande...', 'pending');
     closeModal('m-cmd');
-    sbSaveCommande(cmdData).then(function(){ showSync('✅ Commande sauvegardée', 'ok'); return paiAvanceAppliquer(cmdData.id, _paiAvance); }).catch(function(){ showSync('⚠️ Erreur sync commande', 'err'); }); // Sync Supabase — AVANT renderDash
+    sbSaveCommande(cmdData).then(function(r){ if (r && r.definitif) return; if (!r || r.ok !== false) showSync('✅ Commande sauvegardée', 'ok'); return paiAvanceAppliquer(cmdData.id, _paiAvance); }) /* v7.5.135 : refus définitif = rien de plus */.catch(function(){ showSync('⚠️ Erreur sync commande', 'err'); }); // Sync Supabase — AVANT renderDash
     // v7.5.90 : la date de livraison a changé (= report) -> réinitialiser les drapeaux SMS
     // de tournée pour que le client reçoive bien veille + départ pour sa NOUVELLE date.
     if (cmdData.date && _ancienneDateLiv && cmdData.date !== _ancienneDateLiv) {
@@ -8259,7 +8306,7 @@ function saveCmd() {
     lockBtn(_btnSaveCmd, 3000);
     showSync('⏳ Sauvegarde commande...', 'pending');
     closeModal('m-cmd');
-    sbSaveCommande(cmdData).then(function(){ showSync('✅ Commande sauvegardée', 'ok'); return paiAvanceAppliquer(cmdData.id, _paiAvance); }).catch(function(){ showSync('⚠️ Erreur sync commande', 'err'); }); // Sync Supabase — AVANT renderDash
+    sbSaveCommande(cmdData).then(function(r){ if (r && r.definitif) return; if (!r || r.ok !== false) showSync('✅ Commande sauvegardée', 'ok'); return paiAvanceAppliquer(cmdData.id, _paiAvance); }) /* v7.5.135 : refus définitif = rien de plus */.catch(function(){ showSync('⚠️ Erreur sync commande', 'err'); }); // Sync Supabase — AVANT renderDash
     try { renderCmds(); renderDash(); populateCmdChecklist(); if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres(); } catch(e) { console.warn('render err:', e.message); renderCmds(); populateCmdChecklist(); }
     toast('Commande '+cmdData.id+' créée — '+total.toLocaleString('fr-FR')+' € ✓','ok');
     // v7.5.73 : SMS de confirmation de prise de commande au client (le rassurer/fidéliser :
@@ -9586,7 +9633,15 @@ function rtPointCaisse(t, cmdsLivrees, depEspeces, outils) {
 // (montant_enc) comprend un éventuel acompte payé avant ; l'arrêt garde, à la signature, ce qui était déjà encaissé
 // (`encAvant`). Encaissé sur la tournée = cumul actuel − encAvant, attribué au mode de la commande (Mixte : parts
 // espèces / CB de la livraison). Sans `encAvant` (arrêt signé avant cette version) : null -> calcul d'origine.
+// v7.5.135 (revue Codex sur f09037c, point 2) : l'arrêt garde, à la signature (et à chaque correction du livreur
+// pendant la tournée), ce qui a RÉELLEMENT été encaissé sur place : `encTournee` = { esp, cb }. Ce relevé fait foi :
+// un paiement ou une correction faits plus tard sur la commande (bureau, autre tournée) ne change plus, après coup,
+// le montant attribué à cette tournée. Sans relevé (arrêt signé avant la v7.5.135) : calcul précédent.
 function rtEncaisseTournee(c, arret) {
+  if (arret && arret.encTournee && typeof arret.encTournee === 'object') {
+    var _e = parseFloat(arret.encTournee.esp), _k = parseFloat(arret.encTournee.cb);
+    if (!isNaN(_e) || !isNaN(_k)) return { esp: Math.max(0, rtArrondi(_e || 0)), cb: Math.max(0, rtArrondi(_k || 0)) };
+  }
   if (!c || !arret || arret.encAvant == null || isNaN(parseFloat(arret.encAvant))) return null;
   if (c.stpaie !== 'Payé' && c.stpaie !== 'Partiel') return { esp: 0, cb: 0 };
   if (c.paie === 'Mixte') return { esp: rtArrondi(c.paie_especes != null ? c.paie_especes : arret.paie_especes), cb: rtArrondi(c.paie_cb != null ? c.paie_cb : arret.paie_cb) };
@@ -9594,6 +9649,28 @@ function rtEncaisseTournee(c, arret) {
   if (c.paie === 'Espèces') return { esp: m, cb: 0 };
   if (c.paie === 'CB') return { esp: 0, cb: m };
   return { esp: 0, cb: 0 };
+}
+// v7.5.135 : relevé de ce qui est encaissé sur place à un arrêt (espèces / carte). Rien d'encaissé, virement,
+// déjà payé : 0 / 0. Mixte : les deux parts saisies. Espèces ou CB : le montant encaissé.
+function rtPartEncaissee(encaisse, mode, montant, esp, cb) {
+  if (!encaisse) return { esp: 0, cb: 0 };
+  if (mode === 'Mixte') return { esp: Math.max(0, rtArrondi(esp)), cb: Math.max(0, rtArrondi(cb)) };
+  if (mode === 'Espèces') return { esp: Math.max(0, rtArrondi(montant)), cb: 0 };
+  if (mode === 'CB') return { esp: 0, cb: Math.max(0, rtArrondi(montant)) };
+  return { esp: 0, cb: 0 };
+}
+// v7.5.135 (revue Codex sur f09037c, point 1) : contrôle du paiement Mixte (espèces + CB) à la signature, mêmes
+// garde-fous que le montant unique : commande déjà soldée refusée, total jamais au-dessus du reste dû, total plus
+// bas = motif obligatoire. Renvoie le résultat de rtControleMontant sur le TOTAL (ou une erreur).
+function rtControleMixte(resteDu, esp, cb, motif) {
+  var e = parseFloat(String(esp == null ? '' : esp).replace(',', '.')), k = parseFloat(String(cb == null ? '' : cb).replace(',', '.'));
+  if (isNaN(e)) e = 0; if (isNaN(k)) k = 0;
+  if (e < 0 || k < 0) return { ok: false, montant: 0, baisse: false, erreur: 'Montant invalide' };
+  if (rtArrondi(resteDu) <= 0) return { ok: false, montant: 0, baisse: false, erreur: 'Rien à encaisser sur cette commande : choisissez « Déjà payé »' };
+  if (e + k <= 0) return { ok: false, montant: 0, baisse: false, erreur: 'Saisir au moins un montant > 0 (Espèces ou CB)' };
+  var r = rtControleMontant(resteDu, String(rtArrondi(e + k)), motif);
+  r.esp = rtArrondi(e); r.cb = rtArrondi(k);
+  return r;
 }
 // v7.5.133 (revue Codex sur 0fb4eae) : cumul et statut écrits par l'éditeur de paiement du livreur (« Encaisser » /
 // ✏️ sur un arrêt livré). L'acompte déjà payé avant la livraison (arrêt.encAvant) reste dans le cumul :
@@ -9622,13 +9699,58 @@ function rtTourneeAGarder(mesTournees, idAffichee, memo, aujourdhui) {
 }
 // v7.5.130 : dépenses du livreur payées avec les espèces encaissées (carburant, péage, parking, fournisseur…).
 // Une dépense appartient à une tournée par son identifiant de tournée (sinon par la date) ; jamais celles de « CAISSE ».
-function rtDepensesTournee(t, liste) {
+// v7.5.135 (revue Codex sur f09037c, point 3) : une dépense SANS identifiant de tournée n'appartient qu'à UNE seule
+// tournée : la première (ordre des identifiants) du même livreur à la même date. Avant, elle était déduite de
+// chaque tournée du livreur ce jour-là. `listeTournees` absente : rattachement par la date (règle d'origine).
+function rtDepenseDeTournee(d, t, listeTournees) {
+  if (!d || !t) return false;
+  var lv = String(t.livreur || '').toLowerCase();
+  if (String(d.livreur || '').toLowerCase() !== lv) return false; // jamais la dépense d'un autre livreur
+  if (d.tourneeId) return d.tourneeId === t.id;
+  if (d.date !== t.date) return false;
+  var memeJour = (listeTournees || []).filter(function(x) { return x && x.date === t.date && String(x.livreur || '').toLowerCase() === lv; })
+    .map(function(x) { return String(x.id); }).sort();
+  if (!memeJour.length) return true;
+  return memeJour[0] === String(t.id);
+}
+function rtDepensesTournee(t, liste, listeTournees) {
   var lv = String((t && t.livreur) || '').toLowerCase();
   return (liste || []).filter(function(d) {
     if (!d || !t) return false;
-    var memeTournee = d.tourneeId ? d.tourneeId === t.id : d.date === t.date;
-    return String(d.livreur || '').toLowerCase() === lv && String(d.livreur || '').toUpperCase() !== 'CAISSE' && memeTournee;
+    return String(d.livreur || '').toLowerCase() === lv && String(d.livreur || '').toUpperCase() !== 'CAISSE' && rtDepenseDeTournee(d, t, listeTournees);
   });
+}
+// v7.5.135 (revue Codex sur f09037c, point 4) : peut-on ajouter ou corriger une dépense de cette tournée ?
+// Point de caisse validé : non (pour personne) tant que la validation n'est pas annulée — la remise enregistrée
+// resterait figée alors que le reste affiché changerait. Tournée clôturée : plus par le livreur (le bureau corrige,
+// avec un motif journalisé).
+function rtDepenseModifiable(t, qui, remiseValidee) {
+  if (remiseValidee) return { ok: false, erreur: 'Point de caisse déjà validé : annulez d\'abord la validation de la remise pour ajouter ou corriger une dépense' };
+  if (t && t.statut === 'terminée' && qui === 'livreur') return { ok: false, erreur: 'Tournée clôturée : la dépense doit être ajoutée ou corrigée par le bureau' };
+  return { ok: true, erreur: '' };
+}
+// v7.5.135 (revue Codex sur f09037c, point 5) : journal des corrections d'une dépense, gardé dans son commentaire
+// (colonne existante, aucune migration) après un séparateur. Chaque ligne : date, auteur, valeurs avant → après, motif.
+var RT_JOURNAL_SEP = '\n— Journal des corrections —\n';
+function rtDepenseTexte(comment) { var s = String(comment || ''), i = s.indexOf(RT_JOURNAL_SEP); return i < 0 ? s : s.slice(0, i); }
+function rtDepenseJournal(comment) { var s = String(comment || ''), i = s.indexOf(RT_JOURNAL_SEP); return i < 0 ? [] : s.slice(i + RT_JOURNAL_SEP.length).split('\n').filter(function(l) { return l.trim(); }); }
+function rtEurTexte(n) { return rtArrondi(n).toFixed(2).replace('.', ',') + ' €'; }
+// `avant` / `apres` : { cat, montant, modePaie, comment } ; renvoie { ok, erreur, change, comment } (commentaire à enregistrer).
+function rtDepenseCorrection(avant, apres, par, motif, quand) {
+  var a = avant || {}, n = apres || {};
+  var texteAvant = rtDepenseTexte(a.comment), texteApres = rtDepenseTexte(n.comment);
+  var ch = [];
+  if (String(a.cat || '') !== String(n.cat || '')) ch.push('catégorie ' + (a.cat || '—') + ' → ' + (n.cat || '—'));
+  if (rtArrondi(a.montant) !== rtArrondi(n.montant)) ch.push('montant ' + rtEurTexte(a.montant) + ' → ' + rtEurTexte(n.montant));
+  if ((a.modePaie === 'CB' ? 'CB' : 'Espèces') !== (n.modePaie === 'CB' ? 'CB' : 'Espèces')) ch.push('payée ' + (a.modePaie === 'CB' ? 'CB société' : 'Espèces') + ' → ' + (n.modePaie === 'CB' ? 'CB société' : 'Espèces'));
+  if (texteAvant.trim() !== texteApres.trim()) ch.push('commentaire « ' + texteAvant.trim().slice(0, 40) + ' » → « ' + texteApres.trim().slice(0, 40) + ' »');
+  var journal = rtDepenseJournal(a.comment);
+  var garder = function(lignes) { return texteApres + (lignes.length ? RT_JOURNAL_SEP + lignes.join('\n') : ''); };
+  if (!ch.length) return { ok: true, erreur: '', change: false, comment: garder(journal) };
+  var m = String(motif || '').trim();
+  if (m.length < RT_MOTIF_MIN) return { ok: false, erreur: 'Correction d\'une dépense : motif obligatoire (' + RT_MOTIF_MIN + ' caractères au moins)', change: true, comment: String(a.comment || '') };
+  var ligne = String(quand || '') + ' · ' + String(par || '?') + ' : ' + ch.join(', ') + ' · motif : ' + m.replace(/\s+/g, ' ');
+  return { ok: true, erreur: '', change: true, comment: garder(journal.concat([ligne])) };
 }
 function rtDepensesEspeces(liste) { return (liste || []).filter(function(d) { return d && d.modePaie !== 'CB'; }); }
 // Reste à remettre = espèces encaissées − dépenses payées en espèces. Si les dépenses dépassent, rien à remettre
@@ -9681,7 +9803,7 @@ function rtOutilsPage() {
            prepaye: function(c){ return modesPrepaye.indexOf(c.paie) >= 0 || c.paie === PAI_MODE_SITE; } };
 }
 // v7.5.129 : dépenses en espèces d'un livreur pour une tournée (même règle que les retours de caisse)
-function rtDepensesEspecesTournee(t, liste) { return rtDepensesEspeces(rtDepensesTournee(t, liste)); }
+function rtDepensesEspecesTournee(t, liste) { return rtDepensesEspeces(rtDepensesTournee(t, liste, tournees)); }
 // v7.5.129 : bloc de clôture en bas de « Ma tournée » (livreur seulement, jamais en aperçu)
 function lvClotureHtml(t) {
   if (!t || role !== 'livreur' || LV_APERCU_ACTIF) return '';
@@ -9767,7 +9889,7 @@ function renderLivreurCaisse(t) {
 
   var livreesCount = t && t.stops ? t.stops.filter(function(s){ return s.statut === 'livré'; }).length : 0;
   // v7.5.130 : dépenses rattachées à CETTE tournée (même règle que le Retour de tournée de l'administrateur)
-  var depJour = (t && role === 'livreur') ? rtDepensesTournee(t, depenses) : [];
+  var depJour = (t && role === 'livreur') ? rtDepensesTournee(t, depenses, tournees) : [];
   if (!(role === 'livreur' && t && (livreesCount > 0 || depJour.length))) {
     caisseDiv.innerHTML = '';
     return;
@@ -9811,7 +9933,7 @@ function renderLivreurCaisse(t) {
     var modeLabel = d.modePaie === 'CB' ? ' 💳' : ' 💵';
     lignes.push({
       icon:'💸',
-      label: d.cat + modeLabel + (d.comment ? ' — '+d.comment : ''),
+      label: d.cat + modeLabel + (rtDepenseTexte(d.comment) ? ' — '+rtDepenseTexte(d.comment) : ''), // v7.5.135 : sans le journal
       val: '-' + d.montant + ' €',
       color: d.modePaie === 'CB' ? 'var(--bd)' : 'var(--rd)',
       depId: d.id
@@ -10890,6 +11012,9 @@ async function lvPaieValider() {
   var _cum = rtCumulEditeur(_cmdCum ? _cmdCum.prix : s.prix, _acompteEd, newMode, newStatut, paieEsp, paieCb, _cmdCum ? _cmdCum.montantEnc : 0);
   var _statutChoisi = newStatut; // statut choisi dans la fenêtre (avant correction par l'acompte)
   newStatut = _cum.stpaie;
+  // v7.5.135 (revue Codex sur f09037c, point 2) : correction faite par le livreur PENDANT la tournée -> le relevé de
+  // l'arrêt suit (ce qui est encaissé sur place = cumul après correction − acompte payé avant la livraison).
+  s.encTournee = rtEncaisseTournee({ paie: newMode, stpaie: newStatut, montantEnc: _cum.montantEnc, paie_especes: newMode === 'Mixte' ? paieEsp : null, paie_cb: newMode === 'Mixte' ? paieCb : null }, { encAvant: _acompteEd }) || { esp: 0, cb: 0 };
   // Mettre à jour le stop
   s.paie   = newMode;
   s.stpaie = newStatut;
@@ -11022,13 +11147,15 @@ function sigMixteRecap() {
   } else if (Math.abs(diff) < 0.01) {
     msg = '✅ Total : ' + total.toFixed(2) + ' €' + avecAcompte + ' · MATCH parfait'; bg = 'var(--gl)'; fg = 'var(--gd)';
   } else if (diff > 0) {
-    msg = '⚠️ Total : ' + total.toFixed(2) + ' €' + avecAcompte + ' · +' + diff.toFixed(2) + ' € de trop'; bg = 'var(--ol)'; fg = 'var(--od)';
+    msg = '⛔ Total : ' + total.toFixed(2) + ' €' + avecAcompte + ' · +' + diff.toFixed(2) + ' € de trop : impossible de dépasser ce qui reste dû'; bg = 'var(--ol)'; fg = 'var(--od)';
   } else {
     msg = '⏳ Total : ' + total.toFixed(2) + ' €' + avecAcompte + ' · manque ' + Math.abs(diff).toFixed(2) + ' €'; bg = '#FFE9E2'; fg = '#A32D2D';
   }
   recap.textContent = msg;
   recap.style.background = bg;
   recap.style.color = fg;
+  // v7.5.135 : total plus bas que le reste dû -> le motif devient obligatoire (champ affiché)
+  var mmw = document.getElementById('sig-mixte-motif-wrap'); if (mmw) mmw.style.display = (esp + cb > 0 && diff < -0.005) ? 'block' : 'none';
 }
 
 function validerNote() {
@@ -11279,6 +11406,8 @@ function sigChoixReinit(cmdSig, s) {
   ['sig-paie-oui', 'sig-paie-non'].forEach(function(id){ var b = document.getElementById(id); if (b) { b.style.background = 'var(--bg)'; b.style.borderColor = 'var(--brd)'; b.style.color = 'var(--text)'; } });
   var inp = document.getElementById('sig-montant'); if (inp) { inp.value = String(sigResteDu); inp.max = String(sigResteDu); }
   var mo = document.getElementById('sig-montant-motif'); if (mo) mo.value = '';
+  var mxm = document.getElementById('sig-mixte-motif'); if (mxm) mxm.value = ''; // v7.5.135
+  var mxw = document.getElementById('sig-mixte-motif-wrap'); if (mxw) mxw.style.display = 'none';
   var mw = document.getElementById('sig-motif-wrap'); if (mw) mw.style.display = 'none';
   var tk = document.getElementById('sig-ticket'); if (tk) tk.value = '';
   var wrap = document.getElementById('sig-paie-mode-wrap'); if (wrap) wrap.style.display = 'none';
@@ -11396,6 +11525,16 @@ function validerSig(){
     // rien à encaisser (déjà soldée) : un encaissement en plus compterait deux fois dans la caisse
     if (_rtReste <= 0) { toast('Rien à encaisser sur cette commande : choisissez « Déjà payé »', 'err'); return; }
   }
+  // v7.5.135 (revue Codex sur f09037c, point 1) : Mixte (espèces + CB) -> mêmes garde-fous sur le TOTAL : commande
+  // déjà soldée refusée, jamais plus que le reste dû, moins = motif obligatoire (trace dans la fiche + alerte au bureau).
+  if (!sigCodActif && sigPaieEncaisse && !sigPrepaidMode && sigPaieMode === 'Mixte' && typeof rtControleMixte === 'function') {
+    _rtCmd = commandes.find(function(c){ return c.id === s.cmdId; }) || null;
+    _rtReste = _rtCmd ? rtResteDu(_rtCmd.prix, _rtCmd.montantEnc, _rtCmd.stpaie) : rtArrondi(s.prix);
+    _rtDeja = (_rtCmd && _rtCmd.stpaie === 'Partiel') ? (parseFloat(_rtCmd.montantEnc) || 0) : 0;
+    _rtMotif = String((document.getElementById('sig-mixte-motif') || {}).value || '').trim();
+    _rtCtl = rtControleMixte(_rtReste, (document.getElementById('sig-paie-esp') || {}).value, (document.getElementById('sig-paie-cb') || {}).value, _rtMotif);
+    if (!_rtCtl.ok) { toast(_rtCtl.erreur, 'err'); return; }
+  }
   const heure=new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
   s.statut='livré'; s.heure=heure; s.signataire=nom;
   // v7.5.132 (revue Codex P1) : ce qui était DÉJÀ encaissé avant cette livraison (acompte), pour séparer
@@ -11412,9 +11551,9 @@ function validerSig(){
       toast('Saisir au moins un montant > 0 (Espèces ou CB)', 'err');
       return;
     }
-    var prixStop = parseFloat(s.prix) || 0;
-    var diffStop = (_avantEnc + sigPaieEsp + sigPaieCb) - prixStop; // v7.5.132 : acompte compris
-    sigStatut = (Math.abs(diffStop) < 0.01) ? 'Payé' : 'Partiel';
+    // v7.5.135 : statut d'après le reste dû contrôlé ci-dessus (le total ne dépasse jamais le reste dû)
+    if (typeof rtStatutApres === 'function') sigStatut = rtStatutApres(_rtCmd ? _rtCmd.prix : s.prix, _avantEnc, sigPaieEsp + sigPaieCb);
+    else sigStatut = (Math.abs((_avantEnc + sigPaieEsp + sigPaieCb) - (parseFloat(s.prix) || 0)) < 0.01) ? 'Payé' : 'Partiel';
   }
   // v7.5.129 : montant plus bas que le reste dû -> « Partiel » (ou « Non payé » à 0 €)
   if (_rtCtl && _rtCtl.baisse) {
@@ -11444,6 +11583,10 @@ function validerSig(){
     delete s.paie_especes;
     delete s.paie_cb;
   }
+  // v7.5.135 (revue Codex sur f09037c, point 2) : relevé de ce qui est RÉELLEMENT encaissé sur place à cet arrêt.
+  // Le point de caisse de la tournée l'utilise, au lieu du cumul ACTUEL de la commande (qui peut changer plus tard).
+  var _montantSurPlace = sigCodActif ? sigCodMontant : (_rtCtl ? _rtCtl.montant : (parseFloat(s.prix) || 0));
+  if (typeof rtPartEncaissee === 'function') s.encTournee = sigPrepaidMode ? { esp: 0, cb: 0 } : rtPartEncaissee(sigPaieEncaisse, sigPaieMode, _montantSurPlace, sigPaieEsp, sigPaieCb);
   if(t.stops.every(x=>['livré','annulé'].includes(x.statut))) t.statut='terminée';
   const cmd=commandes.find(c=>c.id===s.cmdId);
   if(cmd){
@@ -11534,6 +11677,8 @@ function validerSig(){
   sigCmdMarketplace = null;
   // v7.5.113 : reset paiement à la livraison
   sigCodActif = false; sigCodChoix = null; sigCodMontant = 0;
+  var _mxm = document.getElementById('sig-mixte-motif'); if (_mxm) _mxm.value = ''; // v7.5.135
+  var _mxw = document.getElementById('sig-mixte-motif-wrap'); if (_mxw) _mxw.style.display = 'none';
   var _cw = document.getElementById('sig-cod-wrap'); if (_cw) _cw.style.display = 'none';
   var _tki = document.getElementById('sig-ticket'); if (_tki) _tki.value = '';
   var _tkw = document.getElementById('sig-ticket-wrap'); if (_tkw) _tkw.style.display = 'none';
@@ -11954,7 +12099,7 @@ function finRender() {
       // "remises" -> indicateur "espèces en attente" surestimé.
       var espT = (cmdsT||[]).reduce(function(s,c){ return s+getMontantEspecesCmd(c); }, 0);
       var depEspT = deps.filter(function(d){
-        var matchTournee = d.tourneeId ? d.tourneeId === t.id : d.date === t.date;
+        var matchTournee = rtDepenseDeTournee(d, t, tournees); // v7.5.135 : attribution unique
         return (d.livreur||'').toLowerCase() === (t.livreur||'').toLowerCase()
                && (d.livreur||'').toUpperCase() !== 'CAISSE'
                && d.modePaie !== 'CB' && matchTournee;
@@ -11980,7 +12125,7 @@ function finRender() {
       // v7.3.3 : inclut les paiements Mixte via getMontantEspecesCmd
       var espT = (cmdsT||[]).reduce(function(s,c){ return s + getMontantEspecesCmd(c); }, 0);
       var depEspT = deps.filter(function(d){
-        var matchTournee = d.tourneeId ? d.tourneeId === t.id : d.date === t.date;
+        var matchTournee = rtDepenseDeTournee(d, t, tournees); // v7.5.135 : attribution unique
         return (d.livreur||'').toLowerCase() === (t.livreur||'').toLowerCase()
                && (d.livreur||'').toUpperCase() !== 'CAISSE'
                && d.modePaie !== 'CB' && matchTournee;
@@ -12034,7 +12179,7 @@ function finRender() {
       var cmdsTP = getCmdsLivresParTournee(tP);
       var espTP = (cmdsTP||[]).reduce(function(s,c){ return s + getMontantEspecesCmd(c); }, 0);
       var depEspTP = (depenses||[]).filter(function(d){
-        var matchTP = d.tourneeId ? d.tourneeId === tP.id : d.date === tP.date;
+        var matchTP = rtDepenseDeTournee(d, tP, tournees); // v7.5.135 : attribution unique
         return (d.livreur||'').toLowerCase() === (tP.livreur||'').toLowerCase()
                && (d.livreur||'').toUpperCase() !== 'CAISSE'
                && d.modePaie !== 'CB' && matchTP;
@@ -12133,7 +12278,7 @@ function finRender() {
         var nonEnc   = cmdsLv.filter(function(c){ return c.stpaie!=='Payé'; }).reduce(function(s,c){ return s+c.prix; },0);
         var tExact = t.date || '';
         var depEspDetail = deps.filter(function(d){
-          var matchTournee = d.tourneeId ? d.tourneeId === t.id : d.date === tExact;
+          var matchTournee = rtDepenseDeTournee(d, t, tournees); // v7.5.135 : attribution unique
           return (d.livreur||'').toLowerCase() === lv.toLowerCase() && (d.livreur||'').toUpperCase() !== 'CAISSE' && d.modePaie !== 'CB' && matchTournee;
         });
         var depEspLv = depEspDetail.reduce(function(s,d){ return s + d.montant; }, 0);
@@ -12324,15 +12469,19 @@ function rtEchapper(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;'
 // v7.5.130 : dépenses d'une tournée (Retour de tournée) : une ligne par dépense (✏️ corriger), + Ajouter.
 function rtLignesDepenses(r) {
   var t = r && r.t; if (!t) return '';
-  var toutes = rtDepensesTournee(t, depenses);
+  var toutes = rtDepensesTournee(t, depenses, tournees);
+  var fige = rtRemiseValideeTournee(t); // v7.5.135 : point de caisse validé -> dépenses figées
   var h = '<div style="padding:0 0 8px 22px;font-size:12px">';
   toutes.forEach(function(d) {
+    var txt = rtDepenseTexte(d.comment), jr = rtDepenseJournal(d.comment); // v7.5.135 : journal des corrections affiché
     h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;padding:3px 0;color:var(--t2)">' +
-      '<span>' + rtEchapper(d.cat || 'Dépense') + (d.comment ? ' — ' + rtEchapper(String(d.comment).substring(0, 40)) : '') + (d.modePaie === 'CB' ? ' <span style="color:var(--bd)">(CB société, non déduite)</span>' : '') + '</span>' +
+      '<span>' + rtEchapper(d.cat || 'Dépense') + (txt ? ' — ' + rtEchapper(String(txt).substring(0, 40)) : '') + (d.modePaie === 'CB' ? ' <span style="color:var(--bd)">(CB société, non déduite)</span>' : '') + '</span>' +
       '<span style="white-space:nowrap"><strong style="color:' + (d.modePaie === 'CB' ? 'var(--bd)' : 'var(--red)') + '">− ' + paiEur(d.montant) + '</strong>' +
-      ' <button onclick="ouvrirDepenseLivreur({ tid: \'' + t.id + '\', depId: \'' + rtEchapper(d.id) + '\' })" title="Corriger" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px">✏️</button></span></div>';
+      (fige ? '' : ' <button onclick="ouvrirDepenseLivreur({ tid: \'' + t.id + '\', depId: \'' + rtEchapper(d.id) + '\' })" title="Corriger" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px">✏️</button>') + '</span></div>' +
+      (jr.length ? '<div style="padding:0 0 4px 10px;font-size:11px;color:var(--t3)">' + jr.map(function(l){ return '🕓 Corrigée le ' + rtEchapper(l); }).join('<br>') + '</div>' : '');
   });
-  h += '<button onclick="ouvrirDepenseLivreur({ tid: \'' + t.id + '\' })" style="margin-top:4px;padding:6px 12px;border-radius:8px;border:1.5px dashed var(--red);background:transparent;color:var(--rd);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">+ Ajouter une dépense du livreur</button>';
+  if (fige) h += '<div style="margin-top:4px;font-size:11px;font-weight:700;color:var(--t3)">🔒 Point de caisse validé : dépenses figées (annuler la validation pour corriger)</div>';
+  else h += '<button onclick="ouvrirDepenseLivreur({ tid: \'' + t.id + '\' })" style="margin-top:4px;padding:6px 12px;border-radius:8px;border:1.5px dashed var(--red);background:transparent;color:var(--rd);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">+ Ajouter une dépense du livreur</button>';
   if (r.point && r.point.aRembourser > 0) h += '<div style="margin-top:6px;font-weight:800;color:var(--rd)">Dépenses plus élevées que les espèces : ' + paiEur(r.point.aRembourser) + ' à rembourser au livreur</div>';
   return h + '</div>';
 }
@@ -19576,7 +19725,20 @@ var depLvCatSelected = '';
 // v7.5.130 : cible de l'écran Dépense. null = le livreur sur sa tournée ; sinon { tid, depId } posée par
 // l'administrateur depuis le Retour de tournée (ajout ou correction AVANT la validation du point de caisse).
 var depLvCible = null;
+// v7.5.135 (revue Codex sur f09037c, point 4) : point de caisse de la tournée déjà validé (remise « t_<tournée> »)
+function rtRemiseValideeTournee(t) { return !!(t && typeof caissesRemises !== 'undefined' && caissesRemises && caissesRemises['t_' + t.id] && caissesRemises['t_' + t.id].validee); }
+// Tournée visée par l'écran Dépense : celle de la carte (bureau), sinon celle du livreur (même règle que l'enregistrement).
+function depLvTourneeVisee(cible) {
+  if (cible && cible.tid) return tournees.find(function(x){ return x.id === cible.tid; }) || null;
+  var d = new Date(), auj = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  return rtTourneePourDepense(tournees, livNom, currentLvTourneeId, LV_APERCU_ACTIF, auj);
+}
+function depLvControle(t) { return rtDepenseModifiable(t, role === 'livreur' ? 'livreur' : 'bureau', rtRemiseValideeTournee(t)); }
+function depLvAuteur() { return role === 'livreur' ? ('livreur ' + (livNom || '')) : (role === 'admin' ? 'administrateur' : (role || '?')); }
+function depLvQuand() { var d = new Date(); return d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
 function ouvrirDepenseLivreur(cible) {
+  var _ctlOuv = depLvControle(depLvTourneeVisee(cible && cible.tid ? cible : null));
+  if (!_ctlOuv.ok) { toast(_ctlOuv.erreur, 'err'); return; }
   depLvCible = (cible && cible.tid) ? cible : null;
   var existante = (depLvCible && depLvCible.depId) ? depenses.find(function(d){ return d.id === depLvCible.depId; }) : null;
   depLvCatSelected = existante ? (existante.cat || '') : '';
@@ -19587,7 +19749,9 @@ function ouvrirDepenseLivreur(cible) {
     b.style.background = actif ? 'var(--red)' : 'var(--bg)'; b.style.borderColor = actif ? 'var(--red)' : 'var(--brd)'; b.style.color = actif ? '#fff' : 'var(--text)';
   });
   var m = document.getElementById('dep-lv-montant'); if(m) m.value = existante ? String(existante.montant) : '';
-  var c = document.getElementById('dep-lv-comment'); if(c) c.value = existante ? (existante.comment || '') : '';
+  var c = document.getElementById('dep-lv-comment'); if(c) c.value = existante ? rtDepenseTexte(existante.comment) : ''; // v7.5.135 : sans le journal
+  var mw = document.getElementById('dep-lv-motif-wrap'); if (mw) mw.style.display = existante ? 'block' : 'none';
+  var mo = document.getElementById('dep-lv-motif'); if (mo) mo.value = '';
   var tCible = depLvCible ? tournees.find(function(x){ return x.id === depLvCible.tid; }) : null;
   var ti = document.getElementById('dep-lv-titre'); if (ti) ti.textContent = existante ? '✏️ Corriger la dépense' : '💸 Ajouter une dépense';
   var st = document.getElementById('dep-lv-sous-titre'); if (st) st.textContent = tCible ? ('Tournée ' + tCible.id + ' · ' + (tCible.livreur || '') + ' · ' + fmtDate(tCible.date) + ' — déduite des espèces à remettre si payée en espèces.') : 'Payée avec les espèces encaissées : elle est déduite des espèces à remettre.';
@@ -19609,6 +19773,10 @@ function depLvSelectCat(btn) {
 function lvModifierDepense(depId) {
   var dep = depenses.find(function(d){ return d.id === depId; });
   if (!dep) { toast('Dépense non trouvée', 'err'); return; }
+  // v7.5.135 (revue Codex sur f09037c, point 4) : tournée clôturée (livreur) ou point de caisse validé -> refusé
+  var _tDep = tournees.find(function(x){ return x && String(x.livreur || '').toLowerCase() === String(dep.livreur || '').toLowerCase() && rtDepenseDeTournee(dep, x, tournees); }) || null;
+  var _ctlLv = depLvControle(_tDep);
+  if (!_ctlLv.ok) { toast(_ctlLv.erreur, 'err'); return; }
 
   var sheet = document.createElement('div');
   sheet.id = 'lv-dep-sheet';
@@ -19624,6 +19792,9 @@ function lvModifierDepense(depId) {
   html += '<button class="lv-dep-mode" data-val="Espèces" style="flex:1;padding:12px;border-radius:10px;border:2px solid ' + (selEsp?'var(--orange)':'var(--brd)') + ';background:' + (selEsp?'var(--ol)':'var(--card)') + ';font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);color:' + (selEsp?'var(--od)':'var(--text)') + '">💵 Espèces</button>';
   html += '<button class="lv-dep-mode" data-val="CB" style="flex:1;padding:12px;border-radius:10px;border:2px solid ' + (selCb?'var(--blue)':'var(--brd)') + ';background:' + (selCb?'var(--bl)':'var(--card)') + ';font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);color:' + (selCb?'var(--bd)':'var(--text)') + '">💳 CB société</button>';
   html += '</div>';
+  // v7.5.135 (revue Codex sur f09037c, point 5) : motif obligatoire, gardé dans le journal de la dépense
+  html += '<div style="font-size:12px;font-weight:700;color:var(--t3);margin-bottom:6px">MOTIF DE LA CORRECTION (obligatoire)</div>';
+  html += '<input id="lv-dep-motif" type="text" autocomplete="off" placeholder="Ex : ticket mal lu, payé avec la carte" style="width:100%;padding:11px;border:1.5px solid var(--red);border-radius:10px;font-size:14px;font-family:var(--font);box-sizing:border-box;margin-bottom:16px">';
   html += '<button id="lv-dep-valider" style="width:100%;padding:14px;border-radius:12px;border:none;background:var(--blue);color:#fff;font-size:15px;font-weight:700;cursor:pointer;font-family:var(--font);margin-bottom:8px">✅ Valider</button>';
   html += '<button id="lv-dep-annuler" style="width:100%;padding:12px;border-radius:12px;border:1px solid var(--brd);background:var(--card);font-size:14px;font-weight:600;cursor:pointer;font-family:var(--font)">Annuler</button>';
 
@@ -19651,16 +19822,20 @@ function lvModifierDepense(depId) {
     if (!s) return;
     var newMode = s.dataset.mode || 'Espèces';
     var dId = s.dataset.depId;
-    s.remove();
     var d2 = depenses.find(function(x){ return x.id === dId; });
-    if (!d2) return;
-    d2.modePaie = newMode;
+    if (!d2) { s.remove(); return; }
+    // v7.5.135 (revue Codex sur f09037c, point 5) : journal de la correction (mode avant → après, auteur, motif)
+    var _corrLv = rtDepenseCorrection(d2, { cat: d2.cat, montant: d2.montant, modePaie: newMode, comment: d2.comment }, depLvAuteur(), (document.getElementById('lv-dep-motif') || {}).value, depLvQuand());
+    if (!_corrLv.ok) { toast(_corrLv.erreur, 'err'); return; }
+    s.remove();
+    if (!_corrLv.change) return;
+    d2.modePaie = newMode; d2.comment = _corrLv.comment;
     // Sync Supabase
     try {
       await fetch(SUPABASE_URL + '/rest/v1/depenses?id=eq.' + encodeURIComponent(dId), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
-        body: JSON.stringify({ mode_paie: newMode })
+        body: JSON.stringify({ mode_paie: newMode, comment: d2.comment })
       });
       // Recharger les dépenses depuis Supabase pour s'assurer de la cohérence
       var rDep = await fetch(SUPABASE_URL + '/rest/v1/depenses?select=*&order=date_depense.desc', {
@@ -19715,10 +19890,19 @@ async function validerDepenseLivreur() {
   // Livreur : celle qu'il regarde (pas un aperçu), sinon celle du jour (avant : la première non terminée de la
   // liste, parfois une tournée À VENIR -> dépense absente du point de caisse du jour).
   var _cible = depLvCible;
-  var _activeTournee = _cible ? tournees.find(function(t){ return t.id === _cible.tid; })
-    : rtTourneePourDepense(tournees, livNom, currentLvTourneeId, LV_APERCU_ACTIF, (function(){ var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })());
+  var _activeTournee = depLvTourneeVisee(_cible);
+  // v7.5.135 (revue Codex sur f09037c, point 4) : tournée clôturée (livreur) ou point de caisse validé -> refusé
+  var _ctlMod = depLvControle(_activeTournee);
+  if (!_ctlMod.ok) { toast(_ctlMod.erreur, 'err'); return; }
   var _tourneeDate = _activeTournee ? _activeTournee.date : today;
   var _existante = (_cible && _cible.depId) ? depenses.find(function(d){ return d.id === _cible.depId; }) : null;
+  // v7.5.135 (revue Codex sur f09037c, point 5) : correction -> motif obligatoire et ligne de journal (avant → après, auteur, date)
+  var _commentFinal = comment || '';
+  if (_existante) {
+    var _corr = rtDepenseCorrection(_existante, { cat: depLvCatSelected, montant: montantVal, modePaie: modePaieLv, comment: comment }, depLvAuteur(), (document.getElementById('dep-lv-motif') || {}).value, depLvQuand());
+    if (!_corr.ok) { toast(_corr.erreur, 'err'); return; }
+    _commentFinal = _corr.comment;
+  }
 
   var dep = _existante || {
     id: generateId('dlv'),
@@ -19727,7 +19911,7 @@ async function validerDepenseLivreur() {
     tourneeId: _activeTournee ? _activeTournee.id : null,
     source: _cible ? 'admin' : 'livreur'
   };
-  dep.cat = depLvCatSelected; dep.montant = montantVal; dep.comment = comment || ''; dep.modePaie = modePaieLv;
+  dep.cat = depLvCatSelected; dep.montant = montantVal; dep.comment = _commentFinal; dep.modePaie = modePaieLv;
 
   if (!_existante) depenses.unshift(dep);
   depLvCible = null;
