@@ -1,5 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.187 - Tableau de bord + menus : fusion de la PR 26 (v7.5.186 ; PR 25 v7.5.185 et PR 24 v7.5.184 incluses : relecture complete du verrou de caisse) (26/11/2026)
+// v7.5.186 - Arrivage : fusion de la PR 25 (v7.5.185, PR 24 v7.5.184 incluse : relecture complete du verrou de caisse) (26/11/2026)
+// v7.5.185 - Habillage style D : fusion de la PR 24 (v7.5.184, relecture complete du verrou de caisse) (26/11/2026)
+// v7.5.184 - Caisse (revue Codex sur 639f2f5, regle des 10 retours) : rattachement des depenses fige par la base, tournees validees protegees, verrou consultatif partage avec la validation de la remise (26/11/2026)
 // v7.5.178 - Fusion de la PR 26 (arrivage v7.5.177 : verification sous le verrou de la reception ; style D v7.5.176 : vert de jour lisible ; caisse v7.5.175 : verrou du point de caisse tenu par la base) dans tableau de bord + menus (26/11/2026)
 // v7.5.177 - Arrivage (revue Codex sur ce01159) : resultat indetermine verifie par statut_reception_arrivage (meme verrou que la reception : attend une validation encore en cours) ; fusion du style D v7.5.176 et de la caisse v7.5.175 (26/11/2026)
 // v7.5.176 - Habillage style D : vert de jour fonce (#1f7a52, texte blanc >= 4,5:1, WCAG AA) pour boutons, notifications de succes, export CSV, "Especes a remettre" ; tests de contraste des paires de jour ; fusion de la caisse v7.5.175 (26/11/2026)

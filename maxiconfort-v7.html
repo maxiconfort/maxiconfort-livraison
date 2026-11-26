@@ -4982,10 +4982,31 @@ async function sbSaveTournee(t) {
     });
     if (!resp.ok) {
       var e = await resp.text();
+      // v7.5.184 (revue Codex PR 24 sur 639f2f5, point 1) : refus du verrou de la base (point de caisse validé) = définitif :
+      // message clair, la tournée locale reprend l'état de la base (rien n'est rejoué)
+      if (rtRefusCaisseValidee(resp.status, e)) { toast(RT_MSG_TOURNEE_CAISSE_VALIDEE, 'err'); await sbRechargerTournee(t.id); return { refuse: true }; }
       console.warn('sbSaveTournee erreur', resp.status, e);
     } else {
     }
   } catch(e) { console.warn('Supabase save tournee:', e.message); }
+}
+// v7.5.184 : relit UNE tournée dans la base et remplace la copie locale (absente de la base -> retirée de la liste)
+async function sbRechargerTournee(id) {
+  try {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/tournees?id=eq.' + encodeURIComponent(id) + '&select=*', {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+    });
+    if (!r || !r.ok) return;
+    var rows = await r.json();
+    if (!Array.isArray(rows)) return;
+    var idx = tournees.findIndex(function(x){ return x && x.id === id; });
+    if (rows.length) {
+      var row = rows[0], m = { id: row.id, livreur: row.livreur, date: row.date_tournee, statut: row.statut, stops: row.stops || [] };
+      if (idx > -1) tournees[idx] = m; else tournees.unshift(m);
+    } else if (idx > -1) tournees.splice(idx, 1);
+    try { localStorage.setItem('mx_tournees_cache', JSON.stringify(tournees)); } catch(e) {}
+    try { renderTournees(); renderLivreur(); renderDash(); } catch(e) {}
+  } catch(e) { console.warn('sbRechargerTournee:', e && e.message); }
 }
 
 var caissesRemises = {};
@@ -10844,12 +10865,17 @@ function supprimerTournee(tid) {
   if (!t) return;
   // v7.1 : PROTECTION TOURNÉE active
   if (!verifierProtectionTournee(t, 'Supprimer la tournée')) return;
+  // v7.5.184 (revue Codex PR 24 sur 639f2f5, point 1) : point de caisse validé -> annuler la validation d'abord (la base refuse aussi)
+  if (rtRemiseValideeTournee(t)) { toast(RT_MSG_TOURNEE_CAISSE_VALIDEE, 'err'); return; }
   if (!confirm('Supprimer la tournée ' + tid + ' (' + t.livreur + ' — ' + t.date + ') ?\nLes commandes ne seront pas supprimées.')) return;
   tournees = tournees.filter(function(x){ return x.id !== tid; });
   // Sync Supabase
   fetch(SUPABASE_URL + '/rest/v1/tournees?id=eq.' + encodeURIComponent(tid), {
     method: 'DELETE',
     headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+  }).then(async function(r){
+    // v7.5.184 : refus du verrou de la base -> la tournée n'est PAS supprimée : elle revient dans la liste, message clair
+    if (r && !r.ok && rtRefusCaisseValidee(r.status, await r.text())) { toast(RT_MSG_TOURNEE_CAISSE_VALIDEE, 'err'); await sbRechargerTournee(tid); }
   }).catch(function(e){ console.warn('delete tournee:', e); });
   try { localStorage.setItem('mx_tournees_cache', JSON.stringify(tournees)); } catch(e) {}
   renderTournees(); renderDash();
@@ -11406,6 +11432,17 @@ function rtDepenseVerrou(etats, listeTournees, estValidee) {
 // v7.5.175 (revue Codex PR 24 sur 437ec1e, P2) : le verrou est aussi tenu PAR LA BASE (migration 038b, déclencheur
 // depenses_verrou_caisse), car le téléphone du livreur ne peut pas lire caisse_remises. Refus = erreur « POINT_CAISSE_VALIDE ».
 var RT_MSG_CAISSE_VALIDEE = '⛔ Point de caisse déjà validé par le bureau : cette dépense ne peut plus être ajoutée, corrigée ni supprimée. Demandez au bureau d\'annuler la validation s\'il faut la changer.';
+// v7.5.184 (revue Codex PR 24 sur 639f2f5, point 1) : la base protège aussi les TOURNÉES (déclencheur tournees_verrou_caisse) :
+// une tournée au point de caisse validé ne peut être ni supprimée ni changée de livreur, de date ou d'identifiant, et aucun
+// changement de tournée ne peut déplacer d'anciennes dépenses sans tournée vers ou depuis une tournée validée.
+var RT_MSG_TOURNEE_CAISSE_VALIDEE = '⛔ Point de caisse déjà validé : cette tournée ne peut être ni supprimée, ni changée de livreur ou de date (ses dépenses en dépendent). Annulez d\'abord la validation de la remise.';
+// v7.5.184 (revue Codex PR 24 sur 639f2f5, point 1) : la base FIGE la tournée d'une dépense à son écriture (tournee_id
+// renseigné). Une correction qui change la DATE ou le LIVREUR détache la dépense de cette tournée : l'appli vide alors
+// tournee_id et la base recalcule le rattachement (même règle que rtDepenseDeTournee).
+function rtDepenseDeplacee(avant, apres) {
+  var a = avant || {}, n = apres || {};
+  return String(a.date || '') !== String(n.date || '') || String(a.livreur || '').toLowerCase() !== String(n.livreur || '').toLowerCase();
+}
 // v7.5.179 (revue Codex PR 24 sur 26dcf5b, point 2) : contrôle DOUX du verrou de la base. L'appli demande à la base
 // (public.verrou_caisse_actif, migration 038b) si le déclencheur est en place. 404 = fonction absente (038b non appliquée)
 // ou réponse « false » = verrou absent -> l'administrateur est prévenu (au lieu de prétendre protéger). 200 « true » = en
@@ -14272,6 +14309,12 @@ function paiCalculRemise(attendu, saisie) {
   return { attendu: a, remis: Math.round(remis * 100) / 100, ecart: Math.round((remis - a) * 100) / 100 };
 }
 async function validerRemiseCaisse(key) {
+  // v7.5.184 (revue Codex PR 24 sur 639f2f5, point 2) : dépenses relues JUSTE AVANT la validation (une dépense ajoutée par le
+  // livreur depuis le dernier affichage est comptée dans le reste à remettre) ; la base sérialise ensuite la validation et
+  // l'écriture des dépenses (verrou consultatif de la 038b).
+  var _relu = false;
+  if (typeof sbLoadDepenses === 'function') { try { await sbLoadDepenses(); finRender(); _relu = true; } catch (e) {} }
+  if (_relu && !(window._paiRemisesAttendu || {})[key]) { toast('Point de caisse introuvable après relecture des dépenses : remise non validée', 'err'); return; }
   var att = (window._paiRemisesAttendu || {})[key] || { especes: 0, cb: 0 };
   var attendu = Math.round((parseFloat(att.especes) || 0) * 100) / 100;
   var saisie = prompt('ESPÈCES ATTENDUES : ' + paiEur(attendu) + '\nCB ENCAISSÉ LIVREUR : ' + paiEur(att.cb || 0) + '\n\nMontant d\'espèces RÉELLEMENT REMIS par le livreur (en €) :', String(attendu));
@@ -14293,7 +14336,7 @@ async function validerRemiseCaisse(key) {
     var _infosCle = rtInfosRemise(key, att, tournees);
     var livreur = _infosCle.livreur;
     var periode = _infosCle.periode;
-    await fetch(SUPABASE_URL + '/rest/v1/caisse_remises', {
+    var _rRem = await fetch(SUPABASE_URL + '/rest/v1/caisse_remises', {
       method: 'POST',
       headers: {
         'apikey': SUPABASE_KEY,
@@ -14315,21 +14358,40 @@ async function validerRemiseCaisse(key) {
         commentaire: entry.commentaire || null
       })
     });
-  } catch(e) { /* fallback localStorage déjà fait */ }
+    if (_rRem && !_rRem.ok) throw new Error('HTTP ' + _rRem.status);
+  } catch(e) {
+    // v7.5.184 (relecture complète du verrou de caisse) : validation NON enregistrée par la base (coupure, session, refus) ->
+    // elle n'est plus gardée seulement sur ce poste : la base ne verrouillerait pas les dépenses alors que l'écran dirait « validé ».
+    delete caissesRemises[key];
+    try { localStorage.setItem('caissesRemises', JSON.stringify(caissesRemises)); } catch(_e){}
+    finRender();
+    toast('⚠️ Remise NON validée : la base ne l\'a pas enregistrée (' + (e && e.message || 'coupure') + '). Réessayez.', 'err');
+    return;
+  }
   finRender();
   toast(calc.ecart === 0 ? '✅ Remise de caisse validée — aucun écart' : '⚠️ Remise validée avec un écart de ' + (calc.ecart > 0 ? '+' : '') + paiEur(calc.ecart), calc.ecart === 0 ? 'ok' : 'err');
 }
 async function annulerRemiseCaisse(key) {
   if (!confirm('Annuler la validation de cette remise ?')) return;
+  var _avantAnn = caissesRemises[key];
   delete caissesRemises[key];
   try { localStorage.setItem('caissesRemises', JSON.stringify(caissesRemises)); } catch(e){}
   // Supprimer dans Supabase
   try {
-    await fetch(SUPABASE_URL + '/rest/v1/caisse_remises?key_remise=eq.' + encodeURIComponent(key), {
+    var _rAnn = await fetch(SUPABASE_URL + '/rest/v1/caisse_remises?key_remise=eq.' + encodeURIComponent(key), {
       method: 'DELETE',
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
     });
-  } catch(e) {}
+    if (_rAnn && !_rAnn.ok) throw new Error('HTTP ' + _rAnn.status);
+  } catch(e) {
+    // v7.5.184 (relecture complète du verrou de caisse) : annulation NON enregistrée -> la remise reste validée dans la base
+    // (les dépenses y restent verrouillées) : l'écran la montre de nouveau validée au lieu d'annoncer « annulée ».
+    if (_avantAnn) caissesRemises[key] = _avantAnn;
+    try { localStorage.setItem('caissesRemises', JSON.stringify(caissesRemises)); } catch(_e){}
+    finRender();
+    toast('⚠️ Annulation NON enregistrée par la base (' + (e && e.message || 'coupure') + ') : la remise reste validée. Réessayez.', 'err');
+    return;
+  }
   finRender();
   toast('↩ Remise annulée', 'ok');
 }
@@ -14780,7 +14842,9 @@ async function sauvegarderDepenseEdit() {
     return;
   }
   // v7.5.171 (revue Codex P2) : ni l'état avant ni l'état après ne peuvent toucher une tournée au point de caisse validé
-  var _apresEdit = Object.assign({}, depenses[idx], { date: date, cat: cat, montant: montant, livreur: livreur, comment: comment, modePaie: modePaie });
+  // v7.5.184 (revue Codex PR 24 sur 639f2f5, point 1) : date ou livreur changés -> tournée détachée (la base recalcule)
+  var _deplaceeEdit = rtDepenseDeplacee(depenses[idx], { date: date, livreur: livreur });
+  var _apresEdit = Object.assign({}, depenses[idx], { date: date, cat: cat, montant: montant, livreur: livreur, comment: comment, modePaie: modePaie }, _deplaceeEdit ? { tourneeId: null } : {});
   var _vrEdit = depVerrouCaisse([depenses[idx], _apresEdit]);
   if (!_vrEdit.ok) { toast(_vrEdit.erreur, 'err'); return; }
   // Update local en mémoire
@@ -14791,7 +14855,7 @@ async function sauvegarderDepenseEdit() {
     var resp = await fetch(SUPABASE_URL + '/rest/v1/depenses?id=eq.' + encodeURIComponent(id), {
       method: 'PATCH',
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date_depense: date, cat: cat, montant: montant, livreur: livreur, comment: comment, mode_paie: modePaie })
+      body: JSON.stringify(Object.assign({ date_depense: date, cat: cat, montant: montant, livreur: livreur, comment: comment, mode_paie: modePaie }, _deplaceeEdit ? { tournee_id: null } : {}))
     });
     if (!resp.ok) {
       var _txtEdit = await resp.text();
