@@ -115,5 +115,36 @@ console.log('\n3. MODE NUIT : PRÉFÉRENCE DE L\'APPAREIL (prefers-color-scheme,
   test('initDarkMode est appelée au démarrage de l\'appli', /initDarkMode\(\);/.test(html.replace(extraireFonction('function initDarkMode()'), '')));
 }
 
+// ══════════ Revue Codex sur a12696a (v7.5.172) : texte lisible sur les fonds de couleur, de jour comme de nuit ══════════
+console.log('\nCONTRASTE DU TEXTE SUR LES FONDS DE COULEUR (mode jour et mode nuit)');
+{
+  const lum = (h) => { const c = [1, 3, 5].map((i) => parseInt(h.substr(i, 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4))); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const contraste = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  const styleD = html.slice(html.indexOf('id="style-d"'), html.indexOf('</style>', html.indexOf('id="style-d"')));
+  const blocJour = styleD.slice(styleD.indexOf(':root{'), styleD.indexOf('@media (prefers-color-scheme: dark)'));
+  const blocNuitAppareil = styleD.slice(styleD.indexOf(':root:not(.light-mode){'), styleD.indexOf(':root.dark-mode{'));
+  const blocNuitChoisie = styleD.slice(styleD.indexOf(':root.dark-mode{'));
+  const jeton = (bloc, nom) => { const m = new RegExp('--' + nom + ':\s*(#[0-9a-fA-F]{6})').exec(bloc); return m ? m[1].toLowerCase() : null; };
+  const paires = [['vert-plein', 'sur-vert'], ['green', 'sur-vert'], ['blue', 'sur-bleu'], ['red', 'sur-rouge'], ['orange', 'sur-orange'], ['violet', 'sur-violet']];
+  for (const [nomBloc, bloc] of [['nuit (réglage de l\'appareil)', blocNuitAppareil], ['nuit (choix « nuit »)', blocNuitChoisie]]) {
+    const mesures = paires.map(([fond, encre]) => [fond, jeton(bloc, fond), jeton(bloc, encre)]);
+    test('mode ' + nomBloc + ' : chaque encre « sur-… » est définie', mesures.every((m) => m[1] && m[2]), mesures);
+    test('mode ' + nomBloc + ' : encre lisible sur chaque fond de couleur (contraste ≥ 4,5:1)', mesures.every((m) => m[1] && m[2] && contraste(m[1], m[2]) >= 4.5), mesures.map((m) => m[0] + ' ' + (m[1] && m[2] ? contraste(m[1], m[2]).toFixed(2) : '?')));
+    test('mode ' + nomBloc + ' : le BLANC y serait illisible (contraste < 3:1), d\'où la correction', mesures.filter((m) => m[0] !== 'red').every((m) => m[1] && contraste(m[1], '#ffffff') < 3));
+  }
+  test('mode jour : encres « sur-… » blanches (rendu de jour inchangé)', paires.every(([, encre]) => jeton(blocJour, encre) === '#ffffff'), paires.map(([, e]) => e + '=' + jeton(blocJour, e)));
+  const caisse = extraireFonction('function renderLivreurCaisse(t)');
+  test('« Ma caisse du jour » : montant positif sur fond vert plein écrit avec l\'encre « sur-vert » (plus de blanc)', /netARemettre > 0 \? 'var\(--vert-plein\)'/.test(caisse) && (caisse.match(/netARemettre > 0 \? 'var\(--sur-vert\)'/g) || []).length === 2 && !/'#fff'/.test(caisse));
+  // toute la page : plus de texte blanc dans un style dont le fond est une couleur qui s'éclaircit la nuit
+  const restes = [];
+  const examiner = (seg) => { const f = seg.match(/background(?:-color)?:\s*var\(--(green|teal|blue|red|orange|violet|vert-plein)\)/g) || [];
+    if (f.length && /(^|[;{"\s])color:\s*(#fff\b|#ffffff\b|white\b)/.test(seg)) restes.push(seg.slice(0, 120)); };
+  (html.match(/style="[^"]*"/g) || []).forEach(examiner);
+  (html.match(/<style[^>]*>[\s\S]*?<\/style>/g) || []).forEach((b) => (b.match(/\{[^{}]*\}/g) || []).forEach(examiner));
+  test('page entière : aucun texte blanc sur fond vert / bleu / rouge / orange / violet (styles et feuilles de style)', restes.length === 0, restes);
+  const fondJs = /(?:background|cssText)[^\n]{0,200}var\(--(?:green|blue|red|orange|violet)\)[^\n]{0,200}\n?[^\n]{0,200}\? *'#fff'/;
+  test('code : plus de « ? \'#fff\' » posé sur un fond de couleur (boutons actifs, réorganisation, catégories de dépense)', !fondJs.test(html));
+}
+
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
 process.exit(ko ? 1 : 0);

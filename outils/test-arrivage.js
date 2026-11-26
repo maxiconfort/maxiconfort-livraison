@@ -1054,9 +1054,104 @@ function nouveauBac(opts) {
       && mp.includes('produitNonVendableDeCommande(c!.lignes, c!.produit, catP)') && mp.includes('rep(422') && mp.indexOf('rep(422') < mp.indexOf('if (!confirme)'));
   }
 
+  // ══ revue Codex PR 26 sur 4e04efd (v7.5.173) : réponse de validation PERDUE après l'écriture en base = résultat INDÉTERMINÉ ══
+  console.log('\n8 septies. RÉPONSE DE VALIDATION PERDUE : RÉSULTAT INDÉTERMINÉ, RELECTURE AVANT TOUTE NOUVELLE TENTATIVE');
+  {
+    ({ bac } = nouveauBac());
+    const I = bac.arrIssueValidation;
+    test('issue : { ok: true } en 200 = validée', I(false, 200, { ok: true, total_recu: 70 }) === 'validee');
+    test('issue : refus explicite de la fonction ({ ok: false, erreur }) = refusée', I(false, 200, { ok: false, erreur: 'arrivage_deja_traite' }) === 'refusee');
+    test('issue : erreur de la base 400 / 401 / 403 / 404 / 422 (opération annulée) = refusée', [400, 401, 403, 404, 422].every(s => I(false, s, { message: 'erreur' }) === 'refusee'));
+    test('issue : pas de réponse (coupure) = INDÉTERMINÉE', I(true, 0, null) === 'indeterminee');
+    test('issue : corps illisible, 5xx, 408 / 425 / 429, réponse sans « ok » = INDÉTERMINÉE', I(false, 200, null) === 'indeterminee' && [500, 502, 503, 504, 408, 425, 429].every(s => I(false, s, { message: 'x' }) === 'indeterminee') && I(false, 200, { total_recu: 70 }) === 'indeterminee');
+    const C = bac.arrConclureRelecture;
+    test('relecture : « recu » = validée (même sans mouvement : tout endommagé)', C('recu', 2, 2) === 'validee' && C('recu', 0, 0) === 'validee');
+    test('relecture : en attente (ou annulé) SANS mouvement = non validée', C('en_attente', 0, 0) === 'non_validee' && C('annule', 0, 0) === 'non_validee');
+    test('relecture : en attente AVEC des mouvements de cet arrivage = incohérente (pas de nouvel envoi)', C('en_attente', 1, 0) === 'incoherente' && C('en_attente', 0, 1) === 'incoherente');
+  }
+  {
+    // réponses de la base pour la relecture (statut, historique des revients, mouvements de stock de CET arrivage)
+    const relecture = (url, etat) => {
+      if (url.includes('/arrivages?select=id,statut,recu_le')) return etat.arrivages || { ok: true, status: 200, corps: paginer(url, [Object.assign(arrivage(etat.statut || 'recu'), { recu_le: '2026-11-26T10:00:00Z' })]) };
+      if (url.includes('/prix_revient_historique?')) return { ok: true, status: 200, corps: paginer(url, etat.historique || []) };
+      if (url.includes('/mouvements_stock?')) return { ok: true, status: 200, corps: paginer(url, etat.mouvements || []) };
+      return null;
+    };
+    const HIST = [{ id: 1, arrivage_id: 7, produit_id: 'pr-a', quantite: 30 }, { id: 2, arrivage_id: 7, produit_id: 'pr-n', quantite: 40 }], MVT = [{ id: 11, quantite: 30 }, { id: 12, quantite: 40 }];
+    const bacPerdu = (rpc, etat) => { const o = { relectures: 0, pendant: null };
+      const x = nouveauBac({ repondre: (url) => {
+        if (url.includes('/rpc/valider_reception_arrivage')) return rpc(o);
+        if (url.includes('/arrivages?select=id,statut,recu_le')) { o.relectures++; if (o.surRelecture) o.surRelecture(); }
+        const rr = relecture(url, typeof etat === 'function' ? etat(o) : etat); if (rr) return rr;
+        if (url.includes('/arrivages?')) return { ok: true, status: 200, corps: paginer(url, [arrivage((typeof etat === 'function' ? etat(o) : etat).statut || 'recu')]) };
+        if (url.includes('/arrivage_lignes?')) return { ok: true, status: 200, corps: paginer(url, lignesArr()) };
+        return { ok: true, status: 200, corps: [] };
+      } });
+      x.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; x.bac.ARR_ETAT.lignes = lignesArr(); x.bac.arrOuvrir(7);
+      return Object.assign(x, { o, nbRpc: () => x.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage')).length,
+        nbRelectures: () => x.appels.filter(a => a.url.includes('/arrivages?select=id,statut,recu_le')).length }); };
+    // A. la base VALIDE, puis la réponse est perdue (coupure) : jamais « NON validée », vérification puis « validée »
+    let X = bacPerdu(() => { throw new Error('Failed to fetch'); }, { statut: 'recu', historique: HIST, mouvements: MVT });
+    X.o.surRelecture = () => { if (!X.o.pendant) X.o.pendant = { envoi: X.bac.ARR_ETAT.envoi, bouton: X.elts['arr-btn-valider'].textContent, desactive: X.elts['arr-btn-valider'].disabled, toasts: X.toasts.map(t => t.m) }; };
+    await X.bac.arrValider();
+    test('validation réussie puis réponse perdue : PENDANT la relecture, résultat INDÉTERMINÉ « vérification en cours… », bouton bloqué, verrou gardé',
+      !!X.o.pendant && X.o.pendant.envoi === true && /vérification en cours/.test(X.o.pendant.bouton) && X.o.pendant.desactive === true
+      && X.o.pendant.toasts.some(m => /INDÉTERMINÉ — vérification en cours/.test(m)) && !X.o.pendant.toasts.some(m => /NON validée/.test(m)), X.o.pendant);
+    test('… statut ET mouvements relus (arrivage, historique des revients, mouvements « arrivage:ARR-TEST-1 »)', X.nbRelectures() >= 1
+      && X.appels.some(a => a.url.includes('/prix_revient_historique?') && a.url.includes('arrivage_id=eq.7') && a.url.includes('source=eq.arrivage'))
+      && X.appels.some(a => a.url.includes('/mouvements_stock?') && a.url.includes('source=eq.' + encodeURIComponent('arrivage:ARR-TEST-1'))));
+    test('… puis « Réception validée » (vérifié dans la base, 70 articles), JAMAIS « NON validée », une seule validation envoyée',
+      X.toasts.some(t => t.t === 'ok' && /Réception validée \(vérifié dans la base : 70 article/.test(t.m)) && !X.toasts.some(t => /NON validée/.test(t.m)) && X.nbRpc() === 1, X.toasts);
+    test('… arrivage « recu », plus de bouton Valider, verrou levé, plus rien « à vérifier »', X.bac.ARR_ETAT.arrivages[0].statut === 'recu' && !X.elts['arr-contenu'].innerHTML.includes('arr-btn-valider')
+      && X.bac.ARR_ETAT.envoi === false && X.bac.ARR_ETAT.aVerifier === null);
+    // A bis. réponse 502 sans corps lisible (passerelle) après validation : même traitement
+    X = bacPerdu(() => ({ ok: false, status: 502, corps: undefined }), { statut: 'recu', historique: HIST, mouvements: MVT });
+    X.bac.fetch = ((f) => async (url, init) => { const r = await f(url, init); if (url.includes('/rpc/')) r.json = async () => { throw new Error('corps illisible'); }; return r; })(X.bac.fetch);
+    await X.bac.arrValider();
+    test('réponse 502 au corps illisible : indéterminée, relue, « validée » (aucun « NON validée »)', X.nbRelectures() >= 1 && X.toasts.some(t => /Réception validée \(vérifié/.test(t.m)) && !X.toasts.some(t => /NON validée/.test(t.m)), X.toasts);
+    // B. erreur RÉELLE (refus explicite) : « NON validée » tout de suite, sans relecture, nouvelle tentative possible
+    X = bacPerdu(() => ({ ok: true, status: 200, corps: { ok: false, erreur: 'une_saisie_par_ligne_requise' } }), { statut: 'en_attente' });
+    await X.bac.arrValider();
+    test('erreur réelle (refus de la fonction) : « NON validée : une_saisie_par_ligne_requise » aussitôt, aucune relecture, bouton réactivé',
+      X.toasts.some(t => t.t === 'err' && /NON validée : une_saisie_par_ligne_requise/.test(t.m)) && X.nbRelectures() === 0 && X.bac.ARR_ETAT.aVerifier === null && X.bac.ARR_ETAT.envoi === false && X.elts['arr-btn-valider'].disabled === false, X.toasts);
+    X = bacPerdu(() => ({ ok: false, status: 400, corps: { code: 'P0001', message: 'contrainte' } }), { statut: 'en_attente' });
+    await X.bac.arrValider();
+    test('erreur réelle de la base (HTTP 400, opération annulée) : « NON validée » sans relecture', X.toasts.some(t => /NON validée : contrainte/.test(t.m)) && X.nbRelectures() === 0 && X.bac.ARR_ETAT.aVerifier === null);
+    // C. réponse perdue AVANT l'écriture (la base n'a rien validé) : relecture « en attente », aucun mouvement -> « NON validée », réessai permis
+    X = bacPerdu((o) => { o.n = (o.n || 0) + 1; if (o.n === 1) throw new Error('Failed to fetch'); return { ok: true, status: 200, corps: { ok: true, total_recu: 70 } }; },
+      (o) => ({ statut: o.n >= 2 ? 'recu' : 'en_attente' }));
+    await X.bac.arrValider();
+    test('réponse perdue, base NON validée : après relecture « NON validée (vérifié dans la base… aucun mouvement) — vous pouvez valider de nouveau »',
+      X.toasts.some(t => t.t === 'err' && /NON validée \(vérifié dans la base : arrivage « En attente de réception », aucun mouvement\) — vous pouvez valider de nouveau/.test(t.m)) && X.bac.ARR_ETAT.aVerifier === null && X.elts['arr-btn-valider'].disabled === false, X.toasts);
+    await X.bac.arrValider();
+    test('… nouvelle tentative autorisée APRÈS la relecture : deuxième envoi, « Réception validée »', X.nbRpc() === 2 && X.toasts.some(t => t.t === 'ok' && /Réception validée : 70/.test(t.m)));
+    // D. réponse perdue ET relecture impossible : reste INDÉTERMINÉ, aucun nouvel envoi tant que la base n'a pas été relue
+    let lectureOk = false;
+    X = bacPerdu(() => { throw new Error('Failed to fetch'); }, () => lectureOk ? { statut: 'recu', historique: HIST, mouvements: MVT } : { arrivages: { ok: false, status: 503, corps: [] } });
+    await X.bac.arrValider();
+    test('relecture impossible : « Résultat INDÉTERMINÉ : vérification impossible (503) », jamais « validée » ni « NON validée »',
+      X.toasts.some(t => /Résultat INDÉTERMINÉ : vérification impossible \(503\)/.test(t.m)) && !X.toasts.some(t => /NON validée|Réception validée/.test(t.m)) && X.bac.ARR_ETAT.aVerifier && X.bac.ARR_ETAT.aVerifier.id === 7, X.toasts);
+    test('… bouton Valider BLOQUÉ (« vérifiez dans la base »), bouton « Vérifier dans la base » proposé, verrou levé (navigation possible)',
+      X.elts['arr-btn-valider'].disabled === true && /Résultat indéterminé : vérifiez dans la base/.test(X.elts['arr-btn-valider'].textContent)
+      && X.elts['arr-contenu'].innerHTML.includes('arr-btn-verifier') && X.elts['arr-btn-verifier'].style.display === '' && X.bac.ARR_ETAT.envoi === false);
+    await X.bac.arrValider();
+    test('… nouvelle validation refusée SANS appel à la base tant que le résultat est indéterminé', X.nbRpc() === 1 && X.toasts.some(t => /validation précédente INDÉTERMINÉ : vérifiez d'abord dans la base/.test(t.m)));
+    lectureOk = true; await X.bac.arrVerifierClic();
+    test('« Vérifier dans la base » une fois la base joignable : « Réception validée (vérifié…) », plus rien à vérifier, une seule validation envoyée',
+      X.toasts.some(t => /Réception validée \(vérifié dans la base/.test(t.m)) && X.bac.ARR_ETAT.aVerifier === null && X.nbRpc() === 1 && X.bac.ARR_ETAT.envoi === false);
+    // E. état incohérent (en attente mais mouvements présents) : reste indéterminé, aucun renvoi
+    X = bacPerdu(() => { throw new Error('Failed to fetch'); }, { statut: 'en_attente', historique: [HIST[0]], mouvements: [] });
+    await X.bac.arrValider(); await X.bac.arrValider();
+    test('relecture incohérente (en attente AVEC un mouvement) : reste INDÉTERMINÉ, message « ne revalidez pas », aucun second envoi',
+      X.toasts.some(t => /Ne revalidez pas/.test(t.m)) && X.bac.ARR_ETAT.aVerifier && X.nbRpc() === 1, X.toasts);
+    // code : plus de « pas de connexion » transformé en « Réception NON validée »
+    const env = extraireFonction('async function arrValiderEnvoi(a, ls, saisies, vue)');
+    test('code : une coupure après l\'envoi n\'est plus traduite en « NON validée » (plus de j = { ok: false, erreur: \'pas de connexion\' })', !/j = \{ ok: false, erreur: 'pas de connexion' \}/.test(env) && /arrIssueValidation\(sansReponse, http, j\)/.test(env) && /if \(issue === 'indeterminee'\) \{ await arrVerifierReception\(a\); return; \}/.test(env));
+  }
+
   console.log('\n9. VERSION');
   const m = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(sw);
-  test('CACHE_VERSION augmentée (v7-5-165 ou plus)', !!m && Number(m[1]) >= 165, m && m[0]);
+  test('CACHE_VERSION augmentée (v7-5-173 ou plus)', !!m && Number(m[1]) >= 173, m && m[0]);
 
   // revue Codex PR 26 sur 636f873 : le banc RÉEL de la 039 ne peut plus « réussir » sans dépendance. Il est lancé ici dans un
   // processus séparé où le paquet est rendu introuvable (aucun téléchargement, aucune base : il s'arrête avant).

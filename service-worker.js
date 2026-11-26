@@ -1,8 +1,12 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.174 - Fusion des corrections arrivage v7.5.173, habillage v7.5.172 et caisse v7.5.171 dans tableau de bord + menus ; numero en double corrige (fusion ex-v7.5.164 -> v7.5.166) (26/11/2026)
+// v7.5.173 - Arrivage : reponse de validation perdue = resultat indetermine, statut et mouvements relus avant toute nouvelle tentative (revue Codex sur 4e04efd) ; fusion de l'habillage v7.5.172 et de la caisse v7.5.171 (26/11/2026)
+// v7.5.172 - Habillage style D : texte des montants positifs lisible en mode nuit (var(--sur-vert)) (revue Codex sur a12696a) ; fusion de la caisse v7.5.171 (26/11/2026)
+// v7.5.171 - Caisse (revue Codex sur 3c3aa05) : "Deja paye" reserve aux commandes soldees (admin : motif journalise), livraisons terminees != tournee cloturee, verrou du point de caisse valide sur la liste Finance (26/11/2026)
 // v7.5.170 - Tableau de bord : modification temps reel sans identifiant = preuve de chargement retiree ; prix de revient relus apres une mise a jour distante du stock (revue Codex sur d0f6efd) (26/11/2026)
+// v7.5.166 - Fusion des corrections arrivages v7.5.163 (creation a prix nul = prix a definir, homonyme refuse ; correction de taux refusee sur rupture de continuite) dans tableau de bord + menus (26/11/2026)
 // v7.5.164 - Arrivage : verrou de validation garde pendant toute l'operation (navigation bloquee), banc 039 en echec si pglite manque (revue Codex sur 636f873) (26/11/2026)
-// v7.5.164 - Fusion des corrections arrivages v7.5.163 (creation a prix nul = prix a definir, homonyme refuse ; correction de taux refusee sur rupture de continuite) dans tableau de bord + menus (26/11/2026)
 // v7.5.163 - Produits : creation a prix nul = prix a definir (non vendable), homonyme d'une reference en attente refuse ; arrivage : correction de taux refusee si le revient a change hors historique (26/11/2026)
 // v7.5.162 - Fusion des corrections arrivages v7.5.161 (remise globale figee tant qu'une ligne figee est presente) dans tableau de bord + menus (26/11/2026)
 // v7.5.161 - Produits non vendables : remise globale figee tant qu'une ligne figee est presente (base, appli, JARVIS) (26/11/2026)
@@ -35,7 +39,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-170';
+const CACHE_VERSION = 'maxiconfort-v7-5-174';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
