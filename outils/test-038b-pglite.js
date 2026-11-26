@@ -9,7 +9,7 @@
 //
 // Ce que fait le banc :
 //   1. recrée le STRICT NÉCESSAIRE du schéma réel : rôles Supabase anon / authenticated / service_role, rôle propriétaire non
-//      superutilisateur avec BYPASSRLS (comme « postgres » chez Supabase), schéma privé « interne », tables depenses et
+//      superutilisateur avec BYPASSRLS (comme « postgres » chez Supabase), schéma privé « interne », tables depenses, tournees et
 //      caisse_remises avec la politique sess_admin de la migration 019, puis la migration 020 TELLE QUELLE (politiques du livreur) ;
 //   2. applique TELLE QUELLE la migration 038b (son auto-contrôle s'exécute : une erreur annulerait la migration), puis une 2e fois ;
 //   3. exécute pour de vrai, rôle par rôle, les écritures que fait l'application (POST = insert, merge-duplicates =
@@ -60,14 +60,19 @@ create table public.depenses (
 create table public.caisse_remises (
   id bigint generated always as identity primary key, key_remise text unique, livreur text, periode text, validee boolean,
   date_remise timestamptz, par text, especes_attendues numeric, especes_remises numeric, ecart numeric, cb_encaisse numeric, commentaire text);
+create table public.tournees (id text primary key, livreur text, date_tournee text, statut text, stops jsonb, updated_at timestamptz);
 do $$
 declare t text;
 begin
-  foreach t in array array['depenses', 'caisse_remises'] loop
+  foreach t in array array['depenses', 'caisse_remises', 'tournees'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('create policy sess_admin on public.%I for all to anon using ((select public.session_role()) = ''admin'') with check ((select public.session_role()) = ''admin'')', t);
   end loop;
 end $$;
+-- migration 019 : politique livreur sur tournees (dates J-2 / J+2 omises : sans effet sur le verrou)
+create policy sess_livreur on public.tournees for all to anon
+  using ((select public.session_role()) = 'livreur' and upper(coalesce(livreur,'')) = (select public.session_livreur()))
+  with check ((select public.session_role()) = 'livreur' and upper(coalesce(livreur,'')) = (select public.session_livreur()));
 -- migration 019 : politique livreur d'origine sur depenses (remplacée par la 020 appliquée telle quelle)
 create policy sess_livreur on public.depenses for all to anon
   using ((select public.session_role()) = 'livreur' and upper(coalesce(livreur,'')) = (select public.session_livreur()))
@@ -159,11 +164,42 @@ create policy sess_livreur on public.depenses for all to anon
   m = await echec('livreur', "update public.depenses set mode_paie = 'CB' where id = 'd2'");
   test('livreur : dépense d\'une tournée NON validée -> modification acceptée', m === null && (await dep('d2')).mode_paie === 'CB', m);
   m = await echec('livreur', POST, ['d4', AUJ, 3, null]);
-  test('livreur : dépense ancienne sans tournée (limite documentée) -> non concernée', m === null, m);
+  test('livreur : dépense sans tournée, aucune tournée du livreur ce jour-là -> acceptée (rien à verrouiller)', m === null, m);
   await q('admin', "insert into public.caisse_remises (key_remise, livreur, periode, validee, par) values ('t_T-L', 'LIVREUR-TEST', $1, false, 'admin')", [AUJ]);
   m = await echec('livreur', "update public.depenses set montant = 6.5 where id = 'd2'");
   test('remise enregistrée mais NON validée (validee = false) -> modification acceptée', m === null, m);
   await q('admin', "delete from public.caisse_remises where key_remise = 't_T-L'");
+
+  // ===================================================================================================================
+  console.log('\n3 bis. DÉPENSE SANS tournee_id : rattachée comme dans l\'appli (première tournée du livreur ce jour-là) — revue Codex sur 26dcf5b');
+  // dates à venir : la politique 020 ne laisse au livreur que ses dépenses de la veille et après
+  const { j1: J1, j2: J2 } = (await db.query("select to_char(current_date + 1, 'YYYY-MM-DD') as j1, to_char(current_date + 2, 'YYYY-MM-DD') as j2")).rows[0];
+  // deux tournées le même jour : la PREMIÈRE (ordre des identifiants : T-A < T-B) reçoit la dépense sans tournée
+  await q('maintenance', "insert into public.tournees (id, livreur, date_tournee, statut) values ('T-B', 'LIVREUR-TEST', $1, 'terminée'), ('T-A', 'livreur-test', $1, 'terminée'), ('T-Z', 'LIVREUR-TEST', $2, 'terminée'), ('T-O', 'AUTRE-TEST', $2, 'terminée')", [J1, J2]);
+  await q('maintenance', "insert into public.depenses (id, date_depense, cat, montant, livreur, comment, mode_paie, tournee_id) values ('s1', $1, 'Péage', 5, 'LIVREUR-TEST', '', 'Espèces', null), ('s2', $2, 'Péage', 4, 'LIVREUR-TEST', '', 'Espèces', null)", [J1, J2]);
+  await valider('T-A');
+  m = await echec('livreur', "update public.depenses set mode_paie = 'CB' where id = 's1'");
+  test('sans tournee_id, date de T-A (validée, 1re du jour, livreur écrit en minuscules) : changement de mode refusé', VERROU.test(m || '') && (await dep('s1')).mode_paie === 'Espèces', m);
+  m = await echec('admin', "delete from public.depenses where id = 's1'");
+  test('sans tournee_id : suppression par l\'admin refusée tant que T-A est validée', VERROU.test(m || '') && (await dep('s1')) !== null, m);
+  m = await echec('livreur', "insert into public.depenses (id, date_depense, cat, montant, livreur, comment, mode_paie, tournee_id) values ('s3', $1, 'Parking', 2, 'LIVREUR-TEST', '', 'Espèces', null)", [J1]);
+  test('sans tournee_id : AJOUT d\'une nouvelle dépense à la date de T-A validée -> refusé', VERROU.test(m || '') && (await dep('s3')) === null, m);
+  m = await echec('livreur', "update public.depenses set date_depense = $1 where id = 's2'", [J1]);
+  test('sans tournee_id : changer la DATE pour entrer dans la tournée validée -> refusé', VERROU.test(m || '') && (await dep('s2')) !== null, m);
+  m = await echec('livreur', "update public.depenses set date_depense = $1 where id = 's1'", [J2]);
+  test('sans tournee_id : changer la DATE pour sortir de la tournée validée -> refusé', VERROU.test(m || ''), m);
+  await annuler('T-A'); await valider('T-B');
+  m = await echec('livreur', "update public.depenses set montant = 6 where id = 's1'");
+  test('seule T-B (2e du jour) validée : la dépense sans tournée appartient à T-A -> modifiable (même règle que l\'appli)', m === null && (await dep('s1')).montant === 6, m);
+  await annuler('T-B');
+  await q('admin', "insert into public.caisse_remises (key_remise, livreur, periode, validee, par) values ('t_T-O', 'AUTRE-TEST', $1, true, 'admin')", [J2]);
+  m = await echec('livreur', "update public.depenses set montant = 5 where id = 's2'");
+  test('tournée validée d\'un AUTRE livreur le même jour -> sans effet sur la dépense', m === null, m);
+  await valider('T-Z');
+  m = await echec('livreur', "update public.depenses set montant = 9, tournee_id = 'T-NV' where id = 's2'");
+  test('sans tournee_id -> tournée renseignée NON validée : l\'état d\'avant (T-Z validée) bloque quand même', VERROU.test(m || ''), m);
+  await annuler('T-Z');
+  test('aucune donnée réécrite : tournee_id des dépenses sans tournée reste vide', (await dep('s1')).tournee_id === null && (await dep('s2')).tournee_id === null);
 
   // ===================================================================================================================
   console.log('\n4. ADMINISTRATEUR : annuler la validation d\'abord');
@@ -189,6 +225,15 @@ create policy sess_livreur on public.depenses for all to anon
   test('maintenance directe (éditeur SQL, sans set role) : non bloquée', m === null, m);
   m = await echec('authenticated', "update public.depenses set comment = 'x' where id = 'd1'");
   test('authenticated (outil LBC) : aucune ligne visible (RLS sans politique) -> aucune écriture', (await q('maintenance', "select comment from public.depenses where id = 'd1'"))[0].comment === 'maintenance');
+
+  // ===================================================================================================================
+  console.log('\n6. CONTRÔLE DOUX DE L\'APPLI : public.verrou_caisse_actif()');
+  test('appli (anon) : verrou_caisse_actif() = vrai une fois la 038b appliquée', (await q('livreur', 'select public.verrou_caisse_actif() as v'))[0].v === true);
+  await db.exec('set role l24_postgres; begin;');
+  await db.exec('alter table public.depenses disable trigger depenses_verrou_caisse');
+  test('déclencheur désactivé -> verrou_caisse_actif() = faux (l\'appli le signale à l\'admin)', (await db.query('select public.verrou_caisse_actif() as v')).rows[0].v === false);
+  await db.exec('rollback; reset role;');
+  test('anon ne peut pas appeler interne.l038b_tournee_attribuee', !!(await echec('anon', "select interne.l038b_tournee_attribuee(null, 'x', 'y')")));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
