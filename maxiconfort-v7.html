@@ -4994,8 +4994,11 @@ async function sbLoadAll() {
     var controller = new AbortController();
     var timeout = setTimeout(function(){ controller.abort(); }, 10000); // 10s timeout
     // select explicite : exclut gls_pdf_base64 (PDF 50-400 Ko/cmd, récupéré à la demande via getLabel)
+    // v7.5.149 (revue Codex PR 27, P2) : chargement en cours = complétude incertaine ; le total est demandé dans la MÊME réponse
+    // (Prefer: count=exact → Content-Range « 0-999/1001 ») : la liste reçue et le total décrivent le même instant
+    cmdChargementComplet = false;
     var rCmds = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=created_at.desc', {
-      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'count=exact' },
       signal: controller.signal
     });
     var rTour = await fetch(SUPABASE_URL + '/rest/v1/tournees?select=*&order=created_at.desc', {
@@ -5004,10 +5007,13 @@ async function sbLoadAll() {
     });
     clearTimeout(timeout);
     var cmdsRes = { data: rCmds.ok ? await rCmds.json() : [], error: rCmds.ok ? null : 'HTTP '+rCmds.status };
+    var cmdsTotal = cmdTotalDepuisEntete(rCmds.headers && rCmds.headers.get ? rCmds.headers.get('Content-Range') : null);
     var tourRes = { data: rTour.ok ? await rTour.json() : [], error: rTour.ok ? null : 'HTTP '+rTour.status };
     if (cmdsRes.error) { console.warn('Supabase commandes error:', cmdsRes.error); }
     if (tourRes.error) { console.warn('Supabase tournees error:', tourRes.error); }
 
+    // v7.5.149 : preuve de chargement COMPLET — lecture réussie et TOUTES les lignes reçues (total de la même réponse)
+    var cmdsComplet = !cmdsRes.error && Array.isArray(cmdsRes.data) && cmdsRes.data.length > 0 && cmdsTotal != null && cmdsRes.data.length >= cmdsTotal;
     if (cmdsRes.data && cmdsRes.data.length > 0) {
       commandes = cmdsRes.data.map(function(r) {
         return {
@@ -5033,6 +5039,7 @@ async function sbLoadAll() {
       });
     }
 
+    cmdChargementComplet = cmdsComplet;
     if (tourRes.data && tourRes.data.length > 0) {
       tournees = tourRes.data.map(function(r) {
         return {
@@ -5180,6 +5187,12 @@ var CMD_PAGE_SIZE = 200;      // commandes chargées par lot
 var cmdPageOffset = 0;        // offset actuel
 var cmdTotalCount = 0;        // total en base
 var cmdAllLoaded = false;     // true quand tout est chargé
+// v7.5.149 (revue Codex PR 27, P2) : PREUVE que « commandes » contient TOUTES les commandes de la base, posée seulement par sbLoadAll
+// (liste lue en entier, total de la même réponse) ; jamais déduite de commandes.length ≥ cmdTotalCount (total non actualisé lors des
+// insertions par temps réel ou relève). Utilisée par le tableau de bord (tdbLocalComplet).
+var cmdChargementComplet = false;
+// Total d'une réponse PostgREST « Content-Range: 0-999/1001 » → 1001 ; « */0 » → 0 ; absent ou « /* » → null (inconnu).
+function cmdTotalDepuisEntete(h) { var m = /\/(\d+)\s*$/.exec(String(h || '')); return m ? parseInt(m[1], 10) : null; }
 
 var _pollingInterval = null;
 function startPolling() {
@@ -6891,14 +6904,21 @@ function tdbHtml(e) {
     (lv.length ? lv.slice(0, 6).map(function (l) { return '<div class="tdb-ligne"><span>' + tdbEsc(l.nom) + '</span><b>' + pl(l.nb, 'livraison') + (A ? ' <small>' + tdbEur(l.ca) + '</small>' : '') + '</b></div>'; }).join('')
       : '<div class="tdb-ligne vide"><span>Aucune livraison sur la période</span></div>') + '</section>';
   h += '</div>';
-  if (e.note) h += '<div class="tdb-source">' + tdbEsc(e.note) + '</div>';
+  if (e.note) h += '<div class="tdb-source">' + tdbEsc(e.note) + (e.reessayer ? ' <button class="btn" onclick="tdbReessayer()">🔄 Réessayer</button>' : '') + '</div>';
   return h;
 }
 
 // ── Données et affichage ──
 var TDB_COLS = 'id,prix,date_commande,date_livraison,statut,stpaie,montant_enc,origine,adresse,livreur';
-var TDB_ETAT = { cle: '', lignes: null, at: 0, enCours: '', erreur: '', revientsDemandes: false, gen: 0, req: 0 };
+var TDB_ETAT = { cle: '', lignes: null, at: 0, enCours: '', erreur: '', revientsDemandes: false, gen: 0, req: 0, echecs: 0, reessaiA: 0 };
 var TDB_DUREE = 60000; // durée de vie de la lecture « par période » (ms)
+// v7.5.149 (revue Codex PR 27 sur 5cca91d) : après un ÉCHEC de lecture, l'avertissement reste affiché et AUCUNE relecture immédiate
+// n'est relancée (avant : tdbRendre relançait aussitôt la lecture, l'erreur était remplacée par « Mise à jour… » et, base injoignable,
+// les requêtes s'enchaînaient). Nouvelle tentative DIFFÉRÉE : 60 s, puis doublée à chaque échec, plafonnée à 10 min ; ou tout de suite
+// par le bouton « Réessayer ». Un signal « commandes » (temps réel, relève) ne force pas de relecture pendant ce délai.
+var TDB_REESSAI = 60000, TDB_REESSAI_MAX = 600000;
+function tdbDelaiReessai(n) { return Math.min(TDB_REESSAI * Math.pow(2, Math.max(0, (n || 1) - 1)), TDB_REESSAI_MAX); }
+function tdbReessayer() { TDB_ETAT.reessaiA = 0; tdbRendre(); }
 // v7.5.139 (revue Codex de 8705c41) : la lecture continue page après page jusqu'à la dernière ; garde-fou EXPLICITE (jamais un
 // arrêt silencieux) : au-delà de TDB_PAGES_MAX pages, erreur affichée (« chiffres non calculés »), jamais de chiffres tronqués.
 var TDB_PAGES_MAX = 500;
@@ -6919,9 +6939,13 @@ function tdbProgrammerExpiration(ms) {
   clearTimeout(_tdbExpire);
   _tdbExpire = setTimeout(function () { _tdbExpire = null; if (tdbVisible()) tdbRendre(); }, Math.max(1000, ms + 200));
 }
-/** Les commandes chargées par l'appli sont-elles TOUTES les commandes de la base ? (sinon : lecture limitée à la période) */
+/** Les commandes chargées par l'appli sont-elles TOUTES les commandes de la base ? (sinon : lecture limitée à la période)
+ *  v7.5.149 (revue Codex PR 27, P2) : plus de comparaison commandes.length ≥ cmdTotalCount — ce total n'est actualisé qu'au chargement
+ *  et une insertion (temps réel, relève) pouvait faire atteindre le total à une liste à laquelle manquait une ancienne commande. On exige
+ *  la PREUVE posée par sbLoadAll (cmdChargementComplet : liste lue en entier, total donné par la MÊME réponse), retirée dès qu'un
+ *  chargement est incertain (nouveau chargement en cours, lecture en échec ou incomplète). */
 function tdbLocalComplet() {
-  return Array.isArray(commandes) && commandes.length > 0 && typeof cmdTotalCount !== 'undefined' && cmdTotalCount > 0 && commandes.length >= cmdTotalCount;
+  return Array.isArray(commandes) && commandes.length > 0 && typeof cmdChargementComplet !== 'undefined' && cmdChargementComplet === true;
 }
 async function tdbLire(filtre) {
   var out = [];
@@ -6951,6 +6975,9 @@ async function tdbCharger(P, cle) {
   TDB_ETAT.cle = cle; TDB_ETAT.enCours = '';
   // une commande a changé pendant la lecture : résultat affiché mais aussitôt périmé (relu au prochain affichage)
   TDB_ETAT.at = gen === TDB_ETAT.gen ? Date.now() : 0;
+  // v7.5.149 : échec → nouvelle tentative différée (60 s, doublée, plafond 10 min) ; succès → compteur remis à zéro
+  if (erreur) { TDB_ETAT.echecs++; TDB_ETAT.at = 0; TDB_ETAT.reessaiA = Date.now() + tdbDelaiReessai(TDB_ETAT.echecs); }
+  else { TDB_ETAT.echecs = 0; TDB_ETAT.reessaiA = 0; }
   tdbRendre();
 }
 function tdbAller(p) {
@@ -6966,21 +6993,29 @@ function tdbRendre() {
   var sel = document.getElementById('dash-periode'), mode = (sel && sel.value) || 'jour', P = tdbPeriodes(mode);
   var td = document.getElementById('tdb-date'); if (td) td.textContent = P.date;
   var tt = document.getElementById('tdb-titre'); if (tt) tt.textContent = P.titre;
-  var admin = role === 'admin', lignes, note = '';
+  var admin = role === 'admin', lignes, note = '', reessayer = false;
   var locales = function () { return (Array.isArray(commandes) ? commandes : []).map(tdbLigne); };
   if (tdbLocalComplet()) lignes = locales();
   else {
     var cle = mode + ':' + P.du + ':' + P.pdu + ':' + P.pau;
     var frais = TDB_ETAT.cle === cle && Date.now() - TDB_ETAT.at < TDB_DUREE;
-    if (!frais && TDB_ETAT.enCours !== cle) tdbCharger(P, cle);
+    var echec = TDB_ETAT.cle === cle && !!TDB_ETAT.erreur, patiente = echec && Date.now() < TDB_ETAT.reessaiA;
+    if (!frais && !patiente && TDB_ETAT.enCours !== cle) tdbCharger(P, cle);
     else if (frais) tdbProgrammerExpiration(TDB_ETAT.at + TDB_DUREE - Date.now());
+    if (patiente) tdbProgrammerExpiration(TDB_ETAT.reessaiA - Date.now()); // nouvelle tentative différée (tableau affiché)
     if (TDB_ETAT.cle === cle && TDB_ETAT.lignes) lignes = TDB_ETAT.lignes;
-    else { lignes = locales(); note = TDB_ETAT.cle === cle && TDB_ETAT.erreur ? 'Lecture de la base impossible (' + TDB_ETAT.erreur + ') : chiffres calculés sur les ' + lignes.length + ' commandes chargées dans l’appli (peut-être incomplets).' : 'Mise à jour depuis la base…'; }
+    else if (echec) { // v7.5.149 : l'avertissement RESTE affiché, même pendant la nouvelle tentative
+      lignes = locales(); reessayer = true;
+      var quand = new Date(TDB_ETAT.reessaiA), hm = String(quand.getHours()).padStart(2, '0') + ':' + String(quand.getMinutes()).padStart(2, '0');
+      note = 'Lecture de la base impossible (' + TDB_ETAT.erreur + ') : chiffres calculés sur les ' + lignes.length + ' commandes chargées dans l’appli (peut-être incomplets). '
+        + (TDB_ETAT.enCours === cle ? 'Nouvelle tentative en cours…' : 'Nouvelle tentative automatique vers ' + hm + '.');
+    }
+    else { lignes = locales(); note = 'Mise à jour depuis la base…'; }
   }
   if (admin && !TDB_ETAT.revientsDemandes && typeof arrChargerRevients === 'function') { TDB_ETAT.revientsDemandes = true; arrChargerRevients().then(function () { tdbRendre(); }); }
   var revients = admin && typeof ARR_ETAT !== 'undefined' ? ARR_ETAT.revients : {};
   var d = tdbDonnees(lignes, P, admin, tdbZoneDe);
-  el.innerHTML = tdbHtml({ P: P, admin: admin, note: note, cur: d.cur, prev: d.prev, zones: d.zones, livreurs: d.livreurs,
+  el.innerHTML = tdbHtml({ P: P, admin: admin, note: note, reessayer: reessayer, cur: d.cur, prev: d.prev, zones: d.zones, livreurs: d.livreurs,
     stock: tdbStock(typeof produits !== 'undefined' ? produits : [], revients, admin) });
 }
 // TDB-FIN

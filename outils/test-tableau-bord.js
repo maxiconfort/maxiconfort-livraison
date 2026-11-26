@@ -304,8 +304,87 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
     test('erreur de lecture affichée dans la note (motif compris)', tranche('// TDB-DEBUT', '// TDB-FIN').includes("'Lecture de la base impossible (' + TDB_ETAT.erreur + ')"));
     test('plus aucune limite silencieuse à 30 pages', !/page < 30/.test(tranche('// TDB-DEBUT', '// TDB-FIN')));
   }
+  console.log('\n7 quater. REVUE CODEX PR 27 SUR 5cca91d (échec de lecture sans boucle, preuve de chargement complet)');
+  { // a) échec de lecture : avertissement gardé, aucune relecture immédiate, nouvelle tentative différée (plafonnée) ou par « Réessayer »
+    const minuteurs = []; let lectures = 0, echoue = true; const el = { innerHTML: '' };
+    const b7 = { console, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, Promise, zones: [],
+      role: 'admin', commandes: [{ id: '#1' }], cmdTotalCount: 5000, produits: [], SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
+      setTimeout: (f, ms) => { minuteurs.push({ f, ms }); return minuteurs.length; }, clearTimeout: () => {},
+      renderDash: () => { b7.tdbRendre(); }, getZoneFromAdresse: () => null, arrChargerRevients: () => new Promise(() => {}),
+      document: { getElementById: (id) => (id === 'tdb-contenu' ? el : id === 'p-dashboard' ? { classList: { contains: () => true } } : id === 'dash-periode' ? { value: 'mois' } : null) },
+      fetch: () => { lectures++; return Promise.resolve(echoue ? { ok: false, status: 503, json: async () => ({}) } : { ok: true, json: async () => [] }); } };
+    vm.createContext(b7); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b7);
+    const attendre = async () => { for (let k = 0; k < 12; k++) await new Promise((r) => setImmediate(r)); };
+    b7.tdbRendre(); await attendre();
+    test('échec : une seule lecture (Mois = 2 requêtes), aucune boucle de requêtes', lectures === 2, lectures);
+    test('échec : avertissement affiché avec le motif et le bouton « Réessayer », pas « Mise à jour… »',
+      /Lecture de la base impossible \(HTTP 503\)/.test(el.innerHTML) && el.innerHTML.includes('tdbReessayer()') && !el.innerHTML.includes('Mise à jour depuis la base'), el.innerHTML.slice(0, 300));
+    const d1 = b7.TDB_ETAT.reessaiA - Date.now();
+    test('échec : nouvelle tentative programmée dans ≈ 60 s', b7.TDB_ETAT.echecs === 1 && d1 > 58000 && d1 <= 60000 && minuteurs.some((m) => m.ms > 58000 && m.ms <= 60200), [d1, minuteurs.map((m) => m.ms)]);
+    for (let k = 0; k < 5; k++) b7.tdbRendre();
+    b7.tdbSignaler('commandes'); minuteurs.filter((m) => m.ms === 800).forEach((m) => m.f()); await attendre();
+    test('pendant le délai : rendus répétés et signal « commandes » → aucune requête, avertissement toujours visible',
+      lectures === 2 && /Lecture de la base impossible/.test(el.innerHTML) && /Nouvelle tentative automatique vers \d\d:\d\d/.test(el.innerHTML), [lectures, el.innerHTML.slice(0, 200)]);
+    // délai écoulé : la tentative programmée relit ; pendant la lecture, l'avertissement reste (« Nouvelle tentative en cours… »)
+    let enAttente = []; b7.fetch = () => { lectures++; return new Promise((ok) => enAttente.push(ok)); };
+    b7.TDB_ETAT.reessaiA = Date.now() - 1; minuteurs[minuteurs.length - 1].f();
+    test('délai écoulé : nouvelle tentative lancée (2 requêtes), avertissement gardé pendant la lecture',
+      lectures === 4 && /Lecture de la base impossible/.test(el.innerHTML) && el.innerHTML.includes('Nouvelle tentative en cours') && !el.innerHTML.includes('Mise à jour depuis la base'), [lectures, el.innerHTML.slice(0, 200)]);
+    enAttente.splice(0).forEach((ok) => ok({ ok: false, status: 500, json: async () => ({}) })); await attendre();
+    const d2 = b7.TDB_ETAT.reessaiA - Date.now();
+    test('2e échec : délai doublé (≈ 120 s), toujours aucune boucle', b7.TDB_ETAT.echecs === 2 && d2 > 118000 && d2 <= 120000 && lectures === 4 && enAttente.length === 0, [d2, lectures]);
+    test('délai plafonné à 10 min', b7.tdbDelaiReessai(1) === 60000 && b7.tdbDelaiReessai(3) === 240000 && b7.tdbDelaiReessai(10) === 600000 && b7.tdbDelaiReessai(50) === 600000);
+    // bouton « Réessayer » : relecture immédiate ; succès → compteur remis à zéro, avertissement retiré
+    b7.tdbReessayer();
+    test('« Réessayer » : relecture immédiate', lectures === 6, lectures);
+    b7.tdbReessayer();
+    test('« Réessayer » pendant une lecture : pas de requête en double', lectures === 6, lectures);
+    enAttente.splice(0).forEach((ok) => ok({ ok: true, json: async () => [] })); await attendre();
+    test('succès après échecs : compteur remis à zéro, plus d’avertissement', b7.TDB_ETAT.echecs === 0 && b7.TDB_ETAT.reessaiA === 0 && !/Lecture de la base impossible/.test(el.innerHTML) && !el.innerHTML.includes('tdbReessayer()'), el.innerHTML.slice(0, 200));
+  }
+  { // b) complétude : preuve posée par sbLoadAll (liste ET total de la même réponse), jamais commandes.length ≥ cmdTotalCount
+    const ligneBase = (n) => ({ id: '#' + n, client: 'Client fictif', prix: 10, statut: 'en-attente', date_livraison: '2026-11-25', date_commande: '2026-11-20' });
+    const charger = async (nb, total, opts) => {
+      const o = opts || {};
+      const b8 = { console: { log() {}, warn() {} }, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, Promise,
+        commandes: [], tournees: [], caissesRemises: {}, nextCmdId: 1, cmdTotalCount: 0, cmdAllLoaded: false, CMD_SELECT_COLS: 'id,client', SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
+        localStorage: { getItem: () => null, setItem() {} }, AbortController: function () { this.signal = {}; this.abort = () => {}; },
+        setTimeout: () => 0, clearTimeout: () => {}, renderCmds() {}, renderDash() {}, renderTournees() {}, renderLivreur() {}, toast() {}, reconcilierTournees() {},
+        document: { querySelector: () => null, getElementById: () => null },
+        fetch: async (url, init) => {
+          const h = (init && init.headers) || {};
+          if (url.endsWith('/commandes?select=id')) return { ok: true, headers: { get: () => '0-0/' + (o.totalSepare != null ? o.totalSepare : total) }, json: async () => [] };
+          if (url.includes('/commandes?')) return o.echec ? { ok: false, status: 500, headers: { get: () => null }, json: async () => ({}) }
+            : { ok: true, headers: { get: (k) => (k === 'Content-Range' && h.Prefer === 'count=exact' && !o.sansTotal ? '0-' + (nb - 1) + '/' + total : null) }, json: async () => Array.from({ length: nb }, (_, k) => ligneBase(k + 1)) };
+          return { ok: true, headers: { get: () => null }, json: async () => [] };
+        } };
+      vm.createContext(b8);
+      vm.runInContext(html.slice(html.indexOf('var cmdChargementComplet = false;'), html.indexOf('var _pollingInterval = null;')), b8);
+      vm.runInContext(fonction('async function sbLoadAll() {'), b8);
+      vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b8);
+      if (o.avant) o.avant(b8);
+      await b8.sbLoadAll();
+      return b8;
+    };
+    let b = await charger(1000, 1001);
+    test('1 000 chargées sur 1 001 : chargement NON complet (preuve absente)', b.commandes.length === 1000 && b.cmdChargementComplet === false && b.tdbLocalComplet() === false, [b.commandes.length, b.cmdChargementComplet]);
+    b.commandes.unshift({ id: '#2000' }); // une insertion par temps réel ou relève
+    const ancienneRegle = b.commandes.length > 0 && b.cmdTotalCount > 0 && b.commandes.length >= b.cmdTotalCount;
+    test('+ 1 insertion (1 001 = total) : toujours NON complet → le tableau lit la base par période', b.commandes.length === 1001 && b.cmdTotalCount === 1001 && b.tdbLocalComplet() === false, [b.commandes.length, b.cmdTotalCount]);
+    test('(preuve que le cas est couvert : l’ancienne règle length ≥ total l’aurait cru complet)', ancienneRegle === true);
+    b = await charger(1001, 1001);
+    test('1 001 chargées sur 1 001 (total de la même réponse) : complet', b.cmdChargementComplet === true && b.tdbLocalComplet() === true);
+    b.commandes.unshift({ id: '#2000' });
+    test('complet puis 1 insertion : reste complet (la nouvelle est dans la liste)', b.tdbLocalComplet() === true);
+    b = await charger(1000, 1000, { totalSepare: 1000, sansTotal: true });
+    test('réponse sans total (Content-Range absent) : jamais complet, même si le comptage séparé coïncide', b.cmdChargementComplet === false && b.tdbLocalComplet() === false);
+    b = await charger(0, 0, { echec: true, avant: (x) => { x.cmdChargementComplet = true; x.commandes = [{ id: '#1' }]; } });
+    test('lecture en échec : preuve retirée (incertain)', b.cmdChargementComplet === false && b.tdbLocalComplet() === false);
+    test('cmdTotalDepuisEntete : « 0-999/1001 » → 1001, « */0 » → 0, « 0-9/* » ou absent → inconnu', b.cmdTotalDepuisEntete('0-999/1001') === 1001 && b.cmdTotalDepuisEntete('*/0') === 0 && b.cmdTotalDepuisEntete('0-9/*') === null && b.cmdTotalDepuisEntete(null) === null);
+    test('tableau : plus aucune comparaison commandes.length ≥ cmdTotalCount', !/commandes\.length >= cmdTotalCount/.test(tranche('// TDB-DEBUT', '// TDB-FIN')));
+  }
   console.log('\n8. MISE EN LIGNE');
 
-test('CACHE_VERSION augmentée (v7-5-146 ou plus)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 146; })());
+test('CACHE_VERSION augmentée (v7-5-149 ou plus)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 149; })());
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

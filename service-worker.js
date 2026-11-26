@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.149 - Tableau de bord : echec de lecture garde l'avertissement (nouvelle tentative differee ou bouton Reessayer), chargement complet prouve par sbLoadAll (26/11/2026)
 // v7.5.148 - Fusion des corrections arrivages v7.5.147 (tous les champs d'une ligne, valorisation de l'apercu reverifiee) dans tableau de bord + menus (26/11/2026)
 // v7.5.147 - Produits non vendables : tous les champs d'une ligne examines ; arrivage : valorisation de l'apercu reverifiee par la base (26/11/2026)
 // v7.5.146 - Tableau de bord : services exclus des alertes de stock (rupture, stock bas) et de la valeur du stock (26/11/2026)
@@ -15,7 +16,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-148';
+const CACHE_VERSION = 'maxiconfort-v7-5-149';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
