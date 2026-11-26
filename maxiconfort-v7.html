@@ -2988,8 +2988,54 @@ try {
   if (_oq) offlineQueue = JSON.parse(_oq) || [];
 } catch(e) {}
 
+// v7.5.191 (bug du 24/11 : le « livré » du livreur ne remontait plus) : les mises à jour de STOCK mises en file
+// par une version précédente (refusées par la base depuis le 24/11, sans marque `oqv`) ne sont PAS rejouées :
+// leurs valeurs de stock sont périmées et écraseraient le stock actuel. Elles sont retirées de la file au
+// chargement ; une seule notification récapitulative est affichée après la connexion (oqSignalerPurge).
+// Les autres éléments (commande, tournée, dépense…) restent rejoués normalement.
+function oqPurgerProduits(file) {
+  var garde = [], noms = [], n = 0;
+  (Array.isArray(file) ? file : []).forEach(function(it) {
+    if (it && it.type === 'produit' && !it.oqv) {
+      n++;
+      var nm = it.data ? String(it.data.nom || it.data.id || '') : '';
+      if (nm && noms.indexOf(nm) < 0) noms.push(nm);
+    } else if (it) garde.push(it);
+  });
+  return { file: garde, n: n, noms: noms };
+}
+var _oqPurge = oqPurgerProduits(offlineQueue);
+if (_oqPurge.n > 0) {
+  offlineQueue = _oqPurge.file;
+  try { localStorage.setItem('mx_offline_queue', JSON.stringify(offlineQueue)); } catch(e) {}
+}
+function oqSignalerPurge() {
+  if (!_oqPurge || !_oqPurge.n) return;
+  var p = _oqPurge; _oqPurge = null; // une seule fois
+  var liste = p.noms.slice(0, 12).join(', ') + (p.noms.length > 12 ? '…' : '');
+  try { notifAjout('warn', 'stock', 'Stock : ' + p.n + ' mise(s) à jour ancienne(s) non envoyée(s)', p.n + ' mises à jour de stock anciennes non envoyées (produits : ' + (liste || '?') + ') — stock à vérifier à l\'inventaire.', 'Gérer le stock', 'stock'); } catch(e) {}
+}
+// v7.5.191 : dans la file, une seule entrée par commande et par produit (la plus récente).
+function oqDedoublonner(file) {
+  var vus = {}, res = [];
+  for (var i = file.length - 1; i >= 0; i--) {
+    var it = file[i];
+    if (it && (it.type === 'commande' || it.type === 'produit') && it.data && it.data.id) {
+      var cle = it.type + '|' + it.data.id;
+      if (vus[cle]) continue;
+      vus[cle] = true;
+    }
+    res.unshift(it);
+  }
+  return res;
+}
+
 function offlineQueueAdd(type, data) {
-  offlineQueue.push({ type: type, data: data, ts: Date.now() });
+  // v7.5.135 : une seule entrée par commande dans la file (la plus récente : l'enregistrement est complet)
+  if (type === 'commande' && data && data.id) offlineQueue = offlineQueue.filter(function(it) { return !(it && it.type === 'commande' && it.data && it.data.id === data.id); });
+  // v7.5.191 : une seule entrée par produit (la plus récente : la dernière valeur de stock)
+  if (type === 'produit' && data && data.id) offlineQueue = offlineQueue.filter(function(it) { return !(it && it.type === 'produit' && it.data && it.data.id === data.id); });
+  offlineQueue.push({ type: type, data: data, ts: Date.now(), oqv: 2 }); // v7.5.191 : oqv = mis en file par une version corrigée
   try { localStorage.setItem('mx_offline_queue', JSON.stringify(offlineQueue)); } catch(e) {}
   // Afficher indicateur
   var ind = document.getElementById('offline-indicator');
@@ -3008,27 +3054,39 @@ function sbSaveEchec(type, data, ctx, status, detail) {
   toast('⚠️ ' + ctx + ' non enregistré en ligne — réessai auto au retour réseau', 'err');
 }
 
+// v7.5.191 : un seul rejeu à la fois (le retour réseau et le démarrage pouvaient en lancer deux).
+var _oqFlushEnCours = false;
 async function offlineQueueFlush() {
-  if (!offlineQueue.length) return;
+  if (!offlineQueue.length || _oqFlushEnCours) return;
+  _oqFlushEnCours = true;
   var remaining = [];
   var flushed = 0;
-  for (var i = 0; i < offlineQueue.length; i++) {
-    var item = offlineQueue[i];
-    try {
-      if (item.type === 'commande') await sbSaveCommande(item.data);
-      else if (item.type === 'tournee') await sbSaveTournee(item.data);
-      else if (item.type === 'depense') await sbSaveDepense(item.data);
-      else if (item.type === 'produit') await sbSaveProduit(item.data);
-      else if (item.type === 'vehicule') await sbSaveVehicule(item.data);
-      else if (item.type === 'entretien') await sbSaveEntretien(item.data);
-      else if (item.type === 'livreur') await sbSaveLivreur(item.data);
-      flushed++;
-    } catch(e) {
-      remaining.push(item); // réessayer plus tard
+  // v7.5.135 / v7.5.191 : on rejoue une COPIE. Avant, la boucle lisait `offlineQueue.length` pendant que chaque
+  // échec y rajoutait un élément → boucle sans fin (≈ 16 000 envois refusés le 26/11, aucun « livré » envoyé).
+  var _aRejouer = offlineQueue.slice();
+  try {
+    for (var i = 0; i < _aRejouer.length; i++) {
+      var item = _aRejouer[i];
+      try {
+        if (item.type === 'commande') await sbSaveCommande(item.data);
+        else if (item.type === 'tournee') await sbSaveTournee(item.data);
+        else if (item.type === 'depense') await sbSaveDepense(item.data);
+        else if (item.type === 'produit') await sbSaveProduit(item.data);
+        else if (item.type === 'vehicule') await sbSaveVehicule(item.data);
+        else if (item.type === 'entretien') await sbSaveEntretien(item.data);
+        else if (item.type === 'livreur') await sbSaveLivreur(item.data);
+        flushed++;
+      } catch(e) {
+        remaining.push(item); // réessayer plus tard
+      }
     }
+  } finally {
+    // v7.5.135 : garder aussi ce qui a été ajouté à la file PENDANT le rejeu (échecs, autres écrans) ; rejoué au
+    // prochain retour réseau ou démarrage, jamais dans ce même rejeu.
+    offlineQueue = oqDedoublonner(remaining.concat(offlineQueue.filter(function(it) { return _aRejouer.indexOf(it) < 0; })));
+    try { localStorage.setItem('mx_offline_queue', JSON.stringify(offlineQueue)); } catch(e) {}
+    _oqFlushEnCours = false;
   }
-  offlineQueue = remaining;
-  try { localStorage.setItem('mx_offline_queue', JSON.stringify(offlineQueue)); } catch(e) {}
   var ind = document.getElementById('offline-indicator');
   if (offlineQueue.length === 0) {
     if (ind) ind.style.display = 'none';
@@ -4192,6 +4250,7 @@ async function sbLoadAll() {
           stops:r.stops||[]
         };
       });
+      try { livControleNonRemontees(); } catch(e) {} // v7.5.191 : contrôle admin, lecture seule
     }
 
     // Récupérer le nombre total de commandes pour la pagination
@@ -4332,9 +4391,44 @@ var cmdPageOffset = 0;        // offset actuel
 var cmdTotalCount = 0;        // total en base
 var cmdAllLoaded = false;     // true quand tout est chargé
 
+// v7.5.191 (bug du 24/11) : contrôle ADMIN en lecture seule — un arrêt « livré » dans une tournée dont la
+// commande n'est pas « livré » (ni annulée) dans la base = livraison non remontée. Aucune écriture automatique :
+// une notification par commande et par session, seulement si l'écart dure au moins LIV_NR_DELAI_MS (évite une
+// fausse alerte pendant les quelques secondes où le livreur enregistre la commande puis la tournée).
+function livNonRemontees(tours, cmds) {
+  var res = [];
+  (Array.isArray(tours) ? tours : []).forEach(function(t) {
+    ((t && t.stops) || []).forEach(function(s) {
+      if (!s || !s.cmdId || (s.statut !== 'livré' && s.statut !== 'livre')) return;
+      var c = (Array.isArray(cmds) ? cmds : []).find(function(x) { return x && x.id === s.cmdId; });
+      if (!c) return;
+      var st = String(c.statut || '');
+      if (st === 'livré' || st === 'livre' || st === 'annulé' || st === 'annule') return;
+      if (res.indexOf(c.id) < 0) res.push(c.id);
+    });
+  });
+  return res;
+}
+var LIV_NR_DELAI_MS = 120000;
+var _livNrVu = {}, _livNrSignale = {};
+function livControleNonRemontees(maintenant) {
+  if (typeof role === 'undefined' || role !== 'admin') return;
+  var now = maintenant || Date.now(), vus = {};
+  livNonRemontees(tournees, commandes).forEach(function(id) {
+    vus[id] = true;
+    if (_livNrSignale[id]) return;
+    if (!_livNrVu[id]) { _livNrVu[id] = now; return; }
+    if (now - _livNrVu[id] < LIV_NR_DELAI_MS) return;
+    _livNrSignale[id] = true;
+    try { notifAjout('urgent', 'commande', 'Livraison non remontée : ' + id + ' — vérifier', 'L\'arrêt est « livré » dans la tournée mais la commande ne l\'est pas dans la base. Vérifier avec le livreur (aucune correction automatique).', 'Voir', 'commandes'); } catch(e) {}
+  });
+  Object.keys(_livNrVu).forEach(function(id) { if (!vus[id]) delete _livNrVu[id]; });
+}
+
 var _pollingInterval = null;
 function startPolling() {
   if (_pollingInterval) return;
+  oqSignalerPurge(); // v7.5.191 : anciennes mises à jour de stock retirées de la file → une notification
   // Vider la queue offline au démarrage si items en attente
   if (navigator.onLine && offlineQueue.length > 0) setTimeout(offlineQueueFlush, 3000);
   _pollingInterval = setInterval(async function() {
@@ -4430,6 +4524,7 @@ function startPolling() {
             renderLivreur();
           }
         }
+        try { livControleNonRemontees(); } catch(e) {} // v7.5.191 : contrôle admin, lecture seule
       }
     // Sync prix/paie/stpaie des stops depuis les commandes mises à jour
     var _syncNeeded = false;
@@ -10785,7 +10880,8 @@ function setLvSt(tid, idx, st, _annOk) {
     const cLv=commandes.find(c=>c.id===s.cmdId);
     if(cLv){
       cLv.statut='livré';
-      stkDeduireStock(cLv.id);
+      // v7.5.191 : une erreur de stock n'empêche jamais l'enregistrement du « livré » (sbSaveCommande plus bas)
+      try { stkDeduireStock(cLv.id); } catch(e) { console.warn('[stock] déduction à la livraison :', e && e.message); }
       // v7.1.7 : Retirer du stock camion (camion → livré client)
       try {
         var itemsCamion = stockCamion.filter(function(sc){
@@ -11044,8 +11140,16 @@ function validerSig(){
         try { notifAjout('err', 'commande', '🚨 NON ENCAISSÉ — ' + cmd.id, paiEur(sigCodMontant) + ' restent dus (paiement à la livraison).', 'Voir', 'commandes'); } catch(e) {}
       }
     }
-    stkDeduireStock(cmd.id);
-    sbSaveCommande(cmd); // ✅ Sync commande Supabase → Realtime admin
+    // v7.5.191 (bug du 24/11) : le « livré » est enregistré AVANT la déduction du stock, et la déduction vient
+    // APRÈS la fin de cet enregistrement (elle réenregistre la commande avec stock_deduit : l'ordre reste
+    // garanti). Une erreur de stock (exception, refus de la base) n'empêche jamais l'enregistrement du « livré ».
+    var _cmdLivre = cmd, _pLivre = null;
+    try { _pLivre = sbSaveCommande(_cmdLivre); } catch(e) { console.warn('[livré] enregistrement :', e && e.message); } // ✅ Sync commande Supabase → Realtime admin
+    Promise.resolve(_pLivre)
+      .catch(function(e) { console.warn('[livré] enregistrement :', e && e.message); })
+      .then(function() {
+        try { stkDeduireStock(_cmdLivre.id); } catch(e) { console.warn('[stock] déduction à la livraison :', e && e.message); }
+      });
   }
   document.getElementById('m-sig').classList.remove('on');
   clearSig();
@@ -14718,9 +14822,46 @@ const _origSetLvSt = setLvSt;
 // SUPABASE — SYNC PRODUITS
 // ════════════════════════════════════════
 
+// v7.5.191 : refus de la base sur un produit (réseau OK) → PAS de remise en file (c'était la boucle du 24-26/11) ;
+// une notification visible, une seule fois par produit et par session.
+var _produitsRefusSignales = {};
+function produitRefusSignaler(p, status, detail) {
+  console.warn('Produit refusé par la base', status || '', detail || '');
+  var nom = String((p && (p.nom || p.id)) || '?');
+  var cle = String((p && (p.id || p.nom)) || '?');
+  if (_produitsRefusSignales[cle]) return;
+  _produitsRefusSignales[cle] = true;
+  try { notifAjout('warn', 'stock', 'Stock non mis à jour : ' + nom + ' — à vérifier', 'La base a refusé la mise à jour du stock' + (status ? ' (HTTP ' + status + ')' : '') + '. Rien n\'est remis en file : vérifier le stock de ce produit.', 'Gérer le stock', 'stock'); } catch(e) {}
+}
+
 async function sbSaveProduit(p) {
+  if (!p) return;
+  // v7.5.191 : une session LIVREUR n'a que le droit de MODIFIER le stock (politique sess_livreur_stock) : pas
+  // d'ajout, donc pas d'« upsert » (POST merge-duplicates = INSERT … ON CONFLICT, refusé HTTP 401 depuis le 24/11).
+  // Le livreur envoie seulement { stock, updated_at } par PATCH sur la fiche existante. Admin / collab : inchangé.
+  if (typeof role !== 'undefined' && role === 'livreur') {
+    if (!p.id) { produitRefusSignaler(p, '', 'produit sans identifiant'); return; }
+    var respL;
+    try {
+      respL = await fetch(SUPABASE_URL + '/rest/v1/produits?id=eq.' + encodeURIComponent(p.id) + '&select=id', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type':  'application/json',
+          'apikey':        SUPABASE_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_KEY,
+          'Prefer':        'return=representation',
+        },
+        body: JSON.stringify({ stock: p.stock || 0, updated_at: new Date().toISOString() })
+      });
+    } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e.message); return; } // vraie coupure réseau : file
+    if (!respL.ok) { var errL = ''; try { errL = await respL.text(); } catch(e) {} produitRefusSignaler(p, respL.status, errL); return; }
+    // aucune ligne modifiée (fiche absente ou refusée par la base sans erreur) : signalé, pas de file
+    try { var lignes = await respL.json(); if (Array.isArray(lignes) && lignes.length === 0) produitRefusSignaler(p, respL.status, 'aucune ligne modifiée'); } catch(e) {}
+    return;
+  }
+  var resp;
   try {
-    var resp = await fetch(SUPABASE_URL + '/rest/v1/produits', {
+    resp = await fetch(SUPABASE_URL + '/rest/v1/produits', {
       method: 'POST',
       headers: {
         'Content-Type':  'application/json',
@@ -14736,12 +14877,12 @@ async function sbSaveProduit(p) {
         actif: p.actif !== false, updated_at: new Date().toISOString()
       })
     });
-    if (!resp.ok) {
-      var err = await resp.text();
-      sbSaveEchec('produit', p, 'Produit', resp.status, err);
-      return;
-    }
-  } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e.message); }
+  } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e.message); return; } // vraie coupure réseau : file
+  if (!resp.ok) {
+    // v7.5.191 : réponse de la base (réseau OK) = refus : notification, jamais de remise en file
+    var err = ''; try { err = await resp.text(); } catch(e) {}
+    produitRefusSignaler(p, resp.status, err);
+  }
 }
 
 async function sbDeleteProduit(id) {
