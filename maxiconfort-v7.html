@@ -2816,6 +2816,12 @@ Maxiconfort — {TEL_CONTACT}</textarea>
           <button id="sig-lv-cb" class="sig-simple-btn" onclick="sigChoixSimple('cb')">💳<br>Carte bleue</button>
           <button id="sig-paie-deja" class="sig-simple-btn" onclick="sigChoixSimple('deja')">📦<br>Déjà payé</button>
         </div>
+        <!-- v7.5.171 : « Déjà payé » sur une commande NON soldée : refusé au livreur ; l'administrateur peut forcer avec un motif (journalisé) -->
+        <div id="sig-deja-info" style="display:none;font-size:13px;font-weight:700;color:var(--rd);margin-bottom:8px"></div>
+        <div id="sig-deja-motif-wrap" style="display:none;margin-bottom:10px">
+          <label for="sig-deja-motif" style="font-size:12px;font-weight:700;color:var(--rd);display:block;margin-bottom:4px">Motif (obligatoire : la commande n'est pas enregistrée comme payée)</label>
+          <input id="sig-deja-motif" type="text" autocomplete="off" placeholder="Ex : virement reçu le 25/11, vérifié sur le compte" style="width:100%;padding:11px;border:1.5px solid var(--red);border-radius:10px;font-size:14px;font-family:var(--font);box-sizing:border-box">
+        </div>
         <div id="sig-montant-wrap" style="display:none;margin-bottom:10px">
           <label for="sig-montant" style="font-size:12px;font-weight:700;color:var(--t2);display:block;margin-bottom:4px">Montant encaissé (€)</label>
           <input id="sig-montant" type="number" inputmode="decimal" min="0" step="0.01" oninput="sigMontantMaj()" style="width:100%;padding:11px;border:1.5px solid var(--green);border-radius:10px;font-size:18px;font-weight:800;font-family:var(--font);text-align:right;box-sizing:border-box">
@@ -9564,6 +9570,33 @@ function rtResteDu(prix, montantEnc, stpaie) {
   if (stpaie === 'Payé') return 0;
   return Math.max(0, rtArrondi((parseFloat(prix) || 0) - (stpaie === 'Partiel' ? (parseFloat(montantEnc) || 0) : 0)));
 }
+// v7.5.171 (revue Codex sur 3c3aa05) : « Déjà payé » ne doit jamais effacer une dette. `resteDu` = ce qui reste dû
+// D'APRÈS LA BASE (commande soldée : paiement en ligne, acompte couvrant tout = 0). Soldée : accepté. Sinon :
+// refusé au livreur (et à tout autre rôle) ; seul l'administrateur peut forcer, avec un motif obligatoire
+// (journalisé dans la fiche et signalé au bureau). Renvoie { ok, force, reste, erreur }.
+function rtControleDejaPaye(resteDu, qui, motif) {
+  var reste = rtArrondi(resteDu);
+  if (reste <= 0) return { ok: true, force: false, reste: 0, erreur: '' };
+  if (qui !== 'admin') return { ok: false, force: false, reste: reste, erreur: 'La commande n\'est pas payée (reste dû ' + rtEurTexte(reste) + ') : encaissez ou signalez au bureau' };
+  var m = String(motif || '').trim();
+  if (m.length < RT_MOTIF_MIN) return { ok: false, force: false, reste: reste, erreur: '« Déjà payé » sur une commande non soldée (reste dû ' + rtEurTexte(reste) + ') : motif obligatoire (' + RT_MOTIF_MIN + ' caractères au moins)' };
+  return { ok: true, force: true, reste: reste, erreur: '' };
+}
+// v7.5.171 (revue Codex sur 3c3aa05, P2) : « livraisons terminées » (automatique : chaque arrêt livré ou annulé)
+// n'est PAS « tournée clôturée » (geste explicite du livreur, « Clôturer ma tournée », ou du bureau). Une tournée
+// dont les livraisons sont terminées reste « en cours » : le livreur peut encore saisir ses dépenses du retour
+// (carburant, péage) jusqu'à la clôture. Une tournée déjà clôturée le reste.
+function rtLivraisonsTerminees(t) {
+  var stops = (t && t.stops) || [];
+  return stops.length > 0 && stops.every(function(x) { return !!x && (x.statut === 'livré' || x.statut === 'annulé'); });
+}
+function rtStatutApresArret(t) {
+  if (!t) return '';
+  if (t.statut === 'terminée') return 'terminée';
+  if (rtLivraisonsTerminees(t)) return 'en cours';
+  if ((t.stops || []).some(function(x) { return !!x && (x.statut === 'en-route' || x.statut === 'arrivé'); })) return 'en cours';
+  return t.statut;
+}
 // Montant saisi par le livreur. Vide = le reste dû. Jamais plus que le reste dû ; moins = motif obligatoire.
 function rtControleMontant(resteDu, saisie, motif) {
   var reste = rtArrondi(resteDu);
@@ -9729,6 +9762,21 @@ function rtDepenseModifiable(t, qui, remiseValidee) {
   if (t && t.statut === 'terminée' && qui === 'livreur') return { ok: false, erreur: 'Tournée clôturée : la dépense doit être ajoutée ou corrigée par le bureau' };
   return { ok: true, erreur: '' };
 }
+// v7.5.171 (revue Codex sur 3c3aa05, P2) : verrou du point de caisse validé appliqué à TOUS les chemins qui
+// ajoutent, corrigent ou suppriment une dépense (liste Finance comprise). `etats` : la dépense AVANT et/ou APRÈS
+// la modification (une correction peut la faire entrer dans une tournée validée ou l'en faire sortir). Une dépense
+// appartient à une tournée selon rtDepenseDeTournee. `estValidee(t)` : point de caisse de la tournée validé.
+function rtDepenseVerrou(etats, listeTournees, estValidee) {
+  var bloquees = [];
+  (etats || []).forEach(function(d) {
+    if (!d) return;
+    (listeTournees || []).forEach(function(t) {
+      if (t && bloquees.indexOf(t.id) < 0 && estValidee(t) && rtDepenseDeTournee(d, t, listeTournees)) bloquees.push(t.id);
+    });
+  });
+  if (!bloquees.length) return { ok: true, erreur: '', tournees: [] };
+  return { ok: false, tournees: bloquees, erreur: 'Point de caisse déjà validé (tournée ' + bloquees.join(', ') + ') : annulez d\'abord la validation de la remise pour ajouter, corriger ou supprimer cette dépense' };
+}
 // v7.5.135 (revue Codex sur f09037c, point 5) : journal des corrections d'une dépense, gardé dans son commentaire
 // (colonne existante, aucune migration) après un séparateur. Chaque ligne : date, auteur, valeurs avant → après, motif.
 var RT_JOURNAL_SEP = '\n— Journal des corrections —\n';
@@ -9819,6 +9867,8 @@ function lvClotureHtml(t) {
   return '<div class="lv-cloture">' +
     '<div style="font-size:15px;font-weight:900;margin-bottom:6px">🏁 Fin de tournée</div>' +
     '<div style="font-size:13px;color:var(--t2);margin-bottom:10px">' + resume + '</div>' +
+    // v7.5.171 : livraisons terminées ≠ tournée clôturée — les dépenses du retour restent possibles jusqu'à la clôture
+    (rtLivraisonsTerminees(t) ? '<div class="lv-livraisons-finies" style="font-size:13px;font-weight:700;margin-bottom:10px">✅ Livraisons terminées. Ajoutez vos dépenses du retour (carburant, péage…) puis clôturez votre tournée.</div>' : '') +
     (c.ok ? '' : '<div style="font-size:13px;color:var(--rd);font-weight:700;margin-bottom:8px">⚠️ ' + c.raison + '</div>' + (liste ? '<ul style="margin:0 0 10px 18px;padding:0;font-size:13px;color:var(--rd)">' + liste + '</ul>' : '')) +
     '<button class="lv-cloture-btn" ' + (c.ok ? '' : 'disabled ') + 'onclick="lvCloturerTournee(\'' + t.id + '\')">' + (c.ok ? '🏁 Clôturer ma tournée' : '🔒 Clôture impossible : un résultat par arrêt') + '</button></div>';
 }
@@ -11005,6 +11055,22 @@ async function lvPaieValider() {
   // v7.5.113 : commande payée en ligne -> aucun encaissement ni changement de mode par cet écran
   var _cmdPaiS = findCmdForStop(s);
   if (_cmdPaiS && paiEstEnLigne(_cmdPaiS)) { toast('Commande déjà payée en ligne : paiement non modifiable ici', 'err'); renderLivreur(); return; }
+  // v7.5.171 (revue Codex sur 3c3aa05) : même règle qu'à la signature pour « Déjà payé » : accepté si l'arrêt était déjà
+  // « Déjà payé » (contrôlé à la signature) ou si la commande est soldée dans la base SANS rien encaissé à cet arrêt ;
+  // sinon refusé au livreur, l'administrateur force avec un motif (journalisé).
+  var _djEd = null, _djEdMotif = '', _resteEd = 0;
+  if (newMode === 'Déjà payé' && newStatut !== 'Non payé') {
+    var _encT = s.encTournee ? rtArrondi((parseFloat(s.encTournee.esp) || 0) + (parseFloat(s.encTournee.cb) || 0)) : 0;
+    var _dejaAvant = s.paie === 'Déjà payé' && s.stpaie === 'Payé';
+    // rien encaissé à cet arrêt : relevé de la tournée (v7.5.135) ; arrêt plus ancien : trace ou mode d'encaissement
+    var _rienSurPlace = s.encTournee ? _encT <= 0 : !(s.enc || (['Espèces', 'CB', 'Mixte', 'Virement'].indexOf(s.paie) >= 0 && s.stpaie && s.stpaie !== 'Non payé'));
+    if (_dejaAvant) _resteEd = 0;
+    else if (_cmdPaiS && rtResteDu(_cmdPaiS.prix, _cmdPaiS.montantEnc, _cmdPaiS.stpaie) <= 0 && _rienSurPlace) _resteEd = 0;
+    else _resteEd = rtArrondi(Math.max(_cmdPaiS ? rtResteDu(_cmdPaiS.prix, _cmdPaiS.montantEnc, _cmdPaiS.stpaie) : 0, (parseFloat(_cmdPaiS ? _cmdPaiS.prix : s.prix) || 0) - (parseFloat(s.encAvant) || 0)));
+    if (_resteEd > 0 && role === 'admin') _djEdMotif = String(prompt('« Déjà payé » sur une commande non soldée (reste dû ' + paiEur(_resteEd) + ').\nMotif obligatoire :', '') || '').trim();
+    _djEd = rtControleDejaPaye(_resteEd, role === 'admin' ? 'admin' : 'livreur', _djEdMotif);
+    if (!_djEd.ok) { toast(_djEd.erreur, 'err'); renderLivreur(); return; }
+  }
 
   // v7.5.133 (revue Codex) : cumul et statut avec l'acompte payé avant la livraison (s.encAvant)
   var _cmdCum = findCmdForStop(s);
@@ -11046,6 +11112,13 @@ async function lvPaieValider() {
     } else if (newStatut === 'Non payé' || _acompteEd > 0) {
       cmd.montantEnc = _cum.montantEnc; // v7.5.133 : « Non payé » avec acompte -> reste « Partiel », cumul = acompte
       delete cmd.paie_especes; delete cmd.paie_cb;
+    }
+    // v7.5.171 : « Déjà payé » FORCÉ par l'administrateur sur une commande non soldée -> journal (fiche + arrêt) et alerte
+    if (_djEd && _djEd.force) {
+      var _djEdQuand = new Date();
+      cmd.instr = (String(cmd.instr || '') + ' ⚠️ « Déjà payé » FORCÉ sans paiement enregistré (reste dû ' + paiEur(_djEd.reste) + ') — motif : ' + _djEdMotif + ' (administrateur, ' + _djEdQuand.toLocaleString('fr-FR') + ').').trim();
+      s.dejaForce = { reste: _djEd.reste, motif: _djEdMotif, par: 'administrateur', at: _djEdQuand.toISOString() };
+      if (typeof notifAjout === 'function') { try { notifAjout('err', 'commande', '⚠️ « Déjà payé » forcé — ' + cmd.id, paiEur(_djEd.reste) + ' n\'étaient pas enregistrés comme payés. Motif : ' + _djEdMotif, 'Voir', 'commandes'); } catch(e) {} }
     }
     await sbSaveCommande(cmd);
   }
@@ -11290,9 +11363,9 @@ function setLvSt(tid, idx, st, _annOk) {
       } catch(e) { console.warn('[stock-camion] livraison fail:', e); }
     }
   }
-  // Si tous livrés → tournée terminée
-  if(t.stops.every(x=>['livré','annulé'].includes(x.statut))){t.statut='terminée';}
-  else if(t.stops.some(x=>['en-route','arrivé'].includes(x.statut))){t.statut='en cours';}
+  // v7.5.171 (revue Codex P2) : tous livrés/annulés = livraisons terminées, la tournée reste « en cours » jusqu'à
+  // « Clôturer ma tournée » (avant : clôturée d'office, ce qui bloquait les dépenses du retour)
+  t.statut = rtStatutApresArret(t);
   renderLivreur(); renderTournees();
   // Sync statut commande
   const cmd=commandes.find(c=>c.id===s.cmdId);
@@ -11390,10 +11463,23 @@ function sigChoixSimple(ch) {
   sigSurligner(ch);
   var nonB = document.getElementById('sig-paie-non'); if (nonB) { nonB.style.background = 'var(--bg)'; nonB.style.borderColor = 'var(--brd)'; nonB.style.color = 'var(--text)'; }
   sigMontantAfficher(ch !== 'deja');
+  sigDejaInfo(ch === 'deja');
+}
+// v7.5.171 : avertit dès le choix « Déjà payé » si la commande n'est pas soldée dans la base (le contrôle qui compte
+// reste celui de validerSig) ; l'administrateur voit le champ motif pour forcer.
+function sigDejaInfo(visible) {
+  var info = document.getElementById('sig-deja-info'), wrap = document.getElementById('sig-deja-motif-wrap'), mo = document.getElementById('sig-deja-motif');
+  var reste = (typeof sigResteDu === 'number') ? sigResteDu : 0;
+  var ctl = visible ? rtControleDejaPaye(reste, role === 'admin' ? 'admin' : 'livreur', 'motif-provisoire') : null;
+  var nonSoldee = !!ctl && ctl.reste > 0;
+  if (info) { info.style.display = nonSoldee ? 'block' : 'none'; info.textContent = nonSoldee ? (role === 'admin' ? '⚠️ Commande non soldée (reste dû ' + paiEur(ctl.reste) + ') : motif obligatoire pour forcer « Déjà payé »' : '⛔ ' + rtControleDejaPaye(reste, 'livreur', '').erreur) : ''; }
+  if (wrap) wrap.style.display = (nonSoldee && role === 'admin') ? 'block' : 'none';
+  if (mo && !visible) mo.value = '';
 }
 // « Autres cas » : Espèces + CB, virement, non payé
 function sigAutreCas(m) {
   sigChoixFait = true;
+  sigDejaInfo(false); // v7.5.171
   sigSurligner(null);
   if (m === 'non') { sigTogglePaie(false); sigMontantAfficher(false); return; }
   sigTogglePaie(true); sigSelectMode(m);
@@ -11407,6 +11493,7 @@ function sigChoixReinit(cmdSig, s) {
   var inp = document.getElementById('sig-montant'); if (inp) { inp.value = String(sigResteDu); inp.max = String(sigResteDu); }
   var mo = document.getElementById('sig-montant-motif'); if (mo) mo.value = '';
   var mxm = document.getElementById('sig-mixte-motif'); if (mxm) mxm.value = ''; // v7.5.135
+  sigDejaInfo(false); // v7.5.171
   var mxw = document.getElementById('sig-mixte-motif-wrap'); if (mxw) mxw.style.display = 'none';
   var mw = document.getElementById('sig-motif-wrap'); if (mw) mw.style.display = 'none';
   var tk = document.getElementById('sig-ticket'); if (tk) tk.value = '';
@@ -11535,6 +11622,16 @@ function validerSig(){
     _rtCtl = rtControleMixte(_rtReste, (document.getElementById('sig-paie-esp') || {}).value, (document.getElementById('sig-paie-cb') || {}).value, _rtMotif);
     if (!_rtCtl.ok) { toast(_rtCtl.erreur, 'err'); return; }
   }
+  // v7.5.171 (revue Codex sur 3c3aa05) : « Déjà payé » seulement si la commande est DÉJÀ soldée dans la base ; sinon
+  // refusé (« encaissez ou signalez au bureau ») ; l'administrateur peut forcer avec un motif, journalisé.
+  // Commande du site payée en ligne (reconnue par la base, pas par le livreur) : non concernée.
+  var _djCtl = null, _djMotif = '';
+  if (!sigCodActif && sigPrepaidMode && sigPrepaidMode !== PAI_MODE_SITE && typeof rtControleDejaPaye === 'function') {
+    var _djCmd = commandes.find(function(c){ return c.id === s.cmdId; }) || null;
+    _djMotif = String((document.getElementById('sig-deja-motif') || {}).value || '').trim();
+    _djCtl = rtControleDejaPaye(_djCmd ? rtResteDu(_djCmd.prix, _djCmd.montantEnc, _djCmd.stpaie) : rtArrondi(s.prix), role === 'admin' ? 'admin' : 'livreur', _djMotif);
+    if (!_djCtl.ok) { toast(_djCtl.erreur, 'err'); return; }
+  }
   const heure=new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
   s.statut='livré'; s.heure=heure; s.signataire=nom;
   // v7.5.132 (revue Codex P1) : ce qui était DÉJÀ encaissé avant cette livraison (acompte), pour séparer
@@ -11587,7 +11684,8 @@ function validerSig(){
   // Le point de caisse de la tournée l'utilise, au lieu du cumul ACTUEL de la commande (qui peut changer plus tard).
   var _montantSurPlace = sigCodActif ? sigCodMontant : (_rtCtl ? _rtCtl.montant : (parseFloat(s.prix) || 0));
   if (typeof rtPartEncaissee === 'function') s.encTournee = sigPrepaidMode ? { esp: 0, cb: 0 } : rtPartEncaissee(sigPaieEncaisse, sigPaieMode, _montantSurPlace, sigPaieEsp, sigPaieCb);
-  if(t.stops.every(x=>['livré','annulé'].includes(x.statut))) t.statut='terminée';
+  // v7.5.171 (revue Codex P2) : livraisons terminées ≠ tournée clôturée (clôture = geste explicite du livreur)
+  if (rtLivraisonsTerminees(t)) t.statut = rtStatutApresArret(t);
   const cmd=commandes.find(c=>c.id===s.cmdId);
   if(cmd){
     cmd.statut='livré';
@@ -11641,6 +11739,13 @@ function validerSig(){
       if (s.enc) s.enc.motif = _rtMotif;
       if (typeof notifAjout === 'function') { try { notifAjout('err', 'commande', '⚠️ Encaissement incomplet — ' + cmd.id, paiEur(_rtReste - _rtCtl.montant) + ' restent dus. Motif : ' + _rtMotif, 'Voir', 'commandes'); } catch(e) {} }
     }
+    // v7.5.171 : « Déjà payé » FORCÉ par l'administrateur sur une commande non soldée -> journal (fiche + arrêt) et alerte
+    if (_djCtl && _djCtl.force) {
+      var _djQui = 'administrateur', _djQuand = new Date();
+      cmd.instr = (String(cmd.instr || '') + ' ⚠️ « Déjà payé » FORCÉ sans paiement enregistré (reste dû ' + paiEur(_djCtl.reste) + ') — motif : ' + _djMotif + ' (' + _djQui + ', ' + _djQuand.toLocaleString('fr-FR') + ').').trim();
+      s.dejaForce = { reste: _djCtl.reste, motif: _djMotif, par: _djQui, at: _djQuand.toISOString() };
+      if (typeof notifAjout === 'function') { try { notifAjout('err', 'commande', '⚠️ « Déjà payé » forcé — ' + cmd.id, paiEur(_djCtl.reste) + ' n\'étaient pas enregistrés comme payés. Motif : ' + _djMotif, 'Voir', 'commandes'); } catch(e) {} }
+    }
     stkDeduireStock(cmd.id);
     sbSaveCommande(cmd); // ✅ Sync commande Supabase → Realtime admin
   }
@@ -11678,6 +11783,7 @@ function validerSig(){
   // v7.5.113 : reset paiement à la livraison
   sigCodActif = false; sigCodChoix = null; sigCodMontant = 0;
   var _mxm = document.getElementById('sig-mixte-motif'); if (_mxm) _mxm.value = ''; // v7.5.135
+  if (typeof sigDejaInfo === 'function') sigDejaInfo(false); // v7.5.171
   var _mxw = document.getElementById('sig-mixte-motif-wrap'); if (_mxw) _mxw.style.display = 'none';
   var _cw = document.getElementById('sig-cod-wrap'); if (_cw) _cw.style.display = 'none';
   var _tki = document.getElementById('sig-ticket'); if (_tki) _tki.value = '';
@@ -12947,7 +13053,7 @@ function sauvegarderDepense() {
   // livreur. Les depenses CB (compte societe) gardent "General" (pas d'impact caisse especes).
   var _depLivreur = (document.getElementById('dep-livreur').value||'').toUpperCase();
   if (!_depLivreur && depModePaie !== 'CB') _depLivreur = 'RANOU';
-  depenses.unshift({
+  var _nouvDep = {
     id: generateId('d'),
     date,
     cat:      document.getElementById('dep-cat').value,
@@ -12955,7 +13061,11 @@ function sauvegarderDepense() {
     livreur:  _depLivreur,
     comment:  document.getElementById('dep-comment').value,
     modePaie: depModePaie, // 'Espèces' = déduit de la caisse livreur | 'CB' = compte société
-  });
+  };
+  // v7.5.171 (revue Codex P2) : une dépense ajoutée ici ne peut pas entrer dans une tournée au point de caisse validé
+  var _vrAjout = depVerrouCaisse([_nouvDep]);
+  if (!_vrAjout.ok) { toast(_vrAjout.erreur, 'err'); return; }
+  depenses.unshift(_nouvDep);
   closeModal('m-depense');
   try { localStorage.removeItem('mx_depenses_cache'); } catch(e) {}
   showSync('⏳ Sauvegarde...', 'pending');
@@ -12970,6 +13080,8 @@ function sauvegarderDepense() {
 function modifierDepense(id) {
   var dep = depenses.find(function(d){ return d.id === id; });
   if (!dep) { toast('Dépense introuvable', 'err'); return; }
+  var _vrOuv = depVerrouCaisse([dep]); // v7.5.171 : point de caisse validé -> annuler la validation d'abord
+  if (!_vrOuv.ok) { toast(_vrOuv.erreur, 'err'); return; }
   // Pré-remplir comme un ajout puis basculer en mode édition
   ouvrirAjoutDepense();
   window._depEditMode = id;
@@ -13024,8 +13136,12 @@ async function sauvegarderDepenseEdit() {
     toast('Remplis tous les champs requis', 'err');
     return;
   }
+  // v7.5.171 (revue Codex P2) : ni l'état avant ni l'état après ne peuvent toucher une tournée au point de caisse validé
+  var _apresEdit = Object.assign({}, depenses[idx], { date: date, cat: cat, montant: montant, livreur: livreur, comment: comment, modePaie: modePaie });
+  var _vrEdit = depVerrouCaisse([depenses[idx], _apresEdit]);
+  if (!_vrEdit.ok) { toast(_vrEdit.erreur, 'err'); return; }
   // Update local en mémoire
-  depenses[idx] = Object.assign({}, depenses[idx], { date: date, cat: cat, montant: montant, livreur: livreur, comment: comment, modePaie: modePaie });
+  depenses[idx] = _apresEdit;
   // PATCH Supabase
   try {
     var resp = await fetch(SUPABASE_URL + '/rest/v1/depenses?id=eq.' + encodeURIComponent(id), {
@@ -13140,6 +13256,9 @@ function supprimerCommande(id) {
 }
 
 function supprimerDepense(id) {
+  // v7.5.171 (revue Codex P2) : point de caisse validé -> annuler la validation d'abord
+  var _vrSup = depVerrouCaisse([depenses.find(function(d){ return d.id === id; })]);
+  if (!_vrSup.ok) { toast(_vrSup.erreur, 'err'); return; }
   if (!confirm('Supprimer cette dépense ?')) return;
   sbDeleteDepense(id); // Sync Supabase
   depenses = depenses.filter(function(d){ return d.id !== id; });
@@ -19702,7 +19821,8 @@ function sauvegarderModif() {
   });
 
   // Mise à jour statut tournée
-  if (t.stops.every(s => ['livré','annulé'].includes(s.statut))) t.statut = 'terminée';
+  // v7.5.171 : une modification par le bureau ne clôture plus d'office (clôture = geste explicite) ; déjà clôturée = inchangée
+  if (rtLivraisonsTerminees(t)) t.statut = (t.statut === 'terminée') ? 'terminée' : 'en cours';
   else if (t.stops.some(s => ['en-route','arrivé'].includes(s.statut))) t.statut = 'en cours';
   else t.statut = 'préparée';
 
@@ -19734,6 +19854,9 @@ function depLvTourneeVisee(cible) {
   return rtTourneePourDepense(tournees, livNom, currentLvTourneeId, LV_APERCU_ACTIF, auj);
 }
 function depLvControle(t) { return rtDepenseModifiable(t, role === 'livreur' ? 'livreur' : 'bureau', rtRemiseValideeTournee(t)); }
+// v7.5.171 (revue Codex sur 3c3aa05, P2) : verrou du point de caisse validé pour les chemins de la liste Finance
+// (ajout, modification, suppression) et le changement de mode par le livreur. `etats` : dépense avant et/ou après.
+function depVerrouCaisse(etats) { return rtDepenseVerrou(etats, tournees, rtRemiseValideeTournee); }
 function depLvAuteur() { return role === 'livreur' ? ('livreur ' + (livNom || '')) : (role === 'admin' ? 'administrateur' : (role || '?')); }
 function depLvQuand() { var d = new Date(); return d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
 function ouvrirDepenseLivreur(cible) {
@@ -19824,6 +19947,9 @@ function lvModifierDepense(depId) {
     var dId = s.dataset.depId;
     var d2 = depenses.find(function(x){ return x.id === dId; });
     if (!d2) { s.remove(); return; }
+    // v7.5.171 (revue Codex P2) : contrôle refait à l'enregistrement (la validation a pu arriver entre-temps)
+    var _vrLv = depVerrouCaisse([d2]);
+    if (!_vrLv.ok) { toast(_vrLv.erreur, 'err'); s.remove(); return; }
     // v7.5.135 (revue Codex sur f09037c, point 5) : journal de la correction (mode avant → après, auteur, motif)
     var _corrLv = rtDepenseCorrection(d2, { cat: d2.cat, montant: d2.montant, modePaie: newMode, comment: d2.comment }, depLvAuteur(), (document.getElementById('lv-dep-motif') || {}).value, depLvQuand());
     if (!_corrLv.ok) { toast(_corrLv.erreur, 'err'); return; }

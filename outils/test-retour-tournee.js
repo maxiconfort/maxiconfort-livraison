@@ -53,7 +53,9 @@ function nouveauBac(role) {
     // v7.5.130 : dépenses du livreur
     'function ouvrirDepenseLivreur(cible)', 'function depLvSelectMode(mode)', 'async function validerDepenseLivreur()', 'function rtLignesDepenses(r)', 'function rtEchapper(s)', 'function renderLivreurCaisse(t)',
     // v7.5.135 : contrôles des dépenses (tournée clôturée, point de caisse validé, journal)
-    'function rtRemiseValideeTournee(t)', 'function depLvTourneeVisee(cible)', 'function depLvControle(t)', 'function depLvAuteur()', 'function depLvQuand()'])
+    'function rtRemiseValideeTournee(t)', 'function depLvTourneeVisee(cible)', 'function depLvControle(t)', 'function depLvAuteur()', 'function depLvQuand()',
+    // v7.5.171 : verrou du point de caisse validé (tous les chemins des dépenses)
+    'function depVerrouCaisse(etats)'])
     vm.runInContext(extraireFonction(f), bac);
   vm.runInContext('var lvReportCible = null, depLvCatSelected = "", depLvCible = null, currentLvTourneeId = null;', bac);
   let _n = 0; bac.generateId = (p) => p + '-test-' + (++_n);
@@ -182,9 +184,13 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     bac.sigChoixSimple('deja'); bac.validerSig(); await attendre();
     test('commande déjà soldée + Déjà payé : accepté', stop.statut === 'livré' && envois.length === 1);
   }
-  { const cmd = LBC(); const { bac, envois } = preparer(cmd); bac.sigChoixSimple('deja');
+  { const cmd = LBC({ stpaie: 'Payé', montantEnc: 180 }); const { bac, envois } = preparer(cmd); bac.sigChoixSimple('deja');
     bac.validerSig(); await attendre(); const b = envois[0] && envois[0].body;
-    test('Déjà payé : Payé, rien encaissé sur place (comportement existant)', b && b.stpaie === 'Payé' && b.paie === 'Déjà payé' && !b.encaisse_par, b);
+    test('Déjà payé (commande soldée dans la base) : Payé, rien encaissé sur place', b && b.stpaie === 'Payé' && b.paie === 'Déjà payé' && !b.encaisse_par, b);
+  }
+  { const cmd = LBC(); const { bac, envois, stop } = preparer(cmd); bac.sigChoixSimple('deja');
+    bac.validerSig(); await attendre();
+    test('v7.5.171 : Déjà payé sur une commande « Non payé » (0 € encaissé) : REFUSÉ au livreur, rien enregistré', stop.statut !== 'livré' && envois.length === 0 && /n'est pas payée[\s\S]*encaissez ou signalez au bureau/.test(bac._toasts.pop()[0]));
   }
   { const cmd = LBC(); const { bac, envois, els } = preparer(cmd); bac.sigAutreCas('non');
     bac.validerSig(); await attendre(); const b = envois[0] && envois[0].body;
@@ -245,8 +251,8 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     test('« Non payé » sans acompte : 0 €, « Non payé » (inchangé)', JSON.stringify(p.rtCumulEditeur(180, 0, 'Espèces', 'Non payé', 0, 0, 0)) === JSON.stringify({ montantEnc: 0, stpaie: 'Non payé' }));
     test('« Payé » : cumul = prix ; « Partiel » sans montant : cumul inchangé', p.rtCumulEditeur(180, 50, 'CB', 'Payé', 0, 0, 50).montantEnc === 180 && p.rtCumulEditeur(180, 50, 'Espèces', 'Partiel', 0, 0, 120).montantEnc === 120);
   }
-  const editeur = async (cmdPlus, stopPlus, fenetre) => {
-    const x = nouveauBac(); const { bac, els } = x;
+  const editeur = async (cmdPlus, stopPlus, fenetre, roleEd, motifPrompt) => {
+    const x = nouveauBac(roleEd); const { bac, els } = x;
     for (const f of ['function lvPaieMixteRecap()', 'async function lvPaieValider()']) vm.runInContext(extraireFonction(f), bac);
     bac.renderFinance = () => {};
     const cmd = LBC(Object.assign({ statut: 'livré' }, cmdPlus)); bac.commandes = [cmd];
@@ -255,7 +261,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     const sh = bac.document.getElementById('lv-paie-sheet');
     Object.assign(sh.dataset, { mode: fenetre.mode, statut: fenetre.statut || 'Payé', tid: 'T-ED', idx: '0', prixTotal: String(cmd.prix), acompte: String(stop.encAvant || 0) });
     bac.document.getElementById('lv-paie-esp').value = String(fenetre.esp || 0); bac.document.getElementById('lv-paie-cb').value = String(fenetre.cb || 0);
-    bac.prompt = () => 'TK-ED';
+    bac.prompt = () => (motifPrompt != null ? motifPrompt : 'TK-ED');
     bac.lvPaieMixteRecap(); const statutRecap = sh.dataset.statut; const recap = bac.document.getElementById('lv-paie-mixte-recap').textContent;
     await bac.lvPaieValider(); await attendre();
     return Object.assign(x, { cmd, stop, statutRecap, recap, b: x.envois[0] && x.envois[0].body });
@@ -524,7 +530,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     const pt = pointDe(x.bac);
     test('Mixte 80 / 100 puis correction de la commande : la tournée garde 80 € espèces et 100 € CB', JSON.stringify(x.stop.encTournee) === JSON.stringify({ esp: 80, cb: 100 }) && pt.especes === 80 && pt.cb === 100, pt);
   }
-  { const x = preparer(LBC()); x.bac.sigChoixSimple('deja'); x.bac.validerSig(); await attendre();
+  { const x = preparer(LBC({ stpaie: 'Payé', montantEnc: 180 })); x.bac.sigChoixSimple('deja'); x.bac.validerSig(); await attendre();
     test('« Déjà payé » : relevé 0 € / 0 €', JSON.stringify(x.stop.encTournee) === JSON.stringify({ esp: 0, cb: 0 }), x.stop.encTournee);
   }
   { const x = preparer(LBC()); x.bac.sigAutreCas('non'); x.bac.validerSig(); await attendre();
@@ -654,6 +660,144 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     test('retour du réseau : la file se vide', q.offlineQueue.length === 0);
   }
 
+  // ══════════ 8. Revue Codex sur 3c3aa05 (v7.5.171) ══════════
+  console.log('\n8. REVUE CODEX SUR 3c3aa05 : « Déjà payé » contrôlé, livraisons terminées ≠ clôture, verrou du point de caisse partout');
+  // 8.1 « Déjà payé » réservé aux commandes déjà soldées dans la base
+  { const { bac: p } = nouveauBac();
+    test('règle pure : commande soldée (reste dû 0) -> accepté, sans forçage', JSON.stringify(p.rtControleDejaPaye(0, 'livreur', '')) === JSON.stringify({ ok: true, force: false, reste: 0, erreur: '' }));
+    test('règle pure : non soldée + livreur -> refusé même avec un motif (« encaissez ou signalez au bureau »)', !p.rtControleDejaPaye(180, 'livreur', 'motif très long').ok && /reste dû 180,00 €\) : encaissez ou signalez au bureau/.test(p.rtControleDejaPaye(180, 'livreur', 'x').erreur));
+    test('règle pure : non soldée + collaboratrice (ni livreur ni administrateur) -> refusé', !p.rtControleDejaPaye(180, 'collab', 'motif très long').ok);
+    test('règle pure : non soldée + administrateur SANS motif (ou trop court) -> refusé', !p.rtControleDejaPaye(180, 'admin', '').ok && !p.rtControleDejaPaye(180, 'admin', 'abc').ok && /motif obligatoire/.test(p.rtControleDejaPaye(180, 'admin', '').erreur));
+    test('règle pure : non soldée + administrateur AVEC motif -> accepté, « forcé », reste dû gardé', JSON.stringify(p.rtControleDejaPaye(130, 'admin', 'virement reçu le 25/11')) === JSON.stringify({ ok: true, force: true, reste: 130, erreur: '' }));
+  }
+  { const x = preparer(LBC({ stpaie: 'Partiel', montantEnc: 50 })); x.bac.sigChoixSimple('deja');
+    test('signature, acompte 50 € sur 180 € : avertissement dès le choix « Déjà payé » (reste dû 130 €), pas de champ motif pour le livreur', x.els['sig-deja-info'].style.display === 'block' && /130,00 €/.test(x.els['sig-deja-info'].textContent) && x.els['sig-deja-motif-wrap'].style.display === 'none', x.els['sig-deja-info'].textContent);
+    x.bac.validerSig(); await attendre();
+    test('signature, acompte partiel + « Déjà payé » par le livreur : refusé, rien enregistré', x.stop.statut !== 'livré' && x.envois.length === 0 && /encaissez ou signalez au bureau/.test(x.bac._toasts.pop()[0]));
+    x.bac.sigChoixSimple('esp');
+    test('changement de choix (Espèces) : l\'avertissement « Déjà payé » disparaît', x.els['sig-deja-info'].style.display === 'none');
+  }
+  { const x = preparer(LBC({ stpaie: 'Partiel', montantEnc: 180 })); x.bac.sigChoixSimple('deja');
+    test('signature, acompte couvrant TOUT le prix : pas d\'avertissement', x.els['sig-deja-info'].style.display === 'none');
+    x.bac.validerSig(); await attendre(); const b = x.envois[0] && x.envois[0].body;
+    test('signature, acompte couvrant tout + « Déjà payé » : accepté, Payé, aucune trace de forçage', x.stop.statut === 'livré' && b && b.stpaie === 'Payé' && !/FORCÉ/.test(b.instr || '') && !x.stop.dejaForce, b);
+  }
+  { const x = preparer(LBC()); x.bac.role = 'admin'; x.bac.sigChoixSimple('deja');
+    test('administrateur, commande non payée : champ motif affiché', x.els['sig-deja-motif-wrap'].style.display === 'block' && /motif obligatoire pour forcer/.test(x.els['sig-deja-info'].textContent));
+    x.bac.validerSig(); await attendre();
+    test('administrateur SANS motif : refusé, rien enregistré', x.stop.statut !== 'livré' && x.envois.length === 0 && /motif obligatoire/.test(x.bac._toasts.pop()[0]));
+    x.els['sig-deja-motif'].value = 'Virement reçu le 25/11, vérifié'; x.bac.validerSig(); await attendre(); const b = x.envois[0] && x.envois[0].body;
+    test('administrateur AVEC motif : « Déjà payé » forcé, Payé', x.stop.statut === 'livré' && b && b.stpaie === 'Payé' && b.paie === 'Déjà payé', b);
+    test('forçage journalisé dans la fiche (reste dû, motif, auteur) et sur l\'arrêt', b && /« Déjà payé » FORCÉ sans paiement enregistré \(reste dû 180 €\) — motif : Virement reçu le 25\/11, vérifié \(administrateur, /.test(b.instr) && x.stop.dejaForce && x.stop.dejaForce.reste === 180 && x.stop.dejaForce.motif === 'Virement reçu le 25/11, vérifié', b && b.instr);
+    test('forçage signalé au bureau (notification)', x.bac._notifs.some((n) => /« Déjà payé » forcé/.test(n[2]) && /Virement reçu/.test(n[3])));
+    test('après validation : champ motif vidé et masqué', x.els['sig-deja-motif'].value === '' && x.els['sig-deja-motif-wrap'].style.display === 'none');
+  }
+  // éditeur de paiement du livreur (après la signature) : même règle
+  { const r = await editeur({ stpaie: 'Payé', montantEnc: 180, paie: 'Espèces' }, { encTournee: { esp: 180, cb: 0 }, paie: 'Espèces', stpaie: 'Payé' }, { mode: 'Déjà payé', statut: 'Payé' });
+    test('éditeur, livreur : 180 € encaissés en espèces à l\'arrêt puis « Déjà payé » -> refusé (sinon les espèces disparaissent de la caisse)', r.envois.length === 0 && r.cmd.paie === 'Espèces' && r.stop.paie === 'Espèces' && /encaissez ou signalez au bureau/.test(r.bac._toasts.pop()[0]));
+  }
+  { const r = await editeur({ stpaie: 'Non payé', montantEnc: 0, paie: 'Espèces' }, { paie: 'Espèces', stpaie: 'Non payé' }, { mode: 'Déjà payé', statut: 'Payé' });
+    test('éditeur, livreur : commande « Non payé » -> « Déjà payé » refusé, dette conservée', r.envois.length === 0 && r.cmd.stpaie === 'Non payé');
+  }
+  { const r = await editeur({ stpaie: 'Payé', montantEnc: 180, paie: 'Déjà payé' }, { paie: 'Déjà payé', stpaie: 'Payé', encTournee: { esp: 0, cb: 0 } }, { mode: 'Déjà payé', statut: 'Payé' });
+    test('éditeur, livreur : arrêt déjà « Déjà payé » (contrôlé à la signature) -> accepté', r.envois.length === 1 && r.b && r.b.stpaie === 'Payé');
+  }
+  { const r = await editeur({ stpaie: 'Payé', montantEnc: 180, paie: 'Virement' }, { paie: 'Espèces', stpaie: 'Non payé', encTournee: { esp: 0, cb: 0 } }, { mode: 'Déjà payé', statut: 'Payé' });
+    test('éditeur, livreur : commande soldée par le bureau (virement), rien encaissé à l\'arrêt -> accepté', r.envois.length === 1 && r.b && r.b.paie === 'Déjà payé');
+  }
+  { const r = await editeur({ stpaie: 'Non payé', montantEnc: 0, paie: 'Espèces' }, { paie: 'Espèces', stpaie: 'Non payé' }, { mode: 'Déjà payé', statut: 'Payé' }, 'admin', '');
+    test('éditeur, administrateur SANS motif : refusé', r.envois.length === 0 && /motif obligatoire/.test(r.bac._toasts.pop()[0]));
+  }
+  { const r = await editeur({ stpaie: 'Non payé', montantEnc: 0, paie: 'Espèces' }, { paie: 'Espèces', stpaie: 'Non payé' }, { mode: 'Déjà payé', statut: 'Payé' }, 'admin', 'Payé sur TikTok Shop, vérifié');
+    test('éditeur, administrateur AVEC motif : forcé et journalisé (fiche, arrêt, notification)', r.envois.length === 1 && r.b && r.b.stpaie === 'Payé' && /FORCÉ[\s\S]*motif : Payé sur TikTok Shop, vérifié \(administrateur, /.test(r.b.instr) && r.stop.dejaForce && r.bac._notifs.some((n) => /« Déjà payé » forcé/.test(n[2])), r.b && r.b.instr);
+  }
+  // 8.2 Livraisons terminées (automatique) ≠ tournée clôturée (geste explicite)
+  { const { bac: p } = nouveauBac();
+    test('fin des livraisons : tous livrés/annulés = terminées ; tournée vide ou arrêt restant = non', p.rtLivraisonsTerminees({ stops: [{ statut: 'livré' }, { statut: 'annulé' }] }) && !p.rtLivraisonsTerminees({ stops: [] }) && !p.rtLivraisonsTerminees({ stops: [{ statut: 'livré' }, { statut: 'reporté' }] }));
+    test('statut après un arrêt : livraisons terminées -> « en cours » (plus « terminée » d\'office)', p.rtStatutApresArret({ statut: 'en cours', stops: [{ statut: 'livré' }] }) === 'en cours' && p.rtStatutApresArret({ statut: 'préparée', stops: [{ statut: 'annulé' }] }) === 'en cours');
+    test('statut après un arrêt : tournée déjà clôturée -> reste « terminée » ; en route -> « en cours » ; sinon inchangé', p.rtStatutApresArret({ statut: 'terminée', stops: [{ statut: 'livré' }] }) === 'terminée' && p.rtStatutApresArret({ statut: 'préparée', stops: [{ statut: 'en-route' }] }) === 'en cours' && p.rtStatutApresArret({ statut: 'préparée', stops: [{ statut: 'en-attente' }] }) === 'préparée');
+  }
+  { const x = preparer(LBC()); const { bac, els, envois } = x; bac.sigChoixSimple('esp'); bac.validerSig(); await attendre();
+    const t = bac.tournees[0];
+    test('dernière signature : arrêt livré, la tournée reste « en cours » (pas clôturée d\'office)', x.stop.statut === 'livré' && t.statut === 'en cours', t.statut);
+    const h = bac.lvClotureHtml(t);
+    test('bloc de fin : « Livraisons terminées », invitation aux dépenses du retour, bouton « Clôturer ma tournée » actif', /Livraisons terminées/.test(h) && /dépenses du retour/.test(h) && /🏁 Clôturer ma tournée/.test(h) && !/disabled/.test(h) && !/✅ Tournée clôturée/.test(h), h.slice(0, 400));
+    test('livraisons terminées : le livreur peut encore ajouter une dépense (règle)', bac.rtDepenseModifiable(t, 'livreur', false).ok === true);
+    const n0 = envois.length;
+    els['m-dep-livreur'] = fauxElement('m-dep-livreur'); els['m-dep-livreur'].style.display = 'none';
+    bac.depLvTourneeVisee = () => t; // la tournée du test (date fixe) est celle que le livreur regarde
+    bac.ouvrirDepenseLivreur();
+    test('livraisons terminées : l\'écran Dépense s\'ouvre (péage du retour)', els['m-dep-livreur'].style.display === 'flex');
+    vm.runInContext('depLvCatSelected = "Péage"; currentLvTourneeId = "T-TEST";', bac); els['dep-lv-montant'].value = '6,40'; await bac.validerDepenseLivreur();
+    const dern = envois[envois.length - 1] && envois[envois.length - 1].body;
+    test('livraisons terminées : la dépense du retour est enregistrée sur la tournée', envois.length === n0 + 1 && dern && dern.tournee_id === 'T-TEST' && dern.montant === 6.4, dern);
+    bac.lvCloturerTournee('T-TEST');
+    test('« Clôturer ma tournée » (geste explicite) : tournée « terminée »', t.statut === 'terminée');
+    bac.ouvrirDepenseLivreur();
+    test('après la clôture explicite : dépense refusée au livreur (« Tournée clôturée »)', /Tournée clôturée/.test(bac._toasts.pop()[0]));
+  }
+  { const sig = extraireFonction('function validerSig()'), st = extraireFonction('function setLvSt(tid, idx, st, _annOk)'), modif = extraireFonction('function sauvegarderModif()');
+    test('code : validerSig et setLvSt ne clôturent plus la tournée d\'office', !/statut\s*=\s*'terminée'/.test(sig) && !/statut\s*=\s*'terminée'/.test(st) && /rtStatutApresArret\(t\)/.test(sig) && /rtStatutApresArret\(t\)/.test(st));
+    test('code : une modification de la tournée par le bureau ne la clôture plus d\'office', /if \(rtLivraisonsTerminees\(t\)\) t\.statut = \(t\.statut === 'terminée'\) \? 'terminée' : 'en cours';/.test(modif));
+  }
+  // 8.3 Verrou du point de caisse validé sur la liste Finance (modifier, enregistrer, supprimer, ajouter)
+  const bacFinance = () => { const x = nouveauBac('admin'); const { bac } = x; bac.livNom = '';
+    for (const f of ['function modifierDepense(id)', 'async function sauvegarderDepenseEdit()', 'function supprimerDepense(id)', 'function sauvegarderDepense()']) vm.runInContext(extraireFonction(f), bac);
+    bac.window = {}; bac._ouvert = 0; bac._supprimees = []; bac._sauvees = [];
+    bac.ouvrirAjoutDepense = () => { bac._ouvert++; }; bac.lockBtn = () => {}; bac.closeModal = () => {}; bac.finRender = () => {}; bac.depSelectMode = () => {}; bac.validerFormDepense = () => true;
+    bac.sbDeleteDepense = (id) => { bac._supprimees.push(id); }; bac.sbSaveDepense = async (d) => { bac._sauvees.push(d); };
+    bac._confirmes = 0; bac.confirm = () => { bac._confirmes++; return true; };
+    bac.console = { log() {}, warn() {}, error() {} };
+    bac.document.getElementById('dep-mode-cb').style.background = ''; bac.document.getElementById('dep-mode-cb').style.borderColor = '';
+    bac.document.getElementById('dep-cat').options = []; bac.document.getElementById('dep-livreur').options = []; bac.document.getElementById('dep-livreur').appendChild = () => {}; bac.document.createElement = () => ({});
+    bac.tournees = [{ id: 'T-F', livreur: 'RANOU', date: '2026-11-24', statut: 'terminée', stops: [] }, { id: 'T-G', livreur: 'RANOU', date: '2026-11-23', statut: 'terminée', stops: [] }];
+    bac.caissesRemises = { 't_T-F': { validee: true } };
+    bac.depenses = [{ id: 'df', livreur: 'RANOU', tourneeId: 'T-F', date: '2026-11-24', cat: 'Carburant', modePaie: 'Espèces', montant: 30, comment: '' },
+      { id: 'dn', livreur: 'RANOU', date: '2026-11-24', cat: 'Péage', modePaie: 'Espèces', montant: 5, comment: '' },
+      { id: 'dg', livreur: 'RANOU', tourneeId: 'T-G', date: '2026-11-23', cat: 'Parking', modePaie: 'Espèces', montant: 4, comment: '' }];
+    const champs = (v) => { for (const k of Object.keys(v)) bac.document.getElementById(k).value = v[k]; };
+    return Object.assign(x, { champs }); };
+  { const { bac, envois, champs } = bacFinance();
+    bac.modifierDepense('df');
+    test('Finance, point de caisse validé : « Modifier » refusé (annulez d\'abord la validation), fenêtre non ouverte', bac._ouvert === 0 && /annulez d'abord la validation/.test(bac._toasts.pop()[0]) && !bac.window._depEditMode);
+    bac.modifierDepense('dn');
+    test('Finance : dépense SANS tournée, rattachée par la date à la tournée validée -> refusée aussi', bac._ouvert === 0 && /T-F/.test(bac._toasts.pop()[0]));
+    bac.supprimerDepense('df');
+    test('Finance, point de caisse validé : « Supprimer » refusé, ni confirmation ni suppression', bac._confirmes === 0 && bac._supprimees.length === 0 && bac.depenses.length === 3 && /annulez d'abord la validation/.test(bac._toasts.pop()[0]));
+    bac.window._depEditMode = 'df'; champs({ 'dep-montant': '99', 'dep-date': '2026-11-24', 'dep-cat': 'Carburant', 'dep-livreur': 'RANOU', 'dep-comment': '' });
+    await bac.sauvegarderDepenseEdit();
+    test('Finance : enregistrement d\'une correction ouverte AVANT la validation -> refusé, rien envoyé, montant inchangé', envois.length === 0 && bac.depenses[0].montant === 30 && /annulez d'abord la validation/.test(bac._toasts.pop()[0]));
+    bac.window._depEditMode = 'dg'; bac.depenses[2].tourneeId = null; champs({ 'dep-montant': '4', 'dep-date': '2026-11-24', 'dep-cat': 'Parking', 'dep-livreur': 'RANOU', 'dep-comment': '' });
+    await bac.sauvegarderDepenseEdit();
+    test('Finance : correction qui ferait ENTRER une dépense dans la tournée validée (date changée) -> refusée', envois.length === 0 && bac.depenses[2].date === '2026-11-23');
+    bac.window._depEditMode = null; champs({ 'dep-montant': '12', 'dep-date': '2026-11-24', 'dep-cat': 'Carburant', 'dep-livreur': 'RANOU', 'dep-comment': 'ajout tardif' });
+    bac.sauvegarderDepense();
+    test('Finance : AJOUT d\'une dépense espèces du livreur à la date de la tournée validée -> refusé, rien ajouté', bac.depenses.length === 3 && bac._sauvees.length === 0 && /annulez d'abord la validation/.test(bac._toasts.pop()[0]));
+    champs({ 'dep-date': '2026-11-22' }); bac.sauvegarderDepense(); await attendre();
+    test('Finance : ajout à une autre date (aucune tournée validée) -> accepté', bac.depenses.length === 4 && bac._sauvees.length === 1);
+  }
+  { const { bac, envois, champs } = bacFinance(); bac.caissesRemises = {}; // validation annulée
+    bac.modifierDepense('df');
+    test('validation annulée : « Modifier » ouvre la fenêtre', bac._ouvert === 1 && bac.window._depEditMode === 'df');
+    champs({ 'dep-montant': '28', 'dep-date': '2026-11-24', 'dep-cat': 'Carburant', 'dep-livreur': 'RANOU', 'dep-comment': '' });
+    await bac.sauvegarderDepenseEdit();
+    test('validation annulée : la correction est enregistrée (PATCH envoyé)', envois.length === 1 && /depenses\?id=eq\.df/.test(envois[0].url) && envois[0].body.montant === 28 && bac.depenses[0].montant === 28, envois[0]);
+    bac.supprimerDepense('dg');
+    test('validation annulée : la suppression passe (confirmation puis suppression)', bac._confirmes === 1 && bac._supprimees[0] === 'dg' && bac.depenses.length === 2);
+  }
+  { const { bac, envois } = nouveauBac();
+    bac.tournees = [{ id: 'T-O2', livreur: 'RANOU', date: AUJ7, statut: 'en cours', stops: [] }];
+    bac.depenses = [{ id: 'dm2', livreur: 'RANOU', tourneeId: 'T-O2', date: AUJ7, cat: 'Péage', modePaie: 'Espèces', montant: 5, comment: '' }];
+    vm.runInContext(extraireFonction('function lvModifierDepense(depId)'), bac);
+    const enfants = {}; bac.document.createElement = () => fauxElement('cree'); bac.document.body = { appendChild(e) { enfants[e.id] = e; } };
+    const base = bac.document.getElementById; bac.document.getElementById = (id) => { if (enfants[id]) return enfants[id]; const e = base(id); if (!e.addEventListener) e.addEventListener = function(ev, fn) { this._clic = fn; }; return e; };
+    bac.lvModifierDepense('dm2'); const feuille = enfants['lv-dep-sheet'];
+    bac.caissesRemises = { 't_T-O2': { validee: true } }; // validation arrivée pendant que la fenêtre était ouverte
+    feuille.dataset.mode = 'CB'; bac.document.getElementById('lv-dep-motif').value = 'Payé avec la carte société';
+    await bac.document.getElementById('lv-dep-valider')._clic();
+    test('livreur : changement de mode enregistré APRÈS la validation du point de caisse -> refusé, rien envoyé', envois.length === 0 && bac.depenses[0].modePaie === 'Espèces' && /annulez d'abord la validation/.test(bac._toasts.pop()[0]));
+  }
+
   // ══════════ 6. Garde-fous (lecture du code) ══════════
   console.log('\n6. GARDE-FOUS (lecture du code)');
   const blocRT = extraireBloc('// ── RT-DEBUT', '// RT-FIN');
@@ -666,7 +810,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
   test('Retour de tournée : bouton « Valider le point de caisse » branché sur validerRemiseCaisse (caisse_remises)', /validerRemiseCaisse\(\\'' \+ r\.caisseKey \+ '\\'\)"[^>]*>✅ Valider le point de caisse/.test(html));
   test('validerRemiseCaisse écrit toujours dans caisse_remises (mécanisme existant)', /rest\/v1\/caisse_remises', \{\s*method: 'POST'/.test(extraireFonction('async function validerRemiseCaisse(key)')));
   test('ancre JARVIS (bloc JVUE) présente', html.indexOf('// JVUE-DEBUT') > 0 && html.indexOf('// JVUE-FIN') > html.indexOf('// JVUE-DEBUT'));
-  test('CACHE_VERSION augmentée (v7-5-136 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(3[6-9]|[4-9]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
+  test('CACHE_VERSION augmentée (v7-5-171 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(7[1-9]|[89]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
