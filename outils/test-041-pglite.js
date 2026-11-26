@@ -1,0 +1,448 @@
+// Banc de test RÉEL de la migration 041 (dropshipping encadré et provenance de chaque pièce, 3 pare-feu) sur une base
+// PostgreSQL JETABLE, EN MÉMOIRE (@electric-sql/pglite 0.2.17 = PostgreSQL 16 en WebAssembly : rien n'est écrit sur le disque,
+// aucune connexion à la vraie base).
+// Usage : node outils/test-041-pglite.js   (SAUTER_PGLITE=1 pour le sauter volontairement : « SAUTÉ », ne vaut jamais preuve)
+// VALEURS FICTIVES uniquement (dépôt PUBLIC) : aucun client, aucun fournisseur, aucun prix réel.
+//
+// Ce que fait le banc :
+//   1. recrée le strict nécessaire du schéma (rôles Supabase, propriétaire BYPASSRLS non superutilisateur, privilèges par défaut,
+//      tables produits / commandes / tournees / depenses / caisse_remises / parametres / stock_camion avec les politiques de
+//      session de la 019, schéma storage minimal) ; applique TELLES QUELLES 004, 020, 038b, 040, puis la 041 (deux fois) ;
+//      la 039 est représentée par sa seule table produits_revient (DDL recopiée ; la 039 a son propre banc) ;
+//   2. exécute pour de vrai les trois pare-feu, le stock du camion, la déduction limitée aux pièces « Dépôt », la marge, le
+//      bilan du jour, les alertes, le journal, les droits par rôle et les politiques du stockage des tickets.
+// LIMITES : une seule connexion (la concurrence est garantie par les verrous FOR UPDATE, vérifiés dans le texte) ; pas de
+// PostgREST ni d'API Storage (appels reproduits en SQL) ; session par paramètre au lieu des en-têtes ; types des colonnes
+// historiques supposés d'après les envois de l'application.
+const fs = require('fs'), path = require('path');
+const racine = path.join(__dirname, '..');
+const VERSION_ATTENDUE = '0.2.17';
+const SAUTER = process.env.SAUTER_PGLITE === '1';
+let PGlite;
+try { ({ PGlite } = require('@electric-sql/pglite')); } catch (e) {
+  if (SAUTER) { console.log('BANC 041 PGLITE SAUTÉ VOLONTAIREMENT (SAUTER_PGLITE=1) : la migration 041 n\'a PAS été testée.'); process.exit(0); }
+  console.error('ÉCHEC DU BANC 041 PGLITE : dépendance @electric-sql/pglite absente — la migration 041 n\'a PAS été testée.');
+  console.error('Installer @electric-sql/pglite ' + VERSION_ATTENDUE + ' (npm install), ou SAUTER_PGLITE=1 pour le sauter volontairement.');
+  process.exit(2);
+}
+const lireMigration = (n) => fs.readFileSync(path.join(racine, 'supabase', 'migrations', n), 'utf8');
+let ok = 0, ko = 0;
+const test = (nom, cond, det) => { if (cond) { ok++; console.log('  OK   ' + nom); } else { ko++; console.log('  ÉCHEC ' + nom + (det !== undefined ? ' — ' + JSON.stringify(det) : '')); } };
+
+const SQL_ROLES = `
+create role anon nologin noinherit;
+create role authenticated nologin noinherit;
+create role service_role nologin noinherit bypassrls;
+create role l41_postgres nologin bypassrls;
+grant usage, create on schema public to l41_postgres;
+grant usage on schema public to anon, authenticated, service_role;
+alter default privileges for role l41_postgres in schema public grant all on tables to anon, authenticated, service_role;
+alter default privileges for role l41_postgres in schema public grant all on sequences to anon, authenticated, service_role;
+alter default privileges for role l41_postgres in schema public grant all on functions to anon, authenticated, service_role;
+create schema interne authorization l41_postgres;
+create schema storage authorization l41_postgres;
+grant usage on schema storage to anon, authenticated, service_role;
+`;
+// BOUCHONS documentés : session_role() / session_livreur() lisent l41.session_role / l41.session_livreur (en production :
+// en-têtes x-app-secret + x-session-token, table sessions_app, migration 019). Schéma storage : tables buckets / objects
+// minimales (en production : Supabase Storage, RLS activée sur storage.objects, rôle anon pour la clé publishable).
+const SQL_BASE = `
+create or replace function public.session_role() returns text
+language sql stable security definer set search_path = public, pg_catalog as $$ select nullif(current_setting('l41.session_role', true), '') $$;
+create or replace function public.session_livreur() returns text
+language sql stable security definer set search_path = public, pg_catalog as $$
+  select case when nullif(current_setting('l41.session_role', true), '') = 'livreur' then upper(nullif(current_setting('l41.session_livreur', true), '')) end $$;
+revoke all on function public.session_role(), public.session_livreur() from public, anon, authenticated;
+grant execute on function public.session_role(), public.session_livreur() to anon;
+
+create table public.produits (
+  id text primary key, nom text not null, cat text, dim text, prix numeric, poids numeric, stock integer default 0,
+  seuil integer, empl text, remarque text, actif boolean default true, updated_at timestamptz default now(), created_at timestamptz default now());
+create table public.commandes (
+  id text primary key, client text, produit text, lignes jsonb, qte integer default 1, prix numeric default 0, livreur text,
+  transporteur text default 'RANOU', statut text default 'en-attente', date_livraison text, stock_deduit boolean default false,
+  updated_at timestamptz default now(), created_at timestamptz default now());
+create table public.tournees (id text primary key, livreur text, date_tournee text, statut text, stops jsonb, updated_at timestamptz);
+create table public.depenses (
+  id text primary key, date_depense text, cat text, montant numeric, livreur text, comment text, mode_paie text, tournee_id text,
+  created_at timestamptz default now());
+create table public.caisse_remises (
+  id bigint generated always as identity primary key, key_remise text unique, livreur text, periode text, validee boolean,
+  date_remise timestamptz, par text, especes_attendues numeric, especes_remises numeric, ecart numeric, cb_encaisse numeric, commentaire text);
+create table public.parametres (cle text primary key, valeur text);
+create table public.stock_camion (
+  id text primary key, livreur text, produit_libelle text, quantite integer, source_cmd_id text, source_tournee_id text,
+  charge_at timestamptz, charge_par text, status text, retour_at timestamptz, retour_par text);
+-- 039 : seule la table produits_revient est nécessaire ici (DDL recopiée de la 039)
+create table public.produits_revient (
+  produit_id text primary key references public.produits(id) on update cascade on delete cascade,
+  prix_revient_ht numeric(12,4) not null check (prix_revient_ht >= 0), methode text not null default 'cump',
+  provisoire boolean not null default false, maj_at timestamptz default now(), maj_par text);
+
+do $$
+declare t text;
+begin
+  foreach t in array array['produits', 'commandes', 'tournees', 'depenses', 'caisse_remises', 'parametres', 'stock_camion', 'produits_revient'] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('create policy sess_admin on public.%I for all to anon using ((select public.session_role()) = ''admin'') with check ((select public.session_role()) = ''admin'')', t);
+  end loop;
+  foreach t in array array['produits', 'commandes', 'tournees', 'stock_camion'] loop
+    execute format('create policy sess_collab on public.%I for all to anon using ((select public.session_role()) = ''collab'') with check ((select public.session_role()) = ''collab'')', t);
+  end loop;
+end $$;
+create policy sess_livreur on public.commandes for all to anon
+  using ((select public.session_role()) = 'livreur' and upper(coalesce(livreur,'')) = (select public.session_livreur())
+         and coalesce(date_livraison,'') >= to_char(current_date - 2, 'YYYY-MM-DD') and coalesce(date_livraison,'') <= to_char(current_date + 2, 'YYYY-MM-DD'))
+  with check ((select public.session_role()) = 'livreur' and upper(coalesce(livreur,'')) = (select public.session_livreur()));
+create policy sess_livreur on public.tournees for all to anon
+  using ((select public.session_role()) = 'livreur' and upper(coalesce(livreur,'')) = (select public.session_livreur()))
+  with check ((select public.session_role()) = 'livreur' and upper(coalesce(livreur,'')) = (select public.session_livreur()));
+create policy sess_livreur on public.depenses for all to anon
+  using ((select public.session_role()) = 'livreur' and upper(coalesce(livreur,'')) = (select public.session_livreur()))
+  with check ((select public.session_role()) = 'livreur' and upper(coalesce(livreur,'')) = (select public.session_livreur()));
+create policy sess_livreur on public.stock_camion for all to anon
+  using ((select public.session_role()) = 'livreur' and upper(coalesce(livreur,'')) = (select public.session_livreur()))
+  with check ((select public.session_role()) = 'livreur' and upper(coalesce(livreur,'')) = (select public.session_livreur()));
+create policy sess_livreur_lecture on public.produits for select to anon using ((select public.session_role()) = 'livreur');
+create policy sess_livreur_stock on public.produits for update to anon using ((select public.session_role()) = 'livreur') with check ((select public.session_role()) = 'livreur');
+
+create table storage.buckets (id text primary key, name text, public boolean default false);
+create table storage.objects (id bigint generated always as identity primary key, bucket_id text references storage.buckets(id), name text, owner text, created_at timestamptz default now());
+alter table storage.objects enable row level security;
+grant select, insert, update, delete on storage.objects to anon;
+`;
+
+(async () => {
+  let pkg = { version: '?' };
+  try { let d = path.dirname(require.resolve('@electric-sql/pglite'));
+        while (!fs.existsSync(path.join(d, 'package.json')) && path.dirname(d) !== d) d = path.dirname(d);
+        pkg = JSON.parse(fs.readFileSync(path.join(d, 'package.json'), 'utf8')); } catch (e) { /* version inconnue */ }
+  if (pkg.version !== VERSION_ATTENDUE) {
+    console.error('ÉCHEC DU BANC 041 PGLITE : @electric-sql/pglite ' + pkg.version + ' installé, version exigée ' + VERSION_ATTENDUE + ' — migration 041 NON testée.');
+    process.exit(2);
+  }
+  const db = new PGlite();
+  console.log('Base jetable en mémoire : ' + (await db.query('select version() as v')).rows[0].v.split(' on ')[0] + ' (@electric-sql/pglite ' + pkg.version + ')');
+
+  const SESS = { admin: ['admin', ''], collab: ['collab', ''], livreur: ['livreur', 'livreur-a'], livreurB: ['livreur', 'livreur-b'] };
+  async function contexte(qui) {
+    await db.exec('reset role');
+    const s = SESS[qui] || ['', ''];
+    await db.query("select set_config('l41.session_role', $1, false), set_config('l41.session_livreur', $2, false)", s);
+    if (qui === 'proprio') await db.exec('set role l41_postgres');
+    else if (qui !== 'maintenance') await db.exec('set role anon');
+  }
+  async function q(qui, sql, params) { await contexte(qui); try { return (await db.query(sql, params || [])).rows; } finally { await db.exec('reset role'); } }
+  async function echec(qui, sql, params) { await contexte(qui); try { await db.query(sql, params || []); return null; } catch (e) { return String(e && e.message || e); } finally { await db.exec('reset role'); } }
+  const un = async (qui, sql, params) => (await q(qui, sql, params))[0];
+  const rpc = async (qui, appel, params) => (await un(qui, 'select ' + appel + ' as r', params)).r;
+  const P = 'proprio';
+  const AUJ = (await db.query("select to_char(current_date, 'YYYY-MM-DD') as d")).rows[0].d;
+  const stock = async (id) => (await un(P, 'select stock from public.produits where id = $1', [id])).stock;
+  const nb = async (sql, params) => Number((await un(P, 'select count(*)::int as n from ' + sql, params)).n);
+
+  // =========================================================================================================================
+  console.log('\n1. SCHÉMA ET MIGRATIONS (004, 020, 038b, 040 telles quelles, puis 041 TELLE QUELLE deux fois)');
+  await db.exec(SQL_ROLES);
+  await db.exec('set role l41_postgres');
+  await db.exec(SQL_BASE);
+  for (const m of ['004_add_composants_to_produits.sql', '020_depenses_livreur_restreint.sql', '038b_depenses_verrou_caisse_validee.sql', '040_deduction_stock_serveur.sql']) {
+    let err = null; try { await db.exec(lireMigration(m)); } catch (e) { err = e.message; }
+    test('migration ' + m + ' appliquée telle quelle', err === null, err);
+  }
+  const sql041 = lireMigration('041_dropshipping_provenance.sql');
+  let e41 = null; try { await db.exec(sql041); } catch (e) { e41 = e.message; }
+  test('migration 041 appliquée TELLE QUELLE (contrôles des sections 9 et 10 passés)', e41 === null, e41);
+  if (e41) { console.log('\nRÉSULTAT : arrêt, la migration 041 ne s\'applique pas.'); process.exit(1); }
+  let e41b = null; try { await db.exec(sql041); } catch (e) { e41b = e.message; }
+  test('migration 041 rejouable une 2e fois sans erreur', e41b === null, e41b);
+  await db.exec('reset role');
+  {
+    const bloc10 = sql041.slice(sql041.indexOf('-- 10. Auto-contrôle')); const corps10 = bloc10.slice(bloc10.indexOf('do $$'));
+    await db.exec('set role l41_postgres; begin;');
+    await db.exec("create or replace function interne.l041_ht(p_ttc numeric, p_tva numeric) returns numeric language sql immutable as $$ select p_ttc $$");
+    let e10 = null; try { await db.exec(corps10); } catch (e) { e10 = e.message; }
+    await db.exec('rollback; reset role;');
+    test('auto-contrôle section 10 : une règle HT faussée fait ÉCHOUER la migration', !!e10 && /Auto-contrôle 041/.test(e10), e10);
+    const bloc9 = sql041.slice(sql041.indexOf('-- 9. Contrôle')); const corps9 = bloc9.slice(bloc9.indexOf('do $$'), bloc9.indexOf('-- ───', bloc9.indexOf('do $$')));
+    await db.exec('set role l41_postgres; begin;');
+    await db.exec('drop table public.produits_revient cascade');
+    let e9 = null; try { await db.exec(corps9); } catch (e) { e9 = e.message; }
+    await db.exec('rollback; reset role;');
+    test('contrôle section 9 : sans la 039 (produits_revient) → migration ANNULÉE', !!e9 && /produits_revient\.prix_revient_ht/.test(e9), e9);
+  }
+  test('réglages créés : alerte camion 3 jours, charges fixes VIDES, GLS vide, TVA 20',
+    JSON.stringify((await q(P, "select cle, valeur from public.parametres where cle like 'drop_%' order by cle")).map(r => r.cle + '=' + r.valeur))
+      === JSON.stringify(['drop_camion_alerte_jours=3', 'drop_charges_fixes_jour_ht=', 'drop_gls_cout_commande_ht=', 'drop_tva_pct=20']));
+  test('bucket drop-tickets créé PRIVÉ', (await un(P, "select public from storage.buckets where id = 'drop-tickets'")).public === false);
+  const src = (await un(P, "select prosrc from pg_proc where proname = 'drop_enlever_payer'")).prosrc;
+  test('texte : enlèvement — commande puis pièce verrouillées (FOR UPDATE) avant toute lecture de l\'achat',
+    /from public\.commandes where id = p\.cmd_id for update;[\s\S]*from public\.commande_pieces where id = p_piece_id for update;[\s\S]*from public\.achats_fournisseur where id = p\.achat_id for update/.test(src));
+
+  // ---------------------------------------------------------------------------------------------------------------------
+  // Données fictives : matelas M140 (stock 5, revient 100), matelas M180 (stock 0 = rupture, revient 150), sommier S90
+  // (stock 4, revient 40), ensemble E180 = M180 + 2 × S90 ; fournisseurs F1 / F2 (fictifs) ; livreur LIVREUR-A.
+  await q(P, `insert into public.produits (id, nom, cat, dim, prix, stock, composants) values
+    ('pm140', 'Matelas fictif 140', 'Matelas', '140×190', 300, 5, null),
+    ('pm180', 'Matelas fictif 180', 'Matelas', '180×190', 400, 0, null),
+    ('ps90', 'Sommier fictif 90', 'Sommier', '90×190', 120, 4, null),
+    ('pe180', 'Ensemble fictif 180', 'Ensemble', '180×190', 600, 0, '[{"id":"pm180","qte":1},{"id":"ps90","qte":2}]')`);
+  await q(P, "insert into public.produits_revient (produit_id, prix_revient_ht) values ('pm140', 100), ('pm180', 150), ('ps90', 40)");
+  const cmd = (id, champs) => q(P, 'insert into public.commandes (id, client, produit, lignes, qte, prix, livreur, transporteur, statut, date_livraison) values ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10)',
+    [id, 'Client fictif', champs.produit || null, champs.lignes ? JSON.stringify(champs.lignes) : null, champs.qte || 1, champs.prix || 0,
+     champs.livreur || 'Livreur-A', champs.transporteur || 'RANOU', champs.statut || 'en-route', champs.date || AUJ]);
+  await cmd('#C1', { lignes: [{ produitId: 'pe180', nom: 'Ensemble fictif 180', qte: 1 }], prix: 720 });
+  await cmd('#C2', { lignes: [{ produitId: 'pm140', nom: 'Matelas fictif 140', qte: 2 }], prix: 600 });
+  await cmd('#CB', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360, livreur: 'Livreur-B' });
+  await q(P, "insert into public.tournees (id, livreur, date_tournee, statut, stops) values ('T-1', 'Livreur-A', $1, 'en cours', $2::jsonb)",
+    [AUJ, JSON.stringify([{ cmdId: '#C1', client: 'Client fictif' }, { cmdId: '#C2', client: 'Client fictif' }])]);
+
+  // =========================================================================================================================
+  console.log('\n2. DROITS PAR RÔLE');
+  test('sans session : drop_version() ne répond rien', (await rpc('anon', 'public.drop_version()')) === null);
+  test('livreur : drop_version() = 041', (await rpc('livreur', 'public.drop_version()')) === '041');
+  test('admin : crée un fournisseur (écriture directe, politique sess_admin_ecriture)',
+    (await echec('admin', "insert into public.fournisseurs (nom, adresse, telephone) values ('Fournisseur fictif 1', '1 rue Fictive 75000 Paris', '0100000000'), ('Fournisseur fictif 2', '2 rue Fictive 75000 Paris', null)")) === null);
+  const F1 = (await un(P, "select id from public.fournisseurs where nom = 'Fournisseur fictif 1'")).id;
+  const F2 = (await un(P, "select id from public.fournisseurs where nom = 'Fournisseur fictif 2'")).id;
+  test('collaboratrice : ne crée pas de fournisseur', !!(await echec('collab', "insert into public.fournisseurs (nom, adresse) values ('X', 'Y')")));
+  test('livreur : ne crée pas de fournisseur', !!(await echec('livreur', "insert into public.fournisseurs (nom, adresse) values ('X', 'Y')")));
+  test('livreur et collaboratrice : lisent les fournisseurs (adresse de l\'enlèvement)', (await q('livreur', 'select id from public.fournisseurs')).length === 2 && (await q('collab', 'select id from public.fournisseurs')).length === 2);
+  await q('admin', 'insert into public.fournisseur_prix (produit_id, fournisseur_id, prix_achat_ht) values ($1, $2, 160), ($1, $3, 170), ($4, $2, 45)', ['pm180', F1, F2, 'ps90']);
+  test('collaboratrice : AUCUN prix d\'achat visible', (await q('collab', 'select * from public.fournisseur_prix')).length === 0);
+  test('livreur : aucun prix tant que la référence n\'est pas activée', (await q('livreur', 'select * from public.fournisseur_prix')).length === 0);
+  test('livreur : n\'active pas le dropshipping', !!(await echec('livreur', "insert into public.drop_produits (produit_id, actif) values ('pm180', true)")));
+  test('collaboratrice : n\'active pas le dropshipping', !!(await echec('collab', "insert into public.drop_produits (produit_id, actif) values ('pm180', true)")));
+  test('admin : active pm180 (référence en rupture) en dropshipping', (await echec('admin', "insert into public.drop_produits (produit_id, actif, motif) values ('pm180', true, 'rupture')")) === null);
+  test('livreur : voit les 2 prix de la référence activée, pas ceux d\'une référence non activée',
+    JSON.stringify((await q('livreur', 'select produit_id, prix_achat_ht::float8 as p from public.fournisseur_prix order by p')).map(r => r.produit_id + ':' + r.p)) === JSON.stringify(['pm180:160', 'pm180:170']));
+  test('personne n\'écrit directement une pièce, un achat, un coût, une alerte (admin compris)',
+    !!(await echec('admin', "insert into public.commande_pieces (cmd_id, ligne_idx, piece_idx, libelle, empreinte) values ('#C1', 0, 9, 'x', 'x')"))
+    && !!(await echec('livreur', "insert into public.achats_fournisseur (piece_id, cmd_id, fournisseur_id, prix_prevu_ht) values (1, '#C1', 1, 1)"))
+    && !!(await echec('admin', "insert into public.drop_alertes (type, cle, message) values ('ecart_prix', 'x', 'x')")));
+  test('journal : activation et prix journalisés (qui, quoi, combien)',
+    (await nb("public.drop_journal where action = 'drop_produits_insert' and acteur = 'admin'")) === 1
+    && (await nb("public.drop_journal where action = 'fournisseur_prix_insert' and montant = 160")) === 1);
+
+  // =========================================================================================================================
+  console.log('\n3. DÉCOUPAGE EN PIÈCES');
+  let r = await rpc('livreur', 'public.drop_pieces($1)', ['#C1']);
+  test('ensemble 180 = matelas + 2 sommiers 90 → 3 pièces (composants)', r.ok && r.pieces.length === 3
+    && JSON.stringify(r.pieces.map(p => p.produit_id)) === JSON.stringify(['pm180', 'ps90', 'ps90']) && r.pieces.every(p => p.composant_de === 'pe180' && p.ligne_idx === 0), r);
+  const [pM, pS1, pS2] = r.pieces;
+  test('livreur : la pièce activée propose les 2 fournisseurs (prix prévus HT), la moins chère d\'abord',
+    JSON.stringify(pM.fournisseurs.map(f => f.prix_prevu_ht)) === JSON.stringify([160, 170]) && pM.drop_actif === true && pS1.drop_actif === false);
+  r = await rpc('livreur', 'public.drop_pieces($1)', ['#C1']);
+  test('rejouable : pas de nouveau découpage', r.pieces.length === 3 && (await nb("public.commande_pieces where cmd_id = '#C1'")) === 3);
+  r = await rpc('collab', 'public.drop_pieces($1)', ['#C1']);
+  test('collaboratrice : voit les pièces SANS aucun prix', r.ok && r.pieces.length === 3 && r.pieces.every(p => p.fournisseurs === undefined && p.achat === undefined));
+  r = await rpc('livreurB', 'public.drop_pieces($1)', ['#C1']);
+  test('autre livreur : commande introuvable', r.ok === false && r.erreur === 'commande_introuvable');
+  r = await rpc('livreur', 'public.drop_pieces($1)', ['#C2']);
+  test('matelas × 2 → 2 pièces', r.pieces.length === 2);
+  await q(P, "update public.commandes set lignes = $1::jsonb where id = '#C2'", [JSON.stringify([{ produitId: 'pm140', qte: 1 }])]);
+  r = await rpc('livreur', 'public.drop_pieces($1)', ['#C2']);
+  test('lignes changées et rien de déclaré → redécoupage (1 pièce)', r.pieces.length === 1 && r.perime === false);
+  const pC2 = r.pieces[0];
+
+  // =========================================================================================================================
+  console.log('\n4. 1er PARE-FEU : CHARGEMENT (provenance)');
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pS1.id, 'depot']);
+  test('sommier 1 : Dépôt', r.ok && r.piece.provenance === 'depot' && r.piece.origine === 'depot');
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pS2.id, 'fournisseur', F1]);
+  test('sommier 2 : chez un fournisseur REFUSÉ (référence non activée)', r.ok === false && r.erreur === 'dropshipping_inactif');
+  r = await rpc('collab', 'public.drop_declarer($1, $2, null, null)', [pS2.id, 'depot']);
+  test('collaboratrice : ne déclare pas', r.ok === false && r.erreur === 'session_requise');
+  r = await rpc('livreurB', 'public.drop_declarer($1, $2, null, null)', [pS2.id, 'depot']);
+  test('autre livreur : pièce introuvable', r.ok === false && r.erreur === 'piece_introuvable');
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pS2.id, 'depot']);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pM.id, 'fournisseur', F2]);
+  test('matelas 180 (rupture) : chez le fournisseur 2 → achat PRÉVU au prix HT du fournisseur 2', r.ok && r.piece.provenance === 'fournisseur' && r.piece.achat.statut === 'prevu' && r.piece.achat.prix_prevu_ht === 170, r);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pM.id, 'fournisseur', F1]);
+  test('changement de fournisseur avant paiement : ancien achat annulé, nouveau prévu à 160', r.ok && r.piece.achat.prix_prevu_ht === 160
+    && (await nb("public.achats_fournisseur where piece_id = $1 and statut = 'annule'", [pM.id])) === 1
+    && (await un(P, "select tournee_id from public.achats_fournisseur where piece_id = $1 and statut = 'prevu'", [pM.id])).tournee_id === 'T-1');
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pM.id, 'fournisseur', F1]);
+  test('même déclaration rejouée : « deja », rien de plus', r.ok && r.deja === true && (await nb('public.achats_fournisseur where piece_id = $1', [pM.id])) === 2);
+  test('stock théorique 0 : pas d\'alerte « manque au dépôt »', (await nb("public.drop_alertes where type = 'manque_depot'")) === 0);
+  // pM180 en rupture mais pm140 en stock : activer pm140 et le prendre chez le fournisseur → alerte manque au dépôt
+  await q('admin', "insert into public.drop_produits (produit_id, actif) values ('pm140', true)");
+  await q('admin', 'insert into public.fournisseur_prix (produit_id, fournisseur_id, prix_achat_ht) values ($1, $2, 90)', ['pm140', F1]);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pC2.id, 'fournisseur', F1]);
+  test('pièce prise chez un fournisseur alors que le stock théorique en indiquait 5 → alerte « manque au dépôt »', r.ok
+    && (await nb("public.drop_alertes where type = 'manque_depot' and piece_id = $1", [pC2.id])) === 1);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pC2.id, 'depot']);
+  test('revenu à Dépôt : achat prévu annulé', r.ok && r.piece.provenance === 'depot' && (await nb("public.achats_fournisseur where piece_id = $1 and statut = 'prevu'", [pC2.id])) === 0);
+
+  // =========================================================================================================================
+  console.log('\n5. 2e PARE-FEU : ENLÈVEMENT CHEZ LE FOURNISSEUR (« Enlevé et payé »)');
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pS1.id, 10, 'especes', null]);
+  test('pièce « Dépôt » : pas un enlèvement', r.ok === false && r.erreur === 'pas_un_enlevement');
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 165, 'especes', 'autre/C1/t.jpg']);
+  test('chemin de ticket d\'un autre dossier : refusé, rien enregistré', r.ok === false && r.erreur === 'chemin_ticket_invalide' && (await nb("public.depenses where id like 'drop-%'")) === 0);
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 165, 'chèque', null]);
+  test('mode inconnu : refusé', r.ok === false && r.erreur === 'mode_invalide');
+  // point de caisse validé (038b) : refus de la base, RIEN n'est enregistré
+  await q('admin', "insert into public.caisse_remises (key_remise, livreur, periode, validee, par) values ('t_T-1', 'Livreur-A', $1, true, 'admin')", [AUJ]);
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 165, 'especes', 'livreur-a/C1/ticket-1.jpg']);
+  test('point de caisse de la tournée déjà validé (038b) : refusé, ni achat payé ni dépense', r.ok === false && r.erreur === 'point_caisse_valide'
+    && (await un(P, "select statut from public.achats_fournisseur where piece_id = $1 and statut <> 'annule'", [pM.id])).statut === 'prevu' && (await nb("public.depenses where id like 'drop-%'")) === 0, r);
+  await q('admin', "delete from public.caisse_remises where key_remise = 't_T-1'");
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 165, 'especes', 'livreur-a/C1/ticket-1.jpg']);
+  const ach = await un(P, "select * from public.achats_fournisseur where piece_id = $1 and statut = 'paye'", [pM.id]);
+  const dep = await un(P, 'select * from public.depenses where id = $1', ['drop-' + (ach && ach.id)]);
+  test('payé 165 € HT en espèces : achat PAYÉ, écart +5 renvoyé', r.ok && r.ecart === 5 && ach && Number(ach.montant_paye_ht) === 165 && ach.mode === 'especes', r);
+  test('dépense « Espèces » de la tournée créée (déduite de la caisse du livreur, PR 24)', dep && dep.mode_paie === 'Espèces' && Number(dep.montant) === 165 && dep.tournee_id === 'T-1' && dep.livreur === 'Livreur-A' && dep.date_depense === AUJ && dep.cat === 'Achat fournisseur', dep);
+  test('écart payé / prévu → alerte administrateur (+5)', (await nb("public.drop_alertes where type = 'ecart_prix' and montant = 5")) === 1);
+  test('ticket fourni : pas d\'alerte « ticket manquant »', (await nb("public.drop_alertes where type = 'ticket_manquant'")) === 0);
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 165, 'especes', 'livreur-a/C1/ticket-1.jpg']);
+  test('rejeu (réponse perdue) : « deja », aucune 2e dépense', r.ok && r.deja === true && (await nb("public.depenses where id like 'drop-%'")) === 1);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pM.id, 'depot']);
+  test('achat payé : la provenance ne peut plus changer', r.ok === false && r.erreur === 'achat_deja_paye');
+  test('livreur : voit son achat payé ; collaboratrice : aucun achat', (await q('livreur', 'select id from public.achats_fournisseur where statut = $1', ['paye'])).length === 1 && (await q('collab', 'select id from public.achats_fournisseur')).length === 0);
+
+  // =========================================================================================================================
+  console.log('\n6. 3e PARE-FEU : LIVRAISON PIÈCE PAR PIÈCE');
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#C1', JSON.stringify([{ id: pM.id, livree: true }, { id: pS1.id, livree: true }])]);
+  test('pièces incomplètes : refusé', r.ok === false && r.erreur === 'pieces_incompletes');
+  // une pièce fournisseur non payée ne peut pas être livrée : #C3 avec un matelas 180 déclaré fournisseur, non payé
+  await cmd('#C3', { lignes: [{ produitId: 'pm180', qte: 1 }], prix: 480 });
+  const p3 = (await rpc('livreur', 'public.drop_pieces($1)', ['#C3'])).pieces[0];
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#C3', JSON.stringify([{ id: p3.id, livree: true }])]);
+  test('pièce SANS provenance : « livrée » refusé', r.ok === false && r.erreur === 'provenance_manquante');
+  await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [p3.id, 'fournisseur', F1]);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#C3', JSON.stringify([{ id: p3.id, livree: true }])]);
+  test('pièce fournisseur NON payée : « livrée » refusé', r.ok === false && r.erreur === 'enlevement_non_paye');
+  // #C1 : matelas livré, sommier 1 livré, sommier 2 NON livré (refusé par le client)
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#C1', JSON.stringify([{ id: pM.id, livree: true }, { id: pS1.id, livree: true }, { id: pS2.id, livree: false }])]);
+  test('confirmation complète : acceptée', r.ok && r.deja === false, r);
+  const couts = await q(P, "select piece_id, cout_ht::float8 as c, source from public.pieces_couts where cmd_id = '#C1' order by piece_id");
+  test('coûts FIGÉS : matelas = prix payé 165 (achat), sommier dépôt = revient 40 ; pièce non livrée : aucun coût',
+    JSON.stringify(couts.map(x => x.c + ':' + x.source)) === JSON.stringify(['165:achat', '40:revient']), couts);
+  test('coût figé : ni modification ni suppression', /ajout seul/.test(await echec(P, "update public.pieces_couts set cout_ht = 1 where cmd_id = '#C1'") || ''));
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#C1', JSON.stringify([{ id: pM.id, livree: true }, { id: pS1.id, livree: true }, { id: pS2.id, livree: false }])]);
+  test('rejeu : « deja »', r.ok && r.deja === true);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pS1.id, 'depot']);
+  test('après confirmation : la provenance est figée', r.ok === false && r.erreur === 'piece_deja_confirmee');
+
+  // =========================================================================================================================
+  console.log('\n7. STOCK : SEULES LES PIÈCES « DÉPÔT » SONT RETIRÉES (deduire_stock_livraison)');
+  await q(P, "update public.commandes set statut = 'livré' where id = '#C1'");
+  const avant = { m: await stock('pm180'), s: await stock('ps90') };
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#C1']);
+  test('déduction par pièces : 1 sommier retiré (dépôt, livré) ; matelas fournisseur et sommier non livré : rien', r.ok && r.mode === 'pieces'
+    && (await stock('ps90')) === avant.s - 1 && (await stock('pm180')) === avant.m, r);
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#C1']);
+  test('idempotente : 2e appel « deja », aucun retrait de plus', r.ok && r.deja === true && (await stock('ps90')) === avant.s - 1);
+  test('journal des sorties : composant de l\'ensemble noté', (await nb("public.stock_sorties_livraison where cmd_id = '#C1' and produit_id = 'ps90' and composant_de = 'pe180' and qte_retiree = 1")) === 1);
+  await cmd('#C4', { lignes: [{ produitId: 'pm140', qte: 2 }], prix: 600, statut: 'livré' });
+  const s140 = await stock('pm140');
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#C4']);
+  test('commande SANS pièces (bureau, GLS, avant ce module) : retrait comme la 040 (2 matelas)', r.ok && r.mode === 'lignes' && (await stock('pm140')) === s140 - 2, r);
+  // livré sans confirmation des pièces (ancienne version de l'appli) : pièces non fournisseur retirées + alerte
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pC2.id, 'depot']);
+  await q(P, "update public.commandes set statut = 'livré' where id = '#C2'");
+  const s140b = await stock('pm140');
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#C2']);
+  test('livré SANS confirmation des pièces : pièce Dépôt retirée + alerte « livré sans confirmation »', r.ok && (await stock('pm140')) === s140b - 1
+    && (await nb("public.drop_alertes where type = 'livre_sans_confirmation' and cmd_id = '#C2'")) === 1);
+
+  // =========================================================================================================================
+  console.log('\n8. PIÈCE ACHETÉE NON LIVRÉE → STOCK DU CAMION, REPRISE LE LENDEMAIN SANS NOUVEL ACHAT');
+  // sommier 2 de #C1 : non livré mais venu du DÉPÔT → pas de stock camion créé ; on fabrique le cas « acheté non livré » avec #C3
+  await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [p3.id, 160, 'cb', null]);
+  test('payé en CB sans photo : dépense « CB » à part (non déduite des espèces) + alerte « ticket manquant »',
+    (await un(P, "select mode_paie from public.depenses where comment like 'Dropshipping #C3%'")).mode_paie === 'CB' && (await nb("public.drop_alertes where type = 'ticket_manquant'")) === 1);
+  r = await rpc('livreur', 'public.drop_ticket_ajouter($1, $2)', [p3.id, 'livreur-a/C3/ticket-2.jpg']);
+  test('photo envoyée après coup : rattachée, alerte « ticket manquant » marquée vue', r.ok && (await nb("public.drop_alertes where type = 'ticket_manquant' and vue_at is null")) === 0);
+  r = await rpc('livreur', 'public.drop_commande_non_livree($1)', ['#C3']);
+  const sc3 = await un(P, "select * from public.stock_camion where source_cmd_id = '#C3'");
+  test('client absent : la pièce achetée part dans le STOCK DU CAMION, rattachée à son achat ; déclaration remise à zéro', r.ok && r.pieces === 1
+    && sc3 && sc3.status === 'en_camion' && sc3.achat_id !== null && sc3.produit_id === 'pm180'
+    && (await un(P, 'select provenance from public.commande_pieces where id = $1', [p3.id])).provenance === null, sc3);
+  r = await rpc('livreur', 'public.drop_commande_non_livree($1)', ['#C3']);
+  test('rejouable : aucun 2e article dans le camion', r.ok && r.pieces === 0 && (await nb("public.stock_camion where source_cmd_id = '#C3'")) === 1);
+  // le lendemain : nouvelle commande #C5 du même matelas → « Déjà dans le camion »
+  await cmd('#C5', { lignes: [{ produitId: 'pm180', qte: 1 }], prix: 480 });
+  const p5 = (await rpc('livreur', 'public.drop_pieces($1)', ['#C5'])).pieces[0];
+  test('la pièce achetée est proposée « Déjà dans le camion » (marquée achetée)', p5.camion.length === 1 && p5.camion[0].id === sc3.id && p5.camion[0].achete === true, p5.camion);
+  r = await rpc('livreurB', 'public.drop_declarer($1, $2, null, $3)', [p5.id, 'camion', sc3.id]);
+  test('un autre livreur ne prend pas la pièce de ce camion', r.ok === false);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [p5.id, 'camion', sc3.id]);
+  test('« Déjà dans le camion » : origine = fournisseur (son achat), AUCUN nouvel achat', r.ok && r.piece.origine === 'fournisseur'
+    && (await nb("public.achats_fournisseur where cmd_id = '#C5'")) === 0);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [p3.id, 'camion', sc3.id]);
+  test('la même pièce du camion ne sert pas deux fois', r.ok === false && r.erreur === 'piece_camion_indisponible');
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#C5', JSON.stringify([{ id: p5.id, livree: true }])]);
+  test('livrée : coût repris de l\'ACHAT D\'ORIGINE (160, achat_camion) ; article du camion sorti (livré)', r.ok
+    && Number((await un(P, 'select cout_ht from public.pieces_couts where piece_id = $1', [p5.id])).cout_ht) === 160
+    && (await un(P, 'select source from public.pieces_couts where piece_id = $1', [p5.id])).source === 'achat_camion'
+    && (await un(P, 'select status from public.stock_camion where id = $1', [sc3.id])).status === 'livre');
+  await q(P, "update public.commandes set statut = 'livré' where id = '#C5'");
+  const s180 = await stock('pm180');
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#C5']);
+  test('pièce du camion achetée : AUCUN retrait du stock du dépôt', r.ok && (await stock('pm180')) === s180);
+
+  // =========================================================================================================================
+  console.log('\n9. ALERTES (camion > N jours), MARGE, BILAN DU JOUR (administrateur seul)');
+  await q(P, "insert into public.stock_camion (id, livreur, produit_libelle, quantite, source_cmd_id, charge_at, status, produit_id, achat_id) values ('sc-vieux', 'Livreur-A', 'Matelas fictif 180', 1, '#C1', now() - interval '4 days', 'en_camion', 'pm180', $1)", [ach.id]);
+  r = await rpc('admin', 'public.drop_controler()', []);
+  test('pièce achetée dans le camion depuis 4 jours (> 3) → alerte', r.ok && r.alertes.some(a => a.type === 'camion_ancien'), r);
+  await q('admin', "update public.parametres set valeur = '5' where cle = 'drop_camion_alerte_jours'");
+  await q(P, "delete from public.drop_alertes where type = 'camion_ancien'");
+  r = await rpc('admin', 'public.drop_controler()', []);
+  test('réglage passé à 5 jours : plus d\'alerte pour 4 jours', r.ok && r.jours === 5 && !r.alertes.some(a => a.type === 'camion_ancien'));
+  test('drop_controler : refusé au livreur et à la collaboratrice', (await rpc('livreur', 'public.drop_controler()', [])).ok === false && (await rpc('collab', 'public.drop_controler()', [])).ok === false);
+  const al = r.alertes[0];
+  r = await rpc('admin', 'public.drop_alerte_vue($1)', [al.id]);
+  test('alerte marquée vue : ne revient plus dans la liste', r.ok && !(await rpc('admin', 'public.drop_controler()', [])).alertes.some(a => a.id === al.id));
+  r = await rpc('admin', 'public.drop_marge_commande($1)', ['#C1']);
+  test('marge #C1 : vente 720 TTC = 600 HT, coût 165 + 40 = 205, marge 395 ; pièces avec fournisseur, prix payé, mode, ticket',
+    r.ok && r.vente_ht === 600 && r.cout_ht === 205 && r.marge_ht === 395 && r.cout_estime === false
+    && r.pieces.some(p => p.fournisseur === 'Fournisseur fictif 1' && p.montant_paye_ht === 165 && p.mode === 'especes' && p.ticket_path === 'livreur-a/C1/ticket-1.jpg'), r);
+  test('marge : refusée au livreur', (await rpc('livreur', 'public.drop_marge_commande($1)', ['#C1'])).ok === false);
+  await cmd('#G1', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360, transporteur: 'GLS', statut: 'livré', livreur: '' });
+  r = await rpc('admin', 'public.drop_bilan_jour($1)', [AUJ]);
+  // livrées du jour : #C1 (600 HT, 205), #C2 (500 HT, 1 pièce dépôt NON confirmée → coût estimé 100), #C4 (500 HT, 2 × 100
+  // estimé), #C5 (400 HT, 160), #G1 (300 HT, 100 estimé, GLS non renseigné)
+  test('bilan : ventes livrées HT = 2 300, coût des produits = 765, GLS non renseigné (1 commande), résultat = 1 535, charges fixes vides',
+    r.ok && r.commandes === 5 && r.ventes_ht === 2300 && r.cout_produits_ht === 765 && r.gls_ht === 0 && r.commandes_gls_non_renseigne === 1
+    && r.resultat_ht === 1535 && r.charges_fixes_ht === null && r.resultat_net_ht === null, r);
+  await q('admin', "update public.parametres set valeur = '12,5' where cle = 'drop_gls_cout_commande_ht'");
+  await q('admin', "update public.parametres set valeur = '200' where cle = 'drop_charges_fixes_jour_ht'");
+  r = await rpc('admin', 'public.drop_bilan_jour($1)', [AUJ]);
+  test('réglages GLS 12,5 € HT / commande et charges fixes 200 : résultat 1 522,50, net 1 322,50', r.gls_ht === 12.5 && r.resultat_ht === 1522.5 && r.resultat_net_ht === 1322.5, r);
+  test('bilan : refusé au livreur et à la collaboratrice', (await rpc('livreur', 'public.drop_bilan_jour($1)', [AUJ])).ok === false && (await rpc('collab', 'public.drop_bilan_jour($1)', [AUJ])).ok === false);
+  test('collaboratrice : aucun coût lisible (pieces_couts)', (await q('collab', 'select * from public.pieces_couts')).length === 0);
+
+  // =========================================================================================================================
+  console.log('\n10. JOURNAL ET STOCKAGE DES TICKETS');
+  test('journal : provenance, enlèvement (montant), livraison, camion, ticket — avec l\'acteur',
+    (await nb("public.drop_journal where action = 'provenance'")) > 0
+    && (await nb("public.drop_journal where action = 'enlevement_paye' and montant = 165 and acteur = 'livreur:LIVREUR-A'")) === 1
+    && (await nb("public.drop_journal where action = 'livraison_confirmee'")) === 2 && (await nb("public.drop_journal where action = 'vers_camion'")) === 1);
+  test('journal : ajout seul', /ajout seul/.test(await echec(P, 'delete from public.drop_journal') || ''));
+  test('journal : lu par l\'administrateur seulement', (await q('admin', 'select id from public.drop_journal')).length > 0 && (await q('livreur', 'select id from public.drop_journal')).length === 0 && (await q('collab', 'select id from public.drop_journal')).length === 0);
+  test('stockage : le livreur dépose dans SON dossier pour SA commande', (await echec('livreur', "insert into storage.objects (bucket_id, name) values ('drop-tickets', 'livreur-a/C1/ticket-9.jpg')")) === null);
+  test('stockage : pas dans le dossier d\'un autre livreur', !!(await echec('livreur', "insert into storage.objects (bucket_id, name) values ('drop-tickets', 'livreur-b/C1/x.jpg')")));
+  test('stockage : pas pour une commande qu\'il ne voit pas', !!(await echec('livreur', "insert into storage.objects (bucket_id, name) values ('drop-tickets', 'livreur-a/CB/x.jpg')")));
+  test('stockage : le livreur ne relit pas les tickets ; l\'administrateur les lit ; la collaboratrice rien',
+    (await q('livreur', "select id from storage.objects where bucket_id = 'drop-tickets'")).length === 0
+    && (await q('admin', "select id from storage.objects where bucket_id = 'drop-tickets'")).length === 1
+    && (await q('collab', "select id from storage.objects where bucket_id = 'drop-tickets'")).length === 0);
+
+  // =========================================================================================================================
+  console.log('\n11. ADMINISTRATEUR : DÉCOUPAGE PÉRIMÉ, RÉINITIALISATION');
+  await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [p3.id, 'fournisseur', F1]);
+  await q(P, "update public.commandes set lignes = $1::jsonb where id = '#C3'", [JSON.stringify([{ produitId: 'pm140', qte: 1 }])]);
+  r = await rpc('livreur', 'public.drop_pieces($1)', ['#C3']);
+  test('lignes changées APRÈS une déclaration : découpage gardé, signalé « périmé »', r.ok && r.perime === true && r.pieces[0].produit_id === 'pm180');
+  test('réinitialisation : refusée au livreur', (await rpc('livreur', 'public.drop_reinitialiser_pieces($1)', ['#C3'])).ok === false);
+  r = await rpc('admin', 'public.drop_reinitialiser_pieces($1)', ['#C3']);
+  const r2 = await rpc('livreur', 'public.drop_pieces($1)', ['#C3']);
+  test('réinitialisation admin : achat prévu annulé, nouveau découpage d\'après les lignes actuelles', r.ok && r2.pieces.length === 1 && r2.pieces[0].produit_id === 'pm140'
+    && (await nb("public.achats_fournisseur where cmd_id = '#C3' and statut = 'prevu'")) === 0);
+
+  console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
+  process.exit(ko ? 1 : 0);
+})().catch((e) => { console.error('ERREUR DU BANC :', e); process.exit(1); });

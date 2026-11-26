@@ -1,0 +1,1136 @@
+-- 041 (26/11/2026) : DROPSHIPPING ENCADRÉ ET PROVENANCE DE CHAQUE PIÈCE — trois points de contrôle (pare-feu) par pièce, tenus
+-- par le livreur (décisions de Borhen des 25 et 26/11/2026).
+--
+-- RETOUR ARRIÈRE (à exécuter tel quel dans l'éditeur SQL si besoin ; aucune commande, aucun stock, aucune dépense n'est
+-- supprimé ni modifié) :
+--   1) remettre la fonction de la 040 : réexécuter la section 3 du fichier 040_deduction_stock_serveur.sql (create or replace
+--      function public.deduire_stock_livraison…) ;
+--   2) drop function if exists public.drop_version(), public.drop_pieces(text), public.drop_declarer(bigint, text, bigint, text),
+--        public.drop_enlever_payer(bigint, numeric, text, text), public.drop_ticket_ajouter(bigint, text),
+--        public.drop_confirmer_livraison(text, jsonb), public.drop_commande_non_livree(text), public.drop_controler(),
+--        public.drop_alerte_vue(bigint), public.drop_bilan_jour(text), public.drop_marge_commande(text);
+--   3) les tables (fournisseurs, fournisseur_prix, drop_produits, commande_pieces, achats_fournisseur, pieces_couts,
+--      drop_journal, drop_alertes) et les colonnes ajoutées à stock_camion peuvent rester : elles ne sont lues par rien d'autre.
+--      Les dépenses « Achat fournisseur » déjà créées restent dans depenses (elles ont été réellement payées).
+--   4) revenir à l'application précédente (v7.5.198) : sans la fonction drop_version, l'appli n'affiche plus rien de ce module.
+--
+-- ORDRE DE MISE EN SERVICE (obligatoire) : 038b (PR 24) → 039 (PR 26) → 040 (PR 29) → CETTE 041 → PUIS l'application.
+-- Elle exige la table produits_revient (039) et la table stock_sorties_livraison + les fonctions interne.l040_* (040) : le
+-- contrôle de la section 9 ANNULE la migration si elles manquent.
+--
+-- DÉCISIONS DE BORHEN (25-26/11/2026) reproduites ici :
+--   * Finalité : « à la fin de la journée, on sait ce qu'on a gagné », dropshipping ou autre.
+--   * Dropshipping activé par l'ADMINISTRATEUR, référence par référence (table drop_produits), jamais automatiquement.
+--     Plusieurs fournisseurs par référence (fournisseur_prix), chacun avec son prix d'achat HT. Tout est compté en HT.
+--   * Une commande est découpée en PIÈCES (commande_pieces) : un ensemble = ses composants (produits.composants), une pièce
+--     par unité (un ensemble 180×190 = 1 matelas + 2 sommiers 90×190 = 3 pièces).
+--   * Trois points de contrôle par pièce, par le livreur :
+--     1. CHARGEMENT (drop_declarer) : « Dépôt », « À prendre chez <fournisseur> » (référence activée seulement ; prix prévu HT
+--        repris du fournisseur choisi) ou « Déjà dans le camion » (une pièce du stock du camion de CE livreur) ;
+--     2. ENLÈVEMENT (drop_enlever_payer) : « Enlevé et payé » — montant payé HT, espèces ou CB, chemin de la photo du ticket
+--        (stockage privé drop-tickets). Écart payé / prévu → alerte administrateur. Espèces → une dépense « Espèces » de la
+--        tournée (déduite de ce qu'il remet à la caisse, PR 24) ; CB → une dépense « CB » à part (non déduite) ;
+--     3. LIVRAISON (drop_confirmer_livraison) : pièce par pièce, livrée ou non ; une pièce sans provenance, ou une pièce
+--        fournisseur non payée, ne peut pas être confirmée livrée.
+--   * Pièce achetée mais NON livrée (client absent, report, pièce refusée) → STOCK DU CAMION (stock_camion, rattachée à son
+--     achat) ; le lendemain : « Déjà dans le camion », sans nouvel achat, son coût (l'achat d'origine) est repris dans la marge.
+--     Alerte si elle reste dans le camion plus de N jours (réglage drop_camion_alerte_jours, 3 par défaut).
+--   * STOCK du dépôt retiré SEULEMENT pour les pièces d'origine « Dépôt » (deduire_stock_livraison, toujours idempotente, une
+--     seule fois par commande). Alerte « manque au dépôt » si une pièce que le stock théorique disait disponible est prise
+--     chez un fournisseur.
+--   * MARGE de chaque commande = prix HT − coût réel de chaque pièce (Dépôt : prix de revient de la 039 ; Fournisseur : prix
+--     payé HT ; Camion : coût de l'achat d'origine, ou prix de revient si la pièce venait du dépôt), coût FIGÉ à la livraison
+--     (pieces_couts). BILAN DU JOUR (drop_bilan_jour, administrateur seul) : ventes livrées HT, coût des produits, GLS,
+--     résultat ; réglage « charges fixes du jour » vide par défaut.
+--   * Journal de chaque action (drop_journal : qui, quand, quoi, combien), ajout seul.
+--
+-- DROITS : administrateur = tout (lecture ; écritures des fournisseurs, prix et activations par l'API, journalisées par
+-- déclencheur) ; collaboratrice = fournisseurs, activations et pièces EN LECTURE, aucun prix d'achat ; livreur = les pièces,
+-- achats et prix de SES commandes (règle ±2 jours de sess_livreur), prix des fournisseurs des seules références activées.
+-- Les pièces, achats, coûts, journal et alertes ne s'écrivent QUE par les fonctions SECURITY DEFINER ci-dessous (session
+-- vérifiée dans chaque fonction, comme deduire_stock_livraison).
+--
+-- LIMITES : le « livré » d'une commande sans confirmation des pièces n'est PAS refusé par la base (une ancienne version de
+-- l'appli en cache, un statut posé par le bureau ou GLS) : la déduction retire alors les pièces non fournisseur et une alerte
+-- « livré sans confirmation des pièces » est posée. Le stockage des photos utilise la même session (en-têtes x-app-secret /
+-- x-session-token) que l'API REST : à vérifier sur le premier ticket envoyé ; sans photo, l'enlèvement est enregistré avec
+-- une alerte « ticket manquant ». Aucune donnée existante n'est modifiée par cette migration.
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 1. Réglages (table parametres existante ; valeurs modifiables par l'administrateur, aucune valeur commerciale ici)
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+insert into public.parametres (cle, valeur) values
+  ('drop_camion_alerte_jours', '3'),          -- alerte : pièce achetée restée dans le camion plus de N jours
+  ('drop_charges_fixes_jour_ht', ''),         -- charges fixes du jour (HT) : VIDE = non comptées dans le bilan
+  ('drop_gls_cout_commande_ht', ''),          -- coût GLS HT par commande livrée par GLS : VIDE = « GLS non renseigné »
+  ('drop_tva_pct', '20')                      -- TVA pour passer le prix de vente TTC d'une commande en HT
+on conflict (cle) do nothing;
+
+create or replace function interne.l041_reglage(p_cle text) returns numeric
+language plpgsql stable security definer set search_path = public, pg_catalog as $$
+declare v text;
+begin
+  select valeur into v from public.parametres where cle = p_cle;
+  v := replace(btrim(coalesce(v, '')), ',', '.');
+  if v !~ '^-?[0-9]+(\.[0-9]+)?$' then return null; end if;
+  return v::numeric;
+end $$;
+revoke all on function interne.l041_reglage(text) from public, anon, authenticated;
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 2. Tables
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+create table if not exists public.fournisseurs (
+  id bigint generated always as identity primary key,
+  nom text not null check (btrim(nom) <> ''),
+  adresse text not null check (btrim(adresse) <> ''),
+  telephone text,
+  notes text,
+  actif boolean not null default true,
+  cree_at timestamptz not null default now(),
+  maj_at timestamptz not null default now()
+);
+create unique index if not exists fournisseurs_nom_idx on public.fournisseurs (lower(btrim(nom)));
+
+create table if not exists public.fournisseur_prix (
+  id bigint generated always as identity primary key,
+  produit_id text not null references public.produits(id) on update cascade on delete cascade,
+  fournisseur_id bigint not null references public.fournisseurs(id) on delete cascade,
+  prix_achat_ht numeric(12,2) not null check (prix_achat_ht > 0 and prix_achat_ht <= 100000),
+  actif boolean not null default true,
+  maj_at timestamptz not null default now(),
+  unique (produit_id, fournisseur_id)
+);
+
+-- activation du dropshipping, RÉFÉRENCE PAR RÉFÉRENCE, par l'administrateur seulement
+create table if not exists public.drop_produits (
+  produit_id text primary key references public.produits(id) on update cascade on delete cascade,
+  actif boolean not null default false,
+  motif text,
+  maj_at timestamptz not null default now()
+);
+
+-- pièces d'une commande (une ligne par unité) et leur provenance
+create table if not exists public.commande_pieces (
+  id bigint generated always as identity primary key,
+  cmd_id text not null,
+  ligne_idx integer not null check (ligne_idx >= 0),
+  piece_idx integer not null check (piece_idx >= 0),
+  produit_id text,                       -- produit de la pièce (composant pour un ensemble) ; NULL = produit introuvable
+  libelle text not null,
+  composant_de text,                     -- ensemble dont la pièce est un composant
+  empreinte text not null,               -- empreinte des lignes de la commande au découpage
+  provenance text check (provenance in ('depot', 'fournisseur', 'camion')),
+  origine text check (origine in ('depot', 'fournisseur')),   -- d'où vient réellement la pièce (camion : selon son achat)
+  fournisseur_id bigint references public.fournisseurs(id),
+  achat_id bigint,                       -- achat en cours de la pièce (provenance fournisseur)
+  stock_camion_id text,                  -- pièce du camion utilisée (provenance camion)
+  declare_par text, declare_at timestamptz,
+  livraison text check (livraison in ('livree', 'non_livree')),
+  livraison_par text, livraison_at timestamptz,
+  cree_at timestamptz not null default now(),
+  unique (cmd_id, ligne_idx, piece_idx)
+);
+create index if not exists commande_pieces_cmd_idx on public.commande_pieces (cmd_id);
+
+create table if not exists public.achats_fournisseur (
+  id bigint generated always as identity primary key,
+  piece_id bigint not null references public.commande_pieces(id),
+  cmd_id text not null,
+  fournisseur_id bigint not null references public.fournisseurs(id),
+  livreur text,
+  tournee_id text,
+  prix_prevu_ht numeric(12,2) not null check (prix_prevu_ht > 0),
+  montant_paye_ht numeric(12,2) check (montant_paye_ht > 0),
+  mode text check (mode in ('especes', 'cb')),
+  ticket_path text,
+  statut text not null default 'prevu' check (statut in ('prevu', 'paye', 'annule')),
+  depense_id text,
+  paye_par text, paye_at timestamptz,
+  cree_at timestamptz not null default now(),
+  check (statut <> 'paye' or (montant_paye_ht is not null and mode is not null and paye_at is not null))
+);
+create index if not exists achats_fournisseur_piece_idx on public.achats_fournisseur (piece_id);
+create index if not exists achats_fournisseur_cmd_idx on public.achats_fournisseur (cmd_id);
+-- une pièce n'a jamais deux achats en cours (prévu ou payé) en même temps
+create unique index if not exists achats_fournisseur_un_en_cours on public.achats_fournisseur (piece_id) where statut = 'prevu';
+
+-- coût FIGÉ d'une pièce livrée (administrateur seulement)
+create table if not exists public.pieces_couts (
+  piece_id bigint primary key references public.commande_pieces(id),
+  cmd_id text not null,
+  cout_ht numeric(12,4) check (cout_ht is null or cout_ht >= 0),
+  source text not null check (source in ('revient', 'achat', 'achat_camion', 'revient_camion', 'inconnu')),
+  achat_id bigint,
+  fige_at timestamptz not null default now()
+);
+create index if not exists pieces_couts_cmd_idx on public.pieces_couts (cmd_id);
+
+create table if not exists public.drop_journal (
+  id bigint generated always as identity primary key,
+  action text not null,
+  cmd_id text, piece_id bigint, achat_id bigint,
+  montant numeric(12,2),
+  details jsonb,
+  acteur text,
+  cree_at timestamptz not null default now()
+);
+create index if not exists drop_journal_cmd_idx on public.drop_journal (cmd_id);
+
+create table if not exists public.drop_alertes (
+  id bigint generated always as identity primary key,
+  type text not null check (type in ('ecart_prix', 'ticket_manquant', 'manque_depot', 'camion_ancien', 'livre_sans_confirmation')),
+  cle text not null,
+  cmd_id text, piece_id bigint, achat_id bigint,
+  message text not null,
+  montant numeric(12,2),
+  cree_at timestamptz not null default now(),
+  vue_par text, vue_at timestamptz,
+  unique (type, cle)
+);
+
+-- stock du camion (table existante, créée hors migrations) : colonnes pour rattacher une pièce à son achat
+alter table public.stock_camion add column if not exists produit_id text;
+alter table public.stock_camion add column if not exists achat_id bigint;
+alter table public.stock_camion add column if not exists piece_id bigint;            -- pièce d'origine (achetée, non livrée)
+alter table public.stock_camion add column if not exists utilise_par_piece bigint;   -- pièce qui l'a déclarée « Déjà dans le camion »
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 3. Droits et politiques (sess_admin / sess_collab / sess_livreur, comme la 019)
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+do $$
+declare t text;
+begin
+  foreach t in array array['fournisseurs', 'fournisseur_prix', 'drop_produits', 'commande_pieces', 'achats_fournisseur',
+                           'pieces_couts', 'drop_journal', 'drop_alertes'] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('revoke all on table public.%I from public, anon, authenticated', t);
+    execute format('grant select on table public.%I to anon', t);
+    execute format('drop policy if exists sess_admin_lecture on public.%I', t);
+    execute format('create policy sess_admin_lecture on public.%I for select to anon using ((select public.session_role()) = ''admin'')', t);
+  end loop;
+  -- écritures DIRECTES de l'administrateur : fournisseurs, prix, activations (journalisées par déclencheur, section 4)
+  foreach t in array array['fournisseurs', 'fournisseur_prix', 'drop_produits'] loop
+    execute format('grant insert, update on table public.%I to anon', t);
+    execute format('drop policy if exists sess_admin_ecriture on public.%I', t);
+    execute format('create policy sess_admin_ecriture on public.%I for insert to anon with check ((select public.session_role()) = ''admin'')', t);
+    execute format('drop policy if exists sess_admin_modif on public.%I', t);
+    execute format('create policy sess_admin_modif on public.%I for update to anon using ((select public.session_role()) = ''admin'') with check ((select public.session_role()) = ''admin'')', t);
+  end loop;
+end $$;
+revoke all on sequence public.fournisseurs_id_seq, public.fournisseur_prix_id_seq, public.commande_pieces_id_seq,
+  public.achats_fournisseur_id_seq, public.drop_journal_id_seq, public.drop_alertes_id_seq from public, anon, authenticated;
+grant usage on sequence public.fournisseurs_id_seq, public.fournisseur_prix_id_seq to anon;   -- insertions de l'administrateur
+
+-- fournisseurs (nom, adresse) : collaboratrice et livreur en lecture (adresse de l'arrêt d'enlèvement)
+drop policy if exists sess_lecture on public.fournisseurs;
+create policy sess_lecture on public.fournisseurs for select to anon using ((select public.session_role()) in ('collab', 'livreur'));
+drop policy if exists sess_lecture on public.drop_produits;
+create policy sess_lecture on public.drop_produits for select to anon using ((select public.session_role()) in ('collab', 'livreur'));
+-- prix d'achat : livreur seulement pour une référence ACTIVÉE en dropshipping ; collaboratrice : jamais
+drop policy if exists sess_livreur_lecture on public.fournisseur_prix;
+create policy sess_livreur_lecture on public.fournisseur_prix for select to anon
+  using ((select public.session_role()) = 'livreur' and actif
+         and exists (select 1 from public.drop_produits d where d.produit_id = fournisseur_prix.produit_id and d.actif));
+-- pièces : collaboratrice ; livreur = pièces des commandes qu'il voit (politique sess_livreur de commandes, ±2 jours)
+drop policy if exists sess_lecture on public.commande_pieces;
+create policy sess_lecture on public.commande_pieces for select to anon
+  using ((select public.session_role()) = 'collab'
+         or ((select public.session_role()) = 'livreur' and exists (select 1 from public.commandes c where c.id = commande_pieces.cmd_id)));
+-- achats : livreur = les siens
+drop policy if exists sess_livreur_lecture on public.achats_fournisseur;
+create policy sess_livreur_lecture on public.achats_fournisseur for select to anon
+  using ((select public.session_role()) = 'livreur' and upper(coalesce(livreur, '')) = (select public.session_livreur()));
+
+-- stockage PRIVÉ des photos de tickets : bucket drop-tickets ; chemin <livreur>/<commande sans #>/<fichier>
+-- livreur : écriture dans SON dossier, pour une commande qu'il voit ; administrateur : lecture et écriture ; personne d'autre
+do $$
+begin
+  if to_regclass('storage.buckets') is not null and to_regclass('storage.objects') is not null then
+    execute $q$insert into storage.buckets (id, name, public) values ('drop-tickets', 'drop-tickets', false)
+                on conflict (id) do update set public = false$q$;
+    execute 'drop policy if exists drop_tickets_livreur_ajout on storage.objects';
+    execute $q$create policy drop_tickets_livreur_ajout on storage.objects for insert to anon with check (
+      bucket_id = 'drop-tickets' and (select public.session_role()) = 'livreur'
+      and split_part(name, '/', 1) = lower((select public.session_livreur()))
+      and exists (select 1 from public.commandes c where replace(c.id, '#', '') = split_part(name, '/', 2)))$q$;
+    execute 'drop policy if exists drop_tickets_admin on storage.objects';
+    execute $q$create policy drop_tickets_admin on storage.objects for all to anon
+      using (bucket_id = 'drop-tickets' and (select public.session_role()) = 'admin')
+      with check (bucket_id = 'drop-tickets' and (select public.session_role()) = 'admin')$q$;
+  else
+    raise notice '041 : schéma storage absent — bucket drop-tickets non créé (photos des tickets indisponibles)';
+  end if;
+end $$;
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 4. Journal (ajout seul) et journalisation des écritures de l'administrateur
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+create or replace function interne.l041_acteur() returns text
+language sql stable security definer set search_path = public, pg_catalog as $$
+  select coalesce(public.session_role(), 'serveur') || coalesce(':' || public.session_livreur(), '') $$;
+revoke all on function interne.l041_acteur() from public, anon, authenticated;
+
+create or replace function interne.l041_journal_fige() returns trigger
+language plpgsql as $$
+begin
+  raise exception '% : ajout seul (ni modification ni suppression)', tg_table_name;
+end $$;
+drop trigger if exists drop_journal_fige on public.drop_journal;
+create trigger drop_journal_fige before update or delete on public.drop_journal
+  for each row execute function interne.l041_journal_fige();
+drop trigger if exists pieces_couts_fige on public.pieces_couts;
+create trigger pieces_couts_fige before update or delete on public.pieces_couts
+  for each row execute function interne.l041_journal_fige();
+
+create or replace function interne.l041_journaliser_admin() returns trigger
+language plpgsql security definer set search_path = public, interne, pg_catalog as $$
+begin
+  new.maj_at := now();
+  insert into public.drop_journal (action, montant, details, acteur)
+  values (tg_table_name || '_' || lower(tg_op),
+          (to_jsonb(new) ->> 'prix_achat_ht')::numeric,
+          jsonb_build_object('nouveau', to_jsonb(new), 'ancien', case when tg_op = 'UPDATE' then to_jsonb(old) end),
+          interne.l041_acteur());
+  return new;
+end $$;
+revoke all on function interne.l041_journaliser_admin() from public, anon, authenticated;
+do $$
+declare t text;
+begin
+  foreach t in array array['fournisseurs', 'fournisseur_prix', 'drop_produits'] loop
+    execute format('drop trigger if exists %I on public.%I', t || '_journal', t);
+    execute format('create trigger %I before insert or update on public.%I for each row execute function interne.l041_journaliser_admin()', t || '_journal', t);
+  end loop;
+end $$;
+
+create or replace function interne.l041_journal(p_action text, p_cmd text, p_piece bigint, p_achat bigint, p_montant numeric, p_details jsonb)
+returns void language sql security definer set search_path = public, interne, pg_catalog as $$
+  insert into public.drop_journal (action, cmd_id, piece_id, achat_id, montant, details, acteur)
+  values (p_action, p_cmd, p_piece, p_achat, p_montant, p_details, interne.l041_acteur()) $$;
+revoke all on function interne.l041_journal(text, text, bigint, bigint, numeric, jsonb) from public, anon, authenticated;
+
+create or replace function interne.l041_alerte(p_type text, p_cle text, p_cmd text, p_piece bigint, p_achat bigint, p_message text, p_montant numeric)
+returns void language sql security definer set search_path = public, pg_catalog as $$
+  insert into public.drop_alertes (type, cle, cmd_id, piece_id, achat_id, message, montant)
+  values (p_type, p_cle, p_cmd, p_piece, p_achat, p_message, p_montant)
+  on conflict (type, cle) do update set message = excluded.message, montant = excluded.montant, cree_at = now(), vue_par = null, vue_at = null
+  where drop_alertes.message is distinct from excluded.message or drop_alertes.montant is distinct from excluded.montant $$;
+revoke all on function interne.l041_alerte(text, text, text, bigint, bigint, text, numeric) from public, anon, authenticated;
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 5. Fonctions PURES (auto-contrôle section 10) et aides
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+create or replace function interne.l041_mode(p text) returns text
+language sql immutable set search_path = pg_catalog as $$
+  select case lower(btrim(coalesce(p, ''))) when 'especes' then 'especes' when 'espèces' then 'especes'
+              when 'cb' then 'cb' when 'carte' then 'cb' else null end $$;
+create or replace function interne.l041_ht(p_ttc numeric, p_tva numeric) returns numeric
+language sql immutable set search_path = pg_catalog as $$
+  select round(coalesce(p_ttc, 0) / (1 + coalesce(p_tva, 20) / 100), 2) $$;
+create or replace function interne.l041_ecart(p_prevu numeric, p_paye numeric) returns numeric
+language sql immutable set search_path = pg_catalog as $$ select round(coalesce(p_paye, 0) - coalesce(p_prevu, 0), 2) $$;
+-- empreinte des lignes d'une commande (découpage à refaire si elles changent avant toute déclaration)
+create or replace function interne.l041_empreinte(p_lignes jsonb, p_produit text, p_qte integer) returns text
+language sql immutable set search_path = pg_catalog as $$
+  select md5(coalesce(p_lignes::text, '') || '|' || coalesce(p_produit, '') || '|' || coalesce(p_qte::text, '')) $$;
+-- chemin de ticket accepté : <livreur en minuscules>/<commande sans #>/<fichier>
+create or replace function interne.l041_chemin_ticket_ok(p_chemin text, p_livreur text, p_cmd text) returns boolean
+language sql immutable set search_path = pg_catalog as $$
+  select p_chemin is not null and p_livreur is not null and p_cmd is not null
+     and split_part(p_chemin, '/', 1) = lower(p_livreur) and split_part(p_chemin, '/', 2) = replace(p_cmd, '#', '')
+     and split_part(p_chemin, '/', 3) ~ '^[A-Za-z0-9._-]{1,120}$' and split_part(p_chemin, '/', 4) = '' $$;
+
+-- commande accessible à la session (même règle que les politiques sess_* de la 019 ; collaboratrice si p_collab)
+create or replace function interne.l041_cmd_autorisee(p_cmd text, p_collab boolean) returns boolean
+language sql stable security definer set search_path = public, pg_catalog as $$
+  select exists (select 1 from public.commandes c where c.id = p_cmd and (
+    public.session_role() = 'admin' or (p_collab and public.session_role() = 'collab')
+    or (public.session_role() = 'livreur' and public.session_livreur() is not null
+        and upper(coalesce(c.livreur, '')) = public.session_livreur()
+        and coalesce(c.date_livraison, '') >= to_char(current_date - 2, 'YYYY-MM-DD')
+        and coalesce(c.date_livraison, '') <= to_char(current_date + 2, 'YYYY-MM-DD')))) $$;
+revoke all on function interne.l041_cmd_autorisee(text, boolean) from public, anon, authenticated;
+
+-- DÉCOUPAGE d'une commande en pièces (une par unité) : mêmes règles que 040 (lignes ou produit + qte, produit retrouvé par
+-- identifiant puis par nom, quantité max(1, entier)) ; ENSEMBLE → ses composants (qte du composant × quantité)
+create or replace function interne.l041_decomposer(p_lignes jsonb, p_produit text, p_qte jsonb)
+returns table (ligne_idx integer, piece_idx integer, produit_id text, libelle text, composant_de text)
+language plpgsql stable security definer set search_path = public, interne, pg_catalog as $$
+#variable_conflict use_variable
+declare
+  v_lignes jsonb; l jsonb; v_n integer := -1; v_nom text; v_q integer; v_pid text; v_k integer; v_i integer; v_p integer;
+  pr record; cn record; e jsonb;
+begin
+  if jsonb_typeof(p_lignes) = 'array' and jsonb_array_length(p_lignes) > 0 then v_lignes := p_lignes;
+  else v_lignes := jsonb_build_array(jsonb_build_object('produit', p_produit, 'qte', p_qte)); end if;
+  for l in select x.value from jsonb_array_elements(v_lignes) with ordinality as x(value, o) order by x.o loop
+    v_n := v_n + 1;                    -- même indice que le tableau des lignes (chargements[cmd][idx] de l'appli)
+    if jsonb_typeof(l) <> 'object' then continue; end if;
+    v_nom := coalesce(nullif(l ->> 'nom', ''), l ->> 'produit');
+    v_q := least(interne.l040_qte(l -> 'qte'), 50);
+    v_pid := interne.l040_trouver_produit(l ->> 'produitId', v_nom);
+    v_p := 0;
+    select x.id, x.nom, x.composants into pr from public.produits x where x.id = v_pid;
+    if v_pid is not null and jsonb_typeof(pr.composants) = 'array' and jsonb_array_length(pr.composants) > 0 then
+      for e in select x.value from jsonb_array_elements(pr.composants) with ordinality as x(value, o) order by x.o loop
+        if coalesce(e ->> 'id', '') = '' then continue; end if;
+        select x.nom into cn from public.produits x where x.id = e ->> 'id';
+        v_k := least(interne.l040_qte(e -> 'qte'), 20) * v_q;
+        for v_i in 1..v_k loop
+          ligne_idx := v_n; piece_idx := v_p; produit_id := e ->> 'id';
+          libelle := coalesce(cn.nom, e ->> 'nom', e ->> 'id'); composant_de := pr.id;
+          v_p := v_p + 1; return next;
+        end loop;
+      end loop;
+    else
+      for v_i in 1..v_q loop
+        ligne_idx := v_n; piece_idx := v_p; produit_id := v_pid;
+        libelle := coalesce(pr.nom, v_nom, 'Produit'); composant_de := null;
+        v_p := v_p + 1; return next;
+      end loop;
+    end if;
+  end loop;
+end $$;
+revoke all on function interne.l041_decomposer(jsonb, text, jsonb) from public, anon, authenticated;
+
+-- coût d'une pièce : Dépôt = prix de revient (039) ; Fournisseur = prix payé HT ; Camion = achat d'origine, sinon revient
+create or replace function interne.l041_cout_piece(p_piece bigint, out cout numeric, out source text, out achat bigint)
+language plpgsql stable security definer set search_path = public, pg_catalog as $$
+declare p record; a record; sc record;
+begin
+  select * into p from public.commande_pieces where id = p_piece;
+  if not found then source := 'inconnu'; return; end if;
+  if p.provenance = 'fournisseur' then
+    select id, montant_paye_ht, prix_prevu_ht, statut into a from public.achats_fournisseur where id = p.achat_id;
+    if found and a.statut = 'paye' then cout := a.montant_paye_ht; source := 'achat'; achat := a.id; return; end if;
+    source := 'inconnu'; return;
+  end if;
+  if p.provenance = 'camion' then
+    select achat_id into sc from public.stock_camion where id = p.stock_camion_id;
+    if found and sc.achat_id is not null then
+      select id, montant_paye_ht into a from public.achats_fournisseur where id = sc.achat_id and statut = 'paye';
+      if found then cout := a.montant_paye_ht; source := 'achat_camion'; achat := a.id; return; end if;
+      source := 'inconnu'; return;
+    end if;
+    select prix_revient_ht into cout from public.produits_revient where produit_id = p.produit_id;
+    source := case when cout is null then 'inconnu' else 'revient_camion' end; return;
+  end if;
+  -- dépôt (ou provenance non déclarée : la pièce est supposée venir du dépôt, comme avant ce module)
+  select prix_revient_ht into cout from public.produits_revient where produit_id = p.produit_id;
+  source := case when cout is null then 'inconnu' else 'revient' end;
+end $$;
+revoke all on function interne.l041_cout_piece(bigint) from public, anon, authenticated;
+
+-- pièce achetée non livrée → stock du camion (une seule fois par achat)
+create or replace function interne.l041_vers_camion(p_piece bigint) returns text
+language plpgsql security definer set search_path = public, interne, pg_catalog as $$
+declare p record; a record; v_id text;
+begin
+  select * into p from public.commande_pieces where id = p_piece;
+  if not found or p.provenance <> 'fournisseur' or p.achat_id is null then return null; end if;
+  select * into a from public.achats_fournisseur where id = p.achat_id;
+  if not found or a.statut <> 'paye' then return null; end if;
+  v_id := 'sc_drop_' || a.id;
+  insert into public.stock_camion (id, livreur, produit_libelle, quantite, source_cmd_id, source_tournee_id, charge_at, charge_par,
+                                   status, produit_id, achat_id, piece_id)
+  values (v_id, a.livreur, p.libelle, 1, p.cmd_id, a.tournee_id, now(), interne.l041_acteur(), 'en_camion', p.produit_id, a.id, p.id)
+  on conflict (id) do nothing;
+  perform interne.l041_journal('vers_camion', p.cmd_id, p.id, a.id, a.montant_paye_ht, jsonb_build_object('stock_camion_id', v_id));
+  return v_id;
+end $$;
+revoke all on function interne.l041_vers_camion(bigint) from public, anon, authenticated;
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 6. Fonctions du livreur (session vérifiée dans chaque fonction)
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+create or replace function public.drop_version() returns text
+language sql stable security definer set search_path = public, pg_catalog as $$
+  select case when public.session_role() in ('admin', 'collab', 'livreur') then '041' end $$;
+revoke all on function public.drop_version() from public, anon, authenticated;
+grant execute on function public.drop_version() to anon;
+
+-- pièce présentée à la session (prix et choix seulement pour l'administrateur et le livreur)
+create or replace function interne.l041_piece_json(p_piece bigint) returns jsonb
+language plpgsql stable security definer set search_path = public, interne, pg_catalog as $$
+declare p record; c record; v_prix boolean := public.session_role() in ('admin', 'livreur'); j jsonb;
+begin
+  select * into p from public.commande_pieces where id = p_piece;
+  select id, livreur into c from public.commandes where id = p.cmd_id;
+  j := jsonb_build_object('id', p.id, 'cmd_id', p.cmd_id, 'ligne_idx', p.ligne_idx, 'piece_idx', p.piece_idx,
+    'produit_id', p.produit_id, 'libelle', p.libelle, 'composant_de', p.composant_de, 'provenance', p.provenance,
+    'origine', p.origine, 'fournisseur_id', p.fournisseur_id,
+    'fournisseur', (select jsonb_build_object('id', f.id, 'nom', f.nom, 'adresse', f.adresse, 'telephone', f.telephone)
+                      from public.fournisseurs f where f.id = p.fournisseur_id),
+    'stock_camion_id', p.stock_camion_id, 'declare_par', p.declare_par, 'declare_at', p.declare_at,
+    'livraison', p.livraison, 'livraison_par', p.livraison_par, 'livraison_at', p.livraison_at,
+    'drop_actif', exists (select 1 from public.drop_produits d where d.produit_id = p.produit_id and d.actif),
+    'stock_depot', (select stock from public.produits x where x.id = p.produit_id));
+  if v_prix then
+    j := j || jsonb_build_object(
+      'achat', (select jsonb_build_object('id', a.id, 'statut', a.statut, 'prix_prevu_ht', a.prix_prevu_ht,
+                  'montant_paye_ht', a.montant_paye_ht, 'mode', a.mode, 'ticket', a.ticket_path is not null, 'paye_at', a.paye_at)
+                  from public.achats_fournisseur a where a.id = p.achat_id),
+      'fournisseurs', coalesce((select jsonb_agg(jsonb_build_object('id', f.id, 'nom', f.nom, 'adresse', f.adresse,
+                  'prix_prevu_ht', fp.prix_achat_ht) order by fp.prix_achat_ht, f.id)
+                  from public.fournisseur_prix fp join public.fournisseurs f on f.id = fp.fournisseur_id
+                  where fp.produit_id = p.produit_id and fp.actif and f.actif
+                    and exists (select 1 from public.drop_produits d where d.produit_id = p.produit_id and d.actif)), '[]'::jsonb),
+      'camion', coalesce((select jsonb_agg(jsonb_build_object('id', sc.id, 'libelle', sc.produit_libelle,
+                  'charge_at', sc.charge_at, 'achete', sc.achat_id is not null) order by sc.charge_at, sc.id)
+                  from public.stock_camion sc
+                  where sc.status = 'en_camion' and upper(coalesce(sc.livreur, '')) = upper(coalesce(c.livreur, ''))
+                    and (sc.produit_id = p.produit_id or (sc.produit_id is null and sc.produit_libelle = p.libelle))
+                    and (sc.utilise_par_piece is null or sc.utilise_par_piece = p.id)
+                    and (sc.achat_id is not null or sc.charge_at::timestamptz < date_trunc('day', now()))), '[]'::jsonb));
+  end if;
+  return j;
+end $$;
+revoke all on function interne.l041_piece_json(bigint) from public, anon, authenticated;
+
+-- pièces d'une commande (découpées à la première demande ; redécoupées si les lignes ont changé et que rien n'est déclaré)
+create or replace function public.drop_pieces(p_cmd_id text) returns json
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare c record; v_emp text; v_n integer; v_decl integer; v_perime boolean := false;
+begin
+  if public.session_role() is null or public.session_role() not in ('admin', 'collab', 'livreur') then
+    return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
+  if not interne.l041_cmd_autorisee(p_cmd_id, true) then return json_build_object('ok', false, 'erreur', 'commande_introuvable'); end if;
+  select id, lignes, produit, qte into c from public.commandes where id = p_cmd_id for update;   -- un seul découpage à la fois
+  v_emp := interne.l041_empreinte(c.lignes, c.produit, c.qte);
+  select count(*), count(*) filter (where provenance is not null or livraison is not null or achat_id is not null
+                                    or exists (select 1 from public.achats_fournisseur a where a.piece_id = commande_pieces.id))
+    into v_n, v_decl from public.commande_pieces where cmd_id = c.id;
+  if v_n > 0 and exists (select 1 from public.commande_pieces where cmd_id = c.id and empreinte <> v_emp) then
+    if v_decl = 0 and public.session_role() <> 'collab' then
+      delete from public.commande_pieces where cmd_id = c.id;  -- rien de déclaré : découpage refait d'après les lignes actuelles
+      v_n := 0;
+      perform interne.l041_journal('redecoupage', c.id, null, null, null, null);
+    else
+      v_perime := true;                                        -- l'administrateur décide (drop_reinitialiser_pieces)
+    end if;
+  end if;
+  if v_n = 0 and public.session_role() <> 'collab' then
+    if (select count(*) from interne.l041_decomposer(c.lignes, c.produit, to_jsonb(c.qte))) > 200 then
+      return json_build_object('ok', false, 'erreur', 'trop_de_pieces');
+    end if;
+    insert into public.commande_pieces (cmd_id, ligne_idx, piece_idx, produit_id, libelle, composant_de, empreinte)
+    select c.id, d.ligne_idx, d.piece_idx, d.produit_id, d.libelle, d.composant_de, v_emp
+      from interne.l041_decomposer(c.lignes, c.produit, to_jsonb(c.qte)) d;
+  end if;
+  return json_build_object('ok', true, 'cmd_id', c.id, 'perime', v_perime,
+    'pieces', coalesce((select json_agg(interne.l041_piece_json(p.id) order by p.ligne_idx, p.piece_idx)
+                          from public.commande_pieces p where p.cmd_id = c.id), '[]'::json));
+end $$;
+
+-- administrateur : refaire le découpage d'une commande dont les lignes ont changé (achats en cours annulés, pièces du camion
+-- libérées ; un achat PAYÉ non livré part dans le stock du camion — rien n'est perdu)
+create or replace function public.drop_reinitialiser_pieces(p_cmd_id text) returns json
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare p record;
+begin
+  if public.session_role() is distinct from 'admin' then return json_build_object('ok', false, 'erreur', 'admin_requis'); end if;
+  perform 1 from public.commandes where id = p_cmd_id for update;
+  if not found then return json_build_object('ok', false, 'erreur', 'commande_introuvable'); end if;
+  if exists (select 1 from public.commande_pieces where cmd_id = p_cmd_id and livraison = 'livree') then
+    return json_build_object('ok', false, 'erreur', 'pieces_deja_livrees'); end if;
+  for p in select * from public.commande_pieces where cmd_id = p_cmd_id order by id for update loop
+    perform interne.l041_vers_camion(p.id);
+    update public.achats_fournisseur set statut = 'annule' where id = p.achat_id and statut = 'prevu';
+    update public.stock_camion set utilise_par_piece = null where utilise_par_piece = p.id;
+  end loop;
+  -- les pièces gardent leurs achats et coûts éventuels : elles sont détachées (cmd_id préfixé), jamais supprimées
+  update public.commande_pieces set cmd_id = '~' || cmd_id || '~' || id where cmd_id = p_cmd_id;
+  perform interne.l041_journal('reinitialisation', p_cmd_id, null, null, null, null);
+  return json_build_object('ok', true);
+end $$;
+
+-- 1er pare-feu : provenance d'une pièce au CHARGEMENT
+create or replace function public.drop_declarer(p_piece_id bigint, p_provenance text, p_fournisseur_id bigint, p_stock_camion_id text)
+returns json language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare p record; c record; a record; v_fp record; sc record; v_prix_prevu numeric; v_tournee text; v_achat bigint; v_origine text;
+begin
+  if public.session_role() is null or public.session_role() not in ('admin', 'livreur') then
+    return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
+  if p_provenance is null or p_provenance not in ('depot', 'fournisseur', 'camion') then
+    return json_build_object('ok', false, 'erreur', 'provenance_invalide'); end if;
+  select cmd_id into p from public.commande_pieces where id = p_piece_id;
+  if not found or not interne.l041_cmd_autorisee(p.cmd_id, false) then return json_build_object('ok', false, 'erreur', 'piece_introuvable'); end if;
+  select id, livreur into c from public.commandes where id = p.cmd_id for update;
+  select * into p from public.commande_pieces where id = p_piece_id for update;
+  if p.livraison is not null then return json_build_object('ok', false, 'erreur', 'piece_deja_confirmee'); end if;
+  -- même déclaration : rien à faire (rejeu d'une demande dont la réponse a été perdue)
+  if p.provenance = p_provenance and (p_provenance <> 'fournisseur' or p.fournisseur_id = p_fournisseur_id)
+     and (p_provenance <> 'camion' or p.stock_camion_id = p_stock_camion_id) then
+    return json_build_object('ok', true, 'deja', true, 'piece', interne.l041_piece_json(p.id)); end if;
+  if p.achat_id is not null and exists (select 1 from public.achats_fournisseur where id = p.achat_id and statut = 'paye') then
+    return json_build_object('ok', false, 'erreur', 'achat_deja_paye'); end if;
+  if p_provenance = 'fournisseur' then
+    if p.produit_id is null or not exists (select 1 from public.drop_produits d where d.produit_id = p.produit_id and d.actif) then
+      return json_build_object('ok', false, 'erreur', 'dropshipping_inactif'); end if;
+    select fp.prix_achat_ht, f.nom into v_fp from public.fournisseur_prix fp join public.fournisseurs f on f.id = fp.fournisseur_id
+     where fp.produit_id = p.produit_id and fp.fournisseur_id = p_fournisseur_id and fp.actif and f.actif;
+    if not found then return json_build_object('ok', false, 'erreur', 'prix_fournisseur_absent'); end if;
+    v_prix_prevu := v_fp.prix_achat_ht;
+  elsif p_provenance = 'camion' then
+    select * into sc from public.stock_camion where id = p_stock_camion_id for update;
+    if not found or sc.status <> 'en_camion' or upper(coalesce(sc.livreur, '')) <> upper(coalesce(c.livreur, ''))
+       or not (sc.produit_id = p.produit_id or (sc.produit_id is null and sc.produit_libelle = p.libelle))
+       or (sc.utilise_par_piece is not null and sc.utilise_par_piece <> p.id) then
+      return json_build_object('ok', false, 'erreur', 'piece_camion_indisponible'); end if;
+  end if;
+  -- l'ancienne déclaration est défaite : achat prévu annulé, pièce du camion libérée
+  update public.achats_fournisseur set statut = 'annule' where id = p.achat_id and statut = 'prevu';
+  update public.stock_camion set utilise_par_piece = null where utilise_par_piece = p.id;
+  v_achat := null; v_origine := 'depot';
+  if p_provenance = 'fournisseur' then
+    select t.id into v_tournee from public.tournees t
+     where t.stops::jsonb @> jsonb_build_array(jsonb_build_object('cmdId', c.id)) order by t.date_tournee desc, t.id limit 1;
+    insert into public.achats_fournisseur (piece_id, cmd_id, fournisseur_id, livreur, tournee_id, prix_prevu_ht)
+    values (p.id, c.id, p_fournisseur_id, c.livreur, v_tournee, v_fp.prix_achat_ht) returning id into v_achat;
+    v_origine := 'fournisseur';
+    -- « manque au dépôt » : le stock théorique disait la pièce disponible
+    if coalesce((select stock from public.produits where id = p.produit_id), 0) > 0 then
+      perform interne.l041_alerte('manque_depot', 'piece:' || p.id, c.id, p.id, v_achat,
+        'Manque au dépôt ? ' || p.libelle || ' prise chez ' || v_fp.nom || ' alors que le stock théorique en indiquait '
+        || (select stock from public.produits where id = p.produit_id) || ' (' || c.id || ')', null);
+    end if;
+  elsif p_provenance = 'camion' then
+    update public.stock_camion set utilise_par_piece = p.id where id = sc.id;
+    v_origine := case when sc.achat_id is not null then 'fournisseur' else 'depot' end;
+  end if;
+  update public.commande_pieces set provenance = p_provenance, origine = v_origine,
+         fournisseur_id = case when p_provenance = 'fournisseur' then p_fournisseur_id end, achat_id = v_achat,
+         stock_camion_id = case when p_provenance = 'camion' then p_stock_camion_id end,
+         declare_par = interne.l041_acteur(), declare_at = now()
+   where id = p.id;
+  perform interne.l041_journal('provenance', c.id, p.id, v_achat, v_prix_prevu,
+    jsonb_build_object('provenance', p_provenance, 'fournisseur_id', p_fournisseur_id, 'stock_camion_id', p_stock_camion_id));
+  return json_build_object('ok', true, 'deja', false, 'piece', interne.l041_piece_json(p.id));
+end $$;
+
+-- 2e pare-feu : « Enlevé et payé » chez le fournisseur (tout ou rien : achat payé + dépense de la tournée + journal + alertes)
+create or replace function public.drop_enlever_payer(p_piece_id bigint, p_montant_ht numeric, p_mode text, p_ticket_path text)
+returns json language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare p record; c record; a record; f record; v_mode text := interne.l041_mode(p_mode); v_dep text; v_ecart numeric;
+begin
+  if public.session_role() is null or public.session_role() not in ('admin', 'livreur') then
+    return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
+  select cmd_id into p from public.commande_pieces where id = p_piece_id;
+  if not found or not interne.l041_cmd_autorisee(p.cmd_id, false) then return json_build_object('ok', false, 'erreur', 'piece_introuvable'); end if;
+  select id, livreur into c from public.commandes where id = p.cmd_id for update;
+  select * into p from public.commande_pieces where id = p_piece_id for update;
+  if p.provenance is distinct from 'fournisseur' or p.achat_id is null then return json_build_object('ok', false, 'erreur', 'pas_un_enlevement'); end if;
+  select * into a from public.achats_fournisseur where id = p.achat_id for update;
+  if a.statut = 'paye' then return json_build_object('ok', true, 'deja', true, 'piece', interne.l041_piece_json(p.id)); end if;
+  if a.statut <> 'prevu' then return json_build_object('ok', false, 'erreur', 'achat_annule'); end if;
+  if p_montant_ht is null or p_montant_ht <= 0 or p_montant_ht > 5000 then return json_build_object('ok', false, 'erreur', 'montant_invalide'); end if;
+  if v_mode is null then return json_build_object('ok', false, 'erreur', 'mode_invalide'); end if;
+  if p_ticket_path is not null and not interne.l041_chemin_ticket_ok(p_ticket_path, c.livreur, c.id) then
+    return json_build_object('ok', false, 'erreur', 'chemin_ticket_invalide'); end if;
+  select nom into f from public.fournisseurs where id = a.fournisseur_id;
+  v_dep := 'drop-' || a.id;
+  begin
+    -- la dépense de la tournée : Espèces = déduite de ce que le livreur remet à la caisse (PR 24) ; CB = à part
+    insert into public.depenses (id, date_depense, cat, montant, livreur, comment, mode_paie, tournee_id)
+    values (v_dep, current_date, 'Achat fournisseur', round(p_montant_ht, 2), coalesce(c.livreur, ''),
+            'Dropshipping ' || c.id || ' — ' || coalesce(f.nom, '?') || ' — ' || p.libelle || ' (HT)',
+            case when v_mode = 'especes' then 'Espèces' else 'CB' end, a.tournee_id);
+    update public.achats_fournisseur set statut = 'paye', montant_paye_ht = round(p_montant_ht, 2), mode = v_mode,
+           ticket_path = p_ticket_path, depense_id = v_dep, paye_par = interne.l041_acteur(), paye_at = now()
+     where id = a.id;
+  exception when others then
+    -- point de caisse déjà validé (038b) ou autre refus : RIEN n'est enregistré (ni achat payé, ni dépense)
+    return json_build_object('ok', false, 'erreur', case when sqlerrm like '%POINT_CAISSE_VALIDE%' then 'point_caisse_valide' else 'refus_base' end,
+                             'detail', left(sqlerrm, 200));
+  end;
+  v_ecart := interne.l041_ecart(a.prix_prevu_ht, p_montant_ht);
+  if v_ecart <> 0 then
+    perform interne.l041_alerte('ecart_prix', 'achat:' || a.id, c.id, p.id, a.id,
+      'Écart de prix : ' || p.libelle || ' chez ' || coalesce(f.nom, '?') || ' payé ' || round(p_montant_ht, 2) || ' € HT au lieu de '
+      || a.prix_prevu_ht || ' € HT (' || c.id || ')', v_ecart);
+  end if;
+  if p_ticket_path is null then
+    perform interne.l041_alerte('ticket_manquant', 'achat:' || a.id, c.id, p.id, a.id,
+      'Photo du ticket manquante : ' || p.libelle || ' chez ' || coalesce(f.nom, '?') || ' (' || c.id || ')', round(p_montant_ht, 2));
+  end if;
+  perform interne.l041_journal('enlevement_paye', c.id, p.id, a.id, round(p_montant_ht, 2),
+    jsonb_build_object('mode', v_mode, 'prix_prevu_ht', a.prix_prevu_ht, 'ecart', v_ecart, 'ticket', p_ticket_path is not null, 'depense_id', v_dep));
+  return json_build_object('ok', true, 'deja', false, 'ecart', v_ecart, 'depense', json_build_object('id', v_dep,
+    'date', to_char(current_date, 'YYYY-MM-DD'), 'cat', 'Achat fournisseur', 'montant', round(p_montant_ht, 2), 'livreur', c.livreur,
+    'modePaie', case when v_mode = 'especes' then 'Espèces' else 'CB' end, 'tourneeId', a.tournee_id,
+    'comment', 'Dropshipping ' || c.id || ' — ' || coalesce(f.nom, '?') || ' — ' || p.libelle || ' (HT)'),
+    'piece', interne.l041_piece_json(p.id));
+end $$;
+
+-- photo du ticket envoyée après coup (l'alerte « ticket manquant » est marquée vue)
+create or replace function public.drop_ticket_ajouter(p_piece_id bigint, p_ticket_path text) returns json
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare p record; c record; a record;
+begin
+  if public.session_role() is null or public.session_role() not in ('admin', 'livreur') then
+    return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
+  select * into p from public.commande_pieces where id = p_piece_id;
+  if not found or not interne.l041_cmd_autorisee(p.cmd_id, false) then return json_build_object('ok', false, 'erreur', 'piece_introuvable'); end if;
+  select id, livreur into c from public.commandes where id = p.cmd_id;
+  select * into a from public.achats_fournisseur where id = p.achat_id and statut = 'paye' for update;
+  if not found then return json_build_object('ok', false, 'erreur', 'achat_non_paye'); end if;
+  if not interne.l041_chemin_ticket_ok(p_ticket_path, c.livreur, c.id) then return json_build_object('ok', false, 'erreur', 'chemin_ticket_invalide'); end if;
+  update public.achats_fournisseur set ticket_path = p_ticket_path where id = a.id;
+  update public.drop_alertes set vue_par = interne.l041_acteur(), vue_at = now() where type = 'ticket_manquant' and cle = 'achat:' || a.id;
+  perform interne.l041_journal('ticket_ajoute', c.id, p.id, a.id, null, null);
+  return json_build_object('ok', true);
+end $$;
+
+-- 3e pare-feu : LIVRAISON, pièce par pièce. p_pieces = [{ "id": <pièce>, "livree": true|false }, …] : TOUTES les pièces
+create or replace function public.drop_confirmer_livraison(p_cmd_id text, p_pieces jsonb) returns json
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare c record; p record; e jsonb; v_liv boolean; v_n integer; v_cout record; v_camion text; v_res jsonb := '[]'::jsonb;
+begin
+  if public.session_role() is null or public.session_role() not in ('admin', 'livreur') then
+    return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
+  if not interne.l041_cmd_autorisee(p_cmd_id, false) then return json_build_object('ok', false, 'erreur', 'commande_introuvable'); end if;
+  if jsonb_typeof(p_pieces) <> 'array' then return json_build_object('ok', false, 'erreur', 'pieces_requises'); end if;
+  select id, livreur into c from public.commandes where id = p_cmd_id for update;
+  select count(*) into v_n from public.commande_pieces where cmd_id = c.id;
+  if v_n = 0 then return json_build_object('ok', false, 'erreur', 'aucune_piece'); end if;
+  -- déjà confirmée (rejeu) : rien n'est refait
+  if not exists (select 1 from public.commande_pieces where cmd_id = c.id and livraison is null) then
+    return json_build_object('ok', true, 'deja', true); end if;
+  -- contrôles AVANT toute écriture : chaque pièce une fois, provenance déclarée, pièce fournisseur payée
+  if (select count(distinct (x ->> 'id')) from jsonb_array_elements(p_pieces) x) <> v_n
+     or exists (select 1 from jsonb_array_elements(p_pieces) x
+                 where not exists (select 1 from public.commande_pieces q where q.cmd_id = c.id and q.id::text = x ->> 'id')
+                    or jsonb_typeof(x -> 'livree') <> 'boolean') then
+    return json_build_object('ok', false, 'erreur', 'pieces_incompletes'); end if;
+  for p in select q.* from public.commande_pieces q where q.cmd_id = c.id order by q.id for update loop
+    select x into e from jsonb_array_elements(p_pieces) x where x ->> 'id' = p.id::text limit 1;
+    v_liv := (e ->> 'livree')::boolean;
+    if v_liv and p.provenance is null then
+      return json_build_object('ok', false, 'erreur', 'provenance_manquante', 'piece', p.id, 'libelle', p.libelle); end if;
+    if v_liv and p.provenance = 'fournisseur'
+       and not exists (select 1 from public.achats_fournisseur a where a.id = p.achat_id and a.statut = 'paye') then
+      return json_build_object('ok', false, 'erreur', 'enlevement_non_paye', 'piece', p.id, 'libelle', p.libelle); end if;
+  end loop;
+  for p in select q.* from public.commande_pieces q where q.cmd_id = c.id and q.livraison is null order by q.id loop
+    select x into e from jsonb_array_elements(p_pieces) x where x ->> 'id' = p.id::text limit 1;
+    v_liv := (e ->> 'livree')::boolean;
+    if v_liv then
+      select * into v_cout from interne.l041_cout_piece(p.id);
+      insert into public.pieces_couts (piece_id, cmd_id, cout_ht, source, achat_id)
+      values (p.id, c.id, v_cout.cout, v_cout.source, v_cout.achat) on conflict (piece_id) do nothing;
+      if p.provenance = 'camion' then
+        update public.stock_camion set status = 'livre', retour_at = now(), retour_par = interne.l041_acteur() where id = p.stock_camion_id;
+      end if;
+      update public.commande_pieces set livraison = 'livree', livraison_par = interne.l041_acteur(), livraison_at = now() where id = p.id;
+    else
+      -- non livrée : pièce achetée → stock du camion ; pièce du camion → libérée ; achat prévu → annulé
+      v_camion := interne.l041_vers_camion(p.id);
+      update public.achats_fournisseur set statut = 'annule' where id = p.achat_id and statut = 'prevu';
+      update public.stock_camion set utilise_par_piece = null where utilise_par_piece = p.id;
+      update public.commande_pieces set livraison = 'non_livree', livraison_par = interne.l041_acteur(), livraison_at = now() where id = p.id;
+    end if;
+    v_res := v_res || jsonb_build_array(jsonb_build_object('id', p.id, 'livree', v_liv, 'vers_camion', v_camion));
+    v_camion := null;
+  end loop;
+  perform interne.l041_journal('livraison_confirmee', c.id, null, null, null, jsonb_build_object('pieces', v_res));
+  return json_build_object('ok', true, 'deja', false, 'pieces', v_res);
+end $$;
+
+-- commande NON livrée (reportée, client absent) : achats payés → stock du camion, déclarations remises à zéro (le jour de la
+-- nouvelle livraison, le livreur redéclare : « Déjà dans le camion », sans nouvel achat). Rejouable sans effet.
+create or replace function public.drop_commande_non_livree(p_cmd_id text) returns json
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare c record; p record; v_n integer := 0; v_camion text;
+begin
+  if public.session_role() is null or public.session_role() not in ('admin', 'livreur') then
+    return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
+  if not interne.l041_cmd_autorisee(p_cmd_id, false) then return json_build_object('ok', false, 'erreur', 'commande_introuvable'); end if;
+  select id into c from public.commandes where id = p_cmd_id for update;
+  for p in select q.* from public.commande_pieces q where q.cmd_id = c.id and q.livraison is null and q.provenance is not null order by q.id for update loop
+    v_camion := interne.l041_vers_camion(p.id);
+    update public.achats_fournisseur set statut = 'annule' where id = p.achat_id and statut = 'prevu';
+    update public.stock_camion set utilise_par_piece = null where utilise_par_piece = p.id;
+    update public.commande_pieces set provenance = null, origine = null, fournisseur_id = null, achat_id = null, stock_camion_id = null,
+           declare_par = null, declare_at = null where id = p.id;
+    v_n := v_n + 1;
+  end loop;
+  if v_n > 0 then perform interne.l041_journal('commande_non_livree', c.id, null, null, null, jsonb_build_object('pieces', v_n)); end if;
+  return json_build_object('ok', true, 'pieces', v_n);
+end $$;
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 7. Déduction du stock (remplace la fonction de la 040) : seulement les pièces d'origine « Dépôt »
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- Corps des étapes 5 à 8 de la 040, INCHANGÉ (commande sans pièces : GLS, bureau, commandes d'avant ce module)
+create or replace function interne.l041_deduire_classique(p_cmd_id text, p_acteur text) returns jsonb
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare
+  c record; p record; cp record; s record;
+  v_lignes jsonb := '[]'::jsonb; l jsonb; e jsonb;
+  v_ids text[] := '{}'; v_cats text[] := '{}';
+  v_pid text; v_q integer; v_req integer; v_av integer; v_ap integer; v_ret integer; v_cible text; v_sub text;
+  v_retraits jsonb := '[]'::jsonb; v_manques jsonb := '[]'::jsonb;
+begin
+  select id, lignes, produit, qte into c from public.commandes where id = p_cmd_id;
+  if jsonb_typeof(c.lignes) = 'array' and jsonb_array_length(c.lignes) > 0 then
+    for l in select x.value from jsonb_array_elements(c.lignes) with ordinality as x(value, n) order by x.n loop
+      if jsonb_typeof(l) <> 'object' then continue; end if;
+      v_lignes := v_lignes || jsonb_build_array(jsonb_build_object(
+        'id', interne.l040_trouver_produit(l ->> 'produitId', coalesce(nullif(l ->> 'nom', ''), l ->> 'produit')),
+        'produitId', l ->> 'produitId', 'nom', coalesce(nullif(l ->> 'nom', ''), l ->> 'produit'), 'qte', l -> 'qte'));
+    end loop;
+  else
+    v_lignes := jsonb_build_array(jsonb_build_object(
+      'id', interne.l040_trouver_produit(null, c.produit), 'produitId', null, 'nom', c.produit, 'qte', to_jsonb(c.qte)));
+  end if;
+  for l in select x.value from jsonb_array_elements(v_lignes) as x(value) loop
+    v_pid := l ->> 'id';
+    if v_pid is null then continue; end if;
+    v_ids := v_ids || v_pid;
+    select id, composants into p from public.produits where id = v_pid;
+    if jsonb_typeof(p.composants) = 'array' and jsonb_array_length(p.composants) > 0 then
+      for e in select x.value from jsonb_array_elements(p.composants) as x(value) loop
+        if coalesce(e ->> 'id', '') = '' then continue; end if;
+        v_ids := v_ids || (e ->> 'id');
+        select cat into cp from public.produits where id = e ->> 'id';
+        if found then v_cats := v_cats || coalesce(cp.cat, ''); end if;
+      end loop;
+    end if;
+  end loop;
+  if cardinality(v_cats) > 0 then
+    v_ids := v_ids || array(select id from public.produits where coalesce(cat, '') = any (v_cats));
+  end if;
+  perform 1 from public.produits where id = any (v_ids) order by id for update;
+  for l in select x.value from jsonb_array_elements(v_lignes) with ordinality as x(value, n) order by x.n loop
+    v_q := interne.l040_qte(l -> 'qte');
+    v_pid := l ->> 'id';
+    if v_pid is null then
+      v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', l ->> 'produitId', 'nom', l ->> 'nom',
+        'raison', 'produit_introuvable', 'demande', v_q, 'retire', 0, 'manque', v_q));
+      continue;
+    end if;
+    select id, nom, composants into p from public.produits where id = v_pid;
+    if jsonb_typeof(p.composants) = 'array' and jsonb_array_length(p.composants) > 0 then
+      for e in select x.value from jsonb_array_elements(p.composants) with ordinality as x(value, n) order by x.n loop
+        select id, nom, cat, dim, stock into cp from public.produits where id = (e ->> 'id');
+        if not found then
+          v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', e ->> 'id', 'nom', null,
+            'raison', 'composant_introuvable', 'composant_de', p.id, 'demande', interne.l040_qte(e -> 'qte') * v_q, 'retire', 0,
+            'manque', interne.l040_qte(e -> 'qte') * v_q));
+          continue;
+        end if;
+        perform 1 from public.produits where id = cp.id for update;
+        v_req := interne.l040_qte(e -> 'qte') * v_q;
+        v_cible := cp.id; v_sub := null;
+        if coalesce(cp.stock, 0) < v_req then
+          select x.id into s from public.produits x
+           where x.id <> cp.id and coalesce(x.actif, true) and x.cat is not distinct from cp.cat
+             and coalesce((to_jsonb(x) ->> 'vendable')::boolean, true)
+             and interne.l040_dim_compatible(interne.l040_dim(cp.dim), interne.l040_dim(x.dim))
+             and coalesce(x.stock, 0) >= v_req
+           order by x.id limit 1
+           for update;
+          if found then v_cible := s.id; v_sub := cp.id; end if;
+        end if;
+        select stock, nom into s from public.produits where id = v_cible;
+        v_av := s.stock;
+        v_ap := greatest(0, coalesce(v_av, 0) - v_req);
+        v_ret := greatest(0, coalesce(v_av, 0) - v_ap);
+        update public.produits set stock = v_ap, updated_at = now() where id = v_cible;
+        insert into public.stock_sorties_livraison (cmd_id, produit_id, produit_nom, qte_demandee, qte_retiree, stock_avant,
+          stock_apres, composant_de, substitue_de, acteur)
+        values (c.id, v_cible, s.nom, v_req, v_ret, v_av, v_ap, p.id, v_sub, p_acteur);
+        v_retraits := v_retraits || jsonb_build_array(jsonb_build_object('produit_id', v_cible, 'nom', s.nom, 'qte', v_ret,
+          'demande', v_req, 'stock_avant', v_av, 'stock_apres', v_ap, 'composant_de', p.id, 'substitue_de', v_sub));
+        if v_ret < v_req then
+          v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', v_cible, 'nom', s.nom,
+            'raison', 'stock_insuffisant', 'composant_de', p.id, 'demande', v_req, 'retire', v_ret, 'manque', v_req - v_ret));
+        end if;
+      end loop;
+    else
+      select stock, nom into s from public.produits where id = v_pid;
+      v_av := s.stock;
+      v_ap := greatest(0, coalesce(v_av, 0) - v_q);
+      v_ret := greatest(0, coalesce(v_av, 0) - v_ap);
+      update public.produits set stock = v_ap, updated_at = now() where id = v_pid;
+      insert into public.stock_sorties_livraison (cmd_id, produit_id, produit_nom, qte_demandee, qte_retiree, stock_avant,
+        stock_apres, composant_de, substitue_de, acteur)
+      values (c.id, v_pid, s.nom, v_q, v_ret, v_av, v_ap, null, null, p_acteur);
+      v_retraits := v_retraits || jsonb_build_array(jsonb_build_object('produit_id', v_pid, 'nom', s.nom, 'qte', v_ret,
+        'demande', v_q, 'stock_avant', v_av, 'stock_apres', v_ap, 'composant_de', null, 'substitue_de', null));
+      if v_ret < v_q then
+        v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', v_pid, 'nom', s.nom,
+          'raison', 'stock_insuffisant', 'demande', v_q, 'retire', v_ret, 'manque', v_q - v_ret));
+      end if;
+    end if;
+  end loop;
+  return jsonb_build_object('retraits', v_retraits, 'manques', v_manques);
+end $$;
+revoke all on function interne.l041_deduire_classique(text, text) from public, anon, authenticated;
+
+-- Commande découpée en pièces : SEULES les pièces d'origine « Dépôt » sont retirées (provenance Dépôt, pièce du camion venue
+-- du dépôt, ou provenance non déclarée = comme avant ce module) ; jamais une pièce fournisseur (ni une pièce du camion
+-- achetée), jamais une pièce confirmée « non livrée ». Pas de substitution automatique : la pièce est un produit précis.
+create or replace function interne.l041_deduire_pieces(p_cmd_id text, p_acteur text) returns jsonb
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare r record; s record; v_av integer; v_ap integer; v_ret integer;
+  v_retraits jsonb := '[]'::jsonb; v_manques jsonb := '[]'::jsonb;
+begin
+  perform 1 from public.produits where id in (select produit_id from public.commande_pieces where cmd_id = p_cmd_id) order by id for update;
+  for r in select produit_id, min(libelle) as libelle, min(composant_de) as composant_de, count(*)::integer as n
+             from public.commande_pieces
+            where cmd_id = p_cmd_id and coalesce(livraison, 'livree') = 'livree'
+              and (provenance is null or provenance = 'depot' or (provenance = 'camion' and origine = 'depot'))
+            group by produit_id order by produit_id nulls last loop
+    if r.produit_id is null then
+      v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', null, 'nom', r.libelle,
+        'raison', 'produit_introuvable', 'demande', r.n, 'retire', 0, 'manque', r.n));
+      continue;
+    end if;
+    select stock, nom into s from public.produits where id = r.produit_id;
+    if not found then
+      v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', r.produit_id, 'nom', r.libelle,
+        'raison', 'produit_introuvable', 'demande', r.n, 'retire', 0, 'manque', r.n));
+      continue;
+    end if;
+    v_av := s.stock; v_ap := greatest(0, coalesce(v_av, 0) - r.n); v_ret := greatest(0, coalesce(v_av, 0) - v_ap);
+    update public.produits set stock = v_ap, updated_at = now() where id = r.produit_id;
+    insert into public.stock_sorties_livraison (cmd_id, produit_id, produit_nom, qte_demandee, qte_retiree, stock_avant,
+      stock_apres, composant_de, substitue_de, acteur)
+    values (p_cmd_id, r.produit_id, s.nom, r.n, v_ret, v_av, v_ap, r.composant_de, null, p_acteur);
+    v_retraits := v_retraits || jsonb_build_array(jsonb_build_object('produit_id', r.produit_id, 'nom', s.nom, 'qte', v_ret,
+      'demande', r.n, 'stock_avant', v_av, 'stock_apres', v_ap, 'composant_de', r.composant_de, 'substitue_de', null));
+    if v_ret < r.n then
+      v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', r.produit_id, 'nom', s.nom,
+        'raison', 'stock_insuffisant', 'demande', r.n, 'retire', v_ret, 'manque', r.n - v_ret));
+    end if;
+  end loop;
+  if exists (select 1 from public.commande_pieces where cmd_id = p_cmd_id and livraison is null) then
+    perform interne.l041_alerte('livre_sans_confirmation', 'cmd:' || p_cmd_id, p_cmd_id, null, null,
+      'Livré sans confirmation des pièces : ' || p_cmd_id || ' — stock retiré pour les pièces non fournisseur, à vérifier', null);
+  end if;
+  return jsonb_build_object('retraits', v_retraits, 'manques', v_manques);
+end $$;
+revoke all on function interne.l041_deduire_pieces(text, text) from public, anon, authenticated;
+
+create or replace function public.deduire_stock_livraison(p_cmd_id text) returns json
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare
+  v_role text := public.session_role();
+  v_liv text := public.session_livreur();
+  v_acteur text; c record; v_r jsonb; v_mode text;
+begin
+  if v_role is null or v_role not in ('admin', 'collab', 'livreur') then
+    return json_build_object('ok', false, 'erreur', 'session_requise');
+  end if;
+  if coalesce(btrim(p_cmd_id), '') = '' then return json_build_object('ok', false, 'erreur', 'commande_requise'); end if;
+  v_acteur := v_role || coalesce(':' || v_liv, '');
+  -- (1)(2) commande visible par la session (même règle que les politiques sess_*), VERROUILLÉE
+  select id, statut, stock_deduit into c from public.commandes
+   where id = p_cmd_id
+     and (v_role <> 'livreur'
+          or (v_liv is not null and upper(coalesce(livreur, '')) = v_liv
+              and coalesce(date_livraison, '') >= to_char(current_date - 2, 'YYYY-MM-DD')
+              and coalesce(date_livraison, '') <= to_char(current_date + 2, 'YYYY-MM-DD')))
+   for update;
+  if not found then return json_build_object('ok', false, 'erreur', 'commande_introuvable'); end if;
+  -- (3) déjà déduite : rien n'est touché (idempotent)
+  if coalesce(c.stock_deduit, false) then
+    return json_build_object('ok', true, 'deja', true, 'stock_deduit', true, 'retraits', '[]'::json, 'manques', '[]'::json);
+  end if;
+  -- (4) seulement une commande livrée
+  if coalesce(c.statut, '') not in ('livré', 'livre') then
+    return json_build_object('ok', false, 'erreur', 'commande_non_livree', 'statut', c.statut);
+  end if;
+  if exists (select 1 from public.commande_pieces where cmd_id = c.id) then
+    v_r := interne.l041_deduire_pieces(c.id, v_acteur); v_mode := 'pieces';
+  else
+    v_r := interne.l041_deduire_classique(c.id, v_acteur); v_mode := 'lignes';
+  end if;
+  -- (9) une seule fois : marquée déduite dans la MÊME transaction
+  update public.commandes set stock_deduit = true, updated_at = now() where id = c.id;
+  return json_build_object('ok', true, 'deja', false, 'stock_deduit', true, 'mode', v_mode,
+    'retraits', (v_r -> 'retraits')::json, 'manques', (v_r -> 'manques')::json);
+end $$;
+revoke all on function public.deduire_stock_livraison(text) from public, anon, authenticated;
+grant execute on function public.deduire_stock_livraison(text) to anon;   -- session vérifiée DANS la fonction
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 8. Administrateur : alertes, marge d'une commande, bilan du jour
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- relève les alertes « pièce achetée restée dans le camion plus de N jours » puis renvoie les alertes non vues
+create or replace function public.drop_controler() returns json
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare v_jours numeric := coalesce(interne.l041_reglage('drop_camion_alerte_jours'), 3); sc record;
+begin
+  if public.session_role() is distinct from 'admin' then return json_build_object('ok', false, 'erreur', 'admin_requis'); end if;
+  for sc in select s.id, s.produit_libelle, s.livreur, s.charge_at, s.achat_id, a.montant_paye_ht, a.cmd_id
+              from public.stock_camion s join public.achats_fournisseur a on a.id = s.achat_id
+             where s.status = 'en_camion' and s.utilise_par_piece is null
+               and s.charge_at::timestamptz < now() - make_interval(days => greatest(0, v_jours)::integer) loop
+    perform interne.l041_alerte('camion_ancien', 'sc:' || sc.id, sc.cmd_id, null, sc.achat_id,
+      'Pièce achetée dans le camion depuis plus de ' || v_jours || ' jours : ' || sc.produit_libelle || ' (' || coalesce(sc.livreur, '?')
+      || ', chargée le ' || to_char(sc.charge_at::timestamptz, 'DD/MM/YYYY') || ')', sc.montant_paye_ht);
+  end loop;
+  return json_build_object('ok', true, 'jours', v_jours, 'alertes', coalesce((select json_agg(row_to_json(a) order by a.cree_at desc)
+    from (select id, type, cmd_id, piece_id, achat_id, message, montant, cree_at from public.drop_alertes where vue_at is null) a), '[]'::json));
+end $$;
+
+create or replace function public.drop_alerte_vue(p_id bigint) returns json
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+begin
+  if public.session_role() is distinct from 'admin' then return json_build_object('ok', false, 'erreur', 'admin_requis'); end if;
+  update public.drop_alertes set vue_par = interne.l041_acteur(), vue_at = now() where id = p_id and vue_at is null;
+  perform interne.l041_journal('alerte_vue', null, null, null, null, jsonb_build_object('alerte', p_id));
+  return json_build_object('ok', true);
+end $$;
+
+-- marge d'une commande (fiche, détail de tournée) : pièces, provenance, fournisseur, prix payé, mode, ticket, heure, coût
+create or replace function interne.l041_marge(p_cmd_id text) returns jsonb
+language plpgsql stable security definer set search_path = public, interne, pg_catalog as $$
+declare c record; v_tva numeric := coalesce(interne.l041_reglage('drop_tva_pct'), 20); v_gls numeric := interne.l041_reglage('drop_gls_cout_commande_ht');
+  v_pieces jsonb := '[]'::jsonb; p record; v_cout record; v_total numeric := 0; v_inconnu integer := 0; v_estime boolean := false;
+  v_c numeric; v_s text; v_fige boolean; d record; v_rev numeric; v_gls_c numeric;
+begin
+  select id, prix, statut, transporteur, date_livraison into c from public.commandes where id = p_cmd_id;
+  if not found then return null; end if;
+  if exists (select 1 from public.commande_pieces where cmd_id = c.id) then
+    for p in select q.*, f.nom as fournisseur_nom, a.prix_prevu_ht, a.montant_paye_ht, a.mode, a.ticket_path, a.paye_at, a.statut as achat_statut,
+                    pc.cout_ht as cout_fige, pc.source as source_fige
+               from public.commande_pieces q
+               left join public.fournisseurs f on f.id = q.fournisseur_id
+               left join public.achats_fournisseur a on a.id = q.achat_id
+               left join public.pieces_couts pc on pc.piece_id = q.id
+              where q.cmd_id = c.id order by q.ligne_idx, q.piece_idx loop
+      v_fige := p.source_fige is not null;
+      if v_fige then v_c := p.cout_fige; v_s := p.source_fige;
+      else select * into v_cout from interne.l041_cout_piece(p.id); v_c := v_cout.cout; v_s := v_cout.source; end if;
+      if coalesce(p.livraison, 'livree') = 'livree' then
+        if v_c is null then v_inconnu := v_inconnu + 1; else v_total := v_total + v_c; end if;
+        if not v_fige then v_estime := true; end if;
+      end if;
+      v_pieces := v_pieces || jsonb_build_array(jsonb_build_object('id', p.id, 'libelle', p.libelle, 'provenance', p.provenance,
+        'origine', p.origine, 'fournisseur', p.fournisseur_nom, 'prix_prevu_ht', p.prix_prevu_ht, 'montant_paye_ht', p.montant_paye_ht,
+        'mode', p.mode, 'ticket_path', p.ticket_path, 'paye_at', p.paye_at, 'achat_statut', p.achat_statut,
+        'declare_par', p.declare_par, 'declare_at', p.declare_at, 'livraison', p.livraison, 'livraison_at', p.livraison_at,
+        'cout_ht', v_c, 'source', v_s, 'fige', v_fige));
+    end loop;
+  else
+    -- commande sans pièces (GLS, bureau, avant ce module) : coût ESTIMÉ au prix de revient actuel de chaque pièce théorique
+    v_estime := true;
+    for d in select * from interne.l041_decomposer((select lignes from public.commandes where id = c.id), (select produit from public.commandes where id = c.id),
+                                                   (select to_jsonb(qte) from public.commandes where id = c.id)) loop
+      select prix_revient_ht into v_rev from public.produits_revient where produit_id = d.produit_id;
+      if v_rev is null then v_inconnu := v_inconnu + 1; else v_total := v_total + v_rev; end if;
+      v_pieces := v_pieces || jsonb_build_array(jsonb_build_object('libelle', d.libelle, 'provenance', null, 'cout_ht', v_rev,
+        'source', case when v_rev is null then 'inconnu' else 'revient' end, 'fige', false));
+      v_rev := null;
+    end loop;
+  end if;
+  v_gls_c := case when upper(coalesce(c.transporteur, '')) = 'GLS' then v_gls end;
+  return jsonb_build_object('cmd_id', c.id, 'statut', c.statut, 'date_livraison', c.date_livraison, 'transporteur', c.transporteur,
+    'vente_ttc', coalesce(c.prix, 0), 'vente_ht', interne.l041_ht(c.prix, v_tva), 'cout_ht', round(v_total, 2),
+    'cout_inconnu', v_inconnu, 'cout_estime', v_estime,
+    'gls_ht', v_gls_c, 'gls_non_renseigne', upper(coalesce(c.transporteur, '')) = 'GLS' and v_gls is null,
+    'marge_ht', round(interne.l041_ht(c.prix, v_tva) - v_total - coalesce(v_gls_c, 0), 2), 'pieces', v_pieces);
+end $$;
+revoke all on function interne.l041_marge(text) from public, anon, authenticated;
+
+create or replace function public.drop_marge_commande(p_cmd_id text) returns json
+language plpgsql stable security definer set search_path = public, interne, pg_catalog as $$
+begin
+  if public.session_role() is distinct from 'admin' then return json_build_object('ok', false, 'erreur', 'admin_requis'); end if;
+  if not exists (select 1 from public.commandes where id = p_cmd_id) then return json_build_object('ok', false, 'erreur', 'commande_introuvable'); end if;
+  return (jsonb_build_object('ok', true) || interne.l041_marge(p_cmd_id))::json;
+end $$;
+
+-- BILAN DU JOUR : commandes livrées à cette date de livraison (règle du tableau de bord), hors lignes #TEST
+create or replace function public.drop_bilan_jour(p_date text) returns json
+language plpgsql stable security definer set search_path = public, interne, pg_catalog as $$
+declare v_cmds jsonb := '[]'::jsonb; m jsonb; r record; v_ventes numeric := 0; v_cout numeric := 0; v_gls numeric := 0;
+  v_inconnu integer := 0; v_gls_nr integer := 0; v_estimes integer := 0; v_fixes numeric := interne.l041_reglage('drop_charges_fixes_jour_ht');
+  v_resultat numeric;
+begin
+  if public.session_role() is distinct from 'admin' then return json_build_object('ok', false, 'erreur', 'admin_requis'); end if;
+  if p_date is null or p_date !~ '^\d{4}-\d{2}-\d{2}$' then return json_build_object('ok', false, 'erreur', 'date_invalide'); end if;
+  for r in select id from public.commandes where date_livraison = p_date and statut in ('livré', 'livre') and id not like '#TEST%' order by id loop
+    m := interne.l041_marge(r.id);
+    v_ventes := v_ventes + (m ->> 'vente_ht')::numeric;
+    v_cout := v_cout + (m ->> 'cout_ht')::numeric;
+    v_gls := v_gls + coalesce((m ->> 'gls_ht')::numeric, 0);
+    v_inconnu := v_inconnu + (m ->> 'cout_inconnu')::integer;
+    if (m ->> 'gls_non_renseigne')::boolean then v_gls_nr := v_gls_nr + 1; end if;
+    if (m ->> 'cout_estime')::boolean then v_estimes := v_estimes + 1; end if;
+    v_cmds := v_cmds || jsonb_build_array((m - 'pieces') || jsonb_build_object('provenances',
+      (select jsonb_object_agg(coalesce(z.prov, 'non_declaree'), z.n)
+         from (select x2 ->> 'provenance' as prov, count(*) as n from jsonb_array_elements(m -> 'pieces') x2 group by 1) z)));
+  end loop;
+  v_resultat := round(v_ventes - v_cout - v_gls, 2);
+  return json_build_object('ok', true, 'date', p_date, 'commandes', jsonb_array_length(v_cmds),
+    'ventes_ht', round(v_ventes, 2), 'cout_produits_ht', round(v_cout, 2), 'gls_ht', round(v_gls, 2), 'resultat_ht', v_resultat,
+    'charges_fixes_ht', v_fixes, 'resultat_net_ht', case when v_fixes is not null then round(v_resultat - v_fixes, 2) end,
+    'pieces_cout_inconnu', v_inconnu, 'commandes_gls_non_renseigne', v_gls_nr, 'commandes_cout_estime', v_estimes,
+    'detail', v_cmds::json);
+end $$;
+
+do $$
+declare f text;
+begin
+  foreach f in array array['drop_pieces(text)', 'drop_reinitialiser_pieces(text)', 'drop_declarer(bigint, text, bigint, text)',
+    'drop_enlever_payer(bigint, numeric, text, text)', 'drop_ticket_ajouter(bigint, text)', 'drop_confirmer_livraison(text, jsonb)',
+    'drop_commande_non_livree(text)', 'drop_controler()', 'drop_alerte_vue(bigint)', 'drop_marge_commande(text)', 'drop_bilan_jour(text)'] loop
+    execute format('revoke all on function public.%s from public, anon, authenticated', f);
+    execute format('grant execute on function public.%s to anon', f);   -- session vérifiée DANS chaque fonction
+  end loop;
+end $$;
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 9. Contrôle à l'application : prérequis présents (038b, 039, 040, tables historiques), rien n'est écrit
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+do $$
+declare manque text;
+begin
+  select string_agg(t || '.' || col, ', ') into manque
+    from (values ('commandes', 'id'), ('commandes', 'lignes'), ('commandes', 'produit'), ('commandes', 'qte'), ('commandes', 'prix'),
+                 ('commandes', 'livreur'), ('commandes', 'statut'), ('commandes', 'date_livraison'), ('commandes', 'transporteur'),
+                 ('commandes', 'stock_deduit'), ('produits', 'composants'), ('produits', 'stock'),
+                 ('produits_revient', 'prix_revient_ht'), ('stock_sorties_livraison', 'cmd_id'),
+                 ('stock_camion', 'id'), ('stock_camion', 'livreur'), ('stock_camion', 'produit_libelle'), ('stock_camion', 'quantite'),
+                 ('stock_camion', 'source_cmd_id'), ('stock_camion', 'source_tournee_id'), ('stock_camion', 'charge_at'),
+                 ('stock_camion', 'charge_par'), ('stock_camion', 'status'), ('stock_camion', 'retour_at'), ('stock_camion', 'retour_par'),
+                 ('depenses', 'id'), ('depenses', 'date_depense'), ('depenses', 'cat'), ('depenses', 'montant'), ('depenses', 'livreur'),
+                 ('depenses', 'comment'), ('depenses', 'mode_paie'), ('depenses', 'tournee_id'),
+                 ('tournees', 'stops'), ('tournees', 'date_tournee'), ('parametres', 'cle'), ('parametres', 'valeur')) as v(t, col)
+   where not exists (select 1 from information_schema.columns
+                      where table_schema = 'public' and table_name = v.t and column_name = v.col);
+  if manque is not null then
+    raise exception 'Contrôle 041 : colonnes absentes (%) — appliquer d''abord 038b, 039 et 040. Migration annulée.', manque;
+  end if;
+  if to_regprocedure('interne.l040_qte(jsonb)') is null or to_regprocedure('interne.l040_trouver_produit(text, text)') is null then
+    raise exception 'Contrôle 041 : fonctions de la 040 absentes — appliquer d''abord la 040. Migration annulée.';
+  end if;
+end $$;
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 10. Auto-contrôle à l'application : règles PURES (valeurs fictives, rien n'est écrit)
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+do $$
+declare f text := null;
+begin
+  if interne.l041_mode('Espèces') is distinct from 'especes' then f := 'mode espèces'; end if;
+  if f is null and interne.l041_mode('CB') is distinct from 'cb' then f := 'mode cb'; end if;
+  if f is null and interne.l041_mode('chèque') is not null then f := 'mode inconnu'; end if;
+  if f is null and interne.l041_ht(120, 20) <> 100 then f := 'HT 120 TTC'; end if;
+  if f is null and interne.l041_ht(100, 20) <> 83.33 then f := 'HT arrondi'; end if;
+  if f is null and interne.l041_ecart(100, 105.5) <> 5.5 then f := 'écart'; end if;
+  if f is null and interne.l041_ecart(100, 100) <> 0 then f := 'écart nul'; end if;
+  if f is null and not interne.l041_chemin_ticket_ok('livreur-x/123/ticket-1.jpg', 'LIVREUR-X', '#123') then f := 'chemin valide'; end if;
+  if f is null and interne.l041_chemin_ticket_ok('autre/123/ticket-1.jpg', 'LIVREUR-X', '#123') then f := 'chemin autre livreur'; end if;
+  if f is null and interne.l041_chemin_ticket_ok('livreur-x/124/ticket-1.jpg', 'LIVREUR-X', '#123') then f := 'chemin autre commande'; end if;
+  if f is null and interne.l041_chemin_ticket_ok('livreur-x/123/../x.jpg', 'LIVREUR-X', '#123') then f := 'chemin remontée'; end if;
+  if f is null and interne.l041_empreinte('[{"qte":1}]', null, 1) = interne.l041_empreinte('[{"qte":2}]', null, 1) then f := 'empreinte'; end if;
+  if f is not null then
+    raise exception 'Auto-contrôle 041 en échec : cas « % ». Migration annulée.', f;
+  end if;
+end $$;
