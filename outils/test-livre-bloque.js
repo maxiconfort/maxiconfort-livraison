@@ -1,4 +1,4 @@
-// Banc de test du correctif v7.5.191 (26/11/2026) : le « livré » du livreur ne remontait plus depuis le 24/11.
+// Banc de test du correctif v7.5.191 / v7.5.192 (26/11/2026) : le « livré » du livreur ne remontait plus depuis le 24/11.
 // Usage : node outils/test-livre-bloque.js
 // Il EXTRAIT le vrai code de maxiconfort-v7.html (file d'attente hors ligne, sbSaveProduit, validerSig, contrôle
 // admin des livraisons non remontées) et l'exécute dans un bac à sable : aucune connexion à la base, aucune
@@ -24,18 +24,19 @@ const CODE_REJEU = extraireBloc('// v7.5.191 : un seul rejeu à la fois', '// D�
 const CODE_PRODUIT = extraireBloc('// v7.5.191 : refus de la base sur un produit', 'async function sbDeleteProduit');
 const CODE_CONTROLE = extraireBloc('// v7.5.191 (bug du 24/11) : contrôle ADMIN', 'var _pollingInterval');
 const CODE_SIG = extraireFonction('function validerSig()');
+const CODE_STK = extraireBloc('// v7.5.192 : lance un enregistrement asynchrone', '// v7.5.79 : "Actualiser"');
 
 function fauxElement(id) { return { id, value: '', checked: true, style: {}, dataset: {}, innerHTML: '', textContent: '', classList: { add() {}, remove() {}, contains() { return false; } } }; }
 
 // reponse(url, opt) → { status } (réponse HTTP) ou 'reseau' (fetch qui lève)
-function nouveauBac({ role = 'livreur', fileStockee = null, reponse = () => ({ status: 200 }) } = {}) {
-  const stockage = {}; if (fileStockee) stockage.mx_offline_queue = JSON.stringify(fileStockee);
+function nouveauBac({ role = 'livreur', fileStockee = null, stockage = {}, reponse = () => ({ status: 200 }) } = {}) {
+  if (fileStockee) stockage.mx_offline_queue = JSON.stringify(fileStockee);
   const els = {};
   const bac = {
     console: { log() {}, warn() {}, error() {} }, Math, Date, JSON, String, Array, Object, Number, parseInt, parseFloat, isNaN, Promise, encodeURIComponent,
     setTimeout: () => 0,
     SUPABASE_URL: 'https://exemple.invalid', SUPABASE_KEY: 'cle-de-test', role, livNom: 'LIVREUR-TEST',
-    localStorage: { getItem: k => (k in stockage ? stockage[k] : null), setItem: (k, v) => { stockage[k] = String(v); bac._ecritures++; } }, _ecritures: 0, _stockage: stockage,
+    localStorage: { getItem: k => (k in stockage ? stockage[k] : null), setItem: (k, v) => { stockage[k] = String(v); bac._ecritures++; }, removeItem: k => { delete stockage[k]; } }, _ecritures: 0, _stockage: stockage,
     document: { getElementById: id => (els[id] = els[id] || fauxElement(id)), querySelectorAll: () => [], querySelector: () => null },
     toast(m, t) { bac._toasts.push([m, t]); }, _toasts: [], notifAjout(...a) { bac._notifs.push(a); }, _notifs: [],
     _envois: [],
@@ -115,7 +116,7 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     test(r + ' : comportement inchangé (POST merge-duplicates, fiche complète)', e.method === 'POST' && /\/rest\/v1\/produits$/.test(e.url) && /merge-duplicates/.test(e.prefer) && e.body.nom === 'Produit p9' && e.body.stock === 5, [e.method, e.url, e.prefer]);
   }
 
-  console.log('\n3. REFUS DE LA BASE (4xx) : PAS DE FILE, UNE SEULE NOTIFICATION PAR PRODUIT');
+  console.log('\n3. REFUS DÉFINITIF DE LA BASE (4xx) : PAS DE FILE, UNE SEULE NOTIFICATION PAR PRODUIT');
   for (const r of ['livreur', 'admin']) {
     const bac = nouveauBac({ role: r, reponse: () => ({ status: 401, texte: 'new row violates row-level security policy' }) });
     await bac.sbSaveProduit(PROD('p1', 3, 'Matelas Test 140'));
@@ -123,7 +124,8 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     await bac.sbSaveProduit(PROD('p2', 2, 'Sommier Test 140'));
     test(r + ' : refus 401 → rien en file', bac.offlineQueue.length === 0, bac.offlineQueue);
     test(r + ' : une notification par produit (2 produits, 3 refus → 2 notifications)', bac._notifs.length === 2, bac._notifs.map(n => n[2]));
-    test(r + ' : texte « Stock non mis à jour : <produit> — à vérifier »', bac._notifs[0] && bac._notifs[0][2] === 'Stock non mis à jour : Matelas Test 140 — à vérifier', bac._notifs[0] && bac._notifs[0][2]);
+    const attendu = r === 'livreur' ? 'Stock non mis à jour : Matelas Test 140 — à vérifier' : 'Fiche produit non enregistrée : Matelas Test 140 (refus de la base) — à vérifier';
+    test(r + ' : texte « ' + attendu + ' »', bac._notifs[0] && bac._notifs[0][2] === attendu, bac._notifs[0] && bac._notifs[0][2]);
     test(r + ' : pas de toast « réessai auto »', !bac._toasts.some(t => /réessai/.test(t[0])), bac._toasts);
   }
   {
@@ -131,6 +133,7 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     await bac.sbSaveProduit(PROD('p1', 3)); await bac.sbSaveProduit(PROD('p1', 2)); await bac.sbSaveProduit(PROD('p2', 9));
     test('vraie coupure réseau → en file', bac.offlineQueue.length === 2, bac.offlineQueue.length);
     test('une seule entrée par produit, la plus récente (stock 2)', bac.offlineQueue.filter(i => i.data.id === 'p1').length === 1 && bac.offlineQueue.find(i => i.data.id === 'p1').data.stock === 2);
+    test('les nouveaux éléments portent le rôle qui les a mis en file', bac.offlineQueue.every(i => i.role === 'livreur' && i.oqv === 2), bac.offlineQueue.map(i => i.role));
   }
   {
     const bac = nouveauBac({ role: 'livreur', reponse: () => ({ status: 403 }) });
@@ -139,42 +142,162 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     test('rejeu d\'un produit refusé (403) : retiré de la file, pas remis', bac.offlineQueue.length === 0 && bac._envois.length === 1, [bac.offlineQueue.length, bac._envois.length]);
   }
 
-  console.log('\n4. ANCIENNES MISES À JOUR DE STOCK PURGÉES AU CHARGEMENT');
+  console.log('\n3 bis. (A) ERREURS TEMPORAIRES : GARDÉES EN FILE ET REJOUÉES');
+  for (const r of ['livreur', 'admin', 'collab']) {
+    for (const st of [408, 425, 429, 500, 502, 503, 504, 520]) {
+      const bac = nouveauBac({ role: r, reponse: () => ({ status: st, texte: 'temporaire' }) });
+      await bac.sbSaveProduit(PROD('p1', 3, 'Matelas T'));
+      const methode = (bac._envois[0] || {}).method;
+      test(r + ' : HTTP ' + st + ' (' + methode + ') → gardé en file, aucune notification de refus', bac.offlineQueue.length === 1 && bac.offlineQueue[0].data.id === 'p1' && bac._notifs.length === 0, [bac.offlineQueue.length, bac._notifs.map(n => n[2])]);
+    }
+    for (const st of [400, 401, 403, 404, 409, 422, 418]) {
+      const bac = nouveauBac({ role: r, reponse: () => ({ status: st }) });
+      await bac.sbSaveProduit(PROD('p1', 3, 'Matelas T'));
+      test(r + ' : HTTP ' + st + ' → refus définitif (pas de file, une notification)', bac.offlineQueue.length === 0 && bac._notifs.length === 1, [bac.offlineQueue.length, bac._notifs.length]);
+    }
+  }
   {
-    const ancienne = [
-      { type: 'produit', data: PROD('p1', 5, 'Matelas A'), ts: 1 },
-      { type: 'commande', data: { id: '#9001', statut: 'livré' }, ts: 2 },
-      { type: 'produit', data: PROD('p1', 4, 'Matelas A'), ts: 3 },
-      { type: 'produit', data: PROD('p2', 7, 'Sommier B'), ts: 4 },
-      { type: 'tournee', data: { id: 'T-1' }, ts: 5 },
-    ];
-    const bac = nouveauBac({ role: 'livreur', fileStockee: ancienne });
-    test('les 3 éléments produit sont retirés au chargement', bac.offlineQueue.filter(i => i.type === 'produit').length === 0, bac.offlineQueue.map(i => i.type));
+    // une 503 au premier envoi, puis la base répond : la valeur finit par arriver (le stock n'est pas faussé)
+    let n = 0;
+    const bac = nouveauBac({ role: 'livreur', reponse: () => (++n === 1 ? { status: 503 } : { status: 200, json: [{ id: 'p1' }] }) });
+    await bac.sbSaveProduit(PROD('p1', 6));
+    test('503 : en file', bac.offlineQueue.length === 1);
+    await bac.offlineQueueFlush();
+    test('rejeu après la panne : PATCH du stock 6 envoyé, file vide', bac.offlineQueue.length === 0 && bac._envois.length === 2 && bac._envois[1].method === 'PATCH' && bac._envois[1].body.stock === 6, [bac.offlineQueue.length, bac._envois.map(e => e.method)]);
+  }
+  {
+    // panne qui dure : à chaque rejeu un seul envoi, la file reste à un élément (rejeu borné, pas de boucle)
+    const bac = nouveauBac({ role: 'admin', reponse: () => ({ status: 502 }) });
+    await bac.sbSaveProduit(PROD('p1', 6));
+    await bac.offlineQueueFlush(); await bac.offlineQueueFlush(); await bac.offlineQueueFlush();
+    test('panne durable : 1 élément en file, 4 envois au total (1 + 3 rejeux)', bac.offlineQueue.length === 1 && bac._envois.length === 4, [bac.offlineQueue.length, bac._envois.length]);
+  }
+  {
+    // déduction de stock du livreur : 504 pendant la livraison → la valeur déduite reste en file pour le rejeu
+    const bac = nouveauBac({ role: 'livreur', reponse: () => ({ status: 504 }) });
+    Object.assign(bac, { produits: [PROD('p1', 5, 'Matelas D')], stkMouvements: [], finRender() {}, stkRender() {} });
+    bac.stkTrouverProduit = () => bac.produits[0];
+    bac.commandes = [{ id: '#D1', produit: 'Matelas D', qte: 2, client: 'Client Test' }];
+    vm.runInContext(CODE_STK, bac);
+    bac.stkDeduireStock('#D1');
+    for (let k = 0; k < 5; k++) await new Promise(r => setImmediate(r));
+    const it = bac.offlineQueue.find(i => i.type === 'produit');
+    test('stkDeduireStock + 504 : la nouvelle valeur (3) reste en file pour le rejeu', it && it.data.stock === 3, bac.offlineQueue);
+  }
+
+  console.log('\n4. (B, C) ANCIENS ÉLÉMENTS PRODUIT : TRI SELON LE RÔLE, RÉCAPITULATIF DURABLE');
+  const ANCIENNE = () => [
+    { type: 'produit', data: PROD('p1', 5, 'Matelas A'), ts: 1 },
+    { type: 'commande', data: { id: '#9001', statut: 'livré' }, ts: 2 },
+    { type: 'produit', data: PROD('p1', 4, 'Matelas A'), ts: 3 },
+    { type: 'produit', data: PROD('p2', 7, 'Sommier B'), ts: 4 },
+    { type: 'tournee', data: { id: 'T-1' }, ts: 5 },
+  ];
+  const recapDe = (st) => { try { return JSON.parse(st.mx_oq_purge_recap || 'null'); } catch (e) { return null; } };
+  {
+    const bac = nouveauBac({ role: null, fileStockee: ANCIENNE() });
+    test('au chargement (rôle pas encore connu) : rien n\'est retiré', bac.offlineQueue.length === 5, bac.offlineQueue.length);
+    await bac.offlineQueueFlush();
+    test('rôle inconnu : aucun rejeu (attente de la connexion)', bac._envois.length === 0 && bac.offlineQueue.length === 5, [bac._envois.length, bac.offlineQueue.length]);
+    bac.role = 'livreur'; bac.oqAppliquerRole('livreur'); // = loginOk('livreur')
+    test('session livreur : les 3 éléments produit sont retirés', bac.offlineQueue.filter(i => i.type === 'produit').length === 0, bac.offlineQueue.map(i => i.type));
     test('commande et tournée restent en file', bac.offlineQueue.map(i => i.type).join(',') === 'commande,tournee');
     test('la file nettoyée est réécrite dans le téléphone', JSON.parse(bac._stockage.mx_offline_queue).length === 2);
-    test('pas de notification avant la connexion', bac._notifs.length === 0);
+    test('le récapitulatif est gardé dans le téléphone (clé mx_oq_purge_recap)', (recapDe(bac._stockage) || {}).n === 3, bac._stockage.mx_oq_purge_recap);
+    test('pas de notification avant le démarrage de l\'appli', bac._notifs.length === 0);
     bac.oqSignalerPurge();
     const n = bac._notifs[0] || [];
-    test('après la connexion : UNE notification récapitulative', bac._notifs.length === 1, bac._notifs.length);
+    test('ensuite : UNE notification récapitulative', bac._notifs.length === 1, bac._notifs.length);
     test('elle dit « 3 mises à jour de stock anciennes non envoyées (produits : Matelas A, Sommier B) — stock à vérifier à l\'inventaire »', /^3 mises à jour de stock anciennes non envoyées \(produits : Matelas A, Sommier B\) — stock à vérifier à l'inventaire/.test(n[3] || ''), n[3]);
+    test('récapitulatif effacé une fois la notification créée', !('mx_oq_purge_recap' in bac._stockage));
     bac.oqSignalerPurge();
     test('une seule fois', bac._notifs.length === 1);
     await bac.offlineQueueFlush();
     test('le rejeu n\'envoie aucun ancien stock', !bac._envois.some(e => /produits/.test(e.url)), bac._envois.map(e => e.url));
   }
   {
+    // C : rechargement AVANT que la notification ait été créée
+    const stockage = {};
+    const bac1 = nouveauBac({ role: null, fileStockee: ANCIENNE(), stockage });
+    bac1.role = 'livreur'; bac1.oqAppliquerRole('livreur');
+    bac1.notifAjout = () => { throw new Error('pas prêt'); }; // notification impossible à ce moment-là
+    bac1.oqSignalerPurge();
+    test('notification pas créée : récapitulatif conservé', (recapDe(stockage) || {}).n === 3);
+    const bac2 = nouveauBac({ role: null, stockage }); // rechargement de la page, avant la connexion
+    test('après rechargement : la file reste nettoyée (2 éléments)', bac2.offlineQueue.length === 2, bac2.offlineQueue.length);
+    test('après rechargement : récapitulatif toujours là', (recapDe(stockage) || {}).n === 3);
+    bac2.role = 'livreur'; bac2.oqAppliquerRole('livreur'); bac2.oqSignalerPurge();
+    test('après connexion : la notification récapitulative est créée (3, Matelas A, Sommier B)', bac2._notifs.length === 1 && /^3 mises à jour de stock anciennes non envoyées \(produits : Matelas A, Sommier B\)/.test(bac2._notifs[0][3]), bac2._notifs.map(x => x[3]));
+    test('puis le récapitulatif est effacé', !('mx_oq_purge_recap' in stockage));
+  }
+  {
+    // C : rechargement avant même la connexion (tri pas encore fait) : les anciens éléments attendent, rien n'est perdu
+    const stockage = {};
+    nouveauBac({ role: null, fileStockee: ANCIENNE(), stockage });
+    const bac2 = nouveauBac({ role: null, stockage });
+    test('rechargement avant connexion : anciens éléments toujours en file, pas de récapitulatif prématuré', bac2.offlineQueue.length === 5 && !('mx_oq_purge_recap' in stockage));
+  }
+  for (const r of ['admin', 'collab']) {
+    // B : appareil admin / collab : les anciennes fiches complètes sont CONSERVÉES (une par produit, la plus récente)
+    const bac = nouveauBac({ role: null, fileStockee: ANCIENNE() });
+    bac.role = r; bac.oqAppliquerRole(r);
+    const prods = bac.offlineQueue.filter(i => i.type === 'produit');
+    test(r + ' : anciennes fiches conservées, une par produit (p1, p2)', prods.map(i => i.data.id).sort().join(',') === 'p1,p2', prods.map(i => i.data.id));
+    test(r + ' : la plus récente gardée (p1 stock 4, ts 3)', (prods.find(i => i.data.id === 'p1') || { data: {} }).data.stock === 4);
+    test(r + ' : commande et tournée intactes', bac.offlineQueue.filter(i => i.type !== 'produit').map(i => i.type).join(',') === 'commande,tournee');
+    test(r + ' : aucune notification de purge, aucun récapitulatif', bac._notifs.length === 0 && !('mx_oq_purge_recap' in bac._stockage));
+    await bac.offlineQueueFlush();
+    const envoisP = bac._envois.filter(e => /produits/.test(e.url));
+    test(r + ' : rejouées (2 upserts POST de fiches complètes), file vide', envoisP.length === 2 && envoisP.every(e => e.method === 'POST' && e.body.nom) && bac.offlineQueue.length === 0, envoisP.map(e => [e.method, e.body && e.body.id]));
+  }
+  {
+    // B : rejeu lancé alors que le rôle est déjà connu : le tri est fait AVANT le rejeu
+    const bac = nouveauBac({ role: 'admin', fileStockee: ANCIENNE() });
+    await bac.offlineQueueFlush();
+    test('rejeu avec rôle connu : tri fait avant le rejeu (2 fiches rejouées)', bac._envois.filter(e => /produits/.test(e.url)).length === 2);
+  }
+  {
     const bac = nouveauBac({ role: 'livreur', fileStockee: [{ type: 'produit', data: PROD('p5', 2), ts: 1, oqv: 2 }] });
+    bac.oqAppliquerRole('livreur');
     test('un produit mis en file par la version corrigée (coupure réseau) est gardé', bac.offlineQueue.length === 1);
     bac.oqSignalerPurge();
     test('et ne déclenche pas la notification de purge', bac._notifs.length === 0);
   }
   {
     const bac = nouveauBac({ fileStockee: [{ type: 'commande', data: { id: '#1' }, ts: 1 }] });
-    bac.oqSignalerPurge();
+    bac.oqAppliquerRole('livreur'); bac.oqSignalerPurge();
     test('file sans ancien produit : aucune notification', bac._notifs.length === 0 && bac.offlineQueue.length === 1);
   }
 
-  console.log('\n5. validerSig ENREGISTRE LA COMMANDE MÊME SI LA DÉDUCTION DU STOCK LÈVE');
+  console.log('\n4 bis. (D) FICHE PRODUIT ADMIN / COLLAB REFUSÉE : GARDÉE ET RELANÇABLE');
+  for (const r of ['admin', 'collab']) {
+    let refus = true;
+    const bac = nouveauBac({ role: r, reponse: () => (refus ? { status: 422, texte: 'violation' } : { status: 201 }) });
+    await bac.sbSaveProduit(PROD('p1', 3, 'Matelas R'));
+    await bac.sbSaveProduit(Object.assign(PROD('p1', 2, 'Matelas R'), { prix: 120 }));
+    const liste = JSON.parse(bac._stockage.mx_produits_refuses || '{}');
+    test(r + ' : fiche gardée dans mx_produits_refuses, une par id, la plus récente (stock 2, prix 120)', Object.keys(liste).join(',') === 'p1' && liste.p1.data.stock === 2 && liste.p1.data.prix === 120 && liste.p1.status === 422, liste);
+    test(r + ' : notification « Fiche produit non enregistrée : Matelas R (refus de la base) — à vérifier » (une seule)', bac._notifs.length === 1 && bac._notifs[0][2] === 'Fiche produit non enregistrée : Matelas R (refus de la base) — à vérifier', bac._notifs.map(n => n[2]));
+    const btn = bac.document.getElementById('stk-refus-btn');
+    test(r + ' : bouton « Relancer » visible sur la page Stock', btn.style.display === '' && /Relancer 1 fiche/.test(btn.textContent), [btn.style.display, btn.textContent]);
+    await bac.produitsRefusesRelancer();
+    test(r + ' : relance encore refusée → fiche toujours gardée, nouvelle notification', 'p1' in JSON.parse(bac._stockage.mx_produits_refuses || '{}') && bac._notifs.length === 2);
+    refus = false;
+    const nEnv = bac._envois.length;
+    const n = await bac.produitsRefusesRelancer();
+    test(r + ' : relance acceptée → fiche complète renvoyée puis retirée de la liste', n === 1 && bac._envois.length === nEnv + 1 && bac._envois[nEnv].body.prix === 120 && !('mx_produits_refuses' in bac._stockage), [n, bac._stockage.mx_produits_refuses]);
+    test(r + ' : bouton masqué ensuite', btn.style.display === 'none');
+  }
+  {
+    const bac = nouveauBac({ role: 'livreur', reponse: () => ({ status: 403 }) });
+    await bac.sbSaveProduit(PROD('p1', 3, 'Matelas L'));
+    test('livreur : pas de liste de fiches (stock en valeur absolue, rien à relancer)', !('mx_produits_refuses' in bac._stockage));
+    test('livreur : relance impossible', (await bac.produitsRefusesRelancer()) === 0 && bac._envois.length === 1);
+  }
+
+  console.log('\n5. (F) validerSig ENREGISTRE LA COMMANDE MÊME SI LA DÉDUCTION DU STOCK ÉCHOUE');
+  const rejetsNonTraites = [];
+  process.on('unhandledRejection', (e) => { rejetsNonTraites.push(e && e.message); });
   function bacSignature(deduction) {
     const bac = nouveauBac({ role: 'livreur' });
     const ordre = [];
@@ -183,7 +306,7 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
       brevoSendSMS: async () => false, societe: { tel: '' }, paiTraceEncaissement: () => '',
       sbSaveTournee(t) { ordre.push('tournee'); },
       sbSaveCommande: async (c) => { ordre.push('commande:' + c.statut); },
-      stkDeduireStock(id) { ordre.push('stock'); if (deduction === 'leve') throw new Error('produit introuvable'); },
+      stkDeduireStock(id) { ordre.push('stock'); if (deduction === 'leve') throw new Error('produit introuvable'); if (deduction === 'rejette') return Promise.reject(new Error('déduction rejetée')); },
     });
     vm.runInContext('var sigStopId=null, sigPaieEncaisse=false, sigPaieMode="Espèces", sigPrepaidMode=null, sigCmdMarketplace=null, sigCodActif=false, sigCodChoix=null, sigCodMontant=0;', bac);
     vm.runInContext(CODE_SIG, bac);
@@ -193,12 +316,12 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     vm.runInContext('sigStopId = { tid: "T-10", idx: 0 }; sigPrepaidMode = "Déjà payé";', bac);
     return { bac, ordre };
   }
-  for (const cas of ['normal', 'leve']) {
+  for (const cas of ['normal', 'leve', 'rejette']) {
     const { bac, ordre } = bacSignature(cas);
     let erreur = null;
     try { bac.validerSig(); } catch (e) { erreur = e; }
-    await new Promise(r => setImmediate(r));
-    const lib = cas === 'leve' ? 'déduction qui lève' : 'déduction normale';
+    for (let k = 0; k < 5; k++) await new Promise(r => setImmediate(r));
+    const lib = cas === 'leve' ? 'déduction qui lève' : cas === 'rejette' ? 'déduction qui rejette une promesse' : 'déduction normale';
     test(lib + ' : validerSig ne lève pas', erreur === null, erreur && erreur.message);
     test(lib + ' : commande enregistrée « livré »', ordre.includes('commande:livré'), ordre);
     test(lib + ' : la commande est enregistrée AVANT la déduction du stock', ordre.indexOf('commande:livré') >= 0 && ordre.indexOf('commande:livré') < ordre.indexOf('stock'), ordre);
@@ -215,45 +338,92 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     finir(); await new Promise(r => setImmediate(r));
     test('déduction juste après la fin de l\'enregistrement', ordre.indexOf('commande:fin') < ordre.indexOf('stock'), ordre);
   }
-
-  console.log('\n6. CONTRÔLE ADMIN : LIVRAISON NON REMONTÉE (LECTURE SEULE)');
   {
-    const bac = nouveauBac({ role: 'admin' });
+    // VRAIE fonction stkDeduireStock, dont les enregistrements asynchrones (produit, commande) rejettent
+    const { bac, ordre } = bacSignature('normal');
+    let nCmd = 0;
+    Object.assign(bac, { produits: [PROD('p1', 5, 'Matelas S')], stkMouvements: [], finRender() {}, stkRender() {} });
+    bac.stkTrouverProduit = () => bac.produits[0];
+    vm.runInContext(CODE_STK, bac); // remplace le faux stkDeduireStock par le vrai
+    bac.sbSaveProduit = async () => { ordre.push('produit:rejet'); throw new Error('panne produit'); };
+    bac.sbSaveCommande = async (c) => { nCmd++; ordre.push('commande:' + c.statut + (nCmd > 1 ? ':rejet' : '')); if (nCmd > 1) throw new Error('panne commande'); };
+    bac.commandes[0].produit = 'Matelas S';
+    let erreur = null;
+    try { bac.validerSig(); } catch (e) { erreur = e; }
+    for (let k = 0; k < 10; k++) await new Promise(r => setImmediate(r));
+    test('vraie déduction, enregistrements qui rejettent : validerSig ne lève pas', erreur === null, erreur && erreur.message);
+    test('vraie déduction : commande enregistrée « livré » d\'abord, puis stock (rejeté) traité', ordre[0] === 'commande:livré' && ordre.includes('produit:rejet') && ordre.includes('commande:livré:rejet'), ordre);
+    test('vraie déduction : stock local déduit (5 → 4) et commande toujours « livré »', bac.produits[0].stock === 4 && bac.commandes[0].statut === 'livré', [bac.produits[0].stock, bac.commandes[0].statut]);
+  }
+  await new Promise(r => setTimeout(r, 20));
+  test('aucun rejet de promesse non traité pendant toute la section 5', rejetsNonTraites.length === 0, rejetsNonTraites);
+
+  console.log('\n6. (E) CONTRÔLE ADMIN : LIVRAISON NON REMONTÉE (LECTURE SEULE)');
+  {
+    // #5 n'est pas dans la liste chargée : son statut est lu en base (ici « livré » → rien à signaler)
+    const bac = nouveauBac({ role: 'admin', reponse: (url) => (/commandes\?select=id,statut&id=eq\.%235$/.test(url) ? { status: 200, json: [{ id: '#5', statut: 'livré' }] } : { status: 500 }) });
     bac.tournees = [{ id: 'T-1', stops: [{ cmdId: '#1', statut: 'livré' }, { cmdId: '#2', statut: 'livré' }, { cmdId: '#3', statut: 'livré' }, { cmdId: '#4', statut: 'en-route' }, { cmdId: '#5', statut: 'livré' }] }];
     bac.commandes = [{ id: '#1', statut: 'en-route' }, { id: '#2', statut: 'livré' }, { id: '#3', statut: 'annulé' }, { id: '#4', statut: 'en-route' }];
-    test('écarts trouvés : seulement #1 (livrée, annulée, en route et commande absente ignorées)', JSON.stringify(bac.livNonRemontees(bac.tournees, bac.commandes)) === '["#1"]', bac.livNonRemontees(bac.tournees, bac.commandes));
+    test('écarts dans la liste : seulement #1 (livrée, annulée, en route ignorées)', JSON.stringify(bac.livNonRemontees(bac.tournees, bac.commandes)) === '["#1"]', bac.livNonRemontees(bac.tournees, bac.commandes));
+    test('commande absente de la liste : #5 (à lire en base)', JSON.stringify(bac.livNonRemonteesAbsentes(bac.tournees, bac.commandes)) === '["#5"]');
     const t0 = 1000000;
-    bac.livControleNonRemontees(t0);
-    test('premier constat : pas encore d\'alerte (laisse le temps au livreur d\'enregistrer)', bac._notifs.length === 0);
-    bac.livControleNonRemontees(t0 + 60000);
-    test('après 1 min : toujours pas d\'alerte', bac._notifs.length === 0);
-    bac.livControleNonRemontees(t0 + 130000);
+    await bac.livControleNonRemontees(t0);
+    test('premier constat : pas encore d\'alerte, aucune lecture (laisse le temps au livreur d\'enregistrer)', bac._notifs.length === 0 && bac._envois.length === 0);
+    await bac.livControleNonRemontees(t0 + 60000);
+    test('après 1 min : toujours pas d\'alerte ni de lecture', bac._notifs.length === 0 && bac._envois.length === 0);
+    await bac.livControleNonRemontees(t0 + 130000);
     test('après 2 min : une alerte « Livraison non remontée : #1 — vérifier »', bac._notifs.length === 1 && bac._notifs[0][2] === 'Livraison non remontée : #1 — vérifier', bac._notifs.map(n => n[2]));
-    bac.livControleNonRemontees(t0 + 400000);
-    test('une seule fois par commande et par session', bac._notifs.length === 1);
-    test('aucune écriture (aucun envoi à la base)', bac._envois.length === 0 && bac.commandes[0].statut === 'en-route');
+    test('après 2 min : statut de #5 lu en base (GET select=id,statut, id=eq.)', bac._envois.length === 1 && bac._envois[0].method === 'GET' && /\/rest\/v1\/commandes\?select=id,statut&id=eq\.%235$/.test(bac._envois[0].url), bac._envois.map(e => [e.method, e.url]));
+    await bac.livControleNonRemontees(t0 + 400000);
+    test('une seule fois par commande et par session (ni nouvelle alerte, ni nouvelle lecture)', bac._notifs.length === 1 && bac._envois.length === 1, [bac._notifs.length, bac._envois.length]);
+    test('aucune écriture (seulement des lectures GET)', bac._envois.every(e => e.method === 'GET') && bac.commandes[0].statut === 'en-route');
+  }
+  for (const [lib, rep, attendu] of [
+    ['en base « en-route »', { status: 200, json: [{ id: '#7', statut: 'en-route' }] }, 'Livraison non remontée : #7 — vérifier'],
+    ['introuvable en base', { status: 200, json: [] }, 'Livraison non remontée : #7 — commande introuvable'],
+    ['en base « annulé »', { status: 200, json: [{ id: '#7', statut: 'annulé' }] }, null],
+  ]) {
+    const bac = nouveauBac({ role: 'admin', reponse: () => rep });
+    bac.tournees = [{ id: 'T-7', stops: [{ cmdId: '#7', statut: 'livré' }] }]; bac.commandes = [];
+    await bac.livControleNonRemontees(1000); await bac.livControleNonRemontees(130000); await bac.livControleNonRemontees(400000);
+    if (attendu) test('commande absente de la liste, ' + lib + ' : une alerte « ' + attendu + ' »', bac._notifs.length === 1 && bac._notifs[0][2] === attendu && bac._envois.length === 1, [bac._notifs.map(n => n[2]), bac._envois.length]);
+    else test('commande absente de la liste, ' + lib + ' : pas d\'alerte, une seule lecture', bac._notifs.length === 0 && bac._envois.length === 1, [bac._notifs.length, bac._envois.length]);
+  }
+  {
+    // lecture impossible (panne ou réseau) : pas d'alerte, nouvelle tentative au contrôle suivant
+    let n = 0;
+    const bac = nouveauBac({ role: 'admin', reponse: () => (++n === 1 ? 'reseau' : n === 2 ? { status: 503 } : { status: 200, json: [{ id: '#8', statut: 'en-route' }] }) });
+    bac.tournees = [{ id: 'T-8', stops: [{ cmdId: '#8', statut: 'livré' }] }]; bac.commandes = [];
+    await bac.livControleNonRemontees(1000); await bac.livControleNonRemontees(130000);
+    test('lecture en échec (réseau) : pas d\'alerte', bac._notifs.length === 0 && bac._envois.length === 1);
+    await bac.livControleNonRemontees(160000);
+    test('lecture en échec (503) : pas d\'alerte', bac._notifs.length === 0 && bac._envois.length === 2);
+    await bac.livControleNonRemontees(190000); await bac.livControleNonRemontees(220000);
+    test('lecture réussie ensuite : une alerte, plus aucune lecture', bac._notifs.length === 1 && bac._envois.length === 3, [bac._notifs.length, bac._envois.length]);
   }
   {
     const bac = nouveauBac({ role: 'admin' });
     bac.tournees = [{ id: 'T-1', stops: [{ cmdId: '#1', statut: 'livré' }] }];
     bac.commandes = [{ id: '#1', statut: 'en-route' }];
-    bac.livControleNonRemontees(1000);
-    bac.commandes[0].statut = 'livré'; bac.livControleNonRemontees(5000); // remontée entre-temps
-    bac.commandes[0].statut = 'en-route'; bac.livControleNonRemontees(130000);
+    await bac.livControleNonRemontees(1000);
+    bac.commandes[0].statut = 'livré'; await bac.livControleNonRemontees(5000); // remontée entre-temps
+    bac.commandes[0].statut = 'en-route'; await bac.livControleNonRemontees(130000);
     test('un écart résorbé repart de zéro (pas d\'alerte sur un écart de quelques secondes)', bac._notifs.length === 0);
   }
   for (const r of ['livreur', 'collab']) {
     const bac = nouveauBac({ role: r });
-    bac.tournees = [{ id: 'T-1', stops: [{ cmdId: '#1', statut: 'livré' }] }]; bac.commandes = [{ id: '#1', statut: 'en-route' }];
-    bac.livControleNonRemontees(1); bac.livControleNonRemontees(500000);
-    test(r + ' : pas de contrôle (administrateur seulement)', bac._notifs.length === 0);
+    bac.tournees = [{ id: 'T-1', stops: [{ cmdId: '#1', statut: 'livré' }, { cmdId: '#9', statut: 'livré' }] }]; bac.commandes = [{ id: '#1', statut: 'en-route' }];
+    await bac.livControleNonRemontees(1); await bac.livControleNonRemontees(500000);
+    test(r + ' : pas de contrôle ni de lecture (administrateur seulement)', bac._notifs.length === 0 && bac._envois.length === 0);
   }
 
   console.log('\n7. TEXTE DU CODE');
-  test('sbSaveEchec n\'est plus appelé pour un refus HTTP de produit', !/sbSaveEchec\('produit', p, 'Produit', resp(L)?\.status/.test(CODE_PRODUIT));
+  test('un refus définitif de produit ne passe pas par sbSaveEchec (seulement si httpTemporaire)', (CODE_PRODUIT.match(/sbSaveEchec\('produit', p, 'Produit', resp(L)?\.status/g) || []).length === 2 && (CODE_PRODUIT.match(/if \(httpTemporaire\(resp(L)?\.status\)\) \{ sbSaveEchec/g) || []).length === 2);
   test('le rejeu lit une copie (_aRejouer), pas la file qui grandit', /_aRejouer\.length/.test(CODE_REJEU) && !/i < offlineQueue\.length/.test(CODE_REJEU));
+  test('loginOk trie les anciens éléments dès que le rôle est connu', /function loginOk\(r\) \{\s*role=r;\s*\/\/[^\n]*\n\s*try \{ oqAppliquerRole\(r\); \}/.test(html));
+  test('le bouton « Relancer » existe sur la page Stock', /id="stk-refus-btn"[^>]*onclick="produitsRefusesRelancer\(\)"/.test(html));
   const sw = fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8');
-  test('CACHE_VERSION augmenté (v7-5-191)', /CACHE_VERSION = 'maxiconfort-v7-5-191'/.test(sw));
+  test('CACHE_VERSION augmenté (v7-5-192 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-(19[2-9]|[2-9]\d\d)'/.test(sw));
 
   console.log('\n' + ok + ' réussi(s), ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
