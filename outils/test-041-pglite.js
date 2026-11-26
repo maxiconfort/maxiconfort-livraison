@@ -283,7 +283,10 @@ grant select, insert, update, delete on storage.objects to anon;
   r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 165, 'chèque', null]);
   test('mode inconnu : refusé', r.ok === false && r.erreur === 'mode_invalide');
   // point de caisse validé (038b) : refus de la base, RIEN n'est enregistré
-  await q('admin', "insert into public.caisse_remises (key_remise, livreur, periode, validee, par) values ('t_T-1', 'Livreur-A', $1, true, 'admin')", [AUJ]);
+  // v7.5.201 (fusion pile 24-28, 038b v7.5.195) : la validation porte ce sur quoi le montant attendu a été calculé
+  const ctrlT1 = await un(P, "select interne.l038b_depenses_especes('T-1') as d, interne.l038b_arrets_caisse((select t.stops::jsonb from public.tournees t where t.id = 'T-1')) as a");
+  await q('admin', "insert into public.caisse_remises (key_remise, livreur, periode, validee, par, controle_depenses, controle_arrets) values ('t_T-1', 'Livreur-A', $1, true, 'admin', $2, $3)",
+    [AUJ, ctrlT1.d, JSON.stringify(ctrlT1.a)]);
   r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 165, 'especes', 'livreur-a/C1/ticket-1.jpg']);
   test('point de caisse de la tournée déjà validé (038b) : refusé, ni achat payé ni dépense', r.ok === false && r.erreur === 'point_caisse_valide'
     && (await un(P, "select statut from public.achats_fournisseur where piece_id = $1 and statut <> 'annule'", [pM.id])).statut === 'prevu' && (await nb("public.depenses where id like 'drop-%'")) === 0, r);

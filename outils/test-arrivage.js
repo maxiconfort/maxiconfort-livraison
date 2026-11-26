@@ -841,6 +841,7 @@ function nouveauBac(opts) {
     const bacC = (r, prix, nom) => { const B = nouveauBac({ role: r }); B.bac.produits = catC.map(x => Object.assign({}, x));
       Object.assign(B.bac, { editProduitId: null, closeModal() {}, VEN_LIBELLE: 'Prix à définir — non vendable', venDefinirPrix() {} });
       Object.assign(B.bac, { sbSaveEchec() {}, oqSucces() {}, oqStockAncienSignaler() {}, offlineQueue: [] }); // v7.5.198 (fusion PR 29) : file hors sujet ici
+      Object.assign(B.bac, { _prodCreationEnCours: {}, stkMouvementsRelancer() { return Promise.resolve(); } }); // v7.5.201 (fusion PR 29 v7.5.199) : mouvements différés pendant une création
       vm.runInContext(extraireFonction('function oqRoleCourant()') + '\n' + extraireFonction('function stkProduit(id)') + '\n' + extraireBloc('// v7.5.191 : refus de la base sur un produit', 'async function sbSaveProduit(p') + '\n' + extraireFonction('async function sbSaveProduit(p'), B.bac); vm.runInContext(extraireFonction('function sauvegarderProduit()'), B.bac);
       const d = B.bac.document.getElementById; d('p-nom').value = nom; d('p-prix').value = prix; d('p-cat').value = 'Matelas'; B.bac.sauvegarderProduit(); return B; };
     const envoi = (B) => B.appels.find(a => a.methode === 'POST' && a.url.includes('/rest/v1/produits'));

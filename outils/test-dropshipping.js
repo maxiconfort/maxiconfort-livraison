@@ -257,7 +257,7 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
   test('fiche commande et détail de tournée (admin) : provenance et marge', /role === 'admin' && typeof dropFicheCommande === 'function'/.test(extraireFonction('function ouvrirCmd(id)')) && /dropTourneeDetail\(t\)/.test(extraireFonction('function afficherTournee(id)')));
   test('page admin « Dropshipping » : page, menu Plus, titre, ouverture', html.includes('id="p-drop"') && html.includes("{p:'drop',i:'🔀',l:'Dropshipping'}") && html.includes("drop:'Dropshipping'") && /if\(p==='drop' && typeof dropPageInit === 'function'\) dropPageInit\(\);/.test(html));
   test('page admin : réservée à l\'administrateur', /if \(role !== 'admin'\) \{ el\.innerHTML = '<div class="card">Réservé/.test(extraireFonction('async function dropPageInit()')));
-  test('CACHE_VERSION = maxiconfort-v7-5-200', /CACHE_VERSION = 'maxiconfort-v7-5-200'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
+  test('CACHE_VERSION = maxiconfort-v7-5-201 ou plus', /CACHE_VERSION = 'maxiconfort-v7-5-(20[1-9]|2[1-9]\d|[3-9]\d\d)'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
   test('migration 041 présente dans le dépôt', fs.existsSync(path.join(racine, 'supabase', 'migrations', '041_dropshipping_provenance.sql')));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');

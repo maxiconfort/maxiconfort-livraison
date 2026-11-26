@@ -1,7 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.201 - Fusion de Commandes filtres (62f910d, PR 24 a 28 corrigees) et de la derniere correction de la PR 29 (8dde6a9, v7.5.199) dans le dropshipping (27/11/2026)
 // v7.5.200 - Fusion de la PR 29 (v7.5.198 : recredit et mouvements manuels du stock par la base, migration 040 revisee) dans le dropshipping (v7.5.199, migration 041 : deduction limitee aux pieces Depot posee sur la 040 revisee) + STOCK TAMPON dropshipping (achats d avance en lots au prix HT reel, premier entre premier sorti) + libelle Depot - stock BMS (27/11/2026)
 // v7.5.199 - Dropshipping encadre et provenance de chaque piece (migration 041) : 3 pare-feu du livreur (chargement Depot / fournisseur / camion, enlevement paye avec photo du ticket, livraison piece par piece), stock du camion, page admin Dropshipping (bilan du jour, alertes, fournisseurs, prix HT, references activees) ; inclut la fusion de la PR 29 v7.5.197 dans Commandes filtres (refus definitif de la base garde dans la file corrigee) (27/11/2026)
+//   [PR 29] v7.5.199 - Derniere correction ciblee de la PR 29 : reprise au demarrage rappelle la deduction deja faite (resultat complet applique avant de retirer la demande), stock initial d'une creation pris en instantane, mouvement differe tant que la creation du produit attend sa sauvegarde (27/11/2026)
 // v7.5.198 - Recredit a l'annulation et mouvements manuels du stock faits PAR LA BASE (recrediter_stock_livraison, mouvement_stock_produit, migration 040), resultat complet de la deduction restitue au rejeu, fiches produit envoyees sans le stock (sauf creation), stock_deduit tenu par la base (27/11/2026)
 // v7.5.197 - Stock d'une livraison deduit PAR LA BASE (fonction deduire_stock_livraison, migration 040), une seule fois par commande ; demande gardee en file et rejouee sans double effet ; calcul du stock sur le telephone supprime (26/11/2026)
 // v7.5.196 - Deductions de stock suivies sur l'appareil (reprises apres fermeture), stock_deduit seulement si tous les produits sont enregistres, PATCH du livreur conditionnel (delta), versions anciennes invalidees apres un succes (26/11/2026)
@@ -10,11 +12,11 @@
 // v7.5.193 - Livre protege des releves perimees, rejeu par date et role d'origine, nouveaux ecarts controles, purge apres recapitulatif (26/11/2026)
 // v7.5.192 - File : erreurs temporaires rejouees, fiches admin conservees, recapitulatif durable, controle admin par lecture en base (26/11/2026)
 // v7.5.191 - Livreur : le « livre » remonte de nouveau (file d'attente sans boucle, stock du livreur par PATCH) (26/11/2026)
-// v7.5.199 - Commandes, filtres de dates : fusion de la PR 27 (v7.5.198 ; PR 26, PR 25 et PR 24 v7.5.195 incluses : validation de la remise recontrolee par la base, arrets figes) (27/11/2026)
-// v7.5.198 - Tableau de bord + menus : fusion de la PR 26 (v7.5.197 ; PR 25 v7.5.196 et PR 24 v7.5.195 incluses : validation de la remise recontrolee par la base, arrets figes) (27/11/2026)
-// v7.5.197 - Arrivage : fusion de la PR 25 (v7.5.196, PR 24 v7.5.195 incluse : validation de la remise recontrolee par la base, arrets figes) (27/11/2026)
-// v7.5.196 - Habillage style D : fusion de la PR 24 (v7.5.195, derniere correction ciblee : validation recontrolee par la base, arrets figes) (27/11/2026)
-// v7.5.195 - Caisse (revue Codex PR 24 sur 59f3a26, derniere correction ciblee) : validation de la remise recontrolee par la base apres le verrou (depenses et arrets), arrets d'une tournee validee figes pour la caisse (27/11/2026)
+//   [pile 24-28] v7.5.199 - Commandes, filtres de dates : fusion de la PR 27 (v7.5.198 ; PR 26, PR 25 et PR 24 v7.5.195 incluses : validation de la remise recontrolee par la base, arrets figes) (27/11/2026)
+//   [pile 24-28] v7.5.198 - Tableau de bord + menus : fusion de la PR 26 (v7.5.197 ; PR 25 v7.5.196 et PR 24 v7.5.195 incluses : validation de la remise recontrolee par la base, arrets figes) (27/11/2026)
+//   [pile 24-28] v7.5.197 - Arrivage : fusion de la PR 25 (v7.5.196, PR 24 v7.5.195 incluse : validation de la remise recontrolee par la base, arrets figes) (27/11/2026)
+//   [pile 24-28] v7.5.196 - Habillage style D : fusion de la PR 24 (v7.5.195, derniere correction ciblee : validation recontrolee par la base, arrets figes) (27/11/2026)
+//   [pile 24-28] v7.5.195 - Caisse (revue Codex PR 24 sur 59f3a26, derniere correction ciblee) : validation de la remise recontrolee par la base apres le verrou (depenses et arrets), arrets d'une tournee validee figes pour la caisse (27/11/2026)
 // v7.5.187 - Tableau de bord + menus : fusion de la PR 26 (v7.5.186 ; PR 25 v7.5.185 et PR 24 v7.5.184 incluses : relecture complete du verrou de caisse) (26/11/2026)
 // v7.5.186 - Arrivage : fusion de la PR 25 (v7.5.185, PR 24 v7.5.184 incluse : relecture complete du verrou de caisse) (26/11/2026)
 // v7.5.185 - Habillage style D : fusion de la PR 24 (v7.5.184, relecture complete du verrou de caisse) (26/11/2026)
@@ -62,7 +64,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-200';
+const CACHE_VERSION = 'maxiconfort-v7-5-201';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

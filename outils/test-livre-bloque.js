@@ -1,4 +1,4 @@
-// Banc de test du correctif v7.5.191 / v7.5.192 / v7.5.193 / v7.5.194 / v7.5.195 / v7.5.196 / v7.5.197 / v7.5.198 (26-27/11/2026) : le « livré » du livreur ne remontait plus depuis le 24/11.
+// Banc de test du correctif v7.5.191 / v7.5.192 / v7.5.193 / v7.5.194 / v7.5.195 / v7.5.196 / v7.5.197 / v7.5.198 / v7.5.199 (26-27/11/2026) : le « livré » du livreur ne remontait plus depuis le 24/11.
 // Usage : node outils/test-livre-bloque.js
 // Il EXTRAIT le vrai code de maxiconfort-v7.html (file d'attente hors ligne, sbSaveProduit, validerSig, contrôle
 // admin des livraisons non remontées) et l'exécute dans un bac à sable : aucune connexion à la base, aucune
@@ -1365,6 +1365,110 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     const { bac, b } = bacRecredit({}, { p1: 10 });
     const r = await bac.stkMouvementDemander({ id: 'p-absent', nom: 'Produit Absent' }, 'entree', 1, '');
     test('produit absent en base : refus, retiré de la file, notification « Stock non mis à jour : Produit Absent — à vérifier »', r === 'refus' && !bac.offlineQueue.length && bac._notifs.some(n => n[2] === 'Stock non mis à jour : Produit Absent — à vérifier'), bac._notifs.map(n => n[2]));
+  }
+
+  console.log('\n32. (v7.5.199, dernière correction ciblée : 3 réserves natives de Codex sur 6de49a2)');
+  // bac « bureau » avec une base de produits simulée : création (POST, stock envoyé seulement à la création), lecture
+  // avant rejeu, fonctions de stock (baseRpc) ; etat.hors = vrai → toute requête lève (coupure réseau)
+  function bacBureau(stockBase, opts) {
+    const b = baseRpc({}, stockBase), etat = { hors: false, creations: [] };
+    const bac = nouveauBac(Object.assign({ role: 'admin' }, opts || {}, { reponse: (url, opt) => {
+      if (etat.hors) return 'reseau';
+      const r = b.reponse(url, opt); if (r) return r;
+      if (/\/rest\/v1\/produits$/.test(url) && opt.method === 'POST') {
+        const corps = JSON.parse(opt.body);
+        etat.creations.push(corps);
+        if (!(corps.id in b.stock)) b.stock[corps.id] = ('stock' in corps) ? corps.stock : 0;
+        else if ('stock' in corps) b.stock[corps.id] = corps.stock; // merge-duplicates
+        return { status: 201 };
+      }
+      return { status: 200 };
+    } }));
+    bac.lecture = (url) => { if (etat.hors) return 'reseau'; const id = decodeURIComponent((url.match(/id=eq\.([^&]+)/) || [])[1] || ''); return { status: 200, json: (id in b.stock) ? [{ id }] : [] }; };
+    Object.assign(bac, { produits: Object.keys(stockBase).map(k => PROD(k, stockBase[k], 'Produit ' + k)), stkMouvements: [], editProduitId: null, ajustProduitId: null,
+      closeModal() {}, stkRender() {}, buildProduitOptions() {},
+      VEN_LIBELLE: 'Prix à définir — non vendable', venDefinirPrix() {} }); // v7.5.201 (fusion pile 24-28 : arrivage 039)
+    return { bac, b, etat };
+  }
+  {
+    // 1. réponse perdue APRÈS la déduction, puis application rechargée : sbLoadAll lit stock_deduit = vrai
+    const { bac, b } = bacDeduction({ '#R1': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 3 }, { p: 'p-absent', q: 1 }] } }, { p1: 1 });
+    b.perdre = 1;
+    const c = { id: '#R1', statut: 'livré', client: 'Client Test' }; bac.commandes = [c];
+    const r1 = await bac.stkDemanderDeduction(c);
+    test('réserve 1 — réponse perdue : déduction faite en base, demande gardée sur l\'appareil', r1 === 'reessayer' && b.deductions === 1 && fileDe(bac._stockage).some(i => i.type === 'deduction'), [r1, fileDe(bac._stockage)]);
+    const bac2 = nouveauBac({ role: 'livreur', stockage: Object.assign({}, bac._stockage), reponse: (url, opt) => b.reponse(url, opt) || { status: 200 } });
+    Object.assign(bac2, { produits: [PROD('p1', 1, 'Produit p1')], stkMouvements: [] });
+    bac2.commandes = [{ id: '#R1', statut: 'livré', client: 'Client Test', stockDeduit: true }]; // relu par sbLoadAll
+    const appels = b.appels;
+    await bac2.stkReprendreDeductions(true); await attendre();
+    const n = bac2._notifs.find(x => /Stock insuffisant à la livraison #R1/.test(x[2]));
+    test('… rechargement : la fonction est RAPPELÉE (résultat idempotent « deja ») avant de retirer la demande', b.appels === appels + 1 && b.deductions === 1, [b.appels - appels, b.deductions]);
+    test('… les retraits journalisés passent par dedAppliquer (historique « sortie-livraison » écrit une fois)', bac2.stkMouvements.filter(m => m.type === 'sortie-livraison').length === 1, bac2.stkMouvements);
+    test('… les manques sont signalés (p1 : manque 2, p-absent : introuvable)', !!n && /p1 : manque 2/.test(n[3]) && /p-absent : introuvable/.test(n[3]), bac2._notifs.map(x => x[2] + ' | ' + x[3]));
+    test('… demande retirée de la file APRÈS la réponse, stock affiché = base (0)', !bac2.offlineQueue.some(i => i.type === 'deduction') && !fileDe(bac2._stockage).some(i => i.type === 'deduction') && bac2.produits[0].stock === 0, [bac2.offlineQueue, bac2.produits[0].stock]);
+    await bac2.stkReprendreDeductions(true);
+    test('… relance suivante : plus rien à envoyer, aucune alerte en double', b.appels === appels + 1 && bac2._notifs.filter(x => /Stock insuffisant à la livraison #R1/.test(x[2])).length === 1);
+  }
+  // v7.5.201 (fusion du dropshipping, pile 24-28) : sauvegarderProduit appelle venCreationEtat (arrivage, 039)
+  const CODE_FICHE = extraireFonction('function venCreationEtat(estAdmin, prix)') + '\n' + extraireFonction('function sauvegarderProduit()') + '\n' + extraireFonction('function sauvegarderAjustement()');
+  {
+    // 2. produit créé hors ligne avec un stock de 5, puis entrée de 2 AVANT la synchronisation
+    const { bac, b, etat } = bacBureau({});
+    vm.runInContext(CODE_FICHE, bac);
+    etat.hors = true;
+    const el = (id, v) => { bac.document.getElementById(id).value = v; };
+    el('p-nom', 'Matelas Neuf Test'); el('p-stock', '5'); el('p-seuil', '2');
+    bac.sauvegarderProduit(); await attendre();
+    const p = bac.produits[0];
+    test('réserve 2 — création hors ligne : fiche gardée en file (stock 5)', !!p && bac.offlineQueue.some(i => i.type === 'produit') && p.stock === 5, [p, bac.offlineQueue]);
+    bac.ajustProduitId = p.id; el('aj-qte', '2'); el('aj-type', 'entree'); el('aj-motif', 'Arrivage fictif');
+    bac.sauvegarderAjustement(); await attendre();
+    test('… entrée de 2 avant la synchronisation : affichage 7, mouvement +2 gardé en file', p.stock === 7 && bac.offlineQueue.some(i => i.type === 'mouvement' && i.data.qte === 2), bac.offlineQueue.map(i => i.type));
+    etat.hors = false;
+    await bac.offlineQueueFlush(); await attendre();
+    const crea = etat.creations.find(x => x.id === p.id) || {};
+    test('… synchronisation : la création envoie l\'INSTANTANÉ du stock initial (5), pas le stock courant de l\'objet (7)', crea.stock === 5, crea);
+    test('… puis le mouvement +2 : stock en base 7 (et non 9), une seule fois', b.stock[p.id] === 7 && b.mouvements === 1, [b.stock[p.id], b.mouvements]);
+    test('… file vide, marques de création retirées, affichage 7', !bac.offlineQueue.length && !('_nouveau' in p) && !('_stockInitial' in p) && p.stock === 7, [bac.offlineQueue, p]);
+  }
+  {
+    // 3. création de produit et ajustement en file au REDÉMARRAGE (reprise lancée avant le rejeu de la fiche)
+    const fiche = { id: 'pr-neuf9', nom: 'Produit Neuf 9', cat: 'matelas', dim: '', prix: 0, poids: 0, stock: 7, seuil: 2, _nouveau: true, _stockInitial: 5 };
+    const mv = { id: 'mv-test-9', produit_id: 'pr-neuf9', nom: 'Produit Neuf 9', type: 'entree', qte: 2, motif: 'Arrivage fictif' };
+    const file = [{ type: 'produit', data: fiche, ts: 1, oqv: 2, role: 'admin' }, { type: 'mouvement', data: mv, ts: 2, oqv: 2, role: 'admin' }];
+    const { bac, b } = bacBureau({}, { fileStockee: file });
+    bac.produits = [Object.assign({}, fiche)];
+    await bac.stkReprendreDeductions(true); await attendre();
+    test('réserve 3 — reprise au redémarrage : mouvement NON envoyé tant que la création attend (aucun « produit_introuvable », gardé)', b.appels === 0 && bac.offlineQueue.some(i => i.type === 'mouvement') && !bac._notifs.some(x => /Stock non mis à jour/.test(x[2])), [b.appels, bac.offlineQueue.map(i => i.type), bac._notifs.map(x => x[2])]);
+    await bac.offlineQueueFlush(); await attendre();
+    test('… rejeu : création (stock initial 5) PUIS mouvement +2 → 7 en base, file vide', b.stock['pr-neuf9'] === 7 && b.mouvements === 1 && !bac.offlineQueue.length, [b.stock, b.mouvements, bac.offlineQueue]);
+  }
+  {
+    // 3 bis. reprise et rejeu lancés EN MÊME TEMPS au démarrage (chargement + retour réseau)
+    const fiche = { id: 'pr-neuf10', nom: 'Produit Neuf 10', stock: 5, seuil: 2, _nouveau: true, _stockInitial: 5 };
+    const file = [{ type: 'produit', data: fiche, ts: 1, oqv: 2, role: 'admin' }, { type: 'mouvement', data: { id: 'mv-test-10', produit_id: 'pr-neuf10', nom: 'Produit Neuf 10', type: 'entree', qte: 2, motif: '' }, ts: 2, oqv: 2, role: 'admin' }];
+    const { bac, b } = bacBureau({}, { fileStockee: file });
+    bac.produits = [Object.assign({}, fiche)];
+    await Promise.all([bac.stkReprendreDeductions(true), bac.offlineQueueFlush()]); await attendre();
+    await bac.stkReprendreDeductions(true); await attendre();
+    test('… reprise et rejeu simultanés : 7 en base, mouvement appliqué une fois, file vide', b.stock['pr-neuf10'] === 7 && b.mouvements === 1 && !bac.offlineQueue.length && !bac._notifs.some(x => /Stock non mis à jour/.test(x[2])), [b.stock, b.mouvements, bac.offlineQueue.map(i => i.type), bac._notifs.map(x => x[2])]);
+  }
+  {
+    // 3 ter. création en cours d'envoi (pas en file) et ajustement immédiat : différé, envoyé après l'enregistrement
+    const { bac, b } = bacBureau({});
+    const p = { id: 'pr-neuf11', nom: 'Produit Neuf 11', stock: 5, seuil: 2, _nouveau: true, _stockInitial: 5 };
+    bac.produits = [p];
+    const pCrea = bac.sbSaveProduit(p);
+    const r = await bac.stkMouvementDemander(p, 'entree', 2, '');
+    await pCrea; await attendre();
+    test('… création en cours d\'envoi : mouvement différé (gardé), parti dès la création enregistrée → 7', r === 'reessayer' && b.stock['pr-neuf11'] === 7 && b.mouvements === 1 && !bac.offlineQueue.length, [r, b.stock, bac.offlineQueue]);
+  }
+  {
+    // non-régression : produit déjà en base, aucune création en attente → mouvement envoyé tout de suite
+    const { bac, b } = bacBureau({ p1: 10 });
+    const r = await bac.stkMouvementDemander(bac.produits[0], 'entree', 3, '');
+    test('non-régression : produit existant sans création en attente → mouvement immédiat (13)', r === 'ok' && b.stock.p1 === 13, [r, b.stock]);
   }
 
   console.log('\n7. TEXTE DU CODE');
