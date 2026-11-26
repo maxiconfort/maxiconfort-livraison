@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.195 - File : contexte de rejeu en parametre (plus de variable globale), fiche relancee garde sa date, fiche admin rejouee sans ecraser un stock plus recent, rotation des lectures du controle admin (26/11/2026)
 // v7.5.194 - File : cle par intention (stock livreur / fiche admin), anciens elements jamais retires sans recapitulatif, fiches refusees versionnees et gardees en memoire, verrou du livre jusqu'aux sauvegardes produit, relecture 10 min (26/11/2026)
 // v7.5.193 - Livre protege des releves perimees, rejeu par date et role d'origine, nouveaux ecarts controles, purge apres recapitulatif (26/11/2026)
 // v7.5.192 - File : erreurs temporaires rejouees, fiches admin conservees, recapitulatif durable, controle admin par lecture en base (26/11/2026)
@@ -12,7 +13,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-194';
+const CACHE_VERSION = 'maxiconfort-v7-5-195';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

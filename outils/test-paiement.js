@@ -38,7 +38,7 @@ function nouveauBac() {
   };
   vm.createContext(bac);
   vm.runInContext(extraireBloc('var PAI_MODE_SITE', '// PAI-FIN'), bac);
-  vm.runInContext(extraireFonction('async function sbSaveCommande(cmd)'), bac);
+  vm.runInContext(extraireFonction('async function sbSaveCommande(cmd, oqCtx)'), bac);
   vm.runInContext('var sigStopId=null, sigPaieEncaisse=false, sigPaieMode="Espèces", sigPrepaidMode=null, sigCmdMarketplace=null, sigCtx=null, scv=null;', bac);
   vm.runInContext('var sigCodActif=false, sigCodChoix=null, sigCodMontant=0;', bac);
   for (const f of ['function _sigPaieBtns(actif)', 'function sigTogglePaie(encaisse)', 'function sigDejaPaye()', 'function sigSelectMode(mode)', 'function sigCodChoisir(ch)', 'function paiSigPreparer(cmdSig, banner)', 'function validerSig()', 'function chgStopPaie(tid, idx, val)',

@@ -3083,13 +3083,15 @@ function oqDedoublonner(file) {
   return file.filter(function(it, i) { var cle = oqCle(it); return !cle || meilleur[cle] === i; });
 }
 
-function offlineQueueAdd(type, data) {
-  var ts = Date.now(), r = oqRoleCourant();
+function offlineQueueAdd(type, data, oqCtx) {
   // v7.5.193 (réserves Codex 1 et 2) : un élément remis en file par son propre rejeu (échec) garde sa date et son
   // rôle d'ORIGINE : il ne devient pas « plus récent » qu'une modification faite pendant le rejeu, et une fiche
   // mise en file par le livreur reste une mise à jour de stock du livreur (et inversement).
-  var orig = (typeof _oqRejeuItem !== 'undefined' && _oqRejeuItem && _oqRejeuItem.type === type && _oqRejeuItem.data === data) ? _oqRejeuItem : null;
-  if (orig) { ts = Number(orig.ts) || ts; if (orig.role !== undefined) r = orig.role; }
+  // v7.5.195 (réserve Codex 2 sur 6f88c79) : ce contexte (date de version, rôle d'origine) est transmis EN
+  // PARAMÈTRE par l'appelant (oqCtx = { ts, role }), plus par une variable globale : une sauvegarde indépendante du
+  // même objet qui échoue pendant un rejeu prend sa propre date et son propre rôle.
+  var ts = (oqCtx && Number(oqCtx.ts)) || Date.now();
+  var r = (oqCtx && oqCtx.role) ? oqCtx.role : oqRoleCourant();
   var nouvel = { type: type, data: data, ts: ts, oqv: 2, role: r };
   // v7.5.135 / v7.5.191 : une seule entrée par commande et par produit dans la file : la plus récente (ts)
   // v7.5.194 : seulement entre éléments de MÊME clé (oqCle : type + intention) ; les anciens éléments sans oqv
@@ -3113,15 +3115,16 @@ function offlineQueueAdd(type, data) {
 // que RIEN n'était persisté -> donnée perdue au rechargement (rechargée depuis
 // Supabase où elle n'existe pas). Désormais : mise en file d'attente offline
 // (rejouée au retour réseau, comme les commandes) + alerte visible à l'écran.
-function sbSaveEchec(type, data, ctx, status, detail) {
+// v7.5.195 (réserve Codex P2 sur 6f88c79) : oqCtx = { ts, role } de la version qui a échoué, transmis jusqu'à la
+// mise en file (une fiche relancée ou rejouée garde sa date et ne remplace jamais une version plus récente).
+function sbSaveEchec(type, data, ctx, status, detail, oqCtx) {
   console.warn(ctx + ' save échec', status || '', detail || '');
-  try { offlineQueueAdd(type, data); } catch(e) {}
+  try { offlineQueueAdd(type, data, oqCtx); } catch(e) {}
   try { toast('⚠️ ' + ctx + ' non enregistré en ligne — réessai auto au retour réseau', 'err'); } catch(e) {}
 }
 
 // v7.5.191 : un seul rejeu à la fois (le retour réseau et le démarrage pouvaient en lancer deux).
 var _oqFlushEnCours = false;
-var _oqRejeuItem = null; // v7.5.193 : élément en cours de rejeu (cf. offlineQueueAdd)
 async function offlineQueueFlush() {
   if (!offlineQueue.length || _oqFlushEnCours) return;
   // v7.5.192 : les anciens éléments produit sont triés selon le rôle AVANT tout rejeu ; rôle inconnu (pas encore
@@ -3150,19 +3153,19 @@ async function offlineQueueFlush() {
       // toujours un PATCH du stock, même rejoué par une session admin / collab.
       var _rOrig = (item.type === 'produit') ? (item.role || _rc) : null;
       if (item.type === 'produit' && _rc === 'livreur' && _rOrig !== 'livreur') { remaining.push(item); continue; }
-      _oqRejeuItem = item;
+      var _ctx = { ts: Number(item.ts) || 0, role: item.role }; // v7.5.195 : contexte transmis en paramètre
       try {
-        if (item.type === 'commande') await sbSaveCommande(item.data);
+        if (item.type === 'commande') await sbSaveCommande(item.data, _ctx);
         else if (item.type === 'tournee') await sbSaveTournee(item.data);
         else if (item.type === 'depense') await sbSaveDepense(item.data);
-        else if (item.type === 'produit') await sbSaveProduit(item.data, { role: _rOrig, ts: Number(item.ts) || 0 }); // v7.5.194 : version = date de mise en file
+        else if (item.type === 'produit') await sbSaveProduit(item.data, { role: _rOrig, ts: _ctx.ts }); // v7.5.194 : version = date de mise en file
         else if (item.type === 'vehicule') await sbSaveVehicule(item.data);
         else if (item.type === 'entretien') await sbSaveEntretien(item.data);
         else if (item.type === 'livreur') await sbSaveLivreur(item.data);
         flushed++;
       } catch(e) {
         remaining.push(item); // réessayer plus tard
-      } finally { _oqRejeuItem = null; }
+      }
     }
   } finally {
     // v7.5.135 : garder aussi ce qui a été ajouté à la file PENDANT le rejeu (échecs, autres écrans) ; rejoué au
@@ -3655,7 +3658,7 @@ function aoLigne(prod, opt) {
 function aoBadge() { return '<span style="display:inline-block;margin-top:3px;padding:2px 7px;border-radius:4px;background:#b91c1c;color:#fff;font-size:10px;font-weight:800;letter-spacing:.3px">' + AO_LIBELLE + '</span>'; }
 // AO-FIN
 
-async function sbSaveCommande(cmd) {
+async function sbSaveCommande(cmd, oqCtx) { // v7.5.195 : oqCtx = { ts, role } au rejeu (cf. offlineQueueAdd)
   // Toujours tenter Supabase d'abord, queue seulement si fetch échoue
   try {
     // Corps complet de la commande
@@ -3727,7 +3730,7 @@ async function sbSaveCommande(cmd) {
     if (!resp.ok) {
       var errTxt = await resp.text();
       console.warn('sbSaveCommande UPSERT erreur', resp.status, errTxt);
-      offlineQueueAdd('commande', cmd);
+      offlineQueueAdd('commande', cmd, oqCtx);
       showSync('⚠️ Sync en attente', 'pending');
     } else {
       showSync('✅ Commande sauvegardée', 'ok');
@@ -3735,7 +3738,7 @@ async function sbSaveCommande(cmd) {
     try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(ex) {}
   } catch(e) {
     console.warn('Supabase save commande:', e.message);
-    offlineQueueAdd('commande', cmd);
+    offlineQueueAdd('commande', cmd, oqCtx);
     toast('📵 Sauvegarde hors ligne — sync au retour réseau', 'info');
   }
 }
@@ -4516,7 +4519,10 @@ var LIV_NR_DELAI_MS = 120000;
 // que cet écart-là dure. v7.5.194 (réserve Codex 5) : elle est RELUE toutes les LIV_NR_RELECTURE_MS (10 min) tant
 // qu'elle reste absente, pour signaler une régression ultérieure en base ; au plus LIV_NR_LECTURES_MAX lectures par
 // contrôle (les autres attendent le contrôle suivant).
-var _livNrVu = {}, _livNrSignale = {}, _livNrLecture = {}, _livNrOk = {};
+// v7.5.195 (réserve Codex 3 sur 6f88c79) : rotation équitable des lectures : _livNrTente['A|<id>'] = heure de la
+// dernière lecture TENTÉE ; à chaque contrôle, les LIV_NR_LECTURES_MAX commandes lues sont celles dont la dernière
+// tentative est la plus ancienne (jamais tentée d'abord) : dix lectures toujours en échec ne bloquent plus les autres.
+var _livNrVu = {}, _livNrSignale = {}, _livNrLecture = {}, _livNrOk = {}, _livNrTente = {};
 var LIV_NR_RELECTURE_MS = 600000, LIV_NR_LECTURES_MAX = 10;
 function livNrAlerter(id, introuvable, cle) {
   _livNrSignale[cle || ('L|' + id)] = true;
@@ -4556,12 +4562,16 @@ function livControleNonRemontees(maintenant) {
     return now - _livNrVu[cle] >= LIV_NR_DELAI_MS;
   }
   livNonRemontees(tournees, commandes).forEach(function(id) { if (mur('L|' + id)) livNrAlerter(id, false, 'L|' + id); });
-  livNonRemonteesAbsentes(tournees, commandes).forEach(function(id) {
-    if (lectures.length >= LIV_NR_LECTURES_MAX) { vus['A|' + id] = true; return; } // borne : au contrôle suivant
-    if (mur('A|' + id)) lectures.push(livNrLireStatut(id, now).catch(function() {}));
+  var aLire = [];
+  livNonRemonteesAbsentes(tournees, commandes).forEach(function(id, i) { if (mur('A|' + id)) aLire.push({ id: id, i: i }); });
+  // v7.5.195 : la plus ancienne tentative d'abord (à égalité : l'ordre des tournées) ; les autres au contrôle suivant
+  aLire.sort(function(a, b) { return ((_livNrTente['A|' + a.id] || 0) - (_livNrTente['A|' + b.id] || 0)) || (a.i - b.i); });
+  aLire.slice(0, LIV_NR_LECTURES_MAX).forEach(function(x) {
+    _livNrTente['A|' + x.id] = now;
+    lectures.push(livNrLireStatut(x.id, now).catch(function() {}));
   });
   // v7.5.193 : écart plus vu = résorbé → marques effacées (un nouvel écart sera de nouveau contrôlé)
-  [_livNrVu, _livNrSignale, _livNrOk].forEach(function(m) { Object.keys(m).forEach(function(k) { if (!vus[k]) delete m[k]; }); });
+  [_livNrVu, _livNrSignale, _livNrOk, _livNrTente].forEach(function(m) { Object.keys(m).forEach(function(k) { if (!vus[k]) delete m[k]; }); });
   return Promise.all(lectures).then(function() {}, function() {});
 }
 
@@ -15122,6 +15132,8 @@ async function sbSaveProduit(p, opts) {
   // v7.5.193 (réserve Codex 2) : au rejeu, le rôle d'ORIGINE de l'élément décide du mode d'envoi
   var rEnv = (opts && opts.role) || ((typeof role !== 'undefined') ? role : null);
   var tsV = (opts && Number(opts.ts)) || Date.now(); // v7.5.194 : date de la version envoyée (fiches refusées)
+  // v7.5.195 (réserve Codex P2 sur 6f88c79) : en cas d'échec, la version garde SA date et son rôle jusqu'à la file
+  var oqCtx = { ts: tsV, role: rEnv || oqRoleCourant() };
   // v7.5.191 : une session LIVREUR n'a que le droit de MODIFIER le stock (politique sess_livreur_stock) : pas
   // d'ajout, donc pas d'« upsert » (POST merge-duplicates = INSERT … ON CONFLICT, refusé HTTP 401 depuis le 24/11).
   // Le livreur envoie seulement { stock, updated_at } par PATCH sur la fiche existante. Admin / collab : inchangé.
@@ -15139,16 +15151,48 @@ async function sbSaveProduit(p, opts) {
         },
         body: JSON.stringify({ stock: p.stock || 0, updated_at: new Date().toISOString() })
       });
-    } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e.message); return; } // vraie coupure réseau : file
+    } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e.message, oqCtx); return; } // vraie coupure réseau : file
     if (!respL.ok) {
       var errL = ''; try { errL = await respL.text(); } catch(e) {}
-      if (httpTemporaire(respL.status)) { sbSaveEchec('produit', p, 'Produit', respL.status, errL); return; } // v7.5.192 : temporaire → file
+      if (httpTemporaire(respL.status)) { sbSaveEchec('produit', p, 'Produit', respL.status, errL, oqCtx); return; } // v7.5.192 : temporaire → file
       produitRefusSignaler(p, respL.status, errL, rEnv, tsV); return;
     }
     // aucune ligne modifiée (fiche absente ou refusée par la base sans erreur) : signalé, pas de file
     try { var lignes = await respL.json(); if (Array.isArray(lignes) && lignes.length === 0) produitRefusSignaler(p, respL.status, 'aucune ligne modifiée', rEnv, tsV); } catch(e) {}
     return;
   }
+  // v7.5.195 (réserve Codex 1 sur 6f88c79) : une fiche admin / collab REJOUÉE ou RELANCÉE (opts.ts = date de sa
+  // version) n'écrase jamais un stock plus récent. Son stock n'est envoyé que si (a) aucune mise à jour du stock
+  // plus récente du même produit n'attend dans la file et (b) la fiche en base n'a pas été modifiée depuis la date
+  // de la version (lecture seule de updated_at juste avant l'envoi). Sinon la fiche part SANS le champ stock : la
+  // base garde son stock (le plus récent). Une sauvegarde faite à l'instant (sans opts.ts) est inchangée.
+  var avecStock = true;
+  if (opts && Number(opts.ts) && p.id) {
+    var cleS = 'produit|stock|' + p.id;
+    if (offlineQueue.some(function(q) { return oqCle(q) === cleS && (Number(q.ts) || 0) > tsV; })) avecStock = false;
+    if (avecStock) {
+      var respU;
+      try {
+        respU = await fetch(SUPABASE_URL + '/rest/v1/produits?select=id,updated_at&id=eq.' + encodeURIComponent(p.id), {
+          headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+        });
+      } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e.message, oqCtx); return; } // coupure : la fiche reste en file
+      if (respU && respU.ok) {
+        var lu = null; try { lu = await respU.json(); } catch(e) { lu = null; }
+        if (!Array.isArray(lu)) avecStock = false; // réponse illisible : prudence, le stock de la base est gardé
+        else if (lu.length && lu[0]) { var tU = Date.parse(lu[0].updated_at || ''); if (!isFinite(tU) || tU > tsV) avecStock = false; }
+      } else if (respU && httpTemporaire(respU.status)) { sbSaveEchec('produit', p, 'Produit', respU.status, '', oqCtx); return; }
+      else avecStock = false; // lecture refusée : prudence, la fiche part sans le stock
+    }
+  }
+  var corpsP = {
+    id: p.id, nom: p.nom, cat: p.cat||'', dim: p.dim||'',
+    prix: p.prix||0, poids: p.poids||0, stock: p.stock||0,
+    seuil: p.seuil||2, empl: p.empl||'', remarque: p.remarque||'',
+    composants: (p.composants && Array.isArray(p.composants) && p.composants.length > 0) ? p.composants : null,
+    actif: p.actif !== false, updated_at: new Date().toISOString()
+  };
+  if (!avecStock) delete corpsP.stock;
   var resp;
   try {
     resp = await fetch(SUPABASE_URL + '/rest/v1/produits', {
@@ -15159,20 +15203,14 @@ async function sbSaveProduit(p, opts) {
         'Authorization': 'Bearer ' + SUPABASE_KEY,
         'Prefer':        'resolution=merge-duplicates',
       },
-      body: JSON.stringify({
-        id: p.id, nom: p.nom, cat: p.cat||'', dim: p.dim||'',
-        prix: p.prix||0, poids: p.poids||0, stock: p.stock||0,
-        seuil: p.seuil||2, empl: p.empl||'', remarque: p.remarque||'',
-        composants: (p.composants && Array.isArray(p.composants) && p.composants.length > 0) ? p.composants : null,
-        actif: p.actif !== false, updated_at: new Date().toISOString()
-      })
+      body: JSON.stringify(corpsP)
     });
-  } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e.message); return; } // vraie coupure réseau : file
+  } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e.message, oqCtx); return; } // vraie coupure réseau : file
   if (!resp.ok) {
     // v7.5.191 : refus définitif de la base (réseau OK) : notification, jamais de remise en file
     // v7.5.192 : erreur TEMPORAIRE (408, 425, 429, 5xx) : gardée en file pour le rejeu
     var err = ''; try { err = await resp.text(); } catch(e) {}
-    if (httpTemporaire(resp.status)) { sbSaveEchec('produit', p, 'Produit', resp.status, err); return; }
+    if (httpTemporaire(resp.status)) { sbSaveEchec('produit', p, 'Produit', resp.status, err, oqCtx); return; }
     produitRefusSignaler(p, resp.status, err, rEnv, tsV);
     return;
   }

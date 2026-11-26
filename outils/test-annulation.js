@@ -31,7 +31,7 @@ function nouveauBac(roleS) {
     closePanel() {}, ouvrirCmd() {}, sbSaveTournee(t) { tournee.push(JSON.parse(JSON.stringify(t))); }, retirerStockCamion() {}, paiVerrouBody() {}, findCmdForStop(s) { return bac.commandes.find(c => c.id === s.cmdId) || null; } };
   vm.createContext(bac);
   vm.runInContext(extraireBloc('// ANN-DEBUT', '// ANN-FIN'), bac);
-  for (const f of ['async function sbSaveCommande(cmd)', 'function chgStatut(id, st, _annOk)', 'function setLvSt(tid, idx, st, _annOk)']) vm.runInContext(extraireFonction(f), bac);
+  for (const f of ['async function sbSaveCommande(cmd, oqCtx)', 'function chgStatut(id, st, _annOk)', 'function setLvSt(tid, idx, st, _annOk)']) vm.runInContext(extraireFonction(f), bac);
   return { bac, envois, tournee, champ: id => parId[id] };
 }
 let ok = 0, ko = 0; const test = (nom, cond, det) => { if (cond) { ok++; console.log('  OK   ' + nom); } else { ko++; console.log('  ÉCHEC ' + nom + (det !== undefined ? ' — ' + JSON.stringify(det) : '')); } };

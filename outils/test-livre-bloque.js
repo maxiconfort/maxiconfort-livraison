@@ -1,4 +1,4 @@
-// Banc de test du correctif v7.5.191 / v7.5.192 / v7.5.193 / v7.5.194 (26/11/2026) : le « livré » du livreur ne remontait plus depuis le 24/11.
+// Banc de test du correctif v7.5.191 / v7.5.192 / v7.5.193 / v7.5.194 / v7.5.195 (26/11/2026) : le « livré » du livreur ne remontait plus depuis le 24/11.
 // Usage : node outils/test-livre-bloque.js
 // Il EXTRAIT le vrai code de maxiconfort-v7.html (file d'attente hors ligne, sbSaveProduit, validerSig, contrôle
 // admin des livraisons non remontées) et l'exécute dans un bac à sable : aucune connexion à la base, aucune
@@ -19,7 +19,7 @@ function extraireFonction(signature) { // du mot-clé jusqu'à l'accolade ferman
 }
 
 const CODE_FILE = extraireBloc('var offlineQueue = [];', '// v7.5.68 : échec');
-const CODE_ECHEC = extraireFonction('function sbSaveEchec(type, data, ctx, status, detail)');
+const CODE_ECHEC = extraireFonction('function sbSaveEchec(type, data, ctx, status, detail, oqCtx)');
 const CODE_REJEU = extraireBloc('// v7.5.191 : un seul rejeu à la fois', '// Détecter retour en ligne');
 const CODE_PRODUIT = extraireBloc('// v7.5.191 : refus de la base sur un produit', 'async function sbDeleteProduit');
 const CODE_CONTROLE = extraireBloc('// v7.5.191 (bug du 24/11) : contrôle ADMIN', 'var _pollingInterval');
@@ -40,7 +40,15 @@ function nouveauBac({ role = 'livreur', fileStockee = null, stockage = {}, repon
     document: { getElementById: id => (els[id] = els[id] || fauxElement(id)), querySelectorAll: () => [], querySelector: () => null },
     toast(m, t) { bac._toasts.push([m, t]); }, _toasts: [], notifAjout(...a) { bac._notifs.push(a); }, _notifs: [],
     _envois: [],
+    _lectures: [],
     fetch: async (url, opt = {}) => {
+      // v7.5.195 : lecture de updated_at d'un produit avant le rejeu d'une fiche : notée à part (par défaut : aucune ligne)
+      if (/\/rest\/v1\/produits\?select=id,updated_at/.test(url)&& !(opt.method && opt.method !== 'GET')) {
+        bac._lectures.push(url);
+        const rl = bac.lecture ? bac.lecture(url) : { status: 200, json: [] };
+        if (rl === 'reseau') throw new Error('Failed to fetch');
+        return { ok: rl.status >= 200 && rl.status < 300, status: rl.status, text: async () => '', json: async () => rl.json };
+      }
       bac._envois.push({ url, method: opt.method || 'GET', body: opt.body ? JSON.parse(opt.body) : null, prefer: opt.headers && opt.headers.Prefer });
       if (bac._envois.length > 500) throw new Error('trop d\'envois : boucle ?');
       const r = reponse(url, opt);
@@ -496,12 +504,12 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
   console.log('\n9. (réserve 1, v7.5.193) REJEU CONCURRENT : LA MODIFICATION LA PLUS RÉCENTE GAGNE');
   for (const mode of ['remise en file', 'exception']) {
     const bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'commande', data: { id: '#C1', v: 1 }, ts: 1, oqv: 2, role: 'admin' }] });
-    bac.sbSaveCommande = async (c) => {
+    bac.sbSaveCommande = async (c, ctx) => {
       if (c.v !== 1) return;
       await new Promise(r => setImmediate(r));
       bac.offlineQueueAdd('commande', { id: '#C1', v: 2 }); // un autre écran modifie la commande pendant le rejeu
       if (mode === 'exception') throw new Error('échec');
-      bac.offlineQueueAdd('commande', c); // comme sbSaveCommande : l'échec remet l'ancienne version en file
+      bac.offlineQueueAdd('commande', c, ctx); // comme sbSaveCommande (v7.5.195) : l'échec remet l'ancienne version en file avec son contexte
     };
     await bac.offlineQueueFlush();
     const cs = bac.offlineQueue.filter(i => i.type === 'commande');
@@ -518,7 +526,7 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
   }
   {
     const bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'commande', data: { id: '#C2', v: 1 }, ts: 1, oqv: 2 }] });
-    bac.sbSaveCommande = async (c) => { bac.offlineQueueAdd('commande', c); };
+    bac.sbSaveCommande = async (c, ctx) => { bac.offlineQueueAdd('commande', c, ctx); };
     await bac.offlineQueueFlush();
     test('élément remis en file par son propre rejeu : garde sa date d\'origine (ts 1)', bac.offlineQueue.length === 1 && bac.offlineQueue[0].ts === 1, bac.offlineQueue.map(i => i.ts));
   }
@@ -796,6 +804,141 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     test('la version la plus récente (stock 2) est en mémoire', bac.produitsRefusesLire().p1.data.stock === 2);
   }
 
+  console.log('\n19. (P2 sur 6f88c79, v7.5.195) FICHE REFUSÉE RELANCÉE PUIS COUPURE : LA MODIFICATION RÉCENTE N\'EST JAMAIS PERDUE');
+  for (const panne of ['reseau', 503]) {
+    const stockage = { mx_produits_refuses: JSON.stringify({ p1: { data: PROD('p1', 1, 'Matelas R'), status: 422, ts: 100, role: 'admin' } }) };
+    let n = 0, bac = null;
+    bac = nouveauBac({ role: 'admin', stockage, reponse: () => {
+      if (++n === 1) bac.offlineQueueAdd('produit', PROD('p1', 9, 'Matelas R')); // modification récente pendant la relance
+      return panne === 'reseau' ? 'reseau' : { status: panne };
+    } });
+    await bac.produitsRefusesRelancer();
+    const ps = bac.offlineQueue.filter(i => i.type === 'produit' && i.data.id === 'p1');
+    test('relance + ' + (panne === 'reseau' ? 'coupure réseau' : 'HTTP 503') + ' : la file garde le NOUVEAU stock 9 (une seule entrée)', ps.length === 1 && ps[0].data.stock === 9 && ps[0].ts > 100, ps.map(i => [i.data.stock, i.ts]));
+    test('relance + ' + (panne === 'reseau' ? 'coupure réseau' : 'HTTP 503') + ' : la file enregistrée contient le stock 9', JSON.parse(bac._stockage.mx_offline_queue).filter(i => i.data && i.data.id === 'p1').map(i => i.data.stock).join(',') === '9');
+  }
+  {
+    // sans modification récente : la fiche relancée qui échoue entre en file avec SA date (100), pas l'heure de l'échec
+    const stockage = { mx_produits_refuses: JSON.stringify({ p1: { data: PROD('p1', 1, 'Matelas R'), status: 422, ts: 100, role: 'admin' } }) };
+    const bac = nouveauBac({ role: 'admin', stockage, reponse: () => ({ status: 503 }) });
+    await bac.produitsRefusesRelancer();
+    test('relance + HTTP 503 seule : mise en file avec la date de sa version (ts 100)', bac.offlineQueue.length === 1 && bac.offlineQueue[0].ts === 100 && bac.offlineQueue[0].role === 'admin', bac.offlineQueue.map(i => [i.ts, i.role]));
+  }
+
+  console.log('\n20. (réserve 1 sur 6f88c79, v7.5.195) FICHE ADMIN ANCIENNE REJOUÉE : LE STOCK LE PLUS RÉCENT EST GARDÉ (ÉTAT FINAL EN BASE)');
+  // base simulée : GET updated_at, PATCH du stock (livreur), POST merge-duplicates (fiche : seules les colonnes envoyées changent)
+  function bacBase(base, opts) {
+    let bac = null;
+    bac = nouveauBac(Object.assign({}, opts, { reponse: (url, opt) => {
+      const body = opt.body ? JSON.parse(opt.body) : {};
+      if (opt.method === 'PATCH') { const id = decodeURIComponent((url.match(/id=eq\.([^&]+)/) || [])[1] || ''); if (!base[id]) return { status: 200, json: [] }; Object.assign(base[id], body); return { status: 200, json: [{ id }] }; }
+      if (opt.method === 'POST') { base[body.id] = Object.assign(base[body.id] || { stock: 0 }, body); return { status: 201 }; }
+      return { status: 200, json: [] };
+    } }));
+    bac.lecture = (url) => { const id = decodeURIComponent((url.match(/id=eq\.([^&]+)/) || [])[1] || ''); return { status: 200, json: base[id] ? [{ id, updated_at: base[id].updated_at }] : [] }; };
+    return bac;
+  }
+  const T0 = Date.now() - 600000, iso = t => new Date(t).toISOString();
+  {
+    const base = { p1: { id: 'p1', nom: 'Matelas', stock: 2, updated_at: iso(T0 + 30000) } }; // livreur : stock 2 APRÈS la fiche
+    const bac = bacBase(base, { role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p1', 5, 'Matelas Neuf'), ts: T0, oqv: 2, role: 'admin' }] });
+    await bac.offlineQueueFlush();
+    const post = bac._envois.find(e => e.method === 'POST') || {};
+    test('stock livreur plus récent en base : la fiche part SANS le champ stock', post.body && !('stock' in post.body) && post.body.nom === 'Matelas Neuf', post.body);
+    test('état final en base : stock 2 (livreur) gardé, nom de la fiche appliqué, file vide', base.p1.stock === 2 && base.p1.nom === 'Matelas Neuf' && bac.offlineQueue.length === 0, [base.p1, bac.offlineQueue.length]);
+  }
+  {
+    const base = { p1: { id: 'p1', nom: 'Matelas', stock: 7, updated_at: iso(T0 - 30000) } }; // base modifiée AVANT la fiche
+    const bac = bacBase(base, { role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p1', 5, 'Matelas Neuf'), ts: T0, oqv: 2, role: 'admin' }] });
+    await bac.offlineQueueFlush();
+    test('base plus ancienne que la fiche : état final stock 5 (celui de la fiche)', base.p1.stock === 5 && base.p1.nom === 'Matelas Neuf', base.p1);
+  }
+  {
+    const bac = bacBase({}, { role: 'admin', fileStockee: [{ type: 'produit', data: PROD('pN', 4, 'Nouveau'), ts: T0, oqv: 2, role: 'admin' }] });
+    await bac.offlineQueueFlush();
+    const post = bac._envois.find(e => e.method === 'POST') || {};
+    test('produit absent de la base (création) : la fiche part avec son stock (4)', post.body && post.body.stock === 4, post.body);
+  }
+  for (const ordre of ['fiche puis stock', 'stock puis fiche']) {
+    // même appareil (session admin) : une mise à jour du stock du livreur plus récente attend dans la file
+    const base = { p1: { id: 'p1', nom: 'Matelas', stock: 7, updated_at: iso(T0 - 30000) } };
+    const fiche = { type: 'produit', data: PROD('p1', 5, 'Matelas Neuf'), ts: T0, oqv: 2, role: 'admin' };
+    const stock = { type: 'produit', data: PROD('p1', 2, 'Matelas'), ts: T0 + 10000, oqv: 2, role: 'livreur' };
+    const bac = bacBase(base, { role: 'admin', fileStockee: ordre === 'fiche puis stock' ? [fiche, stock] : [stock, fiche] });
+    await bac.offlineQueueFlush();
+    test(ordre + ' : état final en base stock 2 (livreur, plus récent), nom de la fiche, file vide', base.p1.stock === 2 && base.p1.nom === 'Matelas Neuf' && bac.offlineQueue.length === 0, [base.p1, bac.offlineQueue.length]);
+  }
+  {
+    // fiche refusée relancée après une mise à jour du stock du livreur faite en base
+    const base = { p1: { id: 'p1', nom: 'Matelas', stock: 3, updated_at: iso(T0 + 1000) } };
+    const stockage = { mx_produits_refuses: JSON.stringify({ p1: { data: PROD('p1', 8, 'Matelas Neuf'), status: 422, ts: T0, role: 'admin' } }) };
+    const bac = bacBase(base, { role: 'admin', stockage });
+    await bac.produitsRefusesRelancer();
+    test('relance d\'une fiche ancienne : état final stock 3 (livreur) gardé, fiche retirée des refusées', base.p1.stock === 3 && base.p1.nom === 'Matelas Neuf' && Object.keys(bac.produitsRefusesLire()).length === 0, [base.p1, bac.produitsRefusesLire()]);
+  }
+  {
+    const base = { p1: { id: 'p1', nom: 'Matelas', stock: 3, updated_at: iso(Date.now() + 60000) } };
+    const bac = bacBase(base, { role: 'admin' });
+    await bac.sbSaveProduit(PROD('p1', 6, 'Matelas'));
+    test('sauvegarde faite à l\'instant (pas un rejeu) : aucune lecture, stock 6 envoyé (inchangé)', bac._lectures.length === 0 && base.p1.stock === 6, [bac._lectures.length, base.p1.stock]);
+  }
+  for (const lu of ['reseau', 503]) {
+    const base = { p1: { id: 'p1', nom: 'Matelas', stock: 3, updated_at: iso(T0 - 1000) } };
+    const bac = bacBase(base, { role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p1', 5, 'Matelas Neuf'), ts: T0, oqv: 2, role: 'admin' }] });
+    bac.lecture = () => (lu === 'reseau' ? 'reseau' : { status: lu });
+    await bac.offlineQueueFlush();
+    test('lecture de la date impossible (' + lu + ') : rien envoyé, la fiche reste en file avec sa date', bac._envois.length === 0 && bac.offlineQueue.length === 1 && bac.offlineQueue[0].ts === T0 && base.p1.stock === 3, [bac._envois.length, bac.offlineQueue.map(i => i.ts)]);
+  }
+  {
+    const base = { p1: { id: 'p1', nom: 'Matelas', stock: 3, updated_at: iso(T0 - 1000) } };
+    const bac = bacBase(base, { role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p1', 5, 'Matelas Neuf'), ts: T0, oqv: 2, role: 'admin' }] });
+    bac.lecture = () => ({ status: 403 });
+    await bac.offlineQueueFlush();
+    test('lecture refusée (403) : prudence, fiche envoyée SANS le stock (base : 3)', base.p1.stock === 3 && base.p1.nom === 'Matelas Neuf', base.p1);
+  }
+
+  console.log('\n21. (réserve 2 sur 6f88c79, v7.5.195) PLUS DE VARIABLE GLOBALE : UNE SAUVEGARDE INDÉPENDANTE PENDANT UN REJEU GARDE SA DATE ET SON RÔLE');
+  test('_oqRejeuItem n\'existe plus dans la page', !/_oqRejeuItem/.test(html));
+  {
+    // session admin : rejeu d'une mise à jour du stock du livreur (ts 1000) ; pendant l'attente réseau, l'admin
+    // enregistre la fiche du MÊME objet, qui échoue aussi
+    let n = 0, bac = null, indep = null;
+    bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p1', 5, 'Matelas C'), ts: 1000, oqv: 2, role: 'livreur' }],
+      reponse: () => { if (++n === 1) indep = bac.sbSaveProduit(bac.offlineQueue[0].data); return 'reseau'; } });
+    await bac.offlineQueueFlush(); await indep;
+    const ps = bac.offlineQueue.filter(i => i.type === 'produit').map(i => [i.role, i.ts > 1000 ? 'récent' : i.ts]);
+    test('deux entrées distinctes : stock du livreur (ts 1000) ET fiche admin (date récente)', ps.length === 2 && ps.some(x => x[0] === 'livreur' && x[1] === 1000) && ps.some(x => x[0] === 'admin' && x[1] === 'récent'), ps);
+  }
+  {
+    // commande : rejeu (ts 1) ; pendant l'attente, une sauvegarde indépendante du même objet échoue (sans contexte)
+    const bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'commande', data: { id: '#K1', v: 1 }, ts: 1, oqv: 2, role: 'admin' }] });
+    bac.sbSaveCommande = async (c, ctx) => {
+      await new Promise(r => setImmediate(r));
+      bac.offlineQueueAdd('commande', c); // sauvegarde indépendante qui échoue : SA date (maintenant)
+      bac.offlineQueueAdd('commande', c, ctx); // échec du rejeu : date d'origine (1), ne remplace pas la plus récente
+    };
+    await bac.offlineQueueFlush();
+    test('commande : l\'entrée gardée porte la date de la sauvegarde indépendante (pas ts 1)', bac.offlineQueue.length === 1 && bac.offlineQueue[0].ts > 1, bac.offlineQueue.map(i => i.ts));
+  }
+
+  console.log('\n22. (réserve 3 sur 6f88c79, v7.5.195) CONTRÔLE ADMIN : ROTATION ÉQUITABLE DES LECTURES');
+  {
+    const lus = [];
+    const bac = nouveauBac({ role: 'admin', reponse: (url) => {
+      const k = Number((url.match(/eq\.%23F(\d+)$/) || [])[1]); lus.push(k);
+      return k < 10 ? { status: 500 } : { status: 200, json: [{ id: '#F' + k, statut: 'livré' }] }; // les 10 premières : panne persistante
+    } });
+    const stops = []; for (let k = 0; k < 12; k++) stops.push({ cmdId: '#F' + k, statut: 'livré' });
+    bac.tournees = [{ id: 'T-F', stops }]; bac.commandes = [];
+    await bac.livControleNonRemontees(1000); await bac.livControleNonRemontees(130000);
+    test('1er contrôle : 10 lectures (F0…F9, toutes en échec)', lus.length === 10 && lus.every(k => k < 10), lus);
+    lus.length = 0; await bac.livControleNonRemontees(160000);
+    test('contrôle suivant : F10 et F11 (jamais lues) passent en premier', lus.indexOf(10) >= 0 && lus.indexOf(11) >= 0 && lus.length === 10, lus);
+    lus.length = 0; await bac.livControleNonRemontees(190000);
+    test('ensuite : les commandes en panne sont relues (la plus ancienne tentative d\'abord), F10 et F11 lues livrées non relues', lus.length === 10 && lus.indexOf(10) < 0 && lus.indexOf(11) < 0, lus);
+    test('aucune alerte (pannes = on réessaie, F10/F11 livrées)', bac._notifs.length === 0, bac._notifs.length);
+  }
+
   console.log('\n7. TEXTE DU CODE');
   test('un refus définitif de produit ne passe pas par sbSaveEchec (seulement si httpTemporaire)', (CODE_PRODUIT.match(/sbSaveEchec\('produit', p, 'Produit', resp(L)?\.status/g) || []).length === 2 && (CODE_PRODUIT.match(/if \(httpTemporaire\(resp(L)?\.status\)\) \{ sbSaveEchec/g) || []).length === 2);
   test('le rejeu lit une copie (_aRejouer), pas la file qui grandit', /_aRejouer\.length/.test(CODE_REJEU) && !/i < offlineQueue\.length/.test(CODE_REJEU));
@@ -806,7 +949,7 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
   test('rechargement complet : cmdFusionnerChargees + updated_at lu', /commandes = cmdFusionnerChargees\(commandes, _cmdsAvant\)/.test(html) && /select=' \+ CMD_SELECT_COLS \+ ',updated_at&order=created_at\.desc'/.test(html));
   test('setLvSt : « livré » marqué et déduction sur l\'objet validé', /livMarquer\(cLv\.id\);[^\n]*\n[^\n]*\n\s*try \{ stkDeduireStock\(cLv\.id, cLv\); \}/.test(html));
   const sw = fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8');
-  test('CACHE_VERSION augmenté (v7-5-194 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-(19[4-9]|[2-9]\d\d)'/.test(sw));
+  test('CACHE_VERSION augmenté (v7-5-195 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-(19[5-9]|[2-9]\d\d)'/.test(sw));
 
   console.log('\n' + ok + ' réussi(s), ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
