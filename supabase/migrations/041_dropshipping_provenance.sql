@@ -3,20 +3,27 @@
 --
 -- RETOUR ARRIÈRE (à exécuter tel quel dans l'éditeur SQL si besoin ; aucune commande, aucun stock, aucune dépense n'est
 -- supprimé ni modifié) :
---   1) remettre la fonction de la 040 : réexécuter la section 3 du fichier 040_deduction_stock_serveur.sql (create or replace
---      function public.deduire_stock_livraison…) ;
+--   1) remettre la fonction de la 040 (conservée telle quelle par la 041 sous le nom interne.l041_deduire_040) :
+--        drop function if exists public.deduire_stock_livraison(text);
+--        alter function interne.l041_deduire_040(text) rename to deduire_stock_livraison;
+--        alter function interne.deduire_stock_livraison(text) set schema public;
+--        grant execute on function public.deduire_stock_livraison(text) to anon;
 --   2) drop function if exists public.drop_version(), public.drop_pieces(text), public.drop_declarer(bigint, text, bigint, text),
 --        public.drop_enlever_payer(bigint, numeric, text, text), public.drop_ticket_ajouter(bigint, text),
 --        public.drop_confirmer_livraison(text, jsonb), public.drop_commande_non_livree(text), public.drop_controler(),
---        public.drop_alerte_vue(bigint), public.drop_bilan_jour(text), public.drop_marge_commande(text);
+--        public.drop_alerte_vue(bigint), public.drop_bilan_jour(text), public.drop_marge_commande(text),
+--        public.drop_reinitialiser_pieces(text), public.drop_tampon_entree(text, bigint, date, text, text, jsonb),
+--        public.drop_tampon_etat();
 --   3) les tables (fournisseurs, fournisseur_prix, drop_produits, commande_pieces, achats_fournisseur, pieces_couts,
---      drop_journal, drop_alertes) et les colonnes ajoutées à stock_camion peuvent rester : elles ne sont lues par rien d'autre.
+--      drop_journal, drop_alertes, stock_tampon_entrees, stock_tampon_lots, tampon_sorties) et les colonnes ajoutées à stock_camion peuvent rester : elles ne sont lues par rien d'autre.
 --      Les dépenses « Achat fournisseur » déjà créées restent dans depenses (elles ont été réellement payées).
 --   4) revenir à l'application précédente (v7.5.198) : sans la fonction drop_version, l'appli n'affiche plus rien de ce module.
 --
 -- ORDRE DE MISE EN SERVICE (obligatoire) : 038b (PR 24) → 039 (PR 26) → 040 (PR 29) → CETTE 041 → PUIS l'application.
--- Elle exige la table produits_revient (039) et la table stock_sorties_livraison + les fonctions interne.l040_* (040) : le
--- contrôle de la section 9 ANNULE la migration si elles manquent.
+-- Elle exige la table produits_revient (039) et, de la 040 RÉVISÉE (PR 29, v7.5.198), deduire_stock_livraison, les journaux
+-- stock_sorties_livraison / stock_operations et les fonctions interne.l040_* : les contrôles des sections 7 et 9 ANNULENT la
+-- migration si elles manquent. AUCUNE écriture de stock hors des fonctions de la base : la 041 ne retire du stock que dans
+-- deduire_stock_livraison (même verrou, même marque l040.fonction, mêmes journaux que la 040 ; recrédit de la 040 inchangé).
 --
 -- DÉCISIONS DE BORHEN (25-26/11/2026) reproduites ici :
 --   * Finalité : « à la fin de la journée, on sait ce qu'on a gagné », dropshipping ou autre.
@@ -43,6 +50,16 @@
 --     (pieces_couts). BILAN DU JOUR (drop_bilan_jour, administrateur seul) : ventes livrées HT, coût des produits, GLS,
 --     résultat ; réglage « charges fixes du jour » vide par défaut.
 --   * Journal de chaque action (drop_journal : qui, quand, quoi, combien), ajout seul.
+--   * STOCK TAMPON DROPSHIPPING (exigence de Borhen du 27/11/2026 ~00h20) : on peut aussi ACHETER À L'AVANCE chez un
+--     fournisseur et constituer au dépôt un stock tampon. Entrée (drop_tampon_entree, administrateur) : fournisseur, pièces,
+--     quantités, prix d'achat HT réel par pièce, date, mode de paiement, photo du ticket ou de la facture → des LOTS
+--     identifiés « tampon » (stock_tampon_lots) avec leur coût propre, séparés du stock BMS (conteneur) et de son prix de
+--     revient ; le stock du dépôt augmente PAR LA BASE (mouvement_stock_produit de la 040, idempotent). Au chargement, une
+--     pièce peut venir du « Dépôt — stock BMS », du « Dépôt — stock tampon (fournisseur X) », de « chez le
+--     fournisseur » ou du camion. À la livraison, deduire_stock_livraison retire la pièce du stock ET de son lot (premier
+--     entré, premier sorti, tampon_sorties) ; son coût = le prix d'achat réel du lot (marge, bilan du jour). Écrans : entrée,
+--     stock tampon restant par fournisseur et sa valeur (drop_tampon_etat), alerte si un lot dort plus de N jours
+--     (réglage drop_tampon_alerte_jours, 30 par défaut).
 --
 -- DROITS : administrateur = tout (lecture ; écritures des fournisseurs, prix et activations par l'API, journalisées par
 -- déclencheur) ; collaboratrice = fournisseurs, activations et pièces EN LECTURE, aucun prix d'achat ; livreur = les pièces,
@@ -63,7 +80,8 @@ insert into public.parametres (cle, valeur) values
   ('drop_camion_alerte_jours', '3'),          -- alerte : pièce achetée restée dans le camion plus de N jours
   ('drop_charges_fixes_jour_ht', ''),         -- charges fixes du jour (HT) : VIDE = non comptées dans le bilan
   ('drop_gls_cout_commande_ht', ''),          -- coût GLS HT par commande livrée par GLS : VIDE = « GLS non renseigné »
-  ('drop_tva_pct', '20')                      -- TVA pour passer le prix de vente TTC d'une commande en HT
+  ('drop_tva_pct', '20'),                     -- TVA pour passer le prix de vente TTC d'une commande en HT
+  ('drop_tampon_alerte_jours', '30')          -- alerte : lot du stock tampon dropshipping non écoulé depuis plus de N jours
 on conflict (cle) do nothing;
 
 create or replace function interne.l041_reglage(p_cle text) returns numeric
@@ -120,7 +138,7 @@ create table if not exists public.commande_pieces (
   libelle text not null,
   composant_de text,                     -- ensemble dont la pièce est un composant
   empreinte text not null,               -- empreinte des lignes de la commande au découpage
-  provenance text check (provenance in ('depot', 'fournisseur', 'camion')),
+  provenance text check (provenance in ('depot', 'tampon', 'fournisseur', 'camion')),   -- depot = « Dépôt — stock BMS » ; tampon = stock tampon du dépôt (fournisseur_id = fournisseur du lot)
   origine text check (origine in ('depot', 'fournisseur')),   -- d'où vient réellement la pièce (camion : selon son achat)
   fournisseur_id bigint references public.fournisseurs(id),
   achat_id bigint,                       -- achat en cours de la pièce (provenance fournisseur)
@@ -160,7 +178,8 @@ create table if not exists public.pieces_couts (
   piece_id bigint primary key references public.commande_pieces(id),
   cmd_id text not null,
   cout_ht numeric(12,4) check (cout_ht is null or cout_ht >= 0),
-  source text not null check (source in ('revient', 'achat', 'achat_camion', 'revient_camion', 'inconnu')),
+  source text not null check (source in ('revient', 'achat', 'achat_camion', 'revient_camion', 'tampon', 'inconnu')),
+  lot_id bigint,                         -- lot du stock tampon d'où sort la pièce (source tampon)
   achat_id bigint,
   fige_at timestamptz not null default now()
 );
@@ -179,7 +198,7 @@ create index if not exists drop_journal_cmd_idx on public.drop_journal (cmd_id);
 
 create table if not exists public.drop_alertes (
   id bigint generated always as identity primary key,
-  type text not null check (type in ('ecart_prix', 'ticket_manquant', 'manque_depot', 'camion_ancien', 'livre_sans_confirmation')),
+  type text not null check (type in ('ecart_prix', 'ticket_manquant', 'manque_depot', 'camion_ancien', 'livre_sans_confirmation', 'tampon_ancien', 'tampon_epuise')),
   cle text not null,
   cmd_id text, piece_id bigint, achat_id bigint,
   message text not null,
@@ -187,6 +206,41 @@ create table if not exists public.drop_alertes (
   cree_at timestamptz not null default now(),
   vue_par text, vue_at timestamptz,
   unique (type, cle)
+);
+
+-- STOCK TAMPON DROPSHIPPING : entrées (un achat d'avance chez un fournisseur) et lots (une référence × un prix réel HT)
+create table if not exists public.stock_tampon_entrees (
+  id bigint generated always as identity primary key,
+  cle text not null unique,               -- clé d'idempotence choisie par l'appareil (rejeu sans double entrée)
+  fournisseur_id bigint not null references public.fournisseurs(id),
+  date_achat date not null,
+  mode text not null check (mode in ('especes', 'cb', 'virement', 'autre')),
+  ticket_path text,                       -- photo du ticket ou de la facture (bucket privé drop-tickets, dossier tampon/)
+  total_ht numeric(12,2) not null check (total_ht > 0),
+  acteur text,
+  cree_at timestamptz not null default now()
+);
+create table if not exists public.stock_tampon_lots (
+  id bigint generated always as identity primary key,
+  entree_id bigint not null references public.stock_tampon_entrees(id),
+  fournisseur_id bigint not null references public.fournisseurs(id),
+  produit_id text not null references public.produits(id) on update cascade,
+  date_achat date not null,
+  prix_achat_ht numeric(12,2) not null check (prix_achat_ht > 0 and prix_achat_ht <= 100000),
+  quantite_initiale integer not null check (quantite_initiale between 1 and 10000),
+  quantite_restante integer not null check (quantite_restante >= 0),
+  cree_at timestamptz not null default now(),
+  check (quantite_restante <= quantite_initiale)
+);
+create index if not exists stock_tampon_lots_fifo_idx on public.stock_tampon_lots (produit_id, fournisseur_id, date_achat, id) where quantite_restante > 0;
+-- sortie d'une pièce de son lot (une seule fois par pièce ; ajout seul)
+create table if not exists public.tampon_sorties (
+  id bigint generated always as identity primary key,
+  lot_id bigint not null references public.stock_tampon_lots(id),
+  piece_id bigint not null unique references public.commande_pieces(id),
+  cmd_id text not null,
+  prix_achat_ht numeric(12,2) not null,
+  cree_at timestamptz not null default now()
 );
 
 -- stock du camion (table existante, créée hors migrations) : colonnes pour rattacher une pièce à son achat
@@ -202,7 +256,7 @@ do $$
 declare t text;
 begin
   foreach t in array array['fournisseurs', 'fournisseur_prix', 'drop_produits', 'commande_pieces', 'achats_fournisseur',
-                           'pieces_couts', 'drop_journal', 'drop_alertes'] loop
+                           'pieces_couts', 'drop_journal', 'drop_alertes', 'stock_tampon_entrees', 'stock_tampon_lots', 'tampon_sorties'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on table public.%I from public, anon, authenticated', t);
     execute format('grant select on table public.%I to anon', t);
@@ -219,7 +273,8 @@ begin
   end loop;
 end $$;
 revoke all on sequence public.fournisseurs_id_seq, public.fournisseur_prix_id_seq, public.commande_pieces_id_seq,
-  public.achats_fournisseur_id_seq, public.drop_journal_id_seq, public.drop_alertes_id_seq from public, anon, authenticated;
+  public.achats_fournisseur_id_seq, public.drop_journal_id_seq, public.drop_alertes_id_seq, public.stock_tampon_entrees_id_seq,
+  public.stock_tampon_lots_id_seq, public.tampon_sorties_id_seq from public, anon, authenticated;
 grant usage on sequence public.fournisseurs_id_seq, public.fournisseur_prix_id_seq to anon;   -- insertions de l'administrateur
 
 -- fournisseurs (nom, adresse) : collaboratrice et livreur en lecture (adresse de l'arrêt d'enlèvement)
@@ -278,6 +333,9 @@ begin
 end $$;
 drop trigger if exists drop_journal_fige on public.drop_journal;
 create trigger drop_journal_fige before update or delete on public.drop_journal
+  for each row execute function interne.l041_journal_fige();
+drop trigger if exists tampon_sorties_fige on public.tampon_sorties;
+create trigger tampon_sorties_fige before update or delete on public.tampon_sorties
   for each row execute function interne.l041_journal_fige();
 drop trigger if exists pieces_couts_fige on public.pieces_couts;
 create trigger pieces_couts_fige before update or delete on public.pieces_couts
@@ -416,6 +474,14 @@ begin
     select prix_revient_ht into cout from public.produits_revient where produit_id = p.produit_id;
     source := case when cout is null then 'inconnu' else 'revient_camion' end; return;
   end if;
+  if p.provenance = 'tampon' then
+    select ts.prix_achat_ht into cout from public.tampon_sorties ts where ts.piece_id = p.id;
+    if found then source := 'tampon'; return; end if;
+    select l.prix_achat_ht into cout from public.stock_tampon_lots l
+     where l.produit_id = p.produit_id and l.fournisseur_id = p.fournisseur_id and l.quantite_restante > 0
+     order by l.date_achat, l.id limit 1;
+    if found then source := 'tampon'; return; end if;
+  end if;
   -- dépôt (ou provenance non déclarée : la pièce est supposée venir du dépôt, comme avant ce module)
   select prix_revient_ht into cout from public.produits_revient where produit_id = p.produit_id;
   source := case when cout is null then 'inconnu' else 'revient' end;
@@ -465,6 +531,12 @@ begin
     'stock_camion_id', p.stock_camion_id, 'declare_par', p.declare_par, 'declare_at', p.declare_at,
     'livraison', p.livraison, 'livraison_par', p.livraison_par, 'livraison_at', p.livraison_at,
     'drop_actif', exists (select 1 from public.drop_produits d where d.produit_id = p.produit_id and d.actif),
+    'tampon', coalesce((select jsonb_agg(jsonb_build_object('fournisseur_id', t.fournisseur_id, 'nom', t.nom, 'restant', t.restant) order by t.nom)
+                from (select l.fournisseur_id, f.nom, sum(l.quantite_restante)::integer as restant from public.stock_tampon_lots l
+                        join public.fournisseurs f on f.id = l.fournisseur_id
+                       where l.produit_id = p.produit_id and l.quantite_restante > 0 group by l.fournisseur_id, f.nom) t), '[]'::jsonb),
+    'stock_bms', greatest(0, coalesce((select stock from public.produits x where x.id = p.produit_id), 0)
+                       - coalesce((select sum(quantite_restante) from public.stock_tampon_lots l where l.produit_id = p.produit_id), 0)),
     'stock_depot', (select stock from public.produits x where x.id = p.produit_id));
   if v_prix then
     j := j || jsonb_build_object(
@@ -552,7 +624,7 @@ declare p record; c record; a record; v_fp record; sc record; v_prix_prevu numer
 begin
   if public.session_role() is null or public.session_role() not in ('admin', 'livreur') then
     return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
-  if p_provenance is null or p_provenance not in ('depot', 'fournisseur', 'camion') then
+  if p_provenance is null or p_provenance not in ('depot', 'tampon', 'fournisseur', 'camion') then
     return json_build_object('ok', false, 'erreur', 'provenance_invalide'); end if;
   select cmd_id into p from public.commande_pieces where id = p_piece_id;
   if not found or not interne.l041_cmd_autorisee(p.cmd_id, false) then return json_build_object('ok', false, 'erreur', 'piece_introuvable'); end if;
@@ -572,6 +644,10 @@ begin
      where fp.produit_id = p.produit_id and fp.fournisseur_id = p_fournisseur_id and fp.actif and f.actif;
     if not found then return json_build_object('ok', false, 'erreur', 'prix_fournisseur_absent'); end if;
     v_prix_prevu := v_fp.prix_achat_ht;
+  elsif p_provenance = 'tampon' then
+    if p.produit_id is null or not exists (select 1 from public.stock_tampon_lots l where l.produit_id = p.produit_id
+                                             and l.fournisseur_id = p_fournisseur_id and l.quantite_restante > 0) then
+      return json_build_object('ok', false, 'erreur', 'stock_tampon_vide'); end if;
   elsif p_provenance = 'camion' then
     select * into sc from public.stock_camion where id = p_stock_camion_id for update;
     if not found or sc.status <> 'en_camion' or upper(coalesce(sc.livreur, '')) <> upper(coalesce(c.livreur, ''))
@@ -600,7 +676,7 @@ begin
     v_origine := case when sc.achat_id is not null then 'fournisseur' else 'depot' end;
   end if;
   update public.commande_pieces set provenance = p_provenance, origine = v_origine,
-         fournisseur_id = case when p_provenance = 'fournisseur' then p_fournisseur_id end, achat_id = v_achat,
+         fournisseur_id = case when p_provenance in ('fournisseur', 'tampon') then p_fournisseur_id end, achat_id = v_achat,
          stock_camion_id = case when p_provenance = 'camion' then p_stock_camion_id end,
          declare_par = interne.l041_acteur(), declare_at = now()
    where id = p.id;
@@ -716,9 +792,11 @@ begin
     select x into e from jsonb_array_elements(p_pieces) x where x ->> 'id' = p.id::text limit 1;
     v_liv := (e ->> 'livree')::boolean;
     if v_liv then
-      select * into v_cout from interne.l041_cout_piece(p.id);
-      insert into public.pieces_couts (piece_id, cmd_id, cout_ht, source, achat_id)
-      values (p.id, c.id, v_cout.cout, v_cout.source, v_cout.achat) on conflict (piece_id) do nothing;
+      if p.provenance is distinct from 'tampon' then   -- tampon : coût figé à la sortie de son lot (deduire_stock_livraison)
+        select * into v_cout from interne.l041_cout_piece(p.id);
+        insert into public.pieces_couts (piece_id, cmd_id, cout_ht, source, achat_id)
+        values (p.id, c.id, v_cout.cout, v_cout.source, v_cout.achat) on conflict (piece_id) do nothing;
+      end if;
       if p.provenance = 'camion' then
         update public.stock_camion set status = 'livre', retour_at = now(), retour_par = interne.l041_acteur() where id = p.stock_camion_id;
       end if;
@@ -760,173 +838,54 @@ begin
 end $$;
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
--- 7. Déduction du stock (remplace la fonction de la 040) : seulement les pièces d'origine « Dépôt »
+-- 7. Déduction du stock : seulement les pièces d'origine « Dépôt » (s'appuie sur la 040 révisée, sans la recopier)
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
--- Corps des étapes 5 à 8 de la 040, INCHANGÉ (commande sans pièces : GLS, bureau, commandes d'avant ce module)
-create or replace function interne.l041_deduire_classique(p_cmd_id text, p_acteur text) returns jsonb
-language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
-declare
-  c record; p record; cp record; s record;
-  v_lignes jsonb := '[]'::jsonb; l jsonb; e jsonb;
-  v_ids text[] := '{}'; v_cats text[] := '{}';
-  v_pid text; v_q integer; v_req integer; v_av integer; v_ap integer; v_ret integer; v_cible text; v_sub text;
-  v_retraits jsonb := '[]'::jsonb; v_manques jsonb := '[]'::jsonb;
+-- La fonction de la 040 est CONSERVÉE telle quelle sous le nom interne.l041_deduire_040 (commande sans pièces : GLS, bureau,
+-- commandes d'avant ce module → calcul de la 040 inchangé, mêmes journaux, même rejeu). public.deduire_stock_livraison
+-- devient une enveloppe : commande découpée en pièces → retrait des seules pièces « Dépôt », avec les MÊMES règles que la
+-- 040 (verrou consultatif 'l040|<commande>' puis ligne, idempotence par stock_deduit et rejeu du résultat complet
+-- interne.l040_rejeu, produits verrouillés dans l'ordre des identifiants, écriture marquée l040.fonction pour les gardes,
+-- journal stock_sorties_livraison et opération stock_operations : le recrédit recrediter_stock_livraison de la 040 rend
+-- donc exactement ce qui a été retiré). Rejouable : si la 040 est réappliquée après la 041, la 041 réappliquée déplace de
+-- nouveau sa fonction (reconnue à son texte).
+do $$
+declare v_src text;
 begin
-  select id, lignes, produit, qte into c from public.commandes where id = p_cmd_id;
-  if jsonb_typeof(c.lignes) = 'array' and jsonb_array_length(c.lignes) > 0 then
-    for l in select x.value from jsonb_array_elements(c.lignes) with ordinality as x(value, n) order by x.n loop
-      if jsonb_typeof(l) <> 'object' then continue; end if;
-      v_lignes := v_lignes || jsonb_build_array(jsonb_build_object(
-        'id', interne.l040_trouver_produit(l ->> 'produitId', coalesce(nullif(l ->> 'nom', ''), l ->> 'produit')),
-        'produitId', l ->> 'produitId', 'nom', coalesce(nullif(l ->> 'nom', ''), l ->> 'produit'), 'qte', l -> 'qte'));
-    end loop;
-  else
-    v_lignes := jsonb_build_array(jsonb_build_object(
-      'id', interne.l040_trouver_produit(null, c.produit), 'produitId', null, 'nom', c.produit, 'qte', to_jsonb(c.qte)));
+  select p.prosrc into v_src from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.proname = 'deduire_stock_livraison' and pg_get_function_identity_arguments(p.oid) = 'p_cmd_id text';
+  if v_src is null then
+    raise exception 'Contrôle 041 : public.deduire_stock_livraison (migration 040) absente — appliquer d''abord la 040. Migration annulée.';
   end if;
-  for l in select x.value from jsonb_array_elements(v_lignes) as x(value) loop
-    v_pid := l ->> 'id';
-    if v_pid is null then continue; end if;
-    v_ids := v_ids || v_pid;
-    select id, composants into p from public.produits where id = v_pid;
-    if jsonb_typeof(p.composants) = 'array' and jsonb_array_length(p.composants) > 0 then
-      for e in select x.value from jsonb_array_elements(p.composants) as x(value) loop
-        if coalesce(e ->> 'id', '') = '' then continue; end if;
-        v_ids := v_ids || (e ->> 'id');
-        select cat into cp from public.produits where id = e ->> 'id';
-        if found then v_cats := v_cats || coalesce(cp.cat, ''); end if;
-      end loop;
-    end if;
-  end loop;
-  if cardinality(v_cats) > 0 then
-    v_ids := v_ids || array(select id from public.produits where coalesce(cat, '') = any (v_cats));
+  if position('l041_enveloppe' in v_src) = 0 then            -- c'est la fonction de la 040 : la mettre de côté
+    execute 'drop function if exists interne.l041_deduire_040(text)';
+    execute 'alter function public.deduire_stock_livraison(text) set schema interne';
+    execute 'alter function interne.deduire_stock_livraison(text) rename to l041_deduire_040';
   end if;
-  perform 1 from public.produits where id = any (v_ids) order by id for update;
-  for l in select x.value from jsonb_array_elements(v_lignes) with ordinality as x(value, n) order by x.n loop
-    v_q := interne.l040_qte(l -> 'qte');
-    v_pid := l ->> 'id';
-    if v_pid is null then
-      v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', l ->> 'produitId', 'nom', l ->> 'nom',
-        'raison', 'produit_introuvable', 'demande', v_q, 'retire', 0, 'manque', v_q));
-      continue;
-    end if;
-    select id, nom, composants into p from public.produits where id = v_pid;
-    if jsonb_typeof(p.composants) = 'array' and jsonb_array_length(p.composants) > 0 then
-      for e in select x.value from jsonb_array_elements(p.composants) with ordinality as x(value, n) order by x.n loop
-        select id, nom, cat, dim, stock into cp from public.produits where id = (e ->> 'id');
-        if not found then
-          v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', e ->> 'id', 'nom', null,
-            'raison', 'composant_introuvable', 'composant_de', p.id, 'demande', interne.l040_qte(e -> 'qte') * v_q, 'retire', 0,
-            'manque', interne.l040_qte(e -> 'qte') * v_q));
-          continue;
-        end if;
-        perform 1 from public.produits where id = cp.id for update;
-        v_req := interne.l040_qte(e -> 'qte') * v_q;
-        v_cible := cp.id; v_sub := null;
-        if coalesce(cp.stock, 0) < v_req then
-          select x.id into s from public.produits x
-           where x.id <> cp.id and coalesce(x.actif, true) and x.cat is not distinct from cp.cat
-             and coalesce((to_jsonb(x) ->> 'vendable')::boolean, true)
-             and interne.l040_dim_compatible(interne.l040_dim(cp.dim), interne.l040_dim(x.dim))
-             and coalesce(x.stock, 0) >= v_req
-           order by x.id limit 1
-           for update;
-          if found then v_cible := s.id; v_sub := cp.id; end if;
-        end if;
-        select stock, nom into s from public.produits where id = v_cible;
-        v_av := s.stock;
-        v_ap := greatest(0, coalesce(v_av, 0) - v_req);
-        v_ret := greatest(0, coalesce(v_av, 0) - v_ap);
-        update public.produits set stock = v_ap, updated_at = now() where id = v_cible;
-        insert into public.stock_sorties_livraison (cmd_id, produit_id, produit_nom, qte_demandee, qte_retiree, stock_avant,
-          stock_apres, composant_de, substitue_de, acteur)
-        values (c.id, v_cible, s.nom, v_req, v_ret, v_av, v_ap, p.id, v_sub, p_acteur);
-        v_retraits := v_retraits || jsonb_build_array(jsonb_build_object('produit_id', v_cible, 'nom', s.nom, 'qte', v_ret,
-          'demande', v_req, 'stock_avant', v_av, 'stock_apres', v_ap, 'composant_de', p.id, 'substitue_de', v_sub));
-        if v_ret < v_req then
-          v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', v_cible, 'nom', s.nom,
-            'raison', 'stock_insuffisant', 'composant_de', p.id, 'demande', v_req, 'retire', v_ret, 'manque', v_req - v_ret));
-        end if;
-      end loop;
-    else
-      select stock, nom into s from public.produits where id = v_pid;
-      v_av := s.stock;
-      v_ap := greatest(0, coalesce(v_av, 0) - v_q);
-      v_ret := greatest(0, coalesce(v_av, 0) - v_ap);
-      update public.produits set stock = v_ap, updated_at = now() where id = v_pid;
-      insert into public.stock_sorties_livraison (cmd_id, produit_id, produit_nom, qte_demandee, qte_retiree, stock_avant,
-        stock_apres, composant_de, substitue_de, acteur)
-      values (c.id, v_pid, s.nom, v_q, v_ret, v_av, v_ap, null, null, p_acteur);
-      v_retraits := v_retraits || jsonb_build_array(jsonb_build_object('produit_id', v_pid, 'nom', s.nom, 'qte', v_ret,
-        'demande', v_q, 'stock_avant', v_av, 'stock_apres', v_ap, 'composant_de', null, 'substitue_de', null));
-      if v_ret < v_q then
-        v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', v_pid, 'nom', s.nom,
-          'raison', 'stock_insuffisant', 'demande', v_q, 'retire', v_ret, 'manque', v_q - v_ret));
-      end if;
-    end if;
-  end loop;
-  return jsonb_build_object('retraits', v_retraits, 'manques', v_manques);
 end $$;
-revoke all on function interne.l041_deduire_classique(text, text) from public, anon, authenticated;
-
--- Commande découpée en pièces : SEULES les pièces d'origine « Dépôt » sont retirées (provenance Dépôt, pièce du camion venue
--- du dépôt, ou provenance non déclarée = comme avant ce module) ; jamais une pièce fournisseur (ni une pièce du camion
--- achetée), jamais une pièce confirmée « non livrée ». Pas de substitution automatique : la pièce est un produit précis.
-create or replace function interne.l041_deduire_pieces(p_cmd_id text, p_acteur text) returns jsonb
-language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
-declare r record; s record; v_av integer; v_ap integer; v_ret integer;
-  v_retraits jsonb := '[]'::jsonb; v_manques jsonb := '[]'::jsonb;
-begin
-  perform 1 from public.produits where id in (select produit_id from public.commande_pieces where cmd_id = p_cmd_id) order by id for update;
-  for r in select produit_id, min(libelle) as libelle, min(composant_de) as composant_de, count(*)::integer as n
-             from public.commande_pieces
-            where cmd_id = p_cmd_id and coalesce(livraison, 'livree') = 'livree'
-              and (provenance is null or provenance = 'depot' or (provenance = 'camion' and origine = 'depot'))
-            group by produit_id order by produit_id nulls last loop
-    if r.produit_id is null then
-      v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', null, 'nom', r.libelle,
-        'raison', 'produit_introuvable', 'demande', r.n, 'retire', 0, 'manque', r.n));
-      continue;
-    end if;
-    select stock, nom into s from public.produits where id = r.produit_id;
-    if not found then
-      v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', r.produit_id, 'nom', r.libelle,
-        'raison', 'produit_introuvable', 'demande', r.n, 'retire', 0, 'manque', r.n));
-      continue;
-    end if;
-    v_av := s.stock; v_ap := greatest(0, coalesce(v_av, 0) - r.n); v_ret := greatest(0, coalesce(v_av, 0) - v_ap);
-    update public.produits set stock = v_ap, updated_at = now() where id = r.produit_id;
-    insert into public.stock_sorties_livraison (cmd_id, produit_id, produit_nom, qte_demandee, qte_retiree, stock_avant,
-      stock_apres, composant_de, substitue_de, acteur)
-    values (p_cmd_id, r.produit_id, s.nom, r.n, v_ret, v_av, v_ap, r.composant_de, null, p_acteur);
-    v_retraits := v_retraits || jsonb_build_array(jsonb_build_object('produit_id', r.produit_id, 'nom', s.nom, 'qte', v_ret,
-      'demande', r.n, 'stock_avant', v_av, 'stock_apres', v_ap, 'composant_de', r.composant_de, 'substitue_de', null));
-    if v_ret < r.n then
-      v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', r.produit_id, 'nom', s.nom,
-        'raison', 'stock_insuffisant', 'demande', r.n, 'retire', v_ret, 'manque', r.n - v_ret));
-    end if;
-  end loop;
-  if exists (select 1 from public.commande_pieces where cmd_id = p_cmd_id and livraison is null) then
-    perform interne.l041_alerte('livre_sans_confirmation', 'cmd:' || p_cmd_id, p_cmd_id, null, null,
-      'Livré sans confirmation des pièces : ' || p_cmd_id || ' — stock retiré pour les pièces non fournisseur, à vérifier', null);
-  end if;
-  return jsonb_build_object('retraits', v_retraits, 'manques', v_manques);
-end $$;
-revoke all on function interne.l041_deduire_pieces(text, text) from public, anon, authenticated;
+revoke all on function interne.l041_deduire_040(text) from public, anon, authenticated;
 
 create or replace function public.deduire_stock_livraison(p_cmd_id text) returns json
 language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+-- l041_enveloppe (repère lu par la section ci-dessus : ne pas retirer)
 declare
   v_role text := public.session_role();
   v_liv text := public.session_livreur();
-  v_acteur text; c record; v_r jsonb; v_mode text;
+  v_acteur text; c record; r record; s record;
+  v_ids text[]; v_av integer; v_ap integer; v_ret integer;
+  v_retraits jsonb := '[]'::jsonb; v_manques jsonb := '[]'::jsonb; v_res jsonb; v_op bigint; v_touches text[];
+  pt record; lot record; v_lots jsonb := '[]'::jsonb;
 begin
   if v_role is null or v_role not in ('admin', 'collab', 'livreur') then
     return json_build_object('ok', false, 'erreur', 'session_requise');
   end if;
   if coalesce(btrim(p_cmd_id), '') = '' then return json_build_object('ok', false, 'erreur', 'commande_requise'); end if;
+  -- commande sans pièces : la 040, inchangée
+  if not exists (select 1 from public.commande_pieces where cmd_id = p_cmd_id) then
+    return interne.l041_deduire_040(p_cmd_id);
+  end if;
   v_acteur := v_role || coalesce(':' || v_liv, '');
-  -- (1)(2) commande visible par la session (même règle que les politiques sess_*), VERROUILLÉE
+  -- mêmes verrous et même ordre que la 040 (consultatif puis ligne) : la déduction et le recrédit s'attendent
+  perform pg_advisory_xact_lock(hashtext('l040|' || p_cmd_id));
   select id, statut, stock_deduit into c from public.commandes
    where id = p_cmd_id
      and (v_role <> 'livreur'
@@ -935,23 +894,79 @@ begin
               and coalesce(date_livraison, '') <= to_char(current_date + 2, 'YYYY-MM-DD')))
    for update;
   if not found then return json_build_object('ok', false, 'erreur', 'commande_introuvable'); end if;
-  -- (3) déjà déduite : rien n'est touché (idempotent)
-  if coalesce(c.stock_deduit, false) then
-    return json_build_object('ok', true, 'deja', true, 'stock_deduit', true, 'retraits', '[]'::json, 'manques', '[]'::json);
-  end if;
-  -- (4) seulement une commande livrée
+  if coalesce(c.stock_deduit, false) then return interne.l040_rejeu(c.id, 'deduction'); end if;   -- idempotente
   if coalesce(c.statut, '') not in ('livré', 'livre') then
     return json_build_object('ok', false, 'erreur', 'commande_non_livree', 'statut', c.statut);
   end if;
-  if exists (select 1 from public.commande_pieces where cmd_id = c.id) then
-    v_r := interne.l041_deduire_pieces(c.id, v_acteur); v_mode := 'pieces';
-  else
-    v_r := interne.l041_deduire_classique(c.id, v_acteur); v_mode := 'lignes';
-  end if;
-  -- (9) une seule fois : marquée déduite dans la MÊME transaction
+  -- pièces verrouillées (la confirmation de livraison ne change plus pendant le retrait), puis produits dans l'ordre
+  perform 1 from public.commande_pieces where cmd_id = c.id order by id for update;
+  select coalesce(array_agg(distinct produit_id order by produit_id), '{}') into v_ids
+    from public.commande_pieces where cmd_id = c.id and produit_id is not null;
+  perform 1 from public.produits where id = any (v_ids) order by id for update;
+  -- SEULES les pièces d'origine « Dépôt » (Dépôt, pièce du camion venue du dépôt, ou provenance non déclarée = comme avant
+  -- ce module) ; jamais une pièce fournisseur (ni une pièce du camion achetée), jamais une pièce « pas livrée » ; pas de
+  -- substitution (la pièce est un produit précis : un manque est signalé)
+  perform set_config('l040.fonction', '1', true);
+  for r in select produit_id, min(libelle) as libelle, min(composant_de) as composant_de, count(*)::integer as n
+             from public.commande_pieces
+            where cmd_id = c.id and coalesce(livraison, 'livree') = 'livree'
+              and (provenance is null or provenance in ('depot', 'tampon') or (provenance = 'camion' and origine = 'depot'))
+            group by produit_id order by produit_id nulls last loop
+    select stock, nom into s from public.produits where id = r.produit_id;
+    if r.produit_id is null or not found then
+      v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', r.produit_id, 'nom', r.libelle,
+        'raison', 'produit_introuvable', 'demande', r.n, 'retire', 0, 'manque', r.n));
+      continue;
+    end if;
+    v_av := s.stock; v_ap := greatest(0, coalesce(v_av, 0) - r.n); v_ret := greatest(0, coalesce(v_av, 0) - v_ap);
+    update public.produits set stock = v_ap, updated_at = now() where id = r.produit_id;
+    insert into public.stock_sorties_livraison (cmd_id, produit_id, produit_nom, qte_demandee, qte_retiree, stock_avant,
+      stock_apres, composant_de, substitue_de, acteur)
+    values (c.id, r.produit_id, s.nom, r.n, v_ret, v_av, v_ap, r.composant_de, null, v_acteur);
+    v_retraits := v_retraits || jsonb_build_array(jsonb_build_object('produit_id', r.produit_id, 'nom', s.nom, 'qte', v_ret,
+      'demande', r.n, 'stock_avant', v_av, 'stock_apres', v_ap, 'composant_de', r.composant_de, 'substitue_de', null));
+    if v_ret < r.n then
+      v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', r.produit_id, 'nom', s.nom,
+        'raison', 'stock_insuffisant', 'demande', r.n, 'retire', v_ret, 'manque', r.n - v_ret));
+    end if;
+  end loop;
+  -- STOCK TAMPON : chaque pièce « tampon » livrée sort de SON lot (premier entré, premier sorti, chez son fournisseur) ;
+  -- lots verrouillés dans l'ordre (identifiant), coût figé = prix d'achat réel du lot
+  for pt in select q.id, q.produit_id, q.fournisseur_id, q.libelle from public.commande_pieces q
+            where q.cmd_id = c.id and q.provenance = 'tampon' and coalesce(q.livraison, 'livree') = 'livree'
+              and not exists (select 1 from public.tampon_sorties ts where ts.piece_id = q.id) order by q.id loop
+    select l.id, l.prix_achat_ht into lot from public.stock_tampon_lots l
+     where l.produit_id = pt.produit_id and l.fournisseur_id = pt.fournisseur_id and l.quantite_restante > 0
+     order by l.date_achat, l.id limit 1 for update;
+    if found then
+      update public.stock_tampon_lots set quantite_restante = quantite_restante - 1 where id = lot.id;
+      insert into public.tampon_sorties (lot_id, piece_id, cmd_id, prix_achat_ht) values (lot.id, pt.id, c.id, lot.prix_achat_ht);
+      insert into public.pieces_couts (piece_id, cmd_id, cout_ht, source, lot_id) values (pt.id, c.id, lot.prix_achat_ht, 'tampon', lot.id)
+        on conflict (piece_id) do nothing;
+      v_lots := v_lots || jsonb_build_array(jsonb_build_object('piece_id', pt.id, 'lot_id', lot.id, 'produit_id', pt.produit_id));
+    else
+      -- plus rien dans le lot (déjà écoulé) : pièce retirée du stock du dépôt, coût au prix de revient, alerte
+      insert into public.pieces_couts (piece_id, cmd_id, cout_ht, source)
+      select pt.id, c.id, r.prix_revient_ht, case when r.prix_revient_ht is null then 'inconnu' else 'revient' end
+        from (select (select prix_revient_ht from public.produits_revient where produit_id = pt.produit_id) as prix_revient_ht) r
+      on conflict (piece_id) do nothing;
+      perform interne.l041_alerte('tampon_epuise', 'piece:' || pt.id, c.id, pt.id, null,
+        'Stock tampon épuisé : ' || pt.libelle || ' (' || c.id || ') déclarée « stock tampon » sans lot restant — à vérifier', null);
+    end if;
+  end loop;
   update public.commandes set stock_deduit = true, updated_at = now() where id = c.id;
-  return json_build_object('ok', true, 'deja', false, 'stock_deduit', true, 'mode', v_mode,
-    'retraits', (v_r -> 'retraits')::json, 'manques', (v_r -> 'manques')::json);
+  perform set_config('l040.fonction', '', true);
+  if exists (select 1 from public.commande_pieces where cmd_id = c.id and livraison is null) then
+    perform interne.l041_alerte('livre_sans_confirmation', 'cmd:' || c.id, c.id, null, null,
+      'Livré sans confirmation des pièces : ' || c.id || ' — stock retiré pour les pièces non fournisseur, à vérifier', null);
+  end if;
+  v_res := jsonb_build_object('retraits', v_retraits, 'manques', v_manques, 'mode', 'pieces', 'lots_tampon', v_lots);
+  insert into public.stock_operations (nature, cmd_id, sortie_max, resultat, acteur)
+  values ('deduction', c.id, (select max(id) from public.stock_sorties_livraison where cmd_id = c.id), v_res, v_acteur)
+  returning id into v_op;
+  select array_agg(x ->> 'produit_id') into v_touches from jsonb_array_elements(v_retraits) x;
+  return (v_res || jsonb_build_object('ok', true, 'deja', false, 'stock_deduit', true, 'operation_id', v_op,
+    'stocks_actuels', interne.l040_stocks(v_touches)))::json;
 end $$;
 revoke all on function public.deduire_stock_livraison(text) from public, anon, authenticated;
 grant execute on function public.deduire_stock_livraison(text) to anon;   -- session vérifiée DANS la fonction
@@ -963,6 +978,7 @@ grant execute on function public.deduire_stock_livraison(text) to anon;   -- ses
 create or replace function public.drop_controler() returns json
 language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
 declare v_jours numeric := coalesce(interne.l041_reglage('drop_camion_alerte_jours'), 3); sc record;
+  v_jours_t numeric := coalesce(interne.l041_reglage('drop_tampon_alerte_jours'), 30); lt record;
 begin
   if public.session_role() is distinct from 'admin' then return json_build_object('ok', false, 'erreur', 'admin_requis'); end if;
   for sc in select s.id, s.produit_libelle, s.livreur, s.charge_at, s.achat_id, a.montant_paye_ht, a.cmd_id
@@ -973,7 +989,14 @@ begin
       'Pièce achetée dans le camion depuis plus de ' || v_jours || ' jours : ' || sc.produit_libelle || ' (' || coalesce(sc.livreur, '?')
       || ', chargée le ' || to_char(sc.charge_at::timestamptz, 'DD/MM/YYYY') || ')', sc.montant_paye_ht);
   end loop;
-  return json_build_object('ok', true, 'jours', v_jours, 'alertes', coalesce((select json_agg(row_to_json(a) order by a.cree_at desc)
+  for lt in select l.id, l.quantite_restante, l.date_achat, l.prix_achat_ht, x.nom as produit, f.nom as fournisseur
+              from public.stock_tampon_lots l join public.fournisseurs f on f.id = l.fournisseur_id left join public.produits x on x.id = l.produit_id
+             where l.quantite_restante > 0 and l.date_achat < current_date - greatest(0, v_jours_t)::integer loop
+    perform interne.l041_alerte('tampon_ancien', 'lot:' || lt.id, null, null, null,
+      'Stock tampon qui dort depuis plus de ' || v_jours_t || ' jours : ' || lt.quantite_restante || ' × ' || coalesce(lt.produit, '?') || ' ('
+      || lt.fournisseur || ', acheté le ' || to_char(lt.date_achat, 'DD/MM/YYYY') || ')', round(lt.quantite_restante * lt.prix_achat_ht, 2));
+  end loop;
+  return json_build_object('ok', true, 'jours', v_jours, 'jours_tampon', v_jours_t, 'alertes', coalesce((select json_agg(row_to_json(a) order by a.cree_at desc)
     from (select id, type, cmd_id, piece_id, achat_id, message, montant, cree_at from public.drop_alertes where vue_at is null) a), '[]'::json));
 end $$;
 
@@ -1074,10 +1097,71 @@ begin
     'detail', v_cmds::json);
 end $$;
 
+-- ENTRÉE DE STOCK TAMPON (administrateur) : p_lignes = [{ "produit_id": …, "qte": n, "prix_ht": prix réel HT par pièce }]
+-- Tout ou rien ; le stock du dépôt augmente PAR LA BASE (mouvement_stock_produit de la 040, une clé par ligne) ;
+-- rejouée avec la même clé : « deja », rien de plus.
+create or replace function public.drop_tampon_entree(p_cle text, p_fournisseur_id bigint, p_date date, p_mode text,
+  p_ticket_path text, p_lignes jsonb) returns json
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare v_e record; l jsonb; v_q integer; v_px numeric; v_total numeric := 0; v_id bigint; v_m json; v_lots jsonb := '[]'::jsonb; v_lot bigint;
+begin
+  if public.session_role() is distinct from 'admin' then return json_build_object('ok', false, 'erreur', 'admin_requis'); end if;
+  if coalesce(length(p_cle), 0) not between 8 and 80 then return json_build_object('ok', false, 'erreur', 'cle_requise'); end if;
+  perform pg_advisory_xact_lock(hashtext('l041t|' || p_cle));
+  select id into v_e from public.stock_tampon_entrees where cle = p_cle;
+  if found then return json_build_object('ok', true, 'deja', true, 'entree_id', v_e.id); end if;
+  if not exists (select 1 from public.fournisseurs where id = p_fournisseur_id and actif) then return json_build_object('ok', false, 'erreur', 'fournisseur_introuvable'); end if;
+  if p_date is null or p_date > current_date or p_date < current_date - 366 then return json_build_object('ok', false, 'erreur', 'date_invalide'); end if;
+  if coalesce(p_mode, '') not in ('especes', 'cb', 'virement', 'autre') then return json_build_object('ok', false, 'erreur', 'mode_invalide'); end if;
+  if p_ticket_path is not null and (split_part(p_ticket_path, '/', 1) <> 'tampon' or split_part(p_ticket_path, '/', 3) !~ '^[A-Za-z0-9._-]{1,120}$'
+     or split_part(p_ticket_path, '/', 4) <> '') then return json_build_object('ok', false, 'erreur', 'chemin_ticket_invalide'); end if;
+  if jsonb_typeof(p_lignes) <> 'array' or jsonb_array_length(p_lignes) = 0 or jsonb_array_length(p_lignes) > 50 then
+    return json_build_object('ok', false, 'erreur', 'lignes_requises'); end if;
+  for l in select x.value from jsonb_array_elements(p_lignes) x loop
+    if not exists (select 1 from public.produits where id = l ->> 'produit_id') then return json_build_object('ok', false, 'erreur', 'produit_introuvable', 'produit_id', l ->> 'produit_id'); end if;
+    if coalesce(l ->> 'qte', '') !~ '^[0-9]{1,5}$' or (l ->> 'qte')::integer < 1 then return json_build_object('ok', false, 'erreur', 'quantite_invalide'); end if;
+    if coalesce(l ->> 'prix_ht', '') !~ '^[0-9]{1,6}(\.[0-9]{1,2})?$' or (l ->> 'prix_ht')::numeric <= 0 then return json_build_object('ok', false, 'erreur', 'prix_invalide'); end if;
+    v_total := v_total + (l ->> 'qte')::integer * (l ->> 'prix_ht')::numeric;
+  end loop;
+  insert into public.stock_tampon_entrees (cle, fournisseur_id, date_achat, mode, ticket_path, total_ht, acteur)
+  values (p_cle, p_fournisseur_id, p_date, p_mode, p_ticket_path, round(v_total, 2), interne.l041_acteur()) returning id into v_id;
+  for l in select x.value from jsonb_array_elements(p_lignes) with ordinality x(value, o) order by x.o loop
+    v_q := (l ->> 'qte')::integer; v_px := round((l ->> 'prix_ht')::numeric, 2);
+    insert into public.stock_tampon_lots (entree_id, fournisseur_id, produit_id, date_achat, prix_achat_ht, quantite_initiale, quantite_restante)
+    values (v_id, p_fournisseur_id, l ->> 'produit_id', p_date, v_px, v_q, v_q) returning id into v_lot;
+    -- le stock du dépôt augmente par la fonction de la 040 (verrou, journal stock_operations, gardes)
+    v_m := public.mouvement_stock_produit(l ->> 'produit_id', 'entree', v_q, 'Stock tampon dropshipping (lot ' || v_lot || ')', 'tampon:' || p_cle || ':' || v_lot);
+    if not coalesce((v_m ->> 'ok')::boolean, false) then
+      raise exception 'drop_tampon_entree : mouvement de stock refusé (%)', v_m ->> 'erreur';   -- tout est annulé
+    end if;
+    v_lots := v_lots || jsonb_build_array(jsonb_build_object('lot_id', v_lot, 'produit_id', l ->> 'produit_id', 'qte', v_q, 'prix_ht', v_px,
+      'stock_apres', v_m ->> 'stock_apres'));
+  end loop;
+  perform interne.l041_journal('tampon_entree', null, null, null, round(v_total, 2),
+    jsonb_build_object('entree_id', v_id, 'fournisseur_id', p_fournisseur_id, 'mode', p_mode, 'lots', v_lots, 'ticket', p_ticket_path is not null));
+  return json_build_object('ok', true, 'deja', false, 'entree_id', v_id, 'total_ht', round(v_total, 2), 'lots', v_lots);
+end $$;
+
+-- STOCK TAMPON RESTANT par fournisseur et par référence, avec sa valeur (prix d'achat réel des lots) ; administrateur
+create or replace function public.drop_tampon_etat() returns json
+language plpgsql stable security definer set search_path = public, interne, pg_catalog as $$
+begin
+  if public.session_role() is distinct from 'admin' then return json_build_object('ok', false, 'erreur', 'admin_requis'); end if;
+  return json_build_object('ok', true,
+    'fournisseurs', coalesce((select json_agg(z order by z.nom) from (
+      select f.id as fournisseur_id, f.nom, sum(l.quantite_restante)::integer as restant, round(sum(l.quantite_restante * l.prix_achat_ht), 2) as valeur_ht,
+             json_agg(json_build_object('lot_id', l.id, 'produit_id', l.produit_id, 'produit', x.nom, 'restant', l.quantite_restante,
+               'initial', l.quantite_initiale, 'prix_ht', l.prix_achat_ht, 'date_achat', l.date_achat, 'jours', current_date - l.date_achat)
+               order by l.date_achat, l.id) as lots
+        from public.stock_tampon_lots l join public.fournisseurs f on f.id = l.fournisseur_id left join public.produits x on x.id = l.produit_id
+       where l.quantite_restante > 0 group by f.id, f.nom) z), '[]'::json),
+    'valeur_totale_ht', coalesce((select round(sum(quantite_restante * prix_achat_ht), 2) from public.stock_tampon_lots), 0));
+end $$;
+
 do $$
 declare f text;
 begin
-  foreach f in array array['drop_pieces(text)', 'drop_reinitialiser_pieces(text)', 'drop_declarer(bigint, text, bigint, text)',
+  foreach f in array array['drop_tampon_entree(text, bigint, date, text, text, jsonb)', 'drop_tampon_etat()', 'drop_pieces(text)', 'drop_reinitialiser_pieces(text)', 'drop_declarer(bigint, text, bigint, text)',
     'drop_enlever_payer(bigint, numeric, text, text)', 'drop_ticket_ajouter(bigint, text)', 'drop_confirmer_livraison(text, jsonb)',
     'drop_commande_non_livree(text)', 'drop_controler()', 'drop_alerte_vue(bigint)', 'drop_marge_commande(text)', 'drop_bilan_jour(text)'] loop
     execute format('revoke all on function public.%s from public, anon, authenticated', f);
@@ -1095,7 +1179,7 @@ begin
     from (values ('commandes', 'id'), ('commandes', 'lignes'), ('commandes', 'produit'), ('commandes', 'qte'), ('commandes', 'prix'),
                  ('commandes', 'livreur'), ('commandes', 'statut'), ('commandes', 'date_livraison'), ('commandes', 'transporteur'),
                  ('commandes', 'stock_deduit'), ('produits', 'composants'), ('produits', 'stock'),
-                 ('produits_revient', 'prix_revient_ht'), ('stock_sorties_livraison', 'cmd_id'),
+                 ('produits_revient', 'prix_revient_ht'), ('stock_sorties_livraison', 'cmd_id'), ('stock_operations', 'resultat'),
                  ('stock_camion', 'id'), ('stock_camion', 'livreur'), ('stock_camion', 'produit_libelle'), ('stock_camion', 'quantite'),
                  ('stock_camion', 'source_cmd_id'), ('stock_camion', 'source_tournee_id'), ('stock_camion', 'charge_at'),
                  ('stock_camion', 'charge_par'), ('stock_camion', 'status'), ('stock_camion', 'retour_at'), ('stock_camion', 'retour_par'),
@@ -1107,8 +1191,11 @@ begin
   if manque is not null then
     raise exception 'Contrôle 041 : colonnes absentes (%) — appliquer d''abord 038b, 039 et 040. Migration annulée.', manque;
   end if;
-  if to_regprocedure('interne.l040_qte(jsonb)') is null or to_regprocedure('interne.l040_trouver_produit(text, text)') is null then
-    raise exception 'Contrôle 041 : fonctions de la 040 absentes — appliquer d''abord la 040. Migration annulée.';
+  if to_regprocedure('interne.l040_qte(jsonb)') is null or to_regprocedure('interne.l040_trouver_produit(text, text)') is null
+     or to_regprocedure('interne.l040_rejeu(text, text)') is null or to_regprocedure('interne.l040_stocks(text[])') is null
+     or to_regprocedure('interne.l041_deduire_040(text)') is null
+     or to_regprocedure('public.mouvement_stock_produit(text, text, integer, text, text)') is null then
+    raise exception 'Contrôle 041 : fonctions de la 040 révisée absentes — appliquer d''abord la 040 (PR 29, v7.5.198). Migration annulée.';
   end if;
 end $$;
 

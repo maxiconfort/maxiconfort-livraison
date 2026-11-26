@@ -11,8 +11,8 @@
 //   1. recrée le STRICT NÉCESSAIRE du schéma réel (rôles Supabase anon / authenticated / service_role, rôle propriétaire non
 //      superutilisateur avec BYPASSRLS comme « postgres » chez Supabase, privilèges par défaut de Supabase, tables produits /
 //      commandes avec les politiques de session de la migration 019, déclencheur garde_livreur_commandes de la 019 recopié
-//      TEL QUEL depuis le fichier) ; applique TELLES QUELLES les migrations 004 et 031 puis la 040 (contrôles des sections 5
-//      et 6 compris), puis la 040 une 2e fois (rejouable) ;
+//      TEL QUEL depuis le fichier) ; applique TELLES QUELLES les migrations 004 et 031 puis la 040 (contrôles des sections 7
+//      et 8 compris), puis la 040 une 2e fois (rejouable) ;
 //   2. exécute pour de vrai : droits, idempotence, rejeu après réponse perdue, appels « simultanés », livreur d'une autre
 //      commande, commande non livrée, ensemble à composants, substitution automatique, stock insuffisant, journal, garde de
 //      stock_deduit (dont COMPATIBILITÉ : sauvegarde complète ancienne façon v7.5.196 et nouvelle v7.5.197), tout ou rien.
@@ -148,26 +148,26 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   }
   const sql040 = lireMigration('040_deduction_stock_serveur.sql');
   let err040 = null; try { await db.exec(sql040); } catch (e) { err040 = e.message; }
-  test('migration 040 appliquée TELLE QUELLE (contrôles des sections 5 et 6 passés)', err040 === null, err040);
+  test('migration 040 appliquée TELLE QUELLE (contrôles des sections 7 et 8 passés)', err040 === null, err040);
   if (err040) { console.log('\nRÉSULTAT : arrêt, la migration 040 ne s\'applique pas.'); process.exit(1); }
   let err040b = null; try { await db.exec(sql040); } catch (e) { err040b = e.message; }
   test('migration 040 rejouable une 2e fois sans erreur', err040b === null, err040b);
   await db.exec('reset role');
   {
     // l'auto-contrôle s'exécute vraiment : une règle faussée fait échouer la section 6
-    const bloc = sql040.slice(sql040.indexOf('-- 6. Auto-contrôle')); const corps = bloc.slice(bloc.indexOf('do $$'));
+    const bloc = sql040.slice(sql040.indexOf('-- 8. Auto-contrôle')); const corps = bloc.slice(bloc.indexOf('do $$'));
     await db.exec('set role l26_postgres; begin;');
     await db.exec("create or replace function interne.l040_dim_compatible(p_ref text, p_x text) returns boolean language sql immutable as $$ select true $$");
     let e6 = null; try { await db.exec(corps); } catch (e) { e6 = e.message; }
     await db.exec('rollback; reset role;');
-    test('auto-contrôle section 6 : une règle de dimension faussée fait ÉCHOUER la migration', !!e6 && /Auto-contrôle 040/.test(e6), e6);
+    test('auto-contrôle section 8 : une règle de dimension faussée fait ÉCHOUER la migration', !!e6 && /Auto-contrôle 040/.test(e6), e6);
     // le contrôle de la section 5 refuse une base sans la colonne stock_deduit
-    const bloc5 = sql040.slice(sql040.indexOf('-- 5. Contrôle')); const corps5 = bloc5.slice(bloc5.indexOf('do $$'), bloc5.indexOf('-- ───', bloc5.indexOf('do $$')));
+    const bloc5 = sql040.slice(sql040.indexOf('-- 7. Contrôle')); const corps5 = bloc5.slice(bloc5.indexOf('do $$'), bloc5.indexOf('-- ───', bloc5.indexOf('do $$')));
     await db.exec('set role l26_postgres; begin;');
     await db.exec('drop trigger commandes_stock_deduit_garde on public.commandes; alter table public.commandes drop column stock_deduit');
     let e5 = null; try { await db.exec(corps5); } catch (e) { e5 = e.message; }
     await db.exec('rollback; reset role;');
-    test('contrôle section 5 : colonne stock_deduit absente → migration ANNULÉE', !!e5 && /commandes\.stock_deduit/.test(e5), e5);
+    test('contrôle section 7 : colonne stock_deduit absente → migration ANNULÉE', !!e5 && /commandes\.stock_deduit/.test(e5), e5);
   }
   const src = (await un('proprio', "select prosrc from pg_proc where proname = 'deduire_stock_livraison'")).prosrc;
   const iFU = src.search(/from public\.commandes[\s\S]*?for update;/), iDeja = src.indexOf('if coalesce(c.stock_deduit, false) then');
@@ -206,8 +206,10 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   test('retraits : pa −2 (stock 3), pb −1 (stock 9)', r.retraits.length === 2 && r.retraits[0].produit_id === 'pa' && r.retraits[0].qte === 2 && r.retraits[0].stock_apres === 3 && r.retraits[1].produit_id === 'pb' && r.retraits[1].qte === 1 && r.retraits[1].stock_apres === 9, r.retraits);
   test('stocks en base : pa 3, pb 9 ; stock_deduit = vrai ; aucun manque', (await stock('pa')) === 3 && (await stock('pb')) === 9 && (await deduit('#C1')) === true && r.manques.length === 0);
   test('journal écrit : 2 lignes pour #C1, acteur « livreur:LIVREUR-A »', (await journal('#C1')) === 2 && (await un('proprio', "select acteur from public.stock_sorties_livraison where cmd_id = '#C1' limit 1")).acteur === 'livreur:LIVREUR-A');
+  const r1er = r; // réponse du 1er appel (supposée perdue par le téléphone)
   r = await deduire('livreur', '#C1');
-  test('2e appel (réponse du 1er perdue, téléphone qui renvoie) : ok, deja = vrai, rien retiré', r.ok === true && r.deja === true && r.retraits.length === 0, r);
+  test('2e appel (réponse du 1er perdue, téléphone qui renvoie) : ok, deja = vrai, rien retiré en base', r.ok === true && r.deja === true && (await stock('pa')) === 3 && (await stock('pb')) === 9, r);
+  test('… réserve Codex n° 1 : résultat COMPLET de la 1re déduction restitué tel quel (retraits, manques, opération) + stock courant', JSON.stringify(r.retraits) === JSON.stringify(r1er.retraits) && JSON.stringify(r.manques) === JSON.stringify(r1er.manques) && r.operation_id === r1er.operation_id && r.stocks_actuels.pa === 3 && r.stocks_actuels.pb === 9, [r, r1er]);
   for (let i = 0; i < 3; i++) await deduire(i % 2 ? 'admin' : 'livreur', '#C1');
   test('3 rejeux de plus (livreur et admin) : stocks inchangés (pa 3, pb 9), journal toujours 2 lignes', (await stock('pa')) === 3 && (await stock('pb')) === 9 && (await journal('#C1')) === 2);
 
@@ -307,31 +309,27 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   e = await echec('admin', "update public.commandes set stock_deduit = false where id = '#C1'");
   test('administrateur, commande encore « livré » : remise à faux ignorée', e === null && (await deduit('#C1')) === true, e);
   // réserve Codex n° 5 sur 9473d23 : sauvegarde PÉRIMÉE de l'administrateur (copie d'avant le « livré » : statut
-  // en-route, stock_deduit faux, SANS recrédit) → stock_deduit reste vrai ; seule la sauvegarde qui suit un recrédit
-  // (en-tête x-stock-recredit: 1) le remet à faux
+  // en-route, stock_deduit faux) → stock_deduit reste vrai ; seule la fonction de recrédit le remet à faux
   e = await echec('admin', "update public.commandes set statut = 'en-route', stock_deduit = false where id = '#C1'");
-  test('administrateur, sauvegarde PÉRIMÉE (en-route, stock_deduit faux, sans en-tête de recrédit) : stock_deduit reste VRAI', e === null && (await deduit('#C1')) === true, e);
+  test('administrateur, sauvegarde PÉRIMÉE (en-route, stock_deduit faux) : stock_deduit reste VRAI', e === null && (await deduit('#C1')) === true, e);
   await q('proprio', "update public.commandes set statut = 'livré' where id = '#C1'");
   r = await deduire('livreur', '#C1');
   test('… la commande relivrée ensuite ne déduit pas une 2e fois (deja)', r.deja === true && (await stock('pa')) === 1, r);
   ENTETES = JSON.stringify({ 'x-stock-recredit': '1' });
-  e = await echec('collab', "update public.commandes set statut = 'annulé', stock_deduit = false where id = '#C1'");
-  test('collaboratrice avec l\'en-tête de recrédit : refusé (administrateur seulement), stock_deduit reste VRAI', e === null && (await deduit('#C1')) === true, e);
-  await q('proprio', "update public.commandes set statut = 'livré' where id = '#C1'");
-  e = await echec('admin', "update public.commandes set stock_deduit = false where id = '#C1'");
-  test('administrateur avec l\'en-tête mais commande encore « livré » : stock_deduit reste VRAI', e === null && (await deduit('#C1')) === true, e);
-  ENTETES = 'pas du json';
-  e = await echec('admin', "update public.commandes set statut = 'annulé', stock_deduit = false where id = '#C1'");
-  test('en-têtes illisibles : aucune erreur, stock_deduit reste VRAI', e === null && (await deduit('#C1')) === true, e);
-  await q('proprio', "update public.commandes set statut = 'livré' where id = '#C1'");
-  ENTETES = JSON.stringify({ 'x-stock-recredit': '1' });
   e = await echec('admin', "update public.commandes set statut = 'annulé', stock_deduit = false where id = '#C1'");
   ENTETES = '';
-  test('administrateur, recrédit EXPLICITE (commande annulée + en-tête x-stock-recredit) : stock_deduit = faux accepté', e === null && (await deduit('#C1')) === false, e);
+  test('ancien en-tête x-stock-recredit (version précédente de la PR) : sans effet, stock_deduit reste VRAI', e === null && (await deduit('#C1')) === true, e);
+  ENTETES = 'pas du json';
+  e = await echec('admin', "update public.commandes set prix = 5 where id = '#C1'");
+  ENTETES = '';
+  test('en-têtes illisibles : aucune erreur', e === null, e);
   await q('proprio', "update public.commandes set statut = 'livré' where id = '#C1'");
   await q('service_role', "update public.produits set stock = 10 where id in ('pa', 'pb')");
   r = await deduire('livreur', '#C1');
-  test('commande relivrée après recrédit : nouvelle déduction (pa 10 → 8, pb 10 → 9)', r.deja === false && (await stock('pa')) === 8 && (await stock('pb')) === 9, r);
+  test('(remise en état du banc) #C1 toujours déduite : deja', r.deja === true);
+  await q('service_role', "update public.commandes set stock_deduit = false where id = '#C1'");
+  r = await deduire('livreur', '#C1');
+  test('commande dont stock_deduit a été remis à faux par un programme serveur : nouvelle déduction (pa 10 → 8, pb 10 → 9)', r.deja === false && (await stock('pa')) === 8 && (await stock('pb')) === 9, r);
   e = await echec('service_role', "update public.commandes set stock_deduit = false where id = '#C4'");
   test('programme serveur (sans session) : non concerné', e === null && (await deduit('#C4')) === false, e);
   e = await echec('livreur', "update public.commandes set stock_deduit = true where id = '#N-en-route'");
@@ -405,6 +403,155 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   test('journal lisible par l\'administrateur et la collaboratrice, pas par le livreur', Number((await un('admin', 'select count(*)::int as n from public.stock_sorties_livraison')).n) > 0
     && Number((await un('collab', 'select count(*)::int as n from public.stock_sorties_livraison')).n) > 0
     && Number((await un('livreur', 'select count(*)::int as n from public.stock_sorties_livraison')).n) === 0);
+
+  // =========================================================================================================================
+  const fixer = async (stocks) => { for (const [id, v] of Object.entries(stocks)) await q('service_role', 'update public.produits set stock = $2 where id = $1', [id, v]); };
+  const recrediter = async (qui, id, sup) => (await un(qui, 'select public.recrediter_stock_livraison($1, $2) as r', [id, !!sup])).r;
+  const mouvement = async (qui, pid, type, qte, cle) => (await un(qui, 'select public.mouvement_stock_produit($1, $2, $3, $4, $5) as r', [pid, type, qte, 'motif fictif', cle])).r;
+  const nbOps = async (cmd) => Number((await un('proprio', 'select count(*)::int as n from public.stock_operations where cmd_id = $1', [cmd])).n);
+
+  console.log('\n11. RÉSERVE CODEX N° 1 : REJEU APRÈS RÉPONSE PERDUE — RÉSULTAT COMPLET CONSERVÉ (MANQUES, INTROUVABLES)');
+  await fixer({ pc: 1 });
+  await commande('#R1', { lignes: [{ produitId: 'pc', nom: 'Oreiller Fictif C', qte: 3 }, { produitId: 'p-absent', nom: 'Produit Absent Qqq', qte: 1 }] });
+  const rR1 = await deduire('livreur', '#R1');
+  test('1re déduction : retrait partiel (pc 1 sur 3) + manque « stock_insuffisant » + « produit_introuvable »', rR1.retraits.length === 1 && rR1.manques.length === 2 && rR1.manques.some(m => m.raison === 'stock_insuffisant' && m.manque === 2) && rR1.manques.some(m => m.raison === 'produit_introuvable'), rR1);
+  const opR1 = await un('proprio', "select resultat from public.stock_operations where cmd_id = '#R1' and nature = 'deduction'");
+  test('journal des opérations : résultat complet conservé EN BASE, produit introuvable compris', opR1 && opR1.resultat.manques.some(m => m.raison === 'produit_introuvable' && m.nom === 'Produit Absent Qqq'), opR1);
+  for (const qui of ['livreur', 'admin', 'collab']) {
+    const rj = await deduire(qui, '#R1');
+    test('rejeu (' + qui + ') : deja, retraits ET manques identiques à la 1re réponse, rien retiré', rj.deja === true && JSON.stringify(rj.retraits) === JSON.stringify(rR1.retraits) && JSON.stringify(rj.manques) === JSON.stringify(rR1.manques) && (await stock('pc')) === 0, rj);
+  }
+  test('… une seule opération de déduction en base pour #R1', (await nbOps('#R1')) === 1);
+  // commande déduite par une ANCIENNE version (stock_deduit posé par le téléphone) : rien de connu, rien touché
+  await commande('#R2', { lignes: [{ produitId: 'pa', qte: 1 }] });
+  await q('livreur', "update public.commandes set stock_deduit = true where id = '#R2'");
+  const rR2 = await deduire('livreur', '#R2');
+  test('commande déduite par une ancienne version : deja + « resultat_inconnu », aucun retrait', rR2.deja === true && rR2.resultat_inconnu === true && rR2.retraits.length === 0, rR2);
+
+  console.log('\n12. RÉSERVE CODEX N° 2 : RECRÉDIT PAR LA BASE DEPUIS LES SORTIES JOURNALISÉES');
+  await fixer({ pm: 0, 'pz-sub': 5, ps: 8, pc: 1, 'pa-nv': 50 });
+  await commande('#RC1', { lignes: [{ produitId: 'pens', qte: 2 }, { produitId: 'pc', qte: 3 }] });
+  let rc = await deduire('livreur', '#RC1');
+  test('déduction : substitut pz-sub (5 → 3) pour pm en rupture, ps 8 → 4, pc retiré 1 sur 3 (partiel)', (await stock('pz-sub')) === 3 && (await stock('ps')) === 4 && (await stock('pc')) === 0 && (await stock('pm')) === 0, rc);
+  rc = await recrediter('admin', '#RC1');
+  test('recrédit demandé alors que la commande est encore « livré » en base : refus « commande_encore_livree », rien touché', rc.ok === false && rc.erreur === 'commande_encore_livree' && (await stock('ps')) === 4 && (await deduit('#RC1')) === true, rc);
+  test('recrédit par un livreur : « droits_insuffisants » ; sans session : « session_requise »', (await recrediter('livreur', '#RC1')).erreur === 'droits_insuffisants' && (await recrediter('anon', '#RC1')).erreur === 'session_requise');
+  await q('admin', "update public.commandes set statut = 'annulé' where id = '#RC1'");
+  rc = await recrediter('collab', '#RC1');
+  test('commande annulée, collaboratrice : recrédit ok, stock_deduit = faux', rc.ok === true && rc.deja === false && (await deduit('#RC1')) === false, rc);
+  test('… produits et quantités RÉELLEMENT sortis : pz-sub +2 (3 → 5, le substitut), ps +4 (4 → 8), pc +1 seulement (retrait partiel), pm (composant d\'origine) inchangé 0', (await stock('pz-sub')) === 5 && (await stock('ps')) === 8 && (await stock('pc')) === 1 && (await stock('pm')) === 0, rc.retours);
+  const rcRej = await recrediter('admin', '#RC1');
+  test('recrédit rejoué (réponse perdue) : deja, même résultat, stocks inchangés', rcRej.deja === true && JSON.stringify(rcRej.retours) === JSON.stringify(rc.retours) && (await stock('ps')) === 8 && (await stock('pz-sub')) === 5, rcRej);
+  e = await echec('admin', "update public.commandes set stock_deduit = true where id = '#RC1'");
+  r = await deduire('livreur', '#RC1');
+  test('après recrédit, une sauvegarde qui remet stock_deduit = vrai (mode transitoire) puis un rejeu de déduction : deja (pas de 2e retrait)', e === null && r.deja === true && (await stock('ps')) === 8, r);
+  await q('service_role', "update public.commandes set stock_deduit = false where id = '#RC1'");
+  await q('admin', "update public.commandes set statut = 'livré' where id = '#RC1'");
+  await fixer({ pm: 6 });
+  r = await deduire('livreur', '#RC1');
+  test('relivrée : nouvelle déduction (pm 6 → 4, ps 8 → 4, pc 1 → 0)', r.deja === false && (await stock('pm')) === 4 && (await stock('ps')) === 4 && (await stock('pc')) === 0, r);
+  await q('admin', "update public.commandes set statut = 'annulé' where id = '#RC1'");
+  rc = await recrediter('admin', '#RC1');
+  test('2e annulation : seulement les sorties de la 2e livraison (pm +2 → 6, ps +4 → 8, pc +1 → 1 ; pz-sub inchangé 5)', rc.ok && (await stock('pm')) === 6 && (await stock('ps')) === 8 && (await stock('pc')) === 1 && (await stock('pz-sub')) === 5, rc.retours);
+  // commande déduite par une ANCIENNE version : quantités inconnues → rien touché
+  await commande('#RC2', { statut: 'annulé', lignes: [{ produitId: 'pa', qte: 1 }] });
+  await q('livreur', "update public.commandes set stock_deduit = true where id = '#RC2'");
+  const paRC2 = await stock('pa');
+  rc = await recrediter('admin', '#RC2');
+  test('déduite par une ancienne version (aucune sortie journalisée) : « sans_journal », rien touché, stock_deduit reste vrai', rc.ok === false && rc.erreur === 'sans_journal' && (await stock('pa')) === paRC2 && (await deduit('#RC2')) === true, rc);
+  // suppression d'une commande livrée
+  await commande('#RC3', { lignes: [{ produitId: 'pb', qte: 2 }] });
+  await deduire('livreur', '#RC3');
+  const pbRC3 = await stock('pb');
+  rc = await recrediter('admin', '#RC3', true);
+  test('suppression d\'une commande encore « livré » (p_suppression) : recrédit fait (pb +2)', rc.ok === true && (await stock('pb')) === pbRC3 + 2, rc);
+  await commande('#RC4', { lignes: [{ produitId: 'pb', qte: 1 }] });
+  await deduire('livreur', '#RC4');
+  await q('proprio', "delete from public.commandes where id = '#RC4'");
+  const pbRC4 = await stock('pb');
+  test('commande déjà supprimée, sans p_suppression : « commande_introuvable »', (await recrediter('admin', '#RC4')).erreur === 'commande_introuvable');
+  rc = await recrediter('admin', '#RC4', true);
+  test('commande déjà supprimée, p_suppression : recrédit depuis le journal (pb +1)', rc.ok === true && rc.deja === false && (await stock('pb')) === pbRC4 + 1, rc);
+  rc = await recrediter('admin', '#RC4', true);
+  test('… rejoué : deja, pb inchangé', rc.deja === true && (await stock('pb')) === pbRC4 + 1, rc);
+  const srcR = (await un('proprio', "select prosrc from pg_proc where proname = 'recrediter_stock_livraison'")).prosrc;
+  test('texte du recrédit : verrou de la commande puis produits verrouillés dans l\'ordre des identifiants', /pg_advisory_xact_lock\(hashtext\('l040\|'/.test(srcR) && /perform 1 from public\.produits where id = any \(v_ids\) order by id for update;/.test(srcR));
+
+  console.log('\n13. RÉSERVE CODEX N° 3 : MOUVEMENTS MANUELS PAR LA BASE ; FICHES SANS STOCK ; MODE STRICT');
+  await fixer({ pa: 10 });
+  let mv = await mouvement('collab', 'pa', 'entree', 5, 'mv-essai-0001');
+  test('entrée +5 (collaboratrice) : calculée par la base (10 → 15)', mv.ok === true && mv.deja === false && mv.stock_apres === 15 && (await stock('pa')) === 15, mv);
+  mv = await mouvement('collab', 'pa', 'entree', 5, 'mv-essai-0001');
+  test('même clé rejouée (réponse perdue) : deja, stock inchangé (15)', mv.deja === true && mv.stock_apres === 15 && (await stock('pa')) === 15, mv);
+  test('même clé pour un autre produit : « cle_deja_utilisee »', (await mouvement('admin', 'pb', 'entree', 1, 'mv-essai-0001')).erreur === 'cle_deja_utilisee');
+  mv = await mouvement('admin', 'pa', 'sortie', 40, 'mv-essai-0002');
+  test('sortie plus grande que le stock : 0, jamais négatif', mv.stock_apres === 0 && (await stock('pa')) === 0, mv);
+  mv = await mouvement('admin', 'pa', 'correction', 12, 'mv-essai-0003');
+  test('correction explicite du bureau : stock = 12', mv.stock_apres === 12 && (await stock('pa')) === 12, mv);
+  test('refus : livreur, type inconnu, quantité 0 en entrée, clé trop courte, produit absent', (await mouvement('livreur', 'pa', 'entree', 1, 'mv-essai-0004')).erreur === 'droits_insuffisants'
+    && (await mouvement('admin', 'pa', 'vol', 1, 'mv-essai-0005')).erreur === 'type_invalide'
+    && (await mouvement('admin', 'pa', 'entree', 0, 'mv-essai-0006')).erreur === 'quantite_invalide'
+    && (await mouvement('admin', 'pa', 'entree', 1, 'court')).erreur === 'cle_requise'
+    && (await mouvement('admin', 'p-absent', 'entree', 1, 'mv-essai-0007')).erreur === 'produit_introuvable' && (await stock('pa')) === 12);
+  // déduction concurrente : l'administrateur a ouvert la fiche (stock lu 12), une livraison retire 2, puis il enregistre
+  const upsertFiche = (avecStock) => `insert into public.produits (id, nom, cat, dim, prix${avecStock ? ', stock' : ''}, updated_at) values ('pa', $1, 'Matelas', '140x190', 199${avecStock ? ', 12' : ''}, now())
+    on conflict (id) do update set nom = excluded.nom, prix = excluded.prix${avecStock ? ', stock = excluded.stock' : ''}, updated_at = excluded.updated_at`;
+  await commande('#M1', { lignes: [{ produitId: 'pa', qte: 2 }] });
+  await deduire('livreur', '#M1');
+  e = await echec('admin', upsertFiche(false), ['Matelas Fictif A (renommé)']);
+  test('fiche v7.5.198 (sans le champ stock) enregistrée APRÈS une déduction : nom changé, stock de la base gardé (10)', e === null && (await stock('pa')) === 10 && (await un('proprio', "select nom from public.produits where id = 'pa'")).nom === 'Matelas Fictif A (renommé)', e);
+  e = await echec('admin', upsertFiche(true), ['Matelas Fictif A']);
+  test('mode TRANSITOIRE : fiche d\'une ANCIENNE version avec un stock périmé (12) : acceptée telle quelle (compatibilité, limite documentée)', e === null && (await stock('pa')) === 12, e);
+  await q('proprio', "update interne.l040_reglages set actif = true where cle = 'strict_toutes_versions'");
+  await commande('#M2', { lignes: [{ produitId: 'pa', qte: 2 }] });
+  await deduire('livreur', '#M2');
+  e = await echec('admin', upsertFiche(true), ['Matelas Fictif A (strict)']);
+  test('mode STRICT : fiche périmée (stock 12) après une déduction : AUCUNE erreur, nom enregistré, stock de la base gardé (10)', e === null && (await stock('pa')) === 10 && (await un('proprio', "select nom from public.produits where id = 'pa'")).nom === 'Matelas Fictif A (strict)', e);
+  e = await echec('livreur', "update public.produits set stock = 99 where id = 'pa'");
+  test('mode STRICT : PATCH du stock par un livreur (ancienne version) : aucune erreur, ignoré (10)', e === null && (await stock('pa')) === 10, e);
+  e = await echec('collab', "update public.produits set stock = 99 where id = 'pa'");
+  test('mode STRICT : collaboratrice, écriture directe du stock : ignorée (10)', e === null && (await stock('pa')) === 10, e);
+  mv = await mouvement('admin', 'pa', 'entree', 3, 'mv-essai-0008');
+  test('mode STRICT : les fonctions écrivent toujours (entrée +3 → 13)', mv.ok && (await stock('pa')) === 13, mv);
+  e = await echec('admin', "insert into public.produits (id, nom, cat, stock) values ('p-neuf', 'Produit Neuf Fictif', 'Matelas', 7)");
+  test('mode STRICT : création d\'une fiche avec son stock initial : acceptée (7)', e === null && (await stock('p-neuf')) === 7, e);
+  await q('service_role', "update public.produits set stock = 20 where id = 'pa'");
+  test('mode STRICT : programme serveur (sans session) : non concerné (20)', (await stock('pa')) === 20);
+  await commande('#M3', { lignes: [{ produitId: 'pa', qte: 1 }] });
+  e = await echec('livreur', "update public.commandes set stock_deduit = true where id = '#M3'");
+  test('mode STRICT : stock_deduit posé par une ancienne version : ignoré (faux)', e === null && (await deduit('#M3')) === false, e);
+  r = await deduire('livreur', '#M3');
+  test('… la fonction déduit normalement (pa 20 → 19)', r.deja === false && (await stock('pa')) === 19, r);
+  await q('admin', "update public.commandes set statut = 'annulé' where id = '#M3'");
+  rc = await recrediter('admin', '#M3');
+  test('mode STRICT : recrédit par la fonction (19 → 20, stock_deduit faux)', rc.ok && (await stock('pa')) === 20 && (await deduit('#M3')) === false, rc);
+  await q('proprio', "update interne.l040_reglages set actif = false where cle = 'strict_toutes_versions'");
+  let e040c = null; try { await db.exec('set role l26_postgres'); await db.exec("update interne.l040_reglages set actif = true where cle = 'strict_toutes_versions'"); await db.exec(sql040); } catch (x) { e040c = x.message; } finally { await db.exec('reset role'); }
+  test('migration 040 rejouée en mode strict : sans erreur, réglage strict CONSERVÉ', e040c === null && (await un('proprio', "select actif from interne.l040_reglages where cle = 'strict_toutes_versions'")).actif === true, e040c);
+  await q('proprio', "update interne.l040_reglages set actif = false where cle = 'strict_toutes_versions'");
+  test('réglage : aucun accès pour les sessions de l\'application', !!(await echec('admin', 'select * from interne.l040_reglages')));
+  test('journal des opérations : écriture directe refusée, même à l\'administrateur', /permission denied/.test(await echec('admin', "insert into public.stock_operations (nature, resultat) values ('mouvement', '{}')") || ''));
+
+  console.log('\n14. RÉSERVE CODEX N° 4 : VERROUS STABLES, COMPOSITION LUE SOUS VERROU');
+  const srcD = (await un('proprio', "select prosrc from pg_proc where proname = 'deduire_stock_livraison'")).prosrc;
+  test('texte : seulement DEUX prises de verrou de ligne (la commande, puis les produits dans l\'ordre des identifiants)', (srcD.match(/for update/g) || []).length === 2, srcD.match(/for update/g));
+  test('texte : composition relue SOUS verrou (interne.l040_verrous_requis APRÈS le verrou), sous-transaction recommencée sinon', /order by id for update;\s*v_requis := interne\.l040_verrous_requis\(v_ids_lignes\);[\s\S]{0,200}raise exception using errcode = 'L4001'/.test(srcD) && /exception when sqlstate 'L4001'/.test(srcD));
+  test('texte : substitut choisi seulement parmi les produits verrouillés', /x\.id = any \(v_ids\)/.test(srcD));
+  // composition modifiée entre l'ouverture de la commande et la livraison (même transaction : modification, puis appel)
+  await fixer({ pm: 5, ps: 5, pb: 5, pc: 5 });
+  await commande('#V1', { lignes: [{ produitId: 'pens', qte: 1 }] });
+  await contexte('admin'); await db.exec('begin');
+  await db.query(`update public.produits set composants = '[{"id":"pb","qte":1},{"id":"pc","qte":2}]' where id = 'pens'`);
+  const rV1 = (await db.query("select public.deduire_stock_livraison('#V1') as r")).rows[0].r;
+  await db.exec('commit'); await db.exec('reset role');
+  test('composition modifiée juste avant (pm+ps → pb+pc×2) : la NOUVELLE composition est retirée (pb 5 → 4, pc 5 → 3), l\'ancienne non (pm, ps 5)', rV1.ok && (await stock('pb')) === 4 && (await stock('pc')) === 3 && (await stock('pm')) === 5 && (await stock('ps')) === 5, rV1);
+  // nouvelle catégorie de composant : ses substituts sont verrouillés à la passe suivante et peuvent être choisis
+  await q('service_role', "insert into public.produits (id, nom, cat, dim, prix, stock) values ('pt1', 'Tête Fictive 1', 'Tete', '140x190', 50, 0), ('pt2', 'Tête Fictive 2', 'Tete', '140x190', 50, 4)");
+  await q('admin', `update public.produits set composants = '[{"id":"pt1","qte":1}]' where id = 'pens'`);
+  await commande('#V2', { lignes: [{ produitId: 'pens', qte: 2 }] });
+  const rV2 = await deduire('livreur', '#V2');
+  test('composant d\'une nouvelle catégorie en rupture : substitut de cette catégorie verrouillé et pris (pt2 4 → 2)', rV2.ok && (await stock('pt2')) === 2 && rV2.retraits[0].substitue_de === 'pt1', rV2);
+  await q('admin', `update public.produits set composants = '[{"id":"pm","qte":1},{"id":"ps","qte":2}]' where id = 'pens'`);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

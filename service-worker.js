@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.199 - Dropshipping encadre et provenance de chaque piece (migration 041) : 3 pare-feu du livreur (chargement Depot / fournisseur / camion, enlevement paye avec photo du ticket, livraison piece par piece), stock du camion, page admin Dropshipping (bilan du jour, alertes, fournisseurs, prix HT, references activees) (27/11/2026)
-// v7.5.198 - Fusion de la PR 29 (v7.5.197 : stock d'une livraison deduit par la base, migration 040) dans Commandes filtres (v7.5.190) : refus definitif de la base (v7.5.135) garde dans la file corrigee, livre local protege aussi dans le temps reel factorise (26/11/2026)
+// v7.5.200 - Fusion de la PR 29 (v7.5.198 : recredit et mouvements manuels du stock par la base, migration 040 revisee) dans le dropshipping (v7.5.199, migration 041 : deduction limitee aux pieces Depot posee sur la 040 revisee) + STOCK TAMPON dropshipping (achats d avance en lots au prix HT reel, premier entre premier sorti) + libelle Depot - stock BMS (27/11/2026)
+// v7.5.199 - Dropshipping encadre et provenance de chaque piece (migration 041) : 3 pare-feu du livreur (chargement Depot / fournisseur / camion, enlevement paye avec photo du ticket, livraison piece par piece), stock du camion, page admin Dropshipping (bilan du jour, alertes, fournisseurs, prix HT, references activees) ; inclut la fusion de la PR 29 v7.5.197 dans Commandes filtres (refus definitif de la base garde dans la file corrigee) (27/11/2026)
+// v7.5.198 - Recredit a l'annulation et mouvements manuels du stock faits PAR LA BASE (recrediter_stock_livraison, mouvement_stock_produit, migration 040), resultat complet de la deduction restitue au rejeu, fiches produit envoyees sans le stock (sauf creation), stock_deduit tenu par la base (27/11/2026)
 // v7.5.197 - Stock d'une livraison deduit PAR LA BASE (fonction deduire_stock_livraison, migration 040), une seule fois par commande ; demande gardee en file et rejouee sans double effet ; calcul du stock sur le telephone supprime (26/11/2026)
 // v7.5.196 - Deductions de stock suivies sur l'appareil (reprises apres fermeture), stock_deduit seulement si tous les produits sont enregistres, PATCH du livreur conditionnel (delta), versions anciennes invalidees apres un succes (26/11/2026)
 // v7.5.195 - File : contexte de rejeu en parametre (plus de variable globale), fiche relancee garde sa date, fiche admin rejouee sans ecraser un stock plus recent, rotation des lectures du controle admin (26/11/2026)
@@ -56,7 +57,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-199';
+const CACHE_VERSION = 'maxiconfort-v7-5-200';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

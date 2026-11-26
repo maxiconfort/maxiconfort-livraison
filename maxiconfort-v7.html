@@ -3581,6 +3581,17 @@ function oqSignalerPurge() {
   } catch(e) { return; } // notification pas créée : le récapitulatif reste pour la prochaine fois
   try { localStorage.removeItem(OQ_PURGE_CLE); } catch(e) {}
 }
+// v7.5.198 (réserve Codex n° 3 sur f25b1f1) : une mise à jour de stock du livreur en VALEUR ABSOLUE (laissée en file
+// par une version antérieure) n'est plus jamais envoyée : comptée dans le même récapitulatif, signalée une fois
+function oqStockAncienSignaler(p) {
+  var recap = { n: 0, noms: [] }, nom = (p && (p.nom || p.id)) || '?';
+  try { var _r = JSON.parse(localStorage.getItem(OQ_PURGE_CLE) || 'null'); if (_r && _r.n) recap = { n: Number(_r.n) || 0, noms: Array.isArray(_r.noms) ? _r.noms : [] }; } catch(e) {}
+  recap.n += 1; if (recap.noms.indexOf(nom) < 0) recap.noms.push(nom);
+  var ecrit = true;
+  try { localStorage.setItem(OQ_PURGE_CLE, JSON.stringify(recap)); } catch(e) { ecrit = false; }
+  if (ecrit) { if (!(typeof _oqFlushEnCours !== 'undefined' && _oqFlushEnCours)) oqSignalerPurge(); return; } // rejeu : une seule notification à la fin
+  try { notifAjout('warn', 'stock', 'Stock : 1 mise à jour ancienne non envoyée', '1 mise à jour de stock ancienne non envoyée (produit : ' + nom + ') — stock à vérifier à l\'inventaire.', 'Gérer le stock', 'stock'); } catch(e) {}
+}
 // v7.5.191 : dans la file, une seule entrée par commande et par produit (la plus récente).
 // v7.5.193 (réserve Codex 1) : « la plus récente » = la plus grande date de mise en file (ts), pas la dernière
 // position : un ancien élément remis en file pendant un rejeu ne remplace jamais une modification plus récente.
@@ -3595,6 +3606,8 @@ function oqCle(it) {
   if (it.type === 'commande') return 'commande|' + it.data.id;
   if (it.type === 'deduction') return 'deduction|' + it.data.id; // v7.5.197 : une seule demande par commande
   if (it.type === 'drop') return 'drop|' + it.data.id; // v7.5.199 : une demande dropshipping par clé (confirmation, enlèvement…)
+  if (it.type === 'recredit') return 'recredit|' + it.data.id;   // v7.5.198 : une seule demande par commande
+  if (it.type === 'mouvement') return 'mouvement|' + it.data.id; // v7.5.198 : une par clé d'idempotence
   if (it.type === 'produit' && it.oqv) return 'produit|' + oqGenreProduit(it.role) + '|' + it.data.id;
   return null;
 }
@@ -3696,38 +3709,72 @@ function stkDeductionPoser(cmd) {
   if (!dedEnFile(cmd.id)) offlineQueueAdd('deduction', { id: cmd.id });
   return true;
 }
+// v7.5.198 (réserve Codex n° 1 sur f25b1f1) : chaque réponse de la base (déduction, recrédit, mouvement) porte
+// stocks_actuels (stock COURANT des produits touchés, lu par la base) et operation_id. Le stock affiché suit
+// stocks_actuels ; l'historique local et les alertes d'une opération ne sont appliqués qu'UNE fois par appareil
+// (operation_id retenu dans mx_stock_ops_appliquees), même si la réponse arrive par un rejeu (« deja », qui restitue
+// le résultat COMPLET de la première opération : retraits, manques, produits introuvables).
+var STK_OPS_CLE = 'mx_stock_ops_appliquees', _stkOpsMem = null;
+function stkOpsLire() {
+  if (_stkOpsMem) return _stkOpsMem;
+  try { var l = JSON.parse(localStorage.getItem(STK_OPS_CLE) || '[]'); _stkOpsMem = Array.isArray(l) ? l : []; } catch(e) { _stkOpsMem = []; }
+  return _stkOpsMem;
+}
+// vrai si l'opération était déjà appliquée sur cet appareil ; sinon la retient et répond faux
+function stkOpDejaVue(opId) {
+  if (opId === undefined || opId === null || opId === '') return false;
+  var l = stkOpsLire(), k = String(opId);
+  if (l.indexOf(k) >= 0) return true;
+  l.push(k); if (l.length > 300) l.splice(0, l.length - 300);
+  try { localStorage.setItem(STK_OPS_CLE, JSON.stringify(l)); } catch(e) {} // en mémoire au moins pour la session
+  return false;
+}
+function stkProduit(id) {
+  return (typeof produits !== 'undefined' && Array.isArray(produits)) ? (produits.find(function(pp) { return pp && pp.id === id; }) || null) : null;
+}
+function stkStocksActuels(rep) {
+  var sa = rep && rep.stocks_actuels;
+  if (!sa || typeof sa !== 'object') return false;
+  Object.keys(sa).forEach(function(id) { var p = stkProduit(id), v = Number(sa[id]); if (p && sa[id] !== null && isFinite(v)) p.stock = v; });
+  return true;
+}
+function stkRafraichir() {
+  try { var pStock = document.getElementById('p-stock'); if (pStock && pStock.classList.contains('on')) stkRender(); } catch(e) {}
+  try { if (typeof role !== 'undefined' && role !== 'collab' && typeof finRender === 'function') finRender(); } catch(e) {}
+}
 // réponse de la base appliquée à l'affichage (stock des produits retirés, historique local, alertes)
 function dedAppliquer(id, rep, cmdV) {
   var cmd = dedCommande(id, cmdV);
   if (cmd) cmd.stockDeduit = true;
   var cL = dedCommande(id, null); if (cL && cL !== cmd) cL.stockDeduit = true;
-  if (rep.deja) return;
+  var avecActuels = stkStocksActuels(rep);
+  if (rep.resultat_inconnu || stkOpDejaVue(rep.operation_id)) { stkRafraichir(); return; }
   var jour = new Date().toISOString().split('T')[0];
   (Array.isArray(rep.retraits) ? rep.retraits : []).forEach(function(x) {
     if (!x) return;
-    var p = (typeof produits !== 'undefined' && Array.isArray(produits)) ? produits.find(function(pp) { return pp && pp.id === x.produit_id; }) : null;
+    var p = stkProduit(x.produit_id);
     var apres = Number(x.stock_apres), nom = (p && p.nom) || x.nom || x.produit_id;
-    if (p && isFinite(apres)) p.stock = apres;
+    if (p && !avecActuels && isFinite(apres)) p.stock = apres;
     try {
       stkMouvements.unshift({ date: jour, produit: nom, type: 'sortie-livraison', qte: -(Number(x.qte) || 0), stockApres: apres, auto: true, substitue: !!x.substitue_de,
         motif: 'Livraison ' + id + ((cmd && cmd.client) ? ' → ' + cmd.client : '') + (x.composant_de ? ' (composant de ' + x.composant_de + ')' : '')
              + (x.substitue_de ? ' [SUBSTITUTION auto : remplace ' + x.substitue_de + ' en rupture]' : '') });
     } catch(e) {}
-    if (!p || !isFinite(apres)) return;
-    if (apres === 0) {
+    var niv = (p && avecActuels) ? Number(p.stock) : apres; // alerte sur le stock COURANT (rejeu tardif)
+    if (!p || !isFinite(niv)) return;
+    if (niv === 0) {
       try { toast('❌ RUPTURE : ' + nom, 'err'); } catch(e) {}
       try { notifAjout('urgent', 'stock', 'Rupture — ' + nom, 'Stock épuisé après livraison.', 'Gérer le stock', 'stock'); } catch(e) {}
-    } else if (apres <= p.seuil) {
-      try { toast('⚠️ Stock bas : ' + nom + ' (' + apres + ' restants)', 'info'); } catch(e) {}
-      try { notifAjout('warn', 'stock', 'Stock bas — ' + nom, apres + ' unité(s). Seuil: ' + p.seuil, 'Réapprovisionner', 'stock'); } catch(e) {}
+    } else if (niv <= p.seuil) {
+      try { toast('⚠️ Stock bas : ' + nom + ' (' + niv + ' restants)', 'info'); } catch(e) {}
+      try { notifAjout('warn', 'stock', 'Stock bas — ' + nom, niv + ' unité(s). Seuil: ' + p.seuil, 'Réapprovisionner', 'stock'); } catch(e) {}
     }
   });
   var manques = Array.isArray(rep.manques) ? rep.manques : [];
   if (manques.length) {
     try { notifAjout('warn', 'stock', 'Stock insuffisant à la livraison ' + id + ' — à vérifier', manques.map(function(m) { return (m.nom || m.produit_id || '?') + (m.raison === 'stock_insuffisant' ? ' : manque ' + m.manque : ' : introuvable'); }).join(', ') + '. Le stock en base ne descend jamais sous 0.', 'Gérer le stock', 'stock'); } catch(e) {}
   }
-  try { var pStock = document.getElementById('p-stock'); if (pStock && pStock.classList.contains('on')) stkRender(); } catch(e) {}
-  try { if (typeof role !== 'undefined' && role !== 'collab' && typeof finRender === 'function') finRender(); } catch(e) {}
+  stkRafraichir();
 }
 function dedErreurSignaler(id, detail) {
   if (_dedErreurVue[id]) return; _dedErreurVue[id] = true;
@@ -3807,7 +3854,174 @@ function stkReprendreDeductions(force) {
     if (!force && Number(_dedProchain[id]) > now) return;
     p.push(stkDeductionEnvoyer(id, c));
   });
+  // v7.5.198 : recrédits et mouvements manuels restés en file (session admin / collab seulement)
+  var rc = (typeof role !== 'undefined') ? role : null;
+  if (rc === 'admin' || rc === 'collab') {
+    offlineQueue.filter(function(q) { return q && (q.type === 'recredit' || q.type === 'mouvement') && q.data && q.data.id; }).forEach(function(q) {
+      var id = q.data.id;
+      if (!force && Number(_dedProchain[q.type + '|' + id]) > now) return;
+      if (q.type === 'recredit') {
+        if (offlineQueue.some(function(x) { return oqCle(x) === 'commande|' + id; })) return; // statut d'abord
+        p.push(stkRecreditEnvoyer(id));
+      } else p.push(stkMouvementEnvoyer(id));
+    });
+  }
   return Promise.all(p).then(function() {});
+}
+
+// v7.5.198 : appel d'une fonction de la base (rpc) — { etat: 'ok' | 'reseau' | 'absente' | 'http', status, corps }
+async function stkRpc(nom, corps) {
+  var resp, txt = '', c = null;
+  try {
+    resp = await fetch(SUPABASE_URL + '/rest/v1/rpc/' + nom, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
+      body: JSON.stringify(corps)
+    });
+  } catch(e) { return { etat: 'reseau' }; } // coupure, ou réponse perdue après l'effet : le rejeu répondra « deja »
+  try { txt = await resp.text(); c = txt ? JSON.parse(txt) : null; } catch(e) { c = null; }
+  if (!resp.ok) {
+    if (resp.status === 404 || (c && c.code === 'PGRST202')) { // fonction absente : migration 040 pas appliquée
+      if (!_dedBaseAbsenteVue) { _dedBaseAbsenteVue = true; try { toast(DED_BASE_ABSENTE_MSG, 'info'); } catch(e) {} }
+      return { etat: 'absente', status: resp.status };
+    }
+    return { etat: 'http', status: resp.status, corps: c };
+  }
+  return { etat: 'ok', status: resp.status, corps: c };
+}
+function stkFileRetirer(cle) {
+  var n = offlineQueue.length;
+  offlineQueue = offlineQueue.filter(function(q) { return oqCle(q) !== cle; });
+  if (offlineQueue.length !== n) { oqEcrire(); }
+  try { oqIndicateur(); } catch(e) {}
+}
+function stkFileItem(cle) { return offlineQueue.find(function(q) { return oqCle(q) === cle; }) || null; }
+// un seul envoi à la fois par clé ; « reessayer » → prochain essai automatique pas avant 1 min (5 min si absente)
+var _stkEnvoi = {};
+function stkUnEnvoi(cle, fn) {
+  if (_stkEnvoi[cle]) return _stkEnvoi[cle];
+  var fin = Promise.resolve().then(fn).catch(function() { return 'reessayer'; }).then(function(r) {
+    delete _stkEnvoi[cle];
+    if (r === 'absente' || r === 'reessayer') _dedProchain[cle] = Date.now() + (r === 'absente' ? DED_PAUSE_ABSENTE_MS : DED_PAUSE_MS);
+    else delete _dedProchain[cle];
+    return r === 'absente' ? 'reessayer' : r;
+  });
+  _stkEnvoi[cle] = fin;
+  return fin;
+}
+
+// v7.5.198 (réserve Codex n° 2 sur f25b1f1) : RECRÉDIT À L'ANNULATION FAIT PAR LA BASE (recrediter_stock_livraison,
+// migration 040), depuis les sorties RÉELLEMENT journalisées de la dernière déduction (substitut compris, retrait
+// partiel compris), une seule fois, administrateur ou collaboratrice. Le téléphone n'envoie aucune quantité. La demande
+// est posée dans la file (« recredit|<commande> ») AVANT l'envoi, envoyée APRÈS l'enregistrement du nouveau statut, et
+// n'en sort qu'après une réponse de la base (rejeu sans double effet : « deja »). stock_deduit est remis à faux PAR LA
+// BASE (plus d'en-tête x-stock-recredit ni de marque _recredit).
+function stkRecreditAppliquer(id, rep) {
+  var cmd = dedCommande(id, null);
+  if (cmd) cmd.stockDeduit = false;
+  stkStocksActuels(rep);
+  if (rep.resultat_inconnu || stkOpDejaVue(rep.operation_id)) { stkRafraichir(); return; }
+  var jour = new Date().toISOString().split('T')[0];
+  (Array.isArray(rep.retours) ? rep.retours : []).forEach(function(x) {
+    if (!x || !(Number(x.qte) > 0)) return;
+    var p = stkProduit(x.produit_id), nom = (p && p.nom) || x.nom || x.produit_id;
+    try {
+      stkMouvements.unshift({ date: jour, produit: nom, type: 'retour-annulation', qte: Number(x.qte), stockApres: Number(x.stock_apres), auto: true,
+        motif: 'Annulation livraison ' + id + ((cmd && cmd.client) ? ' → ' + cmd.client : '') });
+    } catch(e) {}
+    try { toast('↩️ Stock recrédité : ' + nom + ' (+' + x.qte + ')', 'ok'); } catch(e) {}
+  });
+  stkRafraichir();
+}
+function stkRecreditSignaler(id, titre, texte) {
+  if (_dedErreurVue['recredit|' + id + '|' + titre]) return; _dedErreurVue['recredit|' + id + '|' + titre] = true;
+  try { notifAjout('warn', 'stock', titre, texte, 'Gérer le stock', 'stock'); } catch(e) {}
+}
+// UN envoi : 'ok' | 'deja' | 'reessayer' (gardé en file) | 'refus' / 'abandon' (retiré de la file)
+function stkRecreditEnvoyer(id) {
+  var cle = 'recredit|' + id;
+  return stkUnEnvoi(cle, async function() {
+    var it = stkFileItem(cle);
+    var x = await stkRpc('recrediter_stock_livraison', { p_cmd_id: id, p_suppression: !!(it && it.data && it.data.suppression) });
+    if (x.etat === 'reseau') return 'reessayer';
+    if (x.etat === 'absente') return 'absente';
+    if (x.etat === 'http') {
+      if (!httpTemporaire(x.status)) stkRecreditSignaler(id, 'Recrédit de stock en attente : ' + id + ' — réessai automatique', 'La base n\'a pas encore accepté le recrédit du stock de cette commande (HTTP ' + x.status + '). La demande reste sur l\'appareil et sera renvoyée (jamais deux fois).');
+      return 'reessayer';
+    }
+    var c = x.corps;
+    if (!c || typeof c !== 'object') return 'reessayer';
+    if (c.ok) { stkRecreditAppliquer(id, c); stkFileRetirer(cle); return c.deja ? 'deja' : 'ok'; }
+    if (c.erreur === 'commande_encore_livree') {
+      // le nouveau statut n'est pas encore enregistré en base (en file, ou envoi en cours) : réessayer ; sinon la
+      // commande a été relivrée entre-temps : rien à recréditer
+      var cmd = dedCommande(id, null), cq = stkFileItem('commande|' + id);
+      if ((cmd && !livEstLivre(cmd.statut)) || (cq && cq.data && !livEstLivre(cq.data.statut))) return 'reessayer';
+      stkFileRetirer(cle); return 'abandon';
+    }
+    if (c.erreur === 'sans_journal') {
+      stkFileRetirer(cle);
+      stkRecreditSignaler(id, 'Recrédit de stock à faire à la main : ' + id, 'Cette livraison a été déduite par une ancienne version de l\'application : la base ne connaît pas les quantités sorties. Rien n\'a été recrédité ; corriger le stock depuis la page Stock.');
+      return 'refus';
+    }
+    if (c.erreur === 'commande_introuvable' || c.erreur === 'droits_insuffisants' || c.erreur === 'commande_requise') {
+      stkFileRetirer(cle);
+      stkRecreditSignaler(id, 'Recrédit de stock refusé : ' + id + ' — à vérifier', 'La base a refusé le recrédit du stock de cette commande (' + c.erreur + '). Rien n\'a été recrédité : vérifier le stock.');
+      return 'refus';
+    }
+    return 'reessayer'; // session expirée ou autre : gardée, renvoyée après reconnexion
+  });
+}
+// demande complète : posée en file, puis envoyée APRÈS l'enregistrement du statut (opts.avant) ; ne rejette jamais
+function stkRecreditDemander(cmdId, opts) {
+  if (!cmdId) return Promise.resolve('abandon');
+  var sup = !!(opts && opts.suppression), it = stkFileItem('recredit|' + cmdId);
+  try {
+    if (!it) offlineQueueAdd('recredit', { id: cmdId, suppression: sup });
+    else if (sup && !it.data.suppression) { it.data.suppression = true; oqEcrire(); }
+  } catch(e) { console.warn('[stock] demande de recrédit :', e && e.message); }
+  return Promise.resolve(opts && opts.avant).catch(function() {}).then(function() { return stkRecreditEnvoyer(cmdId); })
+    .catch(function(e) { console.warn('[stock] recrédit :', e && e.message); return 'reessayer'; });
+}
+
+// v7.5.198 (réserve Codex n° 3 sur f25b1f1) : ENTRÉE / RETOUR / SORTIE / CORRECTION manuelle du stock faite PAR LA BASE
+// (mouvement_stock_produit, migration 040) sur le stock verrouillé : jamais une valeur lue plus tôt sur l'appareil. Clé
+// d'idempotence choisie ici (« mouvement|<clé> » en file) : un rejeu après une réponse perdue n'applique rien deux fois.
+function stkMouvementCle() { return 'mv-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10); }
+function stkMouvementDemander(p, type, qte, motif) {
+  if (!p || !p.id) return Promise.resolve('abandon');
+  var cle = stkMouvementCle();
+  try { offlineQueueAdd('mouvement', { id: cle, produit_id: p.id, nom: p.nom || '', type: type, qte: Math.max(0, parseInt(qte) || 0), motif: motif || '' }); }
+  catch(e) { console.warn('[stock] mouvement :', e && e.message); }
+  return stkMouvementEnvoyer(cle);
+}
+function stkMouvementEnvoyer(cleMv) {
+  var cle = 'mouvement|' + cleMv;
+  return stkUnEnvoi(cle, async function() {
+    var it = stkFileItem(cle);
+    if (!it) return 'abandon';
+    var d = it.data;
+    var x = await stkRpc('mouvement_stock_produit', { p_produit_id: d.produit_id, p_type: d.type, p_qte: d.qte, p_motif: d.motif || null, p_cle: cleMv });
+    if (x.etat === 'reseau') return 'reessayer';
+    if (x.etat === 'absente') return 'absente';
+    if (x.etat === 'http') {
+      if (!httpTemporaire(x.status)) stkRecreditSignaler(cleMv, 'Stock non mis à jour : ' + (d.nom || d.produit_id) + ' — réessai automatique', 'La base n\'a pas encore accepté le mouvement de stock (HTTP ' + x.status + '). Il reste sur l\'appareil et sera renvoyé (jamais deux fois).');
+      return 'reessayer';
+    }
+    var c = x.corps;
+    if (!c || typeof c !== 'object') return 'reessayer';
+    if (c.ok) {
+      stkStocksActuels(c); // l'historique local a été écrit au moment de la saisie
+      if (!c.stocks_actuels) { var p = stkProduit(d.produit_id); if (p && isFinite(Number(c.stock_apres))) p.stock = Number(c.stock_apres); }
+      stkOpDejaVue(c.operation_id);
+      stkFileRetirer(cle); stkRafraichir();
+      return c.deja ? 'deja' : 'ok';
+    }
+    if (c.erreur === 'session_requise') return 'reessayer'; // renvoyé après reconnexion
+    stkFileRetirer(cle);
+    stkRecreditSignaler(cleMv, 'Stock non mis à jour : ' + (d.nom || d.produit_id) + ' — à vérifier', 'La base a refusé le mouvement de stock (' + (c.erreur || 'refus') + '). Rien n\'a été changé : vérifier le stock de ce produit.');
+    return 'refus';
+  });
 }
 
 // v7.5.68 : échec d'une sauvegarde "secondaire" (dépense, produit, véhicule,
@@ -3844,8 +4058,10 @@ async function offlineQueueFlush() {
   // échec y rajoutait un élément → boucle sans fin (≈ 16 000 envois refusés le 26/11, aucun « livré » envoyé).
   // v7.5.197 : les demandes de déduction du stock passent APRÈS tous les autres éléments (le « livré » de la commande
   // doit être enregistré avant que la base accepte de déduire son stock).
-  var _aRejouer = offlineQueue.filter(function(it) { return !(it && it.type === 'deduction'); })
-    .concat(offlineQueue.filter(function(it) { return it && it.type === 'deduction'; }));
+  // v7.5.198 : de même pour les recrédits et les mouvements manuels (ordre de la file conservé entre eux : une
+  // déduction puis un recrédit de la même commande partent dans cet ordre)
+  var _estStock = function(it) { return !!it && (it.type === 'deduction' || it.type === 'recredit' || it.type === 'mouvement'); };
+  var _aRejouer = offlineQueue.filter(function(it) { return !_estStock(it); }).concat(offlineQueue.filter(_estStock));
   try {
     for (var i = 0; i < _aRejouer.length; i++) {
       var item = _aRejouer[i];
@@ -3863,6 +4079,18 @@ async function offlineQueueFlush() {
         if (item.data && (remaining.concat(offlineQueue)).some(function(x) { return oqCle(x) === 'drop|conf:' + item.data.id; })) { remaining.push(item); continue; }
         var _rd = (item.data && item.data.id) ? await stkDeductionEnvoyer(item.data.id, null) : 'abandon';
         if (_rd === 'reessayer') remaining.push(item); else if (_rd === 'ok' || _rd === 'deja') flushed++;
+        continue;
+      }
+      // v7.5.198 : recrédit (après l'enregistrement du statut de la commande) et mouvement manuel : sessions admin /
+      // collab seulement (une session livreur les garde pour la prochaine session admin / collab de l'appareil)
+      if (item.type === 'recredit' || item.type === 'mouvement') {
+        if (_rc !== 'admin' && _rc !== 'collab') { remaining.push(item); continue; }
+        if (item.type === 'recredit') {
+          var _cleR = item.data ? 'commande|' + item.data.id : '';
+          if (_cleR && (remaining.concat(offlineQueue)).some(function(x) { return oqCle(x) === _cleR; })) { remaining.push(item); continue; }
+        }
+        var _rs = !(item.data && item.data.id) ? 'abandon' : (item.type === 'recredit' ? await stkRecreditEnvoyer(item.data.id) : await stkMouvementEnvoyer(item.data.id));
+        if (_rs === 'reessayer') remaining.push(item); else if (_rs === 'ok' || _rs === 'deja') flushed++;
         continue;
       }
       // v7.5.193 (réserve Codex 4) : un ancien élément produit pas encore trié (purge reportée) n'est jamais rejoué
@@ -3896,6 +4124,7 @@ async function offlineQueueFlush() {
     _oqFlushEnCours = false;
   }
   if (refuses > 0) toast('⛔ ' + refuses + ' commande(s) refusée(s) par la base : retirée(s) de la file, voir les notifications', 'err');
+  try { oqSignalerPurge(); } catch(e) {} // v7.5.198 : anciennes mises à jour du livreur écartées pendant ce rejeu
   var ind = document.getElementById('offline-indicator');
   if (offlineQueue.length === 0) {
     if (ind) ind.style.display = 'none';
@@ -5217,7 +5446,7 @@ async function sbSaveCommande(cmd, oqCtx) {
       prix: cmd.prix||0,
       prix_brut: cmd.prixBrut||0,
       frais_port: cmd.fraisPort||0,
-      stock_deduit: !!cmd.stockDeduit,
+      // v7.5.198 : stock_deduit n'est plus envoyé (tenu par la base : fonctions de déduction et de recrédit, migration 040)
       remise_globale: cmd.remiseGlobale||0,
       remise_globale_val: cmd.remiseGlobaleVal||0,
       remise_globale_type: cmd.remiseGlobaleType||'pct',
@@ -5255,16 +5484,12 @@ async function sbSaveCommande(cmd, oqCtx) {
     // v7.5.113 : verrou paiement — commande payée en ligne : mode, statut et montant
     // payé ne sont jamais réécrits par une sauvegarde ordinaire (la base garde ses valeurs).
     paiVerrouBody(cmd, body);
-    // v7.5.197 : sauvegarde qui suit un recrédit de l'administrateur (stkReCrediterStock) : en-tête x-stock-recredit,
-    // seul moyen de remettre stock_deduit à faux en base (déclencheur de la migration 040) ; une copie périmée ne l'a pas
-    var _recredit = !!(cmd._recredit && !cmd.stockDeduit);
     var _entetes = {
         'Content-Type': 'application/json',
         'apikey': SUPABASE_KEY,
         'Authorization': 'Bearer ' + SUPABASE_KEY,
         'Prefer': 'resolution=merge-duplicates,return=minimal',
       };
-    if (_recredit) _entetes['x-stock-recredit'] = '1';
     // UPSERT — POST avec Prefer: resolution=merge-duplicates
     // Crée si n'existe pas, met à jour si existe → une seule opération fiable
     var resp = await fetch(SUPABASE_URL + '/rest/v1/commandes', {
@@ -5293,7 +5518,6 @@ async function sbSaveCommande(cmd, oqCtx) {
     } else {
       delete cmd._syncRefus;
       try { oqSucces('commande', cmd, tsVersion, null); } catch(e) {} // v7.5.196
-      if (_recredit && !cmd.stockDeduit) { try { delete cmd._recredit; } catch(e) {} } // v7.5.197 : recrédit enregistré
       showSync('✅ Commande sauvegardée', 'ok');
     }
     try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(ex) {}
@@ -5419,14 +5643,24 @@ try {
 // achats_fournisseur, pieces_couts, drop_journal, drop_alertes ; bucket privé drop-tickets). AUCUN prix d'achat, fournisseur ou
 // revient dans ce fichier (dépôt public) : ce sont des DONNÉES saisies dans l'appli par l'administrateur.
 // Le livreur est le DERNIER PARE-FEU, trois points de contrôle par pièce :
-//   1. CHARGEMENT (écran « CHARGEMENT OBLIGATOIRE ») : Dépôt / Chez <fournisseur> / Déjà dans le camion ;
+//   1. CHARGEMENT (écran « CHARGEMENT OBLIGATOIRE ») : Dépôt — stock BMS / Dépôt — stock tampon (fournisseur X) /
+//      À prendre chez le fournisseur / Déjà dans le camion ;
 //   2. ENLÈVEMENT : un arrêt « Enlèvement » apparaît dans la tournée JUSTE AVANT le client (adresse du fournisseur, pièce, prix
 //      prévu HT) ; « Enlevé et payé » : montant HT, Espèces ou CB, photo du ticket ;
 //   3. LIVRAISON : pièce par pièce « Livrée » / « Pas livrée » ; « Livré » BLOQUÉ tant qu'une pièce n'a pas sa provenance.
+// STOCK TAMPON DROPSHIPPING (exigence de Borhen du 27/11) : achats d'avance chez un fournisseur, rangés au dépôt en LOTS au
+// prix d'achat réel HT (entrée par l'administrateur, page Dropshipping) ; une pièce « stock tampon » sort de son lot (premier
+// entré, premier sorti) par la base à la livraison, son coût = le prix du lot.
 // Tant que la migration 041 n'est pas appliquée (drop_version absente), RIEN de ce module n'est affiché ni bloquant.
 // L'arrêt d'enlèvement est AFFICHÉ dans la tournée (calculé d'après les pièces), il n'est pas ajouté à tournees.stops : la
 // clôture, la caisse et la réconciliation des tournées ne changent pas.
-var DROP_PROV_LIB = { depot: 'Dépôt', fournisseur: 'Chez le fournisseur', camion: 'Déjà dans le camion' };
+var DROP_PROV_LIB = { depot: 'Dépôt — stock BMS', tampon: 'Dépôt — stock tampon', fournisseur: 'À prendre chez le fournisseur', camion: 'Déjà dans le camion' };
+// libellé d'une provenance, fournisseur compris (« Dépôt — stock tampon (X) », « À prendre chez X »)
+function dropProvLib(prov, nomF) {
+  if (prov === 'tampon') return DROP_PROV_LIB.tampon + (nomF ? ' (' + nomF + ')' : '');
+  if (prov === 'fournisseur') return nomF ? 'À prendre chez ' + nomF : DROP_PROV_LIB.fournisseur;
+  return DROP_PROV_LIB[prov] || 'provenance non déclarée';
+}
 var DROP_MONTANT_MAX = 5000;
 var dropActif = null;          // null = pas encore vérifié ; true = migration 041 présente ; false = absente
 var dropPieces = {};           // cmdId -> { pieces: [...], perime: bool, at: ms }
@@ -5459,7 +5693,7 @@ function dropEtatLigne(pieces, ligneIdx) {
   var ps = (pieces || []).filter(function(p) { return p && p.ligne_idx === ligneIdx; });
   var decl = ps.filter(function(p) { return !!p.provenance; }).length;
   return { total: ps.length, declarees: decl, complete: ps.length > 0 && decl === ps.length,
-           depot: ps.some(function(p) { return p.provenance === 'depot'; }) };
+           depot: ps.some(function(p) { return p.provenance === 'depot' || p.provenance === 'tampon'; }) }; // pièces à prendre au dépôt (BMS ou tampon)
 }
 // la ligne compte comme « chargée » : toutes ses pièces déclarées ET (cochée, ou aucune pièce à prendre au dépôt)
 function dropLigneChargee(pieces, ligneIdx, cochee) {
@@ -5560,7 +5794,8 @@ var DROP_ERREURS = {
   enlevement_non_paye: 'Enlèvement non validé : « Enlevé et payé » d\'abord',
   provenance_manquante: 'Provenance manquante pour une pièce',
   pieces_incompletes: 'Indiquez chaque pièce (livrée ou pas)',
-  session_requise: 'Session expirée : reconnectez-vous', commande_introuvable: 'Commande introuvable', piece_introuvable: 'Pièce introuvable'
+  session_requise: 'Session expirée : reconnectez-vous', commande_introuvable: 'Commande introuvable', piece_introuvable: 'Pièce introuvable',
+  stock_tampon_vide: 'Plus de stock tampon de ce fournisseur pour cette pièce'
 };
 function dropMessageErreur(corps) { var e = corps && corps.erreur; return DROP_ERREURS[e] || ('Refus de la base' + (e ? ' (' + e + ')' : '')); }
 
@@ -5740,11 +5975,14 @@ function dropSasLigneHtml(cmd, ligneIdx) {
     var base = 'data-cmd="' + dropEchap(cmd.id) + '" data-piece="' + p.id + '" ';
     var fige = !!(p.livraison || (p.achat && p.achat.statut === 'paye'));
     var html = '<div style="padding:8px 0 10px 38px;border-top:1px dashed var(--brd)"><div style="font-size:13px;font-weight:700;margin-bottom:6px">' + dropEchap(p.libelle) +
-      (p.provenance ? ' — <span style="color:var(--green)">' + DROP_PROV_LIB[p.provenance] + (p.provenance === 'fournisseur' && p.fournisseur ? ' ' + dropEchap(p.fournisseur.nom) : '') + '</span>' : ' — <span style="color:var(--orange)">provenance ?</span>') + '</div>';
+      (p.provenance ? ' — <span style="color:var(--green)">' + dropEchap(dropProvLib(p.provenance, p.fournisseur && p.fournisseur.nom)) + '</span>' : ' — <span style="color:var(--orange)">provenance ?</span>') + '</div>';
     if (fige) return html + '<div style="font-size:12px;color:var(--t3)">Provenance figée (achat payé ou livraison confirmée)</div></div>';
-    html += '<div style="display:flex;flex-wrap:wrap;gap:6px">' + dropBtn('🏠 Dépôt', p.provenance === 'depot', base + 'data-prov="depot"', 'var(--green)');
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px">' + dropBtn('🏠 Dépôt — stock BMS', p.provenance === 'depot', base + 'data-prov="depot"', 'var(--green)');
+    (p.tampon || []).slice(0, 3).forEach(function(t) {
+      html += dropBtn('📦 Dépôt — stock tampon<br><small>' + dropEchap(t.nom) + ' · ' + t.restant + ' en stock</small>', p.provenance === 'tampon' && p.fournisseur_id === t.fournisseur_id, base + 'data-prov="tampon" data-f="' + t.fournisseur_id + '"', 'var(--green)');
+    });
     (p.drop_actif ? (p.fournisseurs || []).slice(0, 3) : []).forEach(function(f) {
-      html += dropBtn('🏭 Chez ' + dropEchap(f.nom) + '<br><small>' + dropEur(f.prix_prevu_ht) + ' HT</small>', p.provenance === 'fournisseur' && p.fournisseur_id === f.id, base + 'data-prov="fournisseur" data-f="' + f.id + '"', 'var(--orange)');
+      html += dropBtn('🏭 À prendre chez ' + dropEchap(f.nom) + '<br><small>' + dropEur(f.prix_prevu_ht) + ' HT</small>', p.provenance === 'fournisseur' && p.fournisseur_id === f.id, base + 'data-prov="fournisseur" data-f="' + f.id + '"', 'var(--orange)');
     });
     var sc = (p.camion || [])[0];
     if (sc || p.provenance === 'camion') html += dropBtn('🚚 Déjà dans le camion', p.provenance === 'camion', base + 'data-prov="camion" data-sc="' + dropEchap(p.provenance === 'camion' ? p.stock_camion_id : sc.id) + '"', 'var(--blue)');
@@ -5781,7 +6019,7 @@ function dropLivraisonHtml(t, s, i) {
       var v = p.livraison ? p.livraison === 'livree' : cf[p.id];
       var b = function(val, lib, coul) { return '<button type="button" onclick="dropChoisirLivraison(\'' + dropEchap(s.cmdId) + '\',' + p.id + ',' + val + ')" ' + (p.livraison ? 'disabled ' : '') + 'style="flex:1;min-height:48px;border-radius:12px;border:2px solid ' + (v === val ? coul : 'var(--brd2)') + ';background:' + (v === val ? coul : 'transparent') + ';color:' + (v === val ? dropEncre(coul) : 'var(--text)') + ';font-weight:800;font-family:var(--font)">' + lib + '</button>'; };
       return '<div style="padding:6px 0;border-top:1px solid var(--brd)"><div style="font-size:13px;font-weight:700">' + dropEchap(p.libelle) +
-        ' <span style="font-weight:600;color:' + (p.provenance ? 'var(--t3)' : 'var(--red)') + '">(' + (p.provenance ? DROP_PROV_LIB[p.provenance] : 'provenance manquante') + ')</span></div>' +
+        ' <span style="font-weight:600;color:' + (p.provenance ? 'var(--t3)' : 'var(--red)') + '">(' + (p.provenance ? dropEchap(dropProvLib(p.provenance, p.fournisseur && p.fournisseur.nom)) : 'provenance manquante') + ')</span></div>' +
         '<div style="display:flex;gap:8px;margin-top:6px">' + b(true, '✅ Livrée', 'var(--green)') + b(false, '✖ Pas livrée', 'var(--red)') + '</div></div>';
     }).join('') +
     (raison ? '<div style="font-size:12px;font-weight:700;color:var(--orange);margin-top:6px">🔒 ' + dropEchap(raison) + '</div>' : '') + '</div>';
@@ -5811,10 +6049,12 @@ async function dropPageInit() {
   if (!(await dropVerifier())) { el.innerHTML = '<div class="card">⏳ Module non disponible : la migration 041 n\'est pas encore appliquée sur la base.</div>'; return; }
   if (!dropAdm.date) { var d = new Date(); dropAdm.date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
   var res = await Promise.all([dropLire('fournisseurs', 'select=*&order=nom'), dropLire('fournisseur_prix', 'select=*'), dropLire('drop_produits', 'select=*'),
-    dropRpc('drop_controler', {}), dropRpc('drop_bilan_jour', { p_date: dropAdm.date }), dropLire('parametres', 'select=cle,valeur&cle=like.drop_*')]);
+    dropRpc('drop_controler', {}), dropRpc('drop_bilan_jour', { p_date: dropAdm.date }), dropLire('parametres', 'select=cle,valeur&cle=like.drop_*'),
+    dropRpc('drop_tampon_etat', {})]);
   dropAdm.fournisseurs = res[0] || []; dropAdm.prix = res[1] || []; dropAdm.actifs = res[2] || [];
   dropAdm.alertes = (res[3].corps && res[3].corps.alertes) || []; dropAdm.bilan = res[4].corps && res[4].corps.ok ? res[4].corps : null;
   dropAdm.reglages = {}; (res[5] || []).forEach(function(r) { dropAdm.reglages[r.cle] = r.valeur; });
+  dropAdm.tampon = (res[6].corps && res[6].corps.ok) ? res[6].corps : null;
   dropPageRendre();
 }
 function dropBilanHtml(b) {
@@ -5827,7 +6067,7 @@ function dropBilanHtml(b) {
     carte('Résultat', dropEur(b.resultat_ht), b.resultat_ht >= 0 ? 'var(--green)' : 'var(--red)', b.resultat_net_ht != null ? 'Après charges fixes (' + dropEur(b.charges_fixes_ht) + ') : ' + dropEur(b.resultat_net_ht) : 'Sans les charges fixes') + '</div>';
   h += '<table style="width:100%;font-size:12px;border-collapse:collapse"><tr style="text-align:left;color:var(--t3)"><th>Commande</th><th>Vente HT</th><th>Coût</th><th>GLS</th><th>Marge</th><th>Provenance</th></tr>' +
     (b.detail || []).map(function(c) {
-      var pv = c.provenances ? Object.keys(c.provenances).map(function(k) { return (DROP_PROV_LIB[k] || (k === 'non_declaree' ? 'non déclarée' : k)) + ' ×' + c.provenances[k]; }).join(', ') : '';
+      var pv = c.provenances ? Object.keys(c.provenances).map(function(k) { return (DROP_PROV_LIB[k] || (k === 'non_declaree' ? 'non déclarée' : dropEchap(k))) + ' ×' + c.provenances[k]; }).join(', ') : '';
       return '<tr style="border-top:1px solid var(--brd)"><td><a href="#" onclick="ouvrirCmd(\'' + dropEchap(c.cmd_id) + '\');return false">' + dropEchap(c.cmd_id) + '</a></td><td>' + dropEur(c.vente_ht) + '</td><td>' + dropEur(c.cout_ht) + (c.cout_estime ? ' <small>(estimé)</small>' : '') + '</td><td>' + (c.gls_ht != null ? dropEur(c.gls_ht) : '—') + '</td><td><strong>' + dropEur(c.marge_ht) + '</strong></td><td>' + dropEchap(pv) + '</td></tr>';
     }).join('') + '</table>';
   return h;
@@ -5850,6 +6090,7 @@ function dropPageRendre() {
     '<input id="drop-f-adresse" placeholder="Adresse" style="flex:2 1 220px;padding:8px;border-radius:8px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)">' +
     '<input id="drop-f-tel" placeholder="Téléphone (facultatif)" style="flex:1 1 140px;padding:8px;border-radius:8px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)">' +
     '<button class="btn btn-p" onclick="dropAjouterFournisseur()">+ Ajouter</button></div></div>';
+  h += dropTamponHtml(A);
   // références : activation + prix par fournisseur (2 ou 3), recherche
   var rech = String(A.recherche || '').toLowerCase();
   var liste = (typeof produits !== 'undefined' ? produits : []).filter(function(p) {
@@ -5871,7 +6112,7 @@ function dropPageRendre() {
         '<input id="drop-pp-' + dropEchap(p.id) + '" placeholder="Prix HT" inputmode="decimal" style="width:80px;padding:4px;border-radius:6px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)"> <button class="btn btn-sm" onclick="dropAjouterPrix(\'' + dropEchap(p.id) + '\')">Enregistrer le prix</button></div></div>';
     }).join('') + '</div>';
   h += '<div class="card"><div class="card-t">⚙️ Réglages</div>' +
-    [['drop_camion_alerte_jours', 'Alerte : pièce achetée dans le camion depuis plus de (jours)'], ['drop_gls_cout_commande_ht', 'Coût GLS HT par commande (vide = non renseigné)'],
+    [['drop_camion_alerte_jours', 'Alerte : pièce achetée dans le camion depuis plus de (jours)'], ['drop_tampon_alerte_jours', 'Alerte : lot du stock tampon non écoulé depuis plus de (jours)'], ['drop_gls_cout_commande_ht', 'Coût GLS HT par commande (vide = non renseigné)'],
      ['drop_charges_fixes_jour_ht', 'Charges fixes du jour HT (vide = non comptées)'], ['drop_tva_pct', 'TVA (%) pour passer les ventes en HT']].map(function(r) {
       return '<div style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:13px"><span style="flex:1">' + r[1] + '</span><input id="drop-rg-' + r[0] + '" value="' + dropEchap(rg[r[0]] || '') + '" inputmode="decimal" style="width:90px;padding:6px;border-radius:6px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)"></div>';
     }).join('') + '<button class="btn btn-p" style="margin-top:8px" onclick="dropSauverReglages()">Enregistrer les réglages</button></div>';
@@ -5901,7 +6142,7 @@ async function dropAjouterPrix(produitId) {
 async function dropPrixActif(id, actif) { if (await dropEcrire('fournisseur_prix', { actif: !!actif }, 'id=eq.' + id)) dropPageInit(); }
 async function dropAlerteVue(id) { var r = await dropRpc('drop_alerte_vue', { p_id: id }); if (r.httpOk) dropPageInit(); }
 async function dropSauverReglages() {
-  var cles = ['drop_camion_alerte_jours', 'drop_gls_cout_commande_ht', 'drop_charges_fixes_jour_ht', 'drop_tva_pct'], tout = true;
+  var cles = ['drop_camion_alerte_jours', 'drop_tampon_alerte_jours', 'drop_gls_cout_commande_ht', 'drop_charges_fixes_jour_ht', 'drop_tva_pct'], tout = true;
   for (var i = 0; i < cles.length; i++) {
     var v = String((document.getElementById('drop-rg-' + cles[i]) || {}).value || '').trim();
     if (v && isNaN(parseFloat(v.replace(',', '.')))) { toast('Valeur invalide : ' + v, 'err'); return; }
@@ -5909,12 +6150,83 @@ async function dropSauverReglages() {
   }
   if (tout) { toast('✅ Réglages enregistrés', 'ok'); dropPageInit(); }
 }
+// ── STOCK TAMPON DROPSHIPPING (administrateur) : entrée d'un achat d'avance, stock restant par fournisseur et sa valeur ──
+var dropTamponLignes = [{ produit_id: '', qte: '', prix: '' }];
+var _dropTamponPhoto = null, _dropTamponEnvoi = false;
+// lignes saisies → lignes envoyées (pure) : produit, quantité entière ≥ 1, prix HT > 0 ; sinon l'erreur de la 1re ligne fausse
+function dropTamponPreparer(lignes) {
+  var ok = [], vues = 0;
+  for (var k = 0; k < (lignes || []).length; k++) {
+    var l = lignes[k] || {};
+    if (!l.produit_id && !String(l.qte || '').trim() && !String(l.prix || '').trim()) continue;   // ligne vide : ignorée
+    vues++;
+    if (!l.produit_id) return { ok: false, erreur: 'Ligne ' + (k + 1) + ' : choisissez la pièce' };
+    var q = parseInt(String(l.qte || '').trim(), 10);
+    if (!/^\d+$/.test(String(l.qte || '').trim()) || q < 1 || q > 10000) return { ok: false, erreur: 'Ligne ' + (k + 1) + ' : quantité invalide' };
+    var m = dropMontant(l.prix);
+    if (!m.ok) return { ok: false, erreur: 'Ligne ' + (k + 1) + ' : prix d\'achat HT par pièce invalide' };
+    ok.push({ produit_id: l.produit_id, qte: q, prix_ht: m.montant });
+  }
+  if (!vues) return { ok: false, erreur: 'Ajoutez au moins une pièce' };
+  return { ok: true, lignes: ok, total: Math.round(ok.reduce(function(t, l) { return t + l.qte * l.prix_ht; }, 0) * 100) / 100 };
+}
+function dropTamponHtml(A) {
+  var t = A.tampon, aujourd = A.date || '';
+  var prods = (typeof produits !== 'undefined' ? produits : []).filter(function(p) { return p && p.id && !(p.composants && p.composants.length); })
+    .sort(function(a, b) { return String(a.nom || '').localeCompare(String(b.nom || '')); });
+  var h = '<div class="card" style="margin-bottom:14px"><div class="card-t">📦 Stock tampon dropshipping (acheté d\'avance, au dépôt)</div>';
+  if (t && t.fournisseurs && t.fournisseurs.length) {
+    h += '<div style="font-size:13px;margin-bottom:8px">Valeur totale : <strong>' + dropEur(t.valeur_totale_ht) + ' HT</strong></div>' + t.fournisseurs.map(function(f) {
+      return '<div style="padding:6px 0;border-top:1px solid var(--brd);font-size:13px"><strong>' + dropEchap(f.nom) + '</strong> — ' + f.restant + ' pièce' + (f.restant > 1 ? 's' : '') + ' · ' + dropEur(f.valeur_ht) + ' HT' +
+        '<div style="font-size:12px;color:var(--t2)">' + (f.lots || []).map(function(l) { return dropEchap(l.produit || l.produit_id) + ' : ' + l.restant + '/' + l.initial + ' à ' + dropEur(l.prix_ht) + ' HT (' + l.jours + ' j)'; }).join(' · ') + '</div></div>';
+    }).join('');
+  } else h += '<div style="font-size:13px;color:var(--t3)">Aucun stock tampon.</div>';
+  var inp = 'padding:6px;border-radius:6px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)';
+  h += '<div style="margin-top:12px;padding-top:10px;border-top:2px solid var(--brd)"><div style="font-weight:800;margin-bottom:6px">+ Entrée de stock tampon (prix HT réels)</div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px"><select id="drop-t-f" style="' + inp + '"><option value="">Fournisseur…</option>' +
+    A.fournisseurs.filter(function(f) { return f.actif; }).map(function(f) { return '<option value="' + f.id + '">' + dropEchap(f.nom) + '</option>'; }).join('') + '</select>' +
+    '<input id="drop-t-date" type="date" value="' + dropEchap(aujourd) + '" style="' + inp + '">' +
+    '<select id="drop-t-mode" style="' + inp + '"><option value="">Paiement…</option><option value="especes">Espèces</option><option value="cb">CB</option><option value="virement">Virement</option><option value="autre">Autre</option></select>' +
+    '<label class="btn btn-sm" style="cursor:pointer">📷 Ticket / facture<input type="file" accept="image/*" capture="environment" style="display:none" onchange="_dropTamponPhoto=this.files&&this.files[0];document.getElementById(\'drop-t-photo\').textContent=_dropTamponPhoto?\'✅ photo prête\':\'\'"></label><span id="drop-t-photo" style="font-size:12px"></span></div>' +
+    dropTamponLignes.map(function(l, k) {
+      return '<div style="display:flex;gap:6px;margin-bottom:4px"><select onchange="dropTamponLignes[' + k + '].produit_id=this.value" style="flex:2;' + inp + '"><option value="">Pièce…</option>' +
+        prods.map(function(p) { return '<option value="' + dropEchap(p.id) + '"' + (p.id === l.produit_id ? ' selected' : '') + '>' + dropEchap(p.nom) + '</option>'; }).join('') + '</select>' +
+        '<input placeholder="Qté" inputmode="numeric" value="' + dropEchap(l.qte) + '" oninput="dropTamponLignes[' + k + '].qte=this.value" style="width:60px;' + inp + '">' +
+        '<input placeholder="Prix HT / pièce" inputmode="decimal" value="' + dropEchap(l.prix) + '" oninput="dropTamponLignes[' + k + '].prix=this.value" style="width:110px;' + inp + '"></div>';
+    }).join('') +
+    '<div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-sm" onclick="dropTamponLignes.push({produit_id:\'\',qte:\'\',prix:\'\'});dropPageRendre()">+ Pièce</button>' +
+    '<button class="btn btn-p" onclick="dropTamponEnregistrer()">Enregistrer l\'entrée</button></div></div></div>';
+  return h;
+}
+async function dropTamponEnregistrer() {
+  if (_dropTamponEnvoi) return;
+  var fid = parseInt((document.getElementById('drop-t-f') || {}).value, 10), date = (document.getElementById('drop-t-date') || {}).value, mode = (document.getElementById('drop-t-mode') || {}).value;
+  if (!fid) { toast('Choisissez le fournisseur', 'err'); return; }
+  if (!date) { toast('Date d\'achat obligatoire', 'err'); return; }
+  if (!mode) { toast('Mode de paiement obligatoire', 'err'); return; }
+  var pr = dropTamponPreparer(dropTamponLignes);
+  if (!pr.ok) { toast(pr.erreur, 'err'); return; }
+  if (!confirm('Entrée de stock tampon : ' + pr.lignes.reduce(function(t, l) { return t + l.qte; }, 0) + ' pièce(s), ' + dropEur(pr.total) + ' HT.\nLe stock du dépôt sera augmenté. Confirmer ?')) return;
+  _dropTamponEnvoi = true;
+  try {
+    var cle = 'tp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8), chemin = null;
+    if (_dropTamponPhoto) { var c0 = 'tampon/' + cle + '/facture.jpg'; if (await dropEnvoyerPhoto(c0, _dropTamponPhoto)) chemin = c0; else toast('⚠️ Photo non envoyée : entrée enregistrée sans photo', 'info'); }
+    var r = await dropRpc('drop_tampon_entree', { p_cle: cle, p_fournisseur_id: fid, p_date: date, p_mode: mode, p_ticket_path: chemin, p_lignes: pr.lignes });
+    if (r.reseau) { toast('📵 Pas de réseau : entrée NON enregistrée', 'err'); return; }
+    if (r.httpOk && r.corps && r.corps.ok) {
+      toast('✅ Stock tampon enregistré : ' + dropEur(r.corps.total_ht) + ' HT', 'ok');
+      (r.corps.lots || []).forEach(function(l) { var p = (typeof produits !== 'undefined') && produits.find(function(x) { return x.id === l.produit_id; }); if (p && l.stock_apres != null) p.stock = parseInt(l.stock_apres, 10) || p.stock; });
+      dropTamponLignes = [{ produit_id: '', qte: '', prix: '' }]; _dropTamponPhoto = null;
+      dropPageInit();
+    } else toast('⛔ ' + dropMessageErreur(r.corps), 'err');
+  } finally { _dropTamponEnvoi = false; }
+}
 // fiche commande et détail de tournée (admin) : provenance, fournisseur, prix payé, mode, photo du ticket, heure, marge
 function dropPiecesAdminHtml(m) {
   if (!m || !m.ok) return '';
   return '<div style="font-size:12px;margin-top:6px">' + (m.pieces || []).map(function(p) {
-    return '<div style="padding:4px 0;border-top:1px solid var(--brd)"><strong>' + dropEchap(p.libelle) + '</strong> — ' + (p.provenance ? DROP_PROV_LIB[p.provenance] : '<span style="color:var(--orange)">provenance non déclarée</span>') +
-      (p.fournisseur ? ' · ' + dropEchap(p.fournisseur) : '') +
+    return '<div style="padding:4px 0;border-top:1px solid var(--brd)"><strong>' + dropEchap(p.libelle) + '</strong> — ' + (p.provenance ? dropEchap(dropProvLib(p.provenance, p.fournisseur)) : '<span style="color:var(--orange)">provenance non déclarée</span>') +
+      (p.source === 'tampon' ? ' · lot du stock tampon' : '') +
       (p.montant_paye_ht != null ? ' · payé <strong>' + dropEur(p.montant_paye_ht) + ' HT</strong> (' + (p.mode === 'cb' ? 'CB' : 'espèces') + ', prévu ' + dropEur(p.prix_prevu_ht) + ')' : (p.prix_prevu_ht != null ? ' · prévu ' + dropEur(p.prix_prevu_ht) + ' HT' : '')) +
       (p.paye_at ? ' · ' + new Date(p.paye_at).toLocaleString('fr-FR') : '') +
       (p.ticket_path ? ' · <a href="#" onclick="dropVoirTicket(\'' + dropEchap(p.ticket_path) + '\');return false">🧾 ticket</a>' : (p.provenance === 'fournisseur' && p.montant_paye_ht != null ? ' · ⚠️ pas de photo' : '')) +
@@ -11298,10 +11610,9 @@ function chgStatut(id, st, _annOk) {
   if (st === 'livré') {
     try { stkDeductionPoser(c); } catch(e) { console.warn('[stock] demande de déduction :', e && e.message); }
   }
-  // Recréditer le stock si annulé/reporté après livraison (admin uniquement)
-  if (role === 'admin' && ancienStatut === 'livré' && (st === 'annulé' || st === 'reporté' || st === 'en-attente' || st === 'en-route')) {
-    stkReCrediterStock(id);
-  }
+  // Recréditer le stock si annulé/reporté après livraison (admin / collab ; v7.5.198 : fait par la base APRÈS
+  // l'enregistrement du nouveau statut, plus bas)
+  var _recredit = (role === 'admin' || role === 'collab') && ancienStatut === 'livré' && (st === 'annulé' || st === 'reporté' || st === 'en-attente' || st === 'en-route');
   // v7.5.85b : synchroniser la TOURNÉE avec le nouveau statut (annulé -> stop annulé,
   // reporté/date -> déplacement, etc.). Avant, changer le statut d'une commande ne
   // touchait pas la tournée -> le client annulé restait dans la tournée.
@@ -11311,6 +11622,7 @@ function chgStatut(id, st, _annOk) {
   if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres();
   var _pSc = sbSaveCommande(c); // Sync Supabase
   if (st === 'livré') stkDemanderDeduction(c, _pSc); // v7.5.197 : après l'enregistrement du « livré »
+  if (_recredit) stkReCrediterStock(id, { avant: _pSc }); // v7.5.198 : après l'enregistrement du nouveau statut
   closePanel(); ouvrirCmd(id);
   toast('Statut mis à jour : ' + st, 'ok');
 }
@@ -16068,7 +16380,7 @@ function supprimerCommande(id) {
   });
 
   // Recréditer le stock si livré
-  if (cmd.statut === 'livré') stkReCrediterStock(id);
+  if (cmd.statut === 'livré') stkReCrediterStock(id, { suppression: true }); // v7.5.198 : par la base, depuis le journal
   // Supprimer la commande
   commandes = commandes.filter(function(c){ return c.id !== id; });
   sbDeleteCommande(id);
@@ -16180,85 +16492,29 @@ let produits = [
 // Mouvements de stock (historique)
 // v7.5.85 : démarre VIDE. Avant, 5 mouvements de DÉMO (Mme Lemaire, Mme Perrin, #1042…)
 // polluaient l'historique des mouvements de stock. Les VRAIS mouvements s'ajoutent via
-// dedAppliquer (réponse de la base, v7.5.197) / stkReCrediterStock (sortie-livraison / retour-annulation).
+// dedAppliquer / stkRecreditAppliquer (réponses de la base, v7.5.197 / v7.5.198 : sortie-livraison / retour-annulation)
+// et les ajustements manuels (sauvegarderAjustement, sauvegarderProduit).
 let stkMouvements = [];
 
 let editProduitId = null;
 let ajustProduitId = null;
 
-// v7.5.79 : retrouve un produit du catalogue d'abord par son ID (fiable, présent dans
-// cmd.lignes[].produitId), puis en repli par nom (commandes legacy / sans id). AVANT :
-// la déduction/recrédit cherchaient UNIQUEMENT par nom approximatif -> les commandes
-// dont le libellé diffère du catalogue (ex site Shopify) ou un produit renommé ->
-// produit non trouvé -> stock jamais décrémenté, en silence.
-function stkTrouverProduit(produitId, nomProduit) {
-  if (produitId) {
-    var byId = produits.find(function(p){ return p.id === produitId; });
-    if (byId) return byId;
-  }
-  if (!nomProduit) return null;
-  return produits.find(function(p) {
-    return p.nom === nomProduit ||
-           nomProduit.includes(p.nom) ||
-           p.nom.includes(nomProduit.split(' ').slice(0,2).join(' '));
-  }) || null;
-}
-
-// ── Déduire automatiquement du stock quand une livraison est validée ──
+// v7.5.198 : stkTrouverProduit (recherche du produit d'une ligne par identifiant puis par nom) est SUPPRIMÉ : plus
+// aucun calcul de stock sur l'appareil ; la même règle est appliquée par la base (interne.l040_trouver_produit, migration 040).
 
 // ── Recréditer le stock si commande annulée/reportée après livraison ──
-function stkReCrediterStock(cmdId) {
-  if (role !== 'admin') return; // Admin uniquement
+// v7.5.198 (réserve Codex n° 2 sur f25b1f1) : le recrédit est fait PAR LA BASE (stkRecreditDemander →
+// recrediter_stock_livraison, migration 040) depuis les sorties réellement journalisées de la livraison ; le téléphone
+// ne calcule plus aucune quantité. Administrateur ou collaboratrice (même règle que la base). La base décide s'il y a
+// quelque chose à recréditer (stock_deduit) : la copie locale n'est plus consultée. Le nouveau statut est enregistré
+// D'ABORD (la base refuse de recréditer une commande encore « livré ») ; opts.suppression : commande supprimée.
+function stkReCrediterStock(cmdId, opts) {
+  if (role !== 'admin' && role !== 'collab') return Promise.resolve('abandon');
   var cmd = commandes.find(function(c){ return c.id === cmdId; });
-  if (!cmd) return;
-
-  // v7.5.79 : on ne recrédite QUE si le stock avait bien été déduit (flag durable, persisté
-  // en base). AVANT : le test reposait sur stkMouvements (volatil) -> après un rechargement,
-  // l'annulation ne recréditait jamais le stock.
-  if (!cmd.stockDeduit) return;
-
-  function recreditUn(prod, qte) {
-    if (!prod) return;
-    prod.stock += qte;
-    stkMouvements.unshift({
-      date: new Date().toISOString().split('T')[0],
-      produit: prod.nom, type: 'retour-annulation', qte: qte, stockApres: prod.stock,
-      motif: 'Annulation livraison ' + cmdId + ' → ' + (cmd.client||'') + ' (Admin)', auto: true,
-    });
-    sbSaveProduit(prod);
-    toast('↩️ Stock recrédité : ' + prod.nom + ' (+' + qte + ')', 'ok');
-  }
-
-  // Recrédit par ID d'abord ; un ENSEMBLE recrédite ses composants (miroir de la déduction)
-  function recredit(produitId, nomProduit, qte) {
-    var prod = stkTrouverProduit(produitId, nomProduit);
-    if (!prod) return;
-    var q = Math.max(1, parseInt(qte) || 1);
-    if (prod.composants && Array.isArray(prod.composants) && prod.composants.length > 0) {
-      prod.composants.forEach(function(c) {
-        var comp = produits.find(function(x){ return x.id === c.id; });
-        if (comp) recreditUn(comp, (c.qte || 1) * q);
-      });
-    } else {
-      recreditUn(prod, q);
-    }
-  }
-
-  if (cmd.lignes && cmd.lignes.length > 0) {
-    cmd.lignes.forEach(function(l) { recredit(l.produitId, l.nom || l.produit, l.qte || 1); });
-  } else {
-    recredit(null, cmd.produit, cmd.qte || 1);
-  }
-
-  // v7.5.79 : stock remis -> marquer non déduit + persister (évite un double recrédit)
-  cmd.stockDeduit = false;
-  // v7.5.197 (réserve Codex n° 5 sur 9473d23) : recrédit EXPLICITE — la sauvegarde porte l'en-tête x-stock-recredit
-  // (gardé avec la commande dans la file jusqu'au succès) ; sans lui, la base garde stock_deduit = vrai (migration 040)
-  cmd._recredit = true;
-  sbSaveCommande(cmd);
-
-  var pStock = document.getElementById('p-stock');
-  if (pStock && pStock.classList.contains('on')) stkRender();
+  if (!cmd) return Promise.resolve('abandon');
+  var sup = !!(opts && opts.suppression);
+  var avant = sup ? null : ((opts && opts.avant !== undefined) ? opts.avant : sbSaveCommande(cmd));
+  return stkRecreditDemander(cmdId, { suppression: sup, avant: avant });
 }
 
 // ════════════════════════════════════════
@@ -16634,10 +16890,18 @@ function sauvegarderProduit() {
   if (_creation === 'a_definir') { data.prix = 0; data.prixDefini = false; data.vendable = false; }
   if (editProduitId) {
     const p = produits.find(x => x.id === editProduitId);
+    // v7.5.198 (réserve Codex n° 3) : un stock modifié dans la fiche est une CORRECTION explicite, faite par la base
+    // (mouvement_stock_produit) ; la fiche elle-même part sans le champ stock (sbSaveProduit)
+    var _stockAvant = p.stock;
     Object.assign(p, data);
+    if (data.stock !== _stockAvant) {
+      stkMouvements.unshift({ date: new Date().toISOString().split('T')[0], produit: p.nom, type: 'correction', qte: data.stock - (Number(_stockAvant) || 0), stockApres: data.stock, motif: 'Correction depuis la fiche produit', auto: false });
+      stkMouvementDemander(p, 'correction', data.stock, 'Correction depuis la fiche produit');
+    }
     toast('Produit mis à jour ✓', 'ok');
   } else {
     data.id = 'pr' + Date.now();
+    data._nouveau = true; // v7.5.198 : création → le stock initial est envoyé une fois (sbSaveProduit)
     produits.push(data);
     toast(_creation === 'a_definir' ? (role === 'admin' ? 'Produit ajouté — ' + VEN_LIBELLE + ' (fixez son prix pour le rendre vendable) ✓'
       : 'Produit créé, le prix sera fixé par l\'administrateur — ' + VEN_LIBELLE + ' ✓') : 'Produit ajouté au catalogue ✓', 'ok');
@@ -16718,7 +16982,7 @@ function sauvegarderAjustement() {
   var qte   = parseInt(document.getElementById('aj-qte').value) || 0;
   var type  = document.getElementById('aj-type').value;
   var motif = document.getElementById('aj-motif').value || '—';
-  if (!qte) { toast('Entrez une quantité', 'err'); return; }
+  if (!qte || qte < 0) { toast('Entrez une quantité positive', 'err'); return; }
   var newStock = p.stock;
   var delta = 0;
   if (type === 'entree' || type === 'retour') { newStock = p.stock + qte; delta = +qte; }
@@ -16731,8 +16995,9 @@ function sauvegarderAjustement() {
   });
   closeModal('m-ajust');
   stkRender();
-  // Sync Supabase
-  sbSaveProduit(p);
+  // v7.5.198 (réserve Codex n° 3) : le mouvement est fait PAR LA BASE sur son propre stock (entrée / retour / sortie en
+  // écart, correction en valeur explicite), idempotent ; le stock affiché est remplacé par celui de la base à la réponse
+  stkMouvementDemander(p, type, qte, motif);
   // Sync notifications si rupture ou stock bas
   if (p.stock === 0) {
     notifAjout('urgent','stock','Rupture — '+p.nom,'Stock épuisé après ajustement.','Gérer le stock','stock');
@@ -18334,53 +18599,30 @@ async function sbSaveProduit(p, opts) {
   var tsV = (opts && Number(opts.ts)) || Date.now(); // v7.5.194 : date de la version envoyée (fiches refusées)
   // v7.5.195 (réserve Codex P2 sur 6f88c79) : en cas d'échec, la version garde SA date et son rôle jusqu'à la file
   var oqCtx = { ts: tsV, role: rEnv || oqRoleCourant() };
-  // v7.5.191 : une session LIVREUR n'a que le droit de MODIFIER le stock (politique sess_livreur_stock) : pas
-  // d'ajout, donc pas d'« upsert » (POST merge-duplicates = INSERT … ON CONFLICT, refusé HTTP 401 depuis le 24/11).
-  // Le livreur envoie seulement { stock, updated_at } par PATCH sur la fiche existante. Admin / collab : inchangé.
-  // v7.5.197 : la livraison ne passe plus par ici (déduction faite par la base) ; PATCH conditionnel et delta retirés.
+  // v7.5.198 (réserve Codex n° 3 sur f25b1f1) : PLUS AUCUNE ÉCRITURE DU STOCK EN VALEUR ABSOLUE pour une fiche
+  // existante. Le stock ne bouge que par les fonctions de la base (déduction, recrédit, mouvement manuel ; migration 040).
+  //  - élément de stock du LIVREUR (valeur absolue calculée sur un téléphone, laissée en file par une version
+  //    antérieure) : jamais envoyé (il écraserait un stock plus récent), compté dans le récapitulatif « mises à jour de
+  //    stock anciennes non envoyées — stock à vérifier à l'inventaire » ;
+  //  - fiche admin / collab : envoyée SANS le champ stock, sauf à la CRÉATION (p._nouveau, posé par
+  //    sauvegarderProduit, retiré après le premier enregistrement ; une fiche rejouée n'envoie son stock que si le
+  //    produit n'existe pas encore en base : lecture seule juste avant l'envoi).
   if (rEnv === 'livreur') {
-    if (!p.id) { produitRefusSignaler(p, '', 'produit sans identifiant', rEnv, tsV); return 'refus'; }
-    var respL;
-    try {
-      respL = await fetch(SUPABASE_URL + '/rest/v1/produits?id=eq.' + encodeURIComponent(p.id) + '&select=id', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'return=representation' },
-        body: JSON.stringify({ stock: p.stock || 0, updated_at: new Date().toISOString() })
-      });
-    } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e && e.message, oqCtx); return 'file'; } // vraie coupure réseau : file
-    if (!respL.ok) {
-      var errL = ''; try { errL = await respL.text(); } catch(e) {}
-      if (httpTemporaire(respL.status)) { sbSaveEchec('produit', p, 'Produit', respL.status, errL, oqCtx); return 'file'; } // v7.5.192
-      produitRefusSignaler(p, respL.status, errL, rEnv, tsV); return 'refus';
-    }
-    // aucune ligne modifiée (fiche absente ou refusée par la base sans erreur) : signalé, pas de file
-    try { var lignesL = await respL.json(); if (Array.isArray(lignesL) && lignesL.length === 0) { produitRefusSignaler(p, 200, 'aucune ligne modifiée', rEnv, tsV); return 'refus'; } } catch(e) {}
-    oqSucces('produit', p, tsV, rEnv);
-    return 'ok';
+    oqStockAncienSignaler(p);
+    return 'refus';
   }
-  // v7.5.195 (réserve Codex 1 sur 6f88c79) : une fiche admin / collab REJOUÉE ou RELANCÉE (opts.ts = date de sa
-  // version) n'écrase jamais un stock plus récent. Son stock n'est envoyé que si (a) aucune mise à jour du stock
-  // plus récente du même produit n'attend dans la file et (b) la fiche en base n'a pas été modifiée depuis la date
-  // de la version (lecture seule de updated_at juste avant l'envoi). Sinon la fiche part SANS le champ stock : la
-  // base garde son stock (le plus récent). Une sauvegarde faite à l'instant (sans opts.ts) est inchangée.
-  var avecStock = true;
-  if (opts && Number(opts.ts) && p.id) {
-    var cleS = 'produit|stock|' + p.id;
-    if (offlineQueue.some(function(q) { return oqCle(q) === cleS && (Number(q.ts) || 0) > tsV; })) avecStock = false;
-    if (avecStock) {
-      var respU;
-      try {
-        respU = await fetch(SUPABASE_URL + '/rest/v1/produits?select=id,updated_at&id=eq.' + encodeURIComponent(p.id), {
-          headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
-        });
-      } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e.message, oqCtx); return 'file'; } // coupure : la fiche reste en file
-      if (respU && respU.ok) {
-        var lu = null; try { lu = await respU.json(); } catch(e) { lu = null; }
-        if (!Array.isArray(lu)) avecStock = false; // réponse illisible : prudence, le stock de la base est gardé
-        else if (lu.length && lu[0]) { var tU = Date.parse(lu[0].updated_at || ''); if (!isFinite(tU) || tU > tsV) avecStock = false; }
-      } else if (respU && httpTemporaire(respU.status)) { sbSaveEchec('produit', p, 'Produit', respU.status, '', oqCtx); return 'file'; }
-      else avecStock = false; // lecture refusée : prudence, la fiche part sans le stock
-    }
+  var avecStock = !!p._nouveau;
+  if (!avecStock && opts && Number(opts.ts) && p.id) {
+    var respU;
+    try {
+      respU = await fetch(SUPABASE_URL + '/rest/v1/produits?select=id,updated_at&id=eq.' + encodeURIComponent(p.id), {
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+      });
+    } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e.message, oqCtx); return 'file'; } // coupure : la fiche reste en file
+    if (respU && respU.ok) {
+      var lu = null; try { lu = await respU.json(); } catch(e) { lu = null; }
+      if (Array.isArray(lu) && lu.length === 0) avecStock = true; // création jamais enregistrée : stock initial envoyé
+    } else if (respU && httpTemporaire(respU.status)) { sbSaveEchec('produit', p, 'Produit', respU.status, '', oqCtx); return 'file'; }
   }
   var corpsP = {
     id: p.id, nom: p.nom, cat: p.cat||'', dim: p.dim||'',
@@ -18411,6 +18653,10 @@ async function sbSaveProduit(p, opts) {
     if (httpTemporaire(resp.status)) { sbSaveEchec('produit', p, 'Produit', resp.status, err, oqCtx); return 'file'; }
     produitRefusSignaler(p, resp.status, err, rEnv, tsV);
     return 'refus';
+  }
+  if (avecStock) { // v7.5.198 : création enregistrée → les sauvegardes suivantes partent sans le stock
+    try { delete p._nouveau; } catch(e) {}
+    var pVivant = stkProduit(p.id); if (pVivant && pVivant !== p) { try { delete pVivant._nouveau; } catch(e) {} }
   }
   produitsRefusesRetirer(p.id, tsV); // v7.5.192 : enregistrée → retirée des fiches refusées ; v7.5.194 : si pas plus récente
   oqSucces('produit', p, tsV, rEnv); // v7.5.196 (réserve Codex 1) : versions plus anciennes de la fiche retirées de la file

@@ -79,6 +79,14 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
   test('commande sans pièces : jamais bloquée', p.dropRaisonBlocage([], {}) === '');
   test('enlèvements : seulement les pièces fournisseur non confirmées', p.dropEnlevements([PIECE(1, { provenance: 'fournisseur' }), PIECE(2, { provenance: 'depot' }), PIECE(3, { provenance: 'fournisseur', livraison: 'livree' })]).map((x) => x.id).join() === '1');
   test('liste de confirmation : pièce déjà confirmée gardée, sinon choix du livreur', JSON.stringify(p.dropListeConfirmation([PIECE(1, { livraison: 'livree' }), PIECE(2), PIECE(3)], { 2: true, 3: false })) === JSON.stringify([{ id: 1, livree: true }, { id: 2, livree: true }, { id: 3, livree: false }]));
+  test('libellés (décision de Borhen du 27/11) : « Dépôt — stock BMS », « Dépôt — stock tampon (X) », « À prendre chez X », « Déjà dans le camion »',
+    p.dropProvLib('depot') === 'Dépôt — stock BMS' && p.dropProvLib('tampon', 'F fictif') === 'Dépôt — stock tampon (F fictif)' && p.dropProvLib('fournisseur', 'F fictif') === 'À prendre chez F fictif'
+    && p.dropProvLib('fournisseur') === 'À prendre chez le fournisseur' && p.dropProvLib('camion') === 'Déjà dans le camion' && !/conteneur/.test(JSON.stringify(p.DROP_PROV_LIB)));
+  test('ligne : une pièce « stock tampon » est aussi à prendre au dépôt (case à cocher)', p.dropEtatLigne([PIECE(1, { provenance: 'tampon' })], 0).depot === true && p.dropLigneChargee([PIECE(1, { provenance: 'tampon' })], 0, false) === false);
+  test('entrée de stock tampon : lignes vides ignorées, prix HT par pièce, total', JSON.stringify(p.dropTamponPreparer([{ produit_id: 'p-s', qte: '2', prix: '30' }, { produit_id: '', qte: '', prix: '' }, { produit_id: 'p-m', qte: '1', prix: '80,5' }]))
+    === JSON.stringify({ ok: true, lignes: [{ produit_id: 'p-s', qte: 2, prix_ht: 30 }, { produit_id: 'p-m', qte: 1, prix_ht: 80.5 }], total: 140.5 }));
+  test('entrée de stock tampon : pièce, quantité ou prix manquant refusés', /choisissez la pièce/.test(p.dropTamponPreparer([{ qte: '1', prix: '3' }]).erreur) && /quantité invalide/.test(p.dropTamponPreparer([{ produit_id: 'x', qte: '1,5', prix: '3' }]).erreur)
+    && /prix d'achat HT/.test(p.dropTamponPreparer([{ produit_id: 'x', qte: '1', prix: '' }]).erreur) && /au moins une pièce/.test(p.dropTamponPreparer([{}]).erreur));
   test('code : aucun prix d\'achat ni nom de fournisseur écrit en dur dans le bloc (dépôt public)', !/prix_achat_ht\s*[:=]\s*\d/.test(CODE_DROP) && !/\d+(,\d+)?\s*€\s*HT/.test(CODE_DROP));
 
   // ════════════════════════════════════════════════════════════════════════════════════
@@ -106,7 +114,8 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
       PIECE(2, { piece_idx: 1, produit_id: 'p-s', libelle: 'Sommier fictif' })], at: Date.now() };
     const h = bac.dropSasLigneHtml({ id: '#D1' }, 0);
     test('pièce activée : Dépôt + un bouton par fournisseur (avec prix prévu HT) + Déjà dans le camion', (h.match(/data-prov="depot"/g) || []).length === 2 && (h.match(/data-prov="fournisseur"/g) || []).length === 2
-      && /Chez Fournisseur fictif A<br><small>160 € HT/.test(h) && (h.match(/data-prov="camion"/g) || []).length === 1 && /data-sc="sc-1"/.test(h), h);
+      && /À prendre chez Fournisseur fictif A<br><small>160 € HT/.test(h) && (h.match(/data-prov="camion"/g) || []).length === 1 && /data-sc="sc-1"/.test(h), h);
+    test('stock tampon : un bouton « Dépôt — stock tampon » par fournisseur qui en a (quantité, SANS prix)', (() => { bac.dropPieces['#D2'] = { pieces: [PIECE(5, { cmd_id: '#D2', tampon: [{ fournisseur_id: 21, nom: 'Fournisseur fictif T', restant: 4 }] })] }; const ht = bac.dropSasLigneHtml({ id: '#D2' }, 0); return /data-prov="tampon" data-f="21"/.test(ht) && /Dépôt — stock tampon<br><small>Fournisseur fictif T · 4 en stock/.test(ht) && /Dépôt — stock BMS/.test(ht); })());
     test('pièce non activée : pas de bouton fournisseur ; pas de camion sans pièce disponible', !/data-piece="2" data-prov="fournisseur"/.test(h) && !/data-piece="2" data-prov="camion"/.test(h));
     test('noms échappés (pas d\'injection)', bac.dropEchap('<img onerror=x>') === '&lt;img onerror=x&gt;');
     await bac.dropDeclarer('#D1', 1, 'fournisseur', 11, null); await attendre();
@@ -230,9 +239,9 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     const h = bac.dropBilanHtml({ ventes_ht: 2300, cout_produits_ht: 765, gls_ht: 12.5, resultat_ht: 1522.5, charges_fixes_ht: null, resultat_net_ht: null, commandes: 5, pieces_cout_inconnu: 0,
       commandes_cout_estime: 3, commandes_gls_non_renseigne: 0, detail: [{ cmd_id: '#D1', vente_ht: 600, cout_ht: 205, gls_ht: null, marge_ht: 395, cout_estime: false, provenances: { depot: 1, fournisseur: 1 } }] });
     test('bilan : ventes livrées HT, coût des produits, GLS, résultat, « sans les charges fixes »', /Ventes livrées HT/.test(h) && /2\s?300 €/.test(h) && /765 €/.test(h) && /12,50 €/.test(h) && /1\s?522,50 €/.test(h) && /Sans les charges fixes/.test(h), h.slice(0, 400));
-    test('bilan : détail par commande (marge, provenance)', /395 €/.test(h) && /Dépôt ×1, Chez le fournisseur ×1/.test(h));
+    test('bilan : détail par commande (marge, provenance)', /395 €/.test(h) && /Dépôt — stock BMS ×1, À prendre chez le fournisseur ×1/.test(h));
     const f = bac.dropPiecesAdminHtml({ ok: true, vente_ht: 600, cout_ht: 205, marge_ht: 395, pieces: [{ libelle: 'Matelas fictif', provenance: 'fournisseur', fournisseur: 'Fournisseur fictif A', montant_paye_ht: 165, prix_prevu_ht: 160, mode: 'especes', paye_at: '2026-11-27T08:00:00Z', ticket_path: 'livreur-test/D1/t.jpg', livraison: 'livree', cout_ht: 165, fige: true }] });
-    test('fiche : provenance, fournisseur, prix payé, mode, heure, lien du ticket, coût, marge', /Chez le fournisseur · Fournisseur fictif A/.test(f) && /payé <strong>165 € HT<\/strong> \(espèces, prévu 160 €\)/.test(f) && /dropVoirTicket\('livreur-test\/D1\/t\.jpg'\)/.test(f) && /marge 395 € HT/.test(f), f);
+    test('fiche : provenance, fournisseur, prix payé, mode, heure, lien du ticket, coût, marge', /À prendre chez Fournisseur fictif A/.test(f) && /payé <strong>165 € HT<\/strong> \(espèces, prévu 160 €\)/.test(f) && /dropVoirTicket\('livreur-test\/D1\/t\.jpg'\)/.test(f) && /marge 395 € HT/.test(f), f);
   }
 
   // ════════════════════════════════════════════════════════════════════════════════════
@@ -248,7 +257,7 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
   test('fiche commande et détail de tournée (admin) : provenance et marge', /role === 'admin' && typeof dropFicheCommande === 'function'/.test(extraireFonction('function ouvrirCmd(id)')) && /dropTourneeDetail\(t\)/.test(extraireFonction('function afficherTournee(id)')));
   test('page admin « Dropshipping » : page, menu Plus, titre, ouverture', html.includes('id="p-drop"') && html.includes("{p:'drop',i:'🔀',l:'Dropshipping'}") && html.includes("drop:'Dropshipping'") && /if\(p==='drop' && typeof dropPageInit === 'function'\) dropPageInit\(\);/.test(html));
   test('page admin : réservée à l\'administrateur', /if \(role !== 'admin'\) \{ el\.innerHTML = '<div class="card">Réservé/.test(extraireFonction('async function dropPageInit()')));
-  test('CACHE_VERSION = maxiconfort-v7-5-199', /CACHE_VERSION = 'maxiconfort-v7-5-199'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
+  test('CACHE_VERSION = maxiconfort-v7-5-200', /CACHE_VERSION = 'maxiconfort-v7-5-200'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
   test('migration 041 présente dans le dépôt', fs.existsSync(path.join(racine, 'supabase', 'migrations', '041_dropshipping_provenance.sql')));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
