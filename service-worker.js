@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.199 - Derniere correction ciblee de la PR 29 : reprise au demarrage rappelle la deduction deja faite (resultat complet applique avant de retirer la demande), stock initial d'une creation pris en instantane, mouvement differe tant que la creation du produit attend sa sauvegarde (27/11/2026)
 // v7.5.198 - Recredit a l'annulation et mouvements manuels du stock faits PAR LA BASE (recrediter_stock_livraison, mouvement_stock_produit, migration 040), resultat complet de la deduction restitue au rejeu, fiches produit envoyees sans le stock (sauf creation), stock_deduit tenu par la base (27/11/2026)
 // v7.5.197 - Stock d'une livraison deduit PAR LA BASE (fonction deduire_stock_livraison, migration 040), une seule fois par commande ; demande gardee en file et rejouee sans double effet ; calcul du stock sur le telephone supprime (26/11/2026)
 // v7.5.196 - Deductions de stock suivies sur l'appareil (reprises apres fermeture), stock_deduit seulement si tous les produits sont enregistres, PATCH du livreur conditionnel (delta), versions anciennes invalidees apres un succes (26/11/2026)
@@ -16,7 +17,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-198';
+const CACHE_VERSION = 'maxiconfort-v7-5-199';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

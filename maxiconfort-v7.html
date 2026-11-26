@@ -3331,7 +3331,9 @@ function stkDemanderDeduction(cmd, pAvant) {
   return Promise.resolve(pAvant).catch(function() {}).then(function() { return stkDeductionEnvoyer(cmd.id, cmd); })
     .catch(function(e) { console.warn('[stock] déduction :', e && e.message); return 'reessayer'; });
 }
-// reprise (chargement, relève) des demandes restées en file : commande déjà déduite → retirée ; sinon renvoyée
+// reprise (chargement, relève) des demandes restées en file : toujours RENVOYÉES à la base, même si la commande est déjà
+// marquée déduite (v7.5.199, réserve Codex sur 6de49a2) : la fonction est idempotente et restitue le résultat COMPLET de
+// la 1re déduction (retraits, manques) ; dedAppliquer l'applique une fois (operation_id) puis la demande quitte la file
 function stkReprendreDeductions(force) {
   var p = [], now = Date.now();
   // commandes livrées sur cet appareil pendant cette session, stock_deduit encore faux, demande sortie de la file sans
@@ -3343,7 +3345,8 @@ function stkReprendreDeductions(force) {
   });
   offlineQueue.filter(function(q) { return q && q.type === 'deduction' && q.data && q.data.id; }).forEach(function(q) {
     var id = q.data.id, c = dedCommande(id, null);
-    if (c && c.stockDeduit) { dedFileRetirer(id); return; }
+    // v7.5.199 : plus de retrait direct quand stock_deduit est vrai (réponse perdue puis rechargement : sbLoadAll lit
+    // stock_deduit vrai, mais les retraits et manques journalisés n'avaient jamais été appliqués ni signalés)
     if (typeof _livEnCours !== 'undefined' && _livEnCours[id]) return; // validerSig l'envoie lui-même
     // le « livré » de la commande attend encore dans la file : le rejeu de la file l'enverra d'abord, puis la demande
     if (offlineQueue.some(function(x) { return oqCle(x) === 'commande|' + id; })) return;
@@ -3400,7 +3403,9 @@ function stkUnEnvoi(cle, fn) {
     delete _stkEnvoi[cle];
     if (r === 'absente' || r === 'reessayer') _dedProchain[cle] = Date.now() + (r === 'absente' ? DED_PAUSE_ABSENTE_MS : DED_PAUSE_MS);
     else delete _dedProchain[cle];
-    return r === 'absente' ? 'reessayer' : r;
+    // v7.5.199 : « attente » (création du produit pas encore enregistrée) = gardé en file, SANS pause : relancé dès
+    // l'enregistrement de la création (stkMouvementsRelancer)
+    return (r === 'absente' || r === 'attente') ? 'reessayer' : r;
   });
   _stkEnvoi[cle] = fin;
   return fin;
@@ -3491,12 +3496,32 @@ function stkMouvementDemander(p, type, qte, motif) {
   catch(e) { console.warn('[stock] mouvement :', e && e.message); }
   return stkMouvementEnvoyer(cle);
 }
+// v7.5.199 (réserve Codex sur 6de49a2) : un mouvement d'un produit dont la CRÉATION attend encore sa sauvegarde (fiche
+// en file, ou envoi de la création en cours) n'est PAS envoyé : la base répondrait « produit_introuvable » et le
+// mouvement serait retiré définitivement. Il reste en file et part dès que la création est enregistrée.
+var _prodCreationEnCours = {};
+function stkCreationEnAttente(pid) {
+  if (!pid) return false;
+  if (_prodCreationEnCours[pid]) return true;
+  return offlineQueue.some(function(q) { return oqCle(q) === 'produit|fiche|' + pid; });
+}
+function stkMouvementsRelancer(pid) {
+  var rc = (typeof role !== 'undefined') ? role : null;
+  if (!pid || (rc !== 'admin' && rc !== 'collab')) return Promise.resolve();
+  var p = offlineQueue.filter(function(q) { return q && q.type === 'mouvement' && q.data && q.data.id && q.data.produit_id === pid; })
+    .map(function(q) { // un envoi encore en cours (« attente ») se termine d'abord : relance juste après
+      var id = q.data.id, enCours = _stkEnvoi['mouvement|' + id];
+      return Promise.resolve(enCours).catch(function() {}).then(function() { return stkMouvementEnvoyer(id); });
+    });
+  return Promise.all(p).then(function() {});
+}
 function stkMouvementEnvoyer(cleMv) {
   var cle = 'mouvement|' + cleMv;
   return stkUnEnvoi(cle, async function() {
     var it = stkFileItem(cle);
     if (!it) return 'abandon';
     var d = it.data;
+    if (stkCreationEnAttente(d.produit_id)) return 'attente'; // gardé en file, relancé après la création
     var x = await stkRpc('mouvement_stock_produit', { p_produit_id: d.produit_id, p_type: d.type, p_qte: d.qte, p_motif: d.motif || null, p_cle: cleMv });
     if (x.etat === 'reseau') return 'reessayer';
     if (x.etat === 'absente') return 'absente';
@@ -13725,6 +13750,9 @@ function sauvegarderProduit() {
   } else {
     data.id = 'pr' + Date.now();
     data._nouveau = true; // v7.5.198 : création → le stock initial est envoyé une fois (sbSaveProduit)
+    // v7.5.199 (réserve Codex sur 6de49a2) : INSTANTANÉ du stock initial, jamais modifié ensuite (une entrée faite avant
+    // la synchronisation change p.stock, pas cet instantané : elle part comme mouvement, après la création)
+    data._stockInitial = data.stock;
     produits.push(data);
     toast('Produit ajouté au catalogue ✓', 'ok');
   }
@@ -15450,7 +15478,15 @@ async function sbSaveProduit(p, opts) {
     composants: (p.composants && Array.isArray(p.composants) && p.composants.length > 0) ? p.composants : null,
     actif: p.actif !== false, updated_at: new Date().toISOString()
   };
+  // v7.5.199 (réserve Codex sur 6de49a2) : à la création, le stock envoyé est l'INSTANTANÉ pris à la saisie de la fiche
+  // (p._stockInitial, jamais modifié ensuite), pas p.stock : l'objet en file est le même que celui du catalogue, et une
+  // entrée faite avant la synchronisation l'a déjà augmenté (5 + 2 = 7) alors que le mouvement +2 part après (→ 9)
+  if (avecStock && p._stockInitial !== undefined && p._stockInitial !== null && isFinite(Number(p._stockInitial))) corpsP.stock = Number(p._stockInitial);
   if (!avecStock) delete corpsP.stock;
+  // v7.5.199 : mouvements de ce produit différés pendant l'envoi de la création (compteur : envois simultanés)
+  var _creaId = (avecStock && p.id) ? p.id : null;
+  if (_creaId) _prodCreationEnCours[_creaId] = (_prodCreationEnCours[_creaId] || 0) + 1;
+  var _creaFin = function() { if (_creaId && !(--_prodCreationEnCours[_creaId] > 0)) delete _prodCreationEnCours[_creaId]; };
   var resp;
   try {
     resp = await fetch(SUPABASE_URL + '/rest/v1/produits', {
@@ -15463,21 +15499,25 @@ async function sbSaveProduit(p, opts) {
       },
       body: JSON.stringify(corpsP)
     });
-  } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e.message, oqCtx); return 'file'; } // vraie coupure réseau : file
+  } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e.message, oqCtx); _creaFin(); return 'file'; } // vraie coupure réseau : file
   if (!resp.ok) {
     // v7.5.191 : refus définitif de la base (réseau OK) : notification, jamais de remise en file
     // v7.5.192 : erreur TEMPORAIRE (408, 425, 429, 5xx) : gardée en file pour le rejeu
     var err = ''; try { err = await resp.text(); } catch(e) {}
-    if (httpTemporaire(resp.status)) { sbSaveEchec('produit', p, 'Produit', resp.status, err, oqCtx); return 'file'; }
+    if (httpTemporaire(resp.status)) { sbSaveEchec('produit', p, 'Produit', resp.status, err, oqCtx); _creaFin(); return 'file'; }
     produitRefusSignaler(p, resp.status, err, rEnv, tsV);
+    _creaFin();
     return 'refus';
   }
   if (avecStock) { // v7.5.198 : création enregistrée → les sauvegardes suivantes partent sans le stock
-    try { delete p._nouveau; } catch(e) {}
-    var pVivant = stkProduit(p.id); if (pVivant && pVivant !== p) { try { delete pVivant._nouveau; } catch(e) {} }
+    try { delete p._nouveau; delete p._stockInitial; } catch(e) {}
+    var pVivant = stkProduit(p.id); if (pVivant && pVivant !== p) { try { delete pVivant._nouveau; delete pVivant._stockInitial; } catch(e) {} }
   }
   produitsRefusesRetirer(p.id, tsV); // v7.5.192 : enregistrée → retirée des fiches refusées ; v7.5.194 : si pas plus récente
   oqSucces('produit', p, tsV, rEnv); // v7.5.196 (réserve Codex 1) : versions plus anciennes de la fiche retirées de la file
+  _creaFin();
+  // v7.5.199 : création enregistrée → les mouvements de ce produit qui l'attendaient partent maintenant
+  if (_creaId) { try { stkMouvementsRelancer(_creaId).catch(function() {}); } catch(e) {} }
   return 'ok';
 }
 
