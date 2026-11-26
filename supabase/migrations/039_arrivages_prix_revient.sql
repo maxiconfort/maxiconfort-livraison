@@ -152,6 +152,45 @@ language sql immutable as $$
 $$;
 revoke all on function interne.lignes_non_vendables_modifiees(jsonb, jsonb, text[]) from public, anon, authenticated;
 
+-- IDENTIFICATION d'une ligne (revue Codex PR 26 sur 66def07) : une ligne ne porte pas toujours un produitId fiable (commande ancienne,
+-- article « hors catalogue » « _custom_… », import du site ou de TikTok, WhatsApp : produitId vide et seulement le NOM). Avant, une telle
+-- ligne au nom d'un produit non vendable passait. Règle :
+--   * produitId d'un produit EXISTANT → ce produit (identifiant fiable, comme avant) ;
+--   * sinon, nom (« produit » ou « nom ») égal au NOM NORMALISÉ d'un produit NON VENDABLE, ou référence (« reference », « sku »,
+--     « _ugs » TikTok, ou le nom lui-même) égale à sa reference_interne normalisée → la ligne est AMBIGUË et RAPPORTÉE à ce produit
+--     (même contrôle « lignes figées » : refusée dans une commande nouvelle ou si elle est ajoutée ou modifiée) ;
+--   * sinon → ligne inchangée (hors catalogue, comme avant).
+-- Normalisation (même règle que nomNormalise côté serveur et venNorm dans l'application) : minuscules, sans accents, « × » lu « x »,
+-- espaces regroupés, « 140 x 190 » = « 140x190 ». Pure.
+create or replace function interne.l039_norm(p text) returns text
+language sql immutable as $$
+  select nullif(regexp_replace(btrim(regexp_replace(
+           translate(lower(coalesce(p, '')), 'àâäáãåçéèêëíìîïñóòôöõúùûüýÿ×', 'aaaaaaceeeeiiiinooooouuuuyyx'),
+           '\s+', ' ', 'g')), '(\d) ?x ?(\d)', '\1x\2', 'g'), '')
+$$;
+-- Lignes avec leur produit IDENTIFIÉ (produitId remplacé par l'identifiant du produit non vendable reconnu par nom ou référence).
+-- Sert seulement à la COMPARAISON : les lignes enregistrées ne sont jamais modifiées. NULL → NULL.
+create or replace function interne.l039_lignes_identifiees(p jsonb) returns jsonb
+language sql stable security definer set search_path = public, interne, pg_catalog as $$
+  select case when p is null then null else (
+    select coalesce(jsonb_agg(
+      case
+        when coalesce(e ->> 'produitId', '') <> '' and exists (select 1 from public.produits q where q.id = e ->> 'produitId') then e
+        else coalesce((
+          select e || jsonb_build_object('produitId', q.id)
+            from public.produits q
+           where (interne.l039_norm(q.nom) in (interne.l039_norm(e ->> 'produit'), interne.l039_norm(e ->> 'nom'))
+                  or (q.reference_interne is not null
+                      and interne.l039_norm(q.reference_interne) in (interne.l039_norm(e ->> 'reference'), interne.l039_norm(e ->> 'sku'),
+                                                                     interne.l039_norm(e ->> '_ugs'), interne.l039_norm(e ->> 'produit'))))
+             and interne.produit_non_vendable(q.id)
+           order by q.id limit 1), e)
+      end order by t.ord), '[]'::jsonb)
+      from jsonb_array_elements(case when jsonb_typeof(p) = 'array' then p else '[]'::jsonb end) with ordinality t(e, ord))
+  end
+$$;
+revoke all on function interne.l039_lignes_identifiees(jsonb) from public, anon, authenticated;
+
 create or replace function interne.commandes_produit_vendable_garde() returns trigger
 language plpgsql security definer set search_path = public, interne, pg_catalog as $$
 declare v_nv text[]; v_modif text[]; v_refus text; v_new jsonb := to_jsonb(new.lignes); v_old jsonb;
@@ -164,6 +203,10 @@ begin
     -- Commande nouvelle : v_old reste NULL, toute ligne d'un produit non vendable est donc refusée.
     select to_jsonb(c.lignes) into v_old from public.commandes c where c.id = new.id;
   end if;
+  -- lignes sans produitId fiable : rapportées au produit non vendable reconnu par nom ou référence (revue Codex sur 66def07),
+  -- des deux côtés (une commande déjà prise qui le contenait par son seul nom reste modifiable si cette ligne ne change pas)
+  v_new := interne.l039_lignes_identifiees(v_new);
+  v_old := interne.l039_lignes_identifiees(v_old);
   -- produits non vendables présents dans les lignes proposées (TOUTES les lignes, pas seulement les « nouvelles »)
   select array_agg(distinct p.id) into v_nv
     from public.produits p
@@ -363,6 +406,16 @@ returns boolean language sql immutable as $$
   end
 $$;
 
+-- Revient unitaire HT d'un LOT (revue Codex PR 26 sur 66def07) : CALCULÉ PAR LA BASE, jamais cru sur parole —
+--   FOB unitaire × taux de change + frais d'import répartis uniformément sur les quantités ATTENDUES de l'arrivage
+--   (frais_u = frais_import_ht / Σ quantite_attendue), arrondi à 4 décimales. Même formule que recalculer_revient_arrivage.
+create or replace function interne.l039_revient_lot(p_fob numeric, p_taux numeric, p_frais_u numeric) returns numeric
+language sql immutable as $$ select round(p_fob * p_taux + coalesce(p_frais_u, 0), 4) $$;
+-- Un revient déjà chargé sur la ligne est-il COHÉRENT avec le calcul ? Tolérance d'arrondi : 1 centime (le fichier de chargement
+-- peut arrondir au centime). Absent (NULL) = cohérent : la base le remplit avec sa propre valeur.
+create or replace function interne.l039_revient_coherent(p_charge numeric, p_calcule numeric) returns boolean
+language sql immutable as $$ select p_charge is null or (p_calcule is not null and abs(p_charge - p_calcule) <= 0.01) $$;
+
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 -- 5. Validation de la réception (ADMINISTRATEUR, une seule fois, atomique)
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -393,6 +446,7 @@ declare
   v_rec integer; v_end integer; v_man integer;
   v_rev_avant numeric; v_prov_avant boolean; v_rev_apres numeric; v_prov_apres boolean; v_stock_avant integer;
   v_nb integer; v_resultat jsonb := '[]'::jsonb; v_total_recu integer := 0; v_ordre bigint; v_instant timestamptz;
+  v_total_att integer; v_sans_fob integer; v_frais_u numeric; v_rev_lot numeric;
 begin
   if (select public.session_role()) is distinct from 'admin' then
     return json_build_object('ok', false, 'erreur', 'session_admin_requise');
@@ -410,6 +464,13 @@ begin
      or (select count(distinct (e ->> 'ligne_id')) from jsonb_array_elements(p_lignes) e) <> v_nb then
     return json_build_object('ok', false, 'erreur', 'une_saisie_par_ligne_requise');
   end if;
+  -- revient de chaque lot CALCULÉ ici (revue Codex sur 66def07) : FOB et taux de change obligatoires, frais répartis sur les
+  -- quantités attendues ; un revient chargé qui contredit ce calcul (au-delà d'un centime) est refusé plus bas, ligne par ligne
+  if a.taux_change is null then return json_build_object('ok', false, 'erreur', 'taux_manquant'); end if;
+  select sum(quantite_attendue), count(*) filter (where fob_unitaire is null) into v_total_att, v_sans_fob
+    from public.arrivage_lignes where arrivage_id = a.id;
+  if v_sans_fob > 0 then return json_build_object('ok', false, 'erreur', 'fob_manquant'); end if;
+  v_frais_u := a.frais_import_ht / v_total_att;
 
   -- verrous dans un ordre fixe (pas d'interblocage avec une autre réception ni un recalcul) : produits, PUIS produits_revient
   perform 1 from public.produits where id in (select produit_id from public.arrivage_lignes where arrivage_id = a.id) order by id for update;
@@ -434,11 +495,15 @@ begin
     if v_rec + v_end + v_man <> l.quantite_attendue then
       raise exception 'CONTRÔLE : ligne % — reçu % + endommagé % + manquant % ≠ attendu %', l.id, v_rec, v_end, v_man, l.quantite_attendue using errcode = 'P0001';
     end if;
-    if v_rec > 0 and l.revient_unitaire_ht is null then
-      raise exception 'REVIENT INCONNU pour la ligne % : impossible de valoriser le stock reçu', l.id using errcode = 'P0001';
+    v_rev_lot := interne.l039_revient_lot(l.fob_unitaire, a.taux_change, v_frais_u);
+    if not interne.l039_revient_coherent(l.revient_unitaire_ht, v_rev_lot) then
+      raise exception 'REVIENT INCOHÉRENT pour la ligne % : le revient chargé ne correspond pas à FOB × taux + frais (écart > 0,01 €)', l.id
+        using errcode = 'P0001';
     end if;
 
-    update public.arrivage_lignes set quantite_recue = v_rec, quantite_endommagee = v_end, quantite_manquante = v_man where id = l.id;
+    -- la ligne garde le revient CALCULÉ par la base (c'est lui qui valorise le stock et entre dans l'historique)
+    update public.arrivage_lignes set quantite_recue = v_rec, quantite_endommagee = v_end, quantite_manquante = v_man,
+      revient_unitaire_ht = v_rev_lot where id = l.id;
 
     select id, nom, stock into p from public.produits where id = l.produit_id;
     v_stock_avant := coalesce(p.stock, 0);
@@ -453,7 +518,7 @@ begin
         values ('entree', p.nom, v_rec, 'arrivage:' || a.reference_interne, 'depot', null, null, null, 'admin');
       insert into public.stock_entrees (date_entree, app_produit_id, quantite, motif, cmd_id, saisi_par, remarque)
         values (v_instant, l.produit_id, v_rec, 'arrivage:' || a.reference_interne, null, 'admin', 'Réception d''arrivage validée dans l''application');
-      v_rev_apres := interne.revient_apres(v_methode, v_stock_avant, v_rev_avant, v_rec, l.revient_unitaire_ht);
+      v_rev_apres := interne.revient_apres(v_methode, v_stock_avant, v_rev_avant, v_rec, v_rev_lot);
       -- un CUMP qui intègre un revient encore PROVISOIRE reste provisoire
       v_prov_apres := interne.revient_provisoire_apres(v_methode, v_stock_avant, v_rev_avant, v_rec, v_prov_avant, a.taux_provisoire);
       insert into public.produits_revient (produit_id, prix_revient_ht, methode, provisoire, maj_at, maj_par)
@@ -462,7 +527,7 @@ begin
           provisoire = excluded.provisoire, maj_at = excluded.maj_at, maj_par = excluded.maj_par;
       insert into public.prix_revient_historique (produit_id, revient_ht, quantite, stock_avant, revient_moyen_avant, revient_moyen_apres,
           methode, source, arrivage_id, provisoire, moyen_avant_provisoire, moyen_apres_provisoire, cree_par)
-        values (l.produit_id, l.revient_unitaire_ht, v_rec, v_stock_avant, v_rev_avant, v_rev_apres, v_methode, 'arrivage', a.id, a.taux_provisoire,
+        values (l.produit_id, v_rev_lot, v_rec, v_stock_avant, v_rev_avant, v_rev_apres, v_methode, 'arrivage', a.id, a.taux_provisoire,
           v_prov_avant, v_prov_apres, 'admin');
       v_total_recu := v_total_recu + v_rec;
     end if;
@@ -633,5 +698,28 @@ begin
   if interne.lignes_non_vendables_modifiees(o, null, nv) is distinct from nv then f := 'commande nouvelle'; end if;
   if f is not null then
     raise exception 'Auto-contrôle 039 (lignes figées) en échec : cas « % ». Migration annulée.', f;
+  end if;
+end $$;
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 10. Auto-contrôle à l'application : revient d'un lot calculé par la base, identification des lignes par nom (fonctions PURES,
+--     valeurs FICTIVES, rien n'est écrit)
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+do $$
+declare f text;
+begin
+  -- FOB 10 × taux 1,1 + frais 30 répartis sur 3 attendus (10 par unité) = 21
+  if interne.l039_revient_lot(10, 1.1, 30.0 / 3) <> 21 then f := 'revient du lot'; end if;
+  if interne.l039_revient_lot(1, 1, 10.0 / 3) <> 4.3333 then f := 'revient arrondi à 4 décimales'; end if;
+  if not interne.l039_revient_coherent(null, 21) then f := 'revient absent = rempli par la base'; end if;
+  if not interne.l039_revient_coherent(21.004, 21) then f := 'écart d''arrondi accepté'; end if;
+  if not interne.l039_revient_coherent(21.01, 21) then f := 'écart d''un centime accepté'; end if;
+  if interne.l039_revient_coherent(21.02, 21) then f := 'écart de 2 centimes refusé'; end if;
+  if interne.l039_revient_coherent(15, 21) then f := 'revient contredisant FOB, taux et frais refusé'; end if;
+  if interne.l039_revient_coherent(21, null) then f := 'calcul impossible refusé'; end if;
+  if interne.l039_norm('  Matelas  Fictif ÉTÉ 140 × 190 x 25 ') is distinct from 'matelas fictif ete 140x190x25' then f := 'nom normalisé'; end if;
+  if interne.l039_norm('   ') is not null then f := 'nom vide'; end if;
+  if f is not null then
+    raise exception 'Auto-contrôle 039 (revient / identification) en échec : cas « % ». Migration annulée.', f;
   end if;
 end $$;

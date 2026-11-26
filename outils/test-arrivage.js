@@ -35,6 +35,13 @@ const lignesArr = () => [
   { id: 71, arrivage_id: 7, produit_id: 'pr-a', quantite_attendue: 30, revient_unitaire_ht: 50 },
   { id: 72, arrivage_id: 7, produit_id: 'pr-n', quantite_attendue: 40, revient_unitaire_ht: 70 },
 ];
+// Réponse paginée comme la base (PostgREST) : filtre arrivage_id=eq.N, puis offset / limit, plafond par réponse (1 000 par défaut).
+function paginer(url, rows, plafond) {
+  const u = new URL(url); let r = rows.slice();
+  const fa = u.searchParams.get('arrivage_id'); if (fa) r = r.filter(x => 'eq.' + x.arrivage_id === fa);
+  const off = Number(u.searchParams.get('offset') || 0), lim = Math.min(Number(u.searchParams.get('limit') || 1e9), plafond || 1000);
+  return r.slice(off, off + lim);
+}
 function nouveauBac(opts) {
   const o = opts || {}, appels = [], toasts = [], elts = {};
   const el = (id) => elts[id] || (elts[id] = { id, innerHTML: '', textContent: '', disabled: false, style: {}, value: '' });
@@ -108,7 +115,7 @@ function nouveauBac(opts) {
   test('base : réservé à une session administrateur', fonc.includes("if (select public.session_role()) is distinct from 'admin' then"));
   // écran : deux clics (même très rapprochés) n'envoient qu'UNE validation ; après succès, le bouton disparaît
   let B = nouveauBac({ repondre: (url) => url.includes('/rpc/valider_reception_arrivage') ? { ok: true, status: 200, corps: { ok: true, total_recu: 70 } }
-    : url.includes('/arrivages?') ? { ok: true, status: 200, corps: [arrivage('recu')] } : url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: lignesArr() } : { ok: true, status: 200, corps: [] } });
+    : url.includes('/arrivages?') ? { ok: true, status: 200, corps: paginer(url, [arrivage('recu')]) } : url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: paginer(url, lignesArr()) } : { ok: true, status: 200, corps: [] } });
   B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr();
   B.bac.arrOuvrir(7);
   const p1 = B.bac.arrValider(), p2 = B.bac.arrValider(); await Promise.all([p1, p2]);
@@ -117,7 +124,8 @@ function nouveauBac(opts) {
   test('après succès : arrivage relu « recu », plus de bouton Valider', B.bac.ARR_ETAT.arrivages[0].statut === 'recu' && !B.elts['arr-contenu'].innerHTML.includes('arr-btn-valider'), B.elts['arr-contenu'].innerHTML.slice(0, 200));
   B.bac.ARR_ETAT.arrivages = [arrivage('recu')]; await B.bac.arrValider();
   test('nouvelle tentative sur un arrivage reçu : refusée sans appel à la base', nbRpc() === 1 && B.toasts.some(t => t.t === 'err' && /déjà été traité/.test(t.m)), B.toasts);
-  B = nouveauBac({ repondre: (url) => url.includes('/rpc/') ? { ok: true, status: 200, corps: { ok: false, erreur: 'arrivage_deja_traite', statut: 'recu' } } : { ok: true, status: 200, corps: [] } });
+  B = nouveauBac({ repondre: (url) => url.includes('/rpc/') ? { ok: true, status: 200, corps: { ok: false, erreur: 'arrivage_deja_traite', statut: 'recu' } }
+    : url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: paginer(url, lignesArr()) } : { ok: true, status: 200, corps: [] } });
   B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.arrOuvrir(7); await B.bac.arrValider();
   test('la base refuse (validé ailleurs entre-temps) : message clair, rien n\'est compté comme reçu', B.toasts.some(t => t.t === 'err' && /NON validée : arrivage_deja_traite/.test(t.m)), B.toasts);
   B = nouveauBac({ confirmer: false }); B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.arrOuvrir(7); await B.bac.arrValider();
@@ -332,9 +340,100 @@ function nouveauBac(opts) {
     && (rec.match(/order by id for update/g) || []).length === 1 && (rec.match(/order by produit_id for update/g) || []).length === 1);
   test('aucune commande touchée (marges passées jamais recalculées)', !/update public\.commandes|alter table public\.commandes/.test(sql));
 
+  console.log('\n8 ter. REVUE CODEX SUR 66def07 (identification par nom, revient calculé par la base, lignes complètes, catalogue JARVIS)');
+  {
+    // --- point 1 : ligne sans produitId fiable, au NOM (ou à la référence) d'un produit non vendable ---
+    ({ bac } = nouveauBac());
+    const R = (lignes, anc) => bac.venLignesRefusees(lignes, bac.produits, anc || null);
+    test('nom exact d\'un produit non vendable, produitId vide : refusé', JSON.stringify(R([{ produitId: '', produit: 'Matelas Nouveau N (fictif)' }])) === JSON.stringify(['Matelas Nouveau N (fictif)']));
+    test('nom à la casse / aux espaces près, produitId « _custom_… » : refusé', R([{ produitId: '_custom_123', produit: '  matelas  NOUVEAU n (FICTIF) ' }]).length === 1);
+    test('ancien champ « nom » seul : refusé', R([{ nom: 'Matelas Retiré R' }]).length === 1 && R([{ nom: 'Matelas Retire R' }]).length === 1);
+    test('référence interne (« _ugs » TikTok, « sku », ou le nom lui-même) : refusé', R([{ produit: 'Article TikTok', _ugs: 'mc-test-1' }]).length === 1 && R([{ sku: 'MC-TEST-1' }]).length === 1 && R([{ produit: 'MC-TEST-1' }]).length === 1);
+    test('ensemble non vendable (composant sans prix) reconnu par son nom : refusé', R([{ produit: 'Ensemble Nouveau N + Sommier' }]).length === 1);
+    test('nom d\'un produit VENDABLE sans produitId : accepté (comportement inchangé)', R([{ produit: 'Matelas Fictif A 140 x 190' }]).length === 0);
+    test('nom inconnu (hors catalogue) : accepté', R([{ produitId: '_custom_9', produit: 'Article libre fictif' }]).length === 0);
+    test('produitId fiable d\'un produit vendable : il prime sur le nom', R([{ produitId: 'pr-a', produit: 'Matelas Nouveau N (fictif)' }]).length === 0);
+    test('commande déjà prise qui le contenait par son seul nom : ligne figée, reste modifiable', R([{ produit: 'Matelas Retiré R' }], { lignes: [{ produitId: null, produit: 'matelas retiré r' }] }).length === 0);
+    const pvN = await import('file:///' + path.join(racine, 'supabase', 'functions', '_shared', 'produits-vendables.ts').replace(/\\/g, '/'));
+    const echant = ['  Matelas  Fictif ÉTÉ 140 × 190 x 25 ', 'Sommier 160X200', 'Ensemble Ça Va 90 x190', '', null, 'MC-TEST-1'];
+    test('normalisation identique dans l\'appli (venNorm) et les fonctions serveur (nomNormalise)', echant.every(s => bac.venNorm(s) === pvN.nomNormalise(s)), echant.map(s => [bac.venNorm(s), pvN.nomNormalise(s)]));
+    test('normalisation : même résultat attendu que l\'auto-contrôle SQL', bac.venNorm('  Matelas  Fictif ÉTÉ 140 × 190 x 25 ') === 'matelas fictif ete 140x190x25' && sql.includes("interne.l039_norm('  Matelas  Fictif ÉTÉ 140 × 190 x 25 ') is distinct from 'matelas fictif ete 140x190x25'"));
+    const trig = sql.slice(sql.indexOf('create or replace function interne.commandes_produit_vendable_garde()'), sql.indexOf('create trigger commandes_produit_vendable_garde'));
+    const ident = sql.slice(sql.indexOf('create or replace function interne.l039_lignes_identifiees'), sql.indexOf('revoke all on function interne.l039_lignes_identifiees'));
+    test('base : lignes identifiées (nom / référence) des DEUX côtés AVANT la recherche des produits non vendables',
+      trig.indexOf('v_new := interne.l039_lignes_identifiees(v_new);') > 0 && trig.indexOf('v_old := interne.l039_lignes_identifiees(v_old);') > trig.indexOf('into v_old from public.commandes')
+      && trig.indexOf('v_new := interne.l039_lignes_identifiees(v_new);') < trig.indexOf('select array_agg(distinct p.id) into v_nv'));
+    test('base : produitId EXISTANT fiable ; sinon nom (produit / nom) ou référence (reference / sku / _ugs / nom) d\'un produit NON VENDABLE',
+      ident.includes("when coalesce(e ->> 'produitId', '') <> '' and exists (select 1 from public.produits q where q.id = e ->> 'produitId') then e")
+      && ident.includes("interne.l039_norm(q.nom) in (interne.l039_norm(e ->> 'produit'), interne.l039_norm(e ->> 'nom'))")
+      && ["'reference'", "'sku'", "'_ugs'"].every(k => ident.includes('interne.l039_norm(e ->> ' + k + ')')) && ident.includes('and interne.produit_non_vendable(q.id)')
+      && ident.includes('end order by t.ord') && sql.includes('revoke all on function interne.l039_lignes_identifiees(jsonb) from public, anon, authenticated;'));
+    test('base : normalisation SQL (minuscules, accents, ×, espaces, 140 x 190)', sql.includes("translate(lower(coalesce(p, '')), 'àâäáãåçéèêëíìîïñóòôöõúùûüýÿ×', 'aaaaaaceeeeiiiinooooouuuuyyx')")
+      && sql.includes("'(\\d) ?x ?(\\d)', '\\1x\\2', 'g'"));
+
+    // --- point 3 : revient du lot calculé (ou vérifié) par la base ---
+    const val3 = sql.slice(sql.indexOf('create or replace function public.valider_reception_arrivage'), sql.indexOf('create or replace function public.recalculer_revient_arrivage'));
+    test('base : taux et FOB obligatoires, frais répartis sur les quantités ATTENDUES', val3.includes("if a.taux_change is null then return json_build_object('ok', false, 'erreur', 'taux_manquant'); end if;")
+      && val3.includes("if v_sans_fob > 0 then return json_build_object('ok', false, 'erreur', 'fob_manquant'); end if;") && val3.includes('v_frais_u := a.frais_import_ht / v_total_att;'));
+    test('base : revient du lot CALCULÉ (FOB × taux + frais), revient chargé incohérent refusé AVANT toute écriture de la ligne',
+      val3.includes('v_rev_lot := interne.l039_revient_lot(l.fob_unitaire, a.taux_change, v_frais_u);')
+      && val3.indexOf('if not interne.l039_revient_coherent(l.revient_unitaire_ht, v_rev_lot) then') > val3.indexOf('v_rev_lot := interne.l039_revient_lot(')
+      && val3.indexOf('REVIENT INCOHÉRENT') < val3.indexOf('update public.arrivage_lignes set quantite_recue'));
+    test('base : c\'est le revient CALCULÉ qui valorise le stock, entre dans l\'historique et reste sur la ligne',
+      val3.includes('interne.revient_apres(v_methode, v_stock_avant, v_rev_avant, v_rec, v_rev_lot)') && val3.includes('values (l.produit_id, v_rev_lot, v_rec, v_stock_avant,')
+      && val3.includes('revient_unitaire_ht = v_rev_lot where id = l.id;') && !/revient_apres\([^)]*l\.revient_unitaire_ht/.test(val3) && !/values \(l\.produit_id, l\.revient_unitaire_ht/.test(val3));
+    test('base : même formule que le recalcul au taux définitif (FOB × taux + frais par unité, 4 décimales)',
+      sql.includes('select round(p_fob * p_taux + coalesce(p_frais_u, 0), 4)') && sql.includes('round(l.fob_unitaire * p_nouveau_taux + v_frais_u, 4)') && sql.includes('v_frais_u := a.frais_import_ht / v_total;'));
+    test('base : tolérance d\'arrondi d\'un centime, revient absent rempli par la base', sql.includes('select p_charge is null or (p_calcule is not null and abs(p_charge - p_calcule) <= 0.01)'));
+    const auto10 = sql.slice(sql.indexOf('-- 10. Auto-contrôle à l\'application : revient d\'un lot'));
+    test('base : auto-contrôle EXÉCUTÉ à l\'application (valeurs fictives : calcul, arrondi, écart toléré / refusé, normalisation)',
+      ['revient du lot', 'revient arrondi à 4 décimales', 'écart de 2 centimes refusé', 'revient contredisant FOB, taux et frais refusé', 'nom normalisé'].every(c => auto10.includes("f := '" + c + "'")) && auto10.includes('Migration annulée'));
+    // modèle JS du même calcul (valeurs fictives), et l'aperçu de l'écran
+    const aR = { id: 9, statut: 'en_attente', taux_change: 1.1, frais_import_ht: 30 };
+    const lR = [{ id: 1, arrivage_id: 9, produit_id: 'pr-a', quantite_attendue: 1, fob_unitaire: 10, revient_unitaire_ht: 21 },
+                { id: 2, arrivage_id: 9, produit_id: 'pr-b', quantite_attendue: 2, fob_unitaire: 20, revient_unitaire_ht: 5 }];
+    test('appli : revient du lot = FOB × taux + frais / attendus (10 × 1,1 + 30 / 3 = 21)', bac.arrRevientCalcule(aR, lR, lR[0]) === 21 && bac.arrRevientCalcule(aR, lR, lR[1]) === 32);
+    test('appli : taux absent → incalculable (la base refusera)', bac.arrRevientCalcule(Object.assign({}, aR, { taux_change: null }), lR, lR[0]) === null);
+    const vR = bac.arrLignesValorisees(aR, lR);
+    test('appli : l\'aperçu utilise le revient calculé ; revient chargé incohérent signalé', vR[0].revient_unitaire_ht === 21 && !vR[0].revient_ecart && vR[1].revient_unitaire_ht === 32 && vR[1].revient_ecart === true && lR[1].revient_unitaire_ht === 5);
+
+    // --- point 4 : plus de lignes historiques que le plafond de la base ---
+    const hist = []; for (let n = 1; n <= 2500; n++) hist.push({ id: n, arrivage_id: 100 + (n % 50), produit_id: 'pr-b', quantite_attendue: 1, quantite_recue: 1, revient_unitaire_ht: 1 });
+    const recents = [{ id: 9001, arrivage_id: 7, produit_id: 'pr-a', quantite_attendue: 30, fob_unitaire: 10 }, { id: 9002, arrivage_id: 7, produit_id: 'pr-n', quantite_attendue: 40, fob_unitaire: 20 }];
+    const arrivRec = Object.assign(arrivage('en_attente'), { taux_change: 1, frais_import_ht: 0 });
+    let lignesBase = hist.concat(recents);
+    for (const plafond of [1000, 300]) {
+      B = nouveauBac({ repondre: (url) => url.includes('/rpc/valider_reception_arrivage') ? { ok: true, status: 200, corps: { ok: true, total_recu: 70 } }
+        : url.includes('/arrivages?') ? { ok: true, status: 200, corps: paginer(url, [Object.assign({}, arrivRec)], plafond) }
+        : url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: paginer(url, lignesBase, plafond) } : { ok: true, status: 200, corps: [] } });
+      await B.bac.arrCharger();
+      test('plafond ' + plafond + ' : les 2 502 lignes sont lues (pages successives, ordre stable par id)', B.bac.ARR_ETAT.lignes.length === 2502 && B.appels.filter(a => a.url.includes('/arrivage_lignes?')).every(a => a.url.includes('order=id.asc')), B.bac.ARR_ETAT.lignes.length);
+      test('plafond ' + plafond + ' : l\'arrivage récent est complet (2 lignes)', B.bac.arrLignesDe(7).length === 2);
+      B.bac.arrOuvrir(7); await B.bac.arrValider();
+      const rpc = B.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage'));
+      test('plafond ' + plafond + ' : lignes de l\'arrivage relues PAR arrivage_id avant l\'envoi, réception envoyée complète',
+        B.appels.some(a => a.url.includes('/arrivage_lignes?') && a.url.includes('arrivage_id=eq.7')) && rpc.length === 1 && rpc[0].body.p_lignes.length === 2, B.toasts);
+    }
+    // une ligne ajoutée à l'arrivage entre l'affichage et la validation : rien n'est envoyé, l'écran est rafraîchi
+    B = nouveauBac({ repondre: (url) => url.includes('/rpc/') ? { ok: true, status: 200, corps: { ok: true } }
+      : url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: paginer(url, lignesArr().concat([{ id: 73, arrivage_id: 7, produit_id: 'pr-s', quantite_attendue: 5 }])) } : { ok: true, status: 200, corps: [] } });
+    B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.arrOuvrir(7); await B.bac.arrValider();
+    test('lignes changées entre-temps : rien n\'est envoyé, lignes rechargées (3), message clair', !B.appels.some(a => a.url.includes('/rpc/')) && B.bac.arrLignesDe(7).length === 3 && B.toasts.some(t => /ont changé/.test(t.m)));
+    B = nouveauBac({ repondre: (url) => url.includes('/arrivage_lignes?') ? { ok: false, status: 503, corps: {} } : { ok: true, status: 200, corps: { ok: true } } });
+    B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.arrOuvrir(7); await B.bac.arrValider();
+    test('lignes illisibles au moment de valider : rien n\'est envoyé', !B.appels.some(a => a.url.includes('/rpc/')) && B.toasts.some(t => /illisibles/.test(t.m)) && B.bac.ARR_ETAT.envoi === false);
+    test('écran : plus aucune lecture d\'arrivage_lignes sans pagination', !/fetch\(b \+ 'arrivage_lignes\?select=\*&order=id\.asc'/.test(html) && html.includes("arrLireTout(b + 'arrivage_lignes?select=*&order=id.asc')"));
+
+    // --- point 2 : catalogue JARVIS complet ---
+    const ja = fs.readFileSync(path.join(racine, 'supabase', 'functions', 'jarvis-action', 'index.ts'), 'utf8');
+    test('JARVIS : catalogue lu par pages (catalogueJarvis / lireCatalogueComplet), plus de select unique plafonné',
+      ja.includes('return await catalogueJarvis(') && /\.select\('\*'\)\.order\('id'\)\.range\(debut, fin\)/.test(ja) && /\.select\('\*'\)\.in\('id', ids\)/.test(ja)
+      && !/sb\.from\('produits'\)\.select\('\*'\);/.test(ja) && (ja.match(/if \(!cat\) return catalogueIllisible\(\);/g) || []).length === 2);
+  }
+
   console.log('\n9. VERSION');
   const m = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(sw);
-  test('CACHE_VERSION augmentée (v7-5-136 ou plus)', !!m && Number(m[1]) >= 136, m && m[0]);
+  test('CACHE_VERSION augmentée (v7-5-142 ou plus)', !!m && Number(m[1]) >= 142, m && m[0]);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

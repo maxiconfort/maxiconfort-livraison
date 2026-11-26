@@ -7,6 +7,14 @@ type LigneProduit = Record<string, any>;
 
 const marque = (r: LigneProduit | undefined) => !!r && (r.vendable === false || r.prix_vente_defini === false);
 
+/** Nom (ou référence) NORMALISÉ pour reconnaître un produit sans identifiant (revue Codex PR 26 sur 66def07) : minuscules, sans
+ *  accents, « × » lu « x », espaces regroupés, « 140 x 190 » = « 140x190 ». MÊME règle que interne.l039_norm (migration 039) et
+ *  venNorm (application). Vide = rien à comparer. */
+export function nomNormalise(s: unknown): string {
+  return String(s ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/×/g, 'x')
+    .replace(/\s+/g, ' ').trim().replace(/(\d) ?x ?(\d)/g, '$1x$2');
+}
+
 /** Identifiants des produits non vendables parmi les lignes lues dans la table produits (select *). */
 export function idsNonVendables(rows: LigneProduit[]): Set<string> {
   const parId = new Map((rows || []).map((r) => [String(r.id), r]));

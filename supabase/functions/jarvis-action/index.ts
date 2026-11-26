@@ -31,7 +31,7 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { VERSION, alerteCorrectionStock, apercuCommande, catalogueDepuisBase, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
+import { VERSION, alerteCorrectionStock, apercuCommande, catalogueJarvis, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
   controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, variantesTel, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_COMPTES, STATUTS_COMPTES_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 import { lireCompteSmsOVH } from '../_shared/ovh-sms.ts';
 import { envoyerAvecReservation, echecCertain, phraseIndetermine } from '../_shared/sms-prevenir.ts';
@@ -73,11 +73,18 @@ function resumeGls(j: any) {
   return { colis: Array.isArray(unites) ? unites.length : null, poids: Array.isArray(unites) ? unites.map((u: any) => Number(u?.Weight ?? u?.weight) || null) : null,
     suivis: Array.isArray(j?.parcels) ? j.parcels.map((x: any) => x?.trackId || x?.parcelNumber).filter(Boolean) : j?.trackId ? [j.trackId] : [] };
 }
-async function catalogue(): Promise<Catalogue> {
+async function catalogue(): Promise<Catalogue | null> {
   // v2.18 : select * (lecture seule) pour lire vendable / prix_vente_defini / composants, présents seulement après la migration 039
-  const { data } = await sb.from('produits').select('*');
-  return catalogueDepuisBase((data as any[]) || []);
+  // v2.19 (revue Codex PR 26 sur 66def07) : plus de lecture unique plafonnée — catalogue COMPLET par pages (ordre stable par id) +
+  // composants manquants par identifiants (catalogueJarvis / lireCatalogueComplet). Lecture impossible = null (502), jamais partiel.
+  try {
+    return await catalogueJarvis(
+      async (debut, fin) => { const { data, error } = await sb.from('produits').select('*').order('id').range(debut, fin); if (error) throw error; return (data as any[]) || []; },
+      async (ids) => { const { data, error } = await sb.from('produits').select('*').in('id', ids); if (error) throw error; return (data as any[]) || []; },
+    );
+  } catch (e) { console.error('catalogue : lecture impossible', e); return null; }
 }
+const catalogueIllisible = () => rep(502, { ok: false, erreur: 'catalogue illisible pour l’instant (rien n’a été fait)' });
 const ecritureRefusee = (e: unknown) => rep(502, { ok: false, erreur: 'écriture refusée par la base' + (e && (e as any).code ? ' (' + (e as any).code + ')' : '') });
 
 Deno.serve(async (req: Request) => {
@@ -219,7 +226,7 @@ Deno.serve(async (req: Request) => {
         par_statut, ouvertes, total: toutes, ...(montant !== null ? { montant_hors_annulees: montant, montant_partiel } : {}) });
     }
     if (d.action === 'lire_stock') {
-      const cat = await catalogue(); const voulu = d.produit ? String(d.produit).toLowerCase() : '';
+      const cat = await catalogue(); if (!cat) return catalogueIllisible(); const voulu = d.produit ? String(d.produit).toLowerCase() : '';
       const produits = [...cat.values()].filter((p) => p.actif && !p.ancienne_offre && (!voulu || p.id.toLowerCase() === voulu || p.nom.toLowerCase().includes(voulu)));
       if (!produits.length) return rep(404, { ok: false, erreur: 'produit inconnu au catalogue' });
       const { data: cpt } = await sb.from('stock_comptage').select('id, fin').eq('statut', 'valide').order('fin', { ascending: false }).limit(1).maybeSingle();
@@ -336,7 +343,7 @@ Deno.serve(async (req: Request) => {
         reprise = { statut_source: String((src as any).statut || ''), ...(d.nom_annonce ? { nom_concorde: nomConcorde(String(d.nom_annonce), co.champs.client) } : {}) }; // relecture : dit, jamais le nom
         Object.assign(d, co.champs);
       }
-      const cat = await catalogue(); const l = lignesCommande(d.lignes!, cat); if (l.erreur) return rep(422, { ok: false, erreur: l.erreur });
+      const cat = await catalogue(); if (!cat) return catalogueIllisible(); const l = lignesCommande(d.lignes!, cat); if (l.erreur) return rep(422, { ok: false, erreur: l.erreur });
       const { data: ids } = await sb.from('commandes').select('id').like('id', '#%').order('created_at', { ascending: false }).limit(300);
       let id = prochainNumero((ids || []).map((x: any) => String(x.id)));
       const cmd = construireCommande(d, id, l.lignes);
