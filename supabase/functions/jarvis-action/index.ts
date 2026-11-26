@@ -32,7 +32,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, catalogueJarvis, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, variantesTel, resumeCredits, lignesCommande, produitPrincipalNonVendable, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_COMPTES, STATUTS_COMPTES_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, variantesTel, resumeCredits, lignesCommande, produitPrincipalNonVendable, produitNonVendableDeCommande, remiseGlobaleModifiee, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_COMPTES, STATUTS_COMPTES_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 import { lireCompteSmsOVH } from '../_shared/ovh-sms.ts';
 import { nomNormalise } from '../_shared/produits-vendables.ts';
 import { envoyerAvecReservation, echecCertain, phraseIndetermine } from '../_shared/sms-prevenir.ts';
@@ -282,6 +282,13 @@ Deno.serve(async (req: Request) => {
     }
     if (d.action === 'modifier_prix') {
       const p = champsPrix(d, c!); const avant = Number(c!.prix) || 0;
+      // v2.23 (revue Codex PR 26 sur 40f0bd6) : modifier_prix efface la remise globale ; elle est FIGÉE si la commande contient un produit
+      // non vendable (la base refuse aussi : commandes_produit_vendable_garde) → refus clair, avant tout aperçu
+      if (remiseGlobaleModifiee(c!, p)) {
+        const catP = await catalogue(); if (!catP) return catalogueIllisible();
+        const nvP = produitNonVendableDeCommande(c!.lignes, c!.produit, catP);
+        if (nvP) return rep(422, { ok: false, erreur: `« ${nvP.nom} » n'est pas encore vendable (prix de vente à définir) : la remise globale de cette commande est figée, modifier_prix l'effacerait (passer par l'appli, administrateur)` });
+      }
       if (!confirme) return rep(200, { ...base, avant, apres: d.prix, motif: d.motif });
       const { error } = await sb.from('commandes').update(p).eq('id', d.cmdId); if (error) return ecritureRefusee(error);
       const { data: v } = await sb.from('commandes').select('prix').eq('id', d.cmdId).maybeSingle();

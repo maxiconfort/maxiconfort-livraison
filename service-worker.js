@@ -1,5 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.162 - Fusion des corrections arrivages v7.5.161 (remise globale figee tant qu'une ligne figee est presente) dans tableau de bord + menus (26/11/2026)
+// v7.5.161 - Produits non vendables : remise globale figee tant qu'une ligne figee est presente (base, appli, JARVIS) (26/11/2026)
 // v7.5.160 - Tableau de bord : suppression recue par le temps reel retiree de la liste locale (sans identifiant : preuve de chargement complet retiree) (26/11/2026)
 // v7.5.159 - Fusion des corrections arrivages v7.5.158 (commande ancienne sans lignes rouverte avec sa ligne d'origine) dans tableau de bord + menus (26/11/2026)
 // v7.5.158 - Commande ancienne sans lignes rouverte : ligne d'origine reconstruite telle quelle, plus de rapprochement par premier mot (26/11/2026)
@@ -27,7 +29,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-160';
+const CACHE_VERSION = 'maxiconfort-v7-5-162';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

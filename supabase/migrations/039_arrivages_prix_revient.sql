@@ -295,18 +295,38 @@ language sql immutable as $$
 $$;
 revoke all on function interne.l039_lignes_effectives(jsonb, text, jsonb, jsonb) from public, anon, authenticated;
 
+-- REMISE GLOBALE FIGÉE (revue Codex PR 26 sur 40f0bd6) : la signature des lignes compare les remises DE LIGNE, pas la remise GLOBALE
+-- de la commande (colonnes remise_globale = montant en euros, remise_globale_val = valeur saisie, remise_globale_type = 'pct' ou
+-- 'eur'). La changer modifiait le montant payé pour un produit non vendable sans toucher sa ligne. Désormais, tant que la commande
+-- contient une ligne FIGÉE d'un produit non vendable (lignes inchangées), sa remise globale est figée elle aussi : même valeur, même
+-- type et même montant (au centime). Le motif (remise_motif, texte) reste libre. Une commande sans ligne non vendable reste libre ;
+-- retirer toutes les lignes du produit non vendable libère la remise. Signature PURE : valeur et montant au centime (absents = 0),
+-- type absent ou vide = 'pct' (comme l'application : remiseGlobaleType || 'pct'). Même règle que venRemiseSignature (application).
+create or replace function interne.l039_remise_signature(p_val jsonb, p_type text, p_montant jsonb) returns jsonb
+language sql immutable as $$
+  select jsonb_build_object('val', coalesce(interne.l039_centimes(p_val), 0),
+                            'type', coalesce(nullif(btrim(p_type), ''), 'pct'),
+                            'montant', coalesce(interne.l039_centimes(p_montant), 0))
+$$;
+revoke all on function interne.l039_remise_signature(jsonb, text, jsonb) from public, anon, authenticated;
+
 create or replace function interne.commandes_produit_vendable_garde() returns trigger
 language plpgsql security definer set search_path = public, interne, pg_catalog as $$
-declare v_nv text[]; v_modif text[]; v_refus text; v_old jsonb;
+declare v_nv text[]; v_modif text[]; v_refus text; v_old jsonb; v_old_remise jsonb;
   v_new jsonb := interne.l039_lignes_effectives(to_jsonb(new.lignes), new.produit::text, to_jsonb(new.qte), to_jsonb(new.prix));
+  v_new_remise jsonb := interne.l039_remise_signature(to_jsonb(new.remise_globale_val), new.remise_globale_type::text, to_jsonb(new.remise_globale));
 begin
   if v_new = '[]'::jsonb then return new; end if;
-  if tg_op = 'UPDATE' then v_old := interne.l039_lignes_effectives(to_jsonb(old.lignes), old.produit::text, to_jsonb(old.qte), to_jsonb(old.prix));
+  if tg_op = 'UPDATE' then
+    v_old := interne.l039_lignes_effectives(to_jsonb(old.lignes), old.produit::text, to_jsonb(old.qte), to_jsonb(old.prix));
+    v_old_remise := interne.l039_remise_signature(to_jsonb(old.remise_globale_val), old.remise_globale_type::text, to_jsonb(old.remise_globale));
   else
     -- enregistrement « upsert » de l'application (INSERT … ON CONFLICT) : le déclencheur INSERT voit la ligne proposée AVANT
     -- la détection du conflit ; si la commande existe déjà, ses lignes actuelles servent de référence (comme pour un UPDATE).
     -- Commande nouvelle : v_old reste NULL, toute ligne d'un produit non vendable est donc refusée (produit principal compris).
-    select interne.l039_lignes_effectives(to_jsonb(c.lignes), c.produit::text, to_jsonb(c.qte), to_jsonb(c.prix)) into v_old
+    select interne.l039_lignes_effectives(to_jsonb(c.lignes), c.produit::text, to_jsonb(c.qte), to_jsonb(c.prix)),
+           interne.l039_remise_signature(to_jsonb(c.remise_globale_val), c.remise_globale_type::text, to_jsonb(c.remise_globale))
+      into v_old, v_old_remise
       from public.commandes c where c.id = new.id;
   end if;
   -- lignes sans produitId fiable : rapportées au produit non vendable reconnu par nom ou référence (revue Codex sur 66def07),
@@ -320,14 +340,23 @@ begin
      and interne.produit_non_vendable(p.id);
   if v_nv is null then return new; end if;
   v_modif := interne.lignes_non_vendables_modifiees(v_new, v_old, v_nv);
-  if v_modif is null then return new; end if;
-  select string_agg(p.nom, ', ' order by p.nom) into v_refus from public.produits p where p.id = any(v_modif);
-  raise exception 'PRODUIT NON VENDABLE (prix de vente à définir) : % — ligne ajoutée, quantité ou prix modifié : refusé', v_refus
-    using errcode = 'P0001';
+  if v_modif is not null then
+    select string_agg(p.nom, ', ' order by p.nom) into v_refus from public.produits p where p.id = any(v_modif);
+    raise exception 'PRODUIT NON VENDABLE (prix de vente à définir) : % — ligne ajoutée, quantité ou prix modifié : refusé', v_refus
+      using errcode = 'P0001';
+  end if;
+  -- lignes figées inchangées (la commande existe donc : v_old_remise est lu) : remise globale figée aussi (revue Codex sur 40f0bd6)
+  if v_new_remise is distinct from v_old_remise then
+    select string_agg(p.nom, ', ' order by p.nom) into v_refus from public.produits p where p.id = any(v_nv);
+    raise exception 'PRODUIT NON VENDABLE (prix de vente à définir) : % — remise globale de la commande modifiée (valeur, type ou montant) : refusé', v_refus
+      using errcode = 'P0001';
+  end if;
+  return new;
 end $$;
 drop trigger if exists commandes_produit_vendable_garde on public.commandes;
--- produit, qte et prix aussi (revue Codex PR 26 sur cf58971) : ce sont les lignes de comparaison d'une commande sans lignes
-create trigger commandes_produit_vendable_garde before insert or update of lignes, produit, qte, prix on public.commandes
+-- produit, qte et prix aussi (revue Codex PR 26 sur cf58971) : ce sont les lignes de comparaison d'une commande sans lignes ;
+-- remise_globale, remise_globale_val et remise_globale_type aussi (revue Codex PR 26 sur 40f0bd6) : remise globale figée
+create trigger commandes_produit_vendable_garde before insert or update of lignes, produit, qte, prix, remise_globale, remise_globale_val, remise_globale_type on public.commandes
   for each row execute function interne.commandes_produit_vendable_garde();
 
 -- Une variante Shopify « certaine » (utilisée pour importer les commandes et publier le stock) ne peut pas pointer vers un
@@ -959,6 +988,19 @@ begin
        jsonb_build_array(interne.l039_ligne_identifiee(interne.l039_lignes_effectives(null, 'Matelas Nouveau N (fictif)', '1', '0') -> 0,
                                                      '[{"id":"pr-n","designe":true,"nv":true}]')), array['pr-n']) is distinct from array['pr-n']
     then f := 'quantité du produit principal modifiée'; end if;
+  -- remise globale FIGÉE (revue Codex PR 26 sur 40f0bd6) : signature au centime, absents = 0, type absent ou vide = 'pct'
+  if interne.l039_remise_signature('10', 'pct', '15') is distinct from interne.l039_remise_signature('10.004', 'pct', '14.999')
+    then f := 'remise globale : écart d''arrondi accepté'; end if;
+  if interne.l039_remise_signature(null, null, null) is distinct from interne.l039_remise_signature('0', '  ', '0')
+    then f := 'remise globale absente = remise nulle en pourcentage'; end if;
+  if interne.l039_remise_signature('10', 'pct', '15') = interne.l039_remise_signature('12', 'pct', '15')
+    then f := 'remise globale : valeur modifiée'; end if;
+  if interne.l039_remise_signature('10', 'pct', '10') = interne.l039_remise_signature('10', 'eur', '10')
+    then f := 'remise globale : type modifié'; end if;
+  if interne.l039_remise_signature('10', 'eur', '10') = interne.l039_remise_signature('10', 'eur', '9.99')
+    then f := 'remise globale : montant modifié d''un centime'; end if;
+  if interne.l039_remise_signature('10', 'pct', '15') = interne.l039_remise_signature(null, null, null)
+    then f := 'remise globale effacée'; end if;
   if f is not null then
     raise exception 'Auto-contrôle 039 (revient / identification) en échec : cas « % ». Migration annulée.', f;
   end if;
