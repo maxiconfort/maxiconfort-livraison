@@ -1,7 +1,7 @@
 // Banc de test « ANCIENNE OFFRE — NE PLUS UTILISER » (v7.5.118, 09/10/2026).
 // Usage : node outils/test-ancienne-offre.js
 // Il EXTRAIT le vrai code de maxiconfort-v7.html (bloc AO-DEBUT … AO-FIN, buildProduitOptions, recalcTotal, getLignesData,
-// stkTrouverProduit, sbLoadProduits, sbSaveProduit) et l'exécute dans un bac à sable : aucune connexion à la base, aucune donnée
+// sbLoadProduits, sbSaveProduit) et l'exécute dans un bac à sable : aucune connexion à la base, aucune donnée
 // réelle. `fetch` est remplacé par un faux qui capture les envois ou rend un faux catalogue.
 const fs = require('fs'), path = require('path'), vm = require('vm');
 const html = fs.readFileSync(path.join(__dirname, '..', 'maxiconfort-v7.html'), 'utf8');
@@ -34,12 +34,13 @@ function nouveauBac(lignes) { const envois = [], memoire = {}, champs = { 'f-rem
     localStorage: { setItem(k, v) { memoire[k] = v; }, getItem(k) { return memoire[k] || null; } },
     fetch: async (url, opt) => { envois.push({ url, methode: (opt && opt.method) || 'GET', body: opt && opt.body ? JSON.parse(opt.body) : null }); return { ok: true, text: async () => '', json: async () => bac._reponse || [] }; },
     stkRender() { bac._rendus++; }, sbSaveEchec() { bac._echecs++; }, oqSucces() {}, // v7.5.196 / v7.5.197 : file hors sujet ici
+    stkProduit(id) { return (bac.produits || []).find(p => p.id === id) || null; }, oqStockAncienSignaler() {}, // v7.5.198
     _rendus: 0, _echecs: 0, _reponse: null };
   vm.createContext(bac);
   vm.runInContext(extraireBloc('// AO-DEBUT', '// AO-FIN'), bac);
   // v7.5.192 : sbSaveProduit s'appuie sur les fonctions de refus et de fiches refusées définies juste avant elle
   vm.runInContext(extraireFonction('function oqRoleCourant()') + '\n' + extraireBloc('// v7.5.191 : refus de la base sur un produit', 'async function sbSaveProduit(p'), bac);
-  for (const f of ['function buildProduitOptions()', 'function recalcTotal()', 'function getLignesData()', 'function stkTrouverProduit(produitId, nomProduit)', 'async function sbLoadProduits()', 'async function sbSaveProduit(p']) vm.runInContext(extraireFonction(f), bac);
+  for (const f of ['function buildProduitOptions()', 'function recalcTotal()', 'function getLignesData()', 'async function sbLoadProduits()', 'async function sbSaveProduit(p']) vm.runInContext(extraireFonction(f), bac);
   return { bac, envois, memoire, champs }; }
 let ok = 0, ko = 0; const test = (nom, cond, det) => { if (cond) { ok++; console.log('  OK   ' + nom); } else { ko++; console.log('  ÉCHEC ' + nom + (det !== undefined ? ' — ' + JSON.stringify(det) : '')); } };
 
@@ -79,7 +80,7 @@ let ok = 0, ko = 0; const test = (nom, cond, det) => { if (cond) { ok++; console
   test('commande ancienne sans lignes, au nom exact de l\'ancien pack : repérée', bac.aoCommande({ produit: nomAncien }, bac.produits) === true);
   test('commande d\'un autre produit : non repérée', bac.aoCommande({ lignes: [{ produitId: PACK15 }, { produitId: '_custom_x', produit: 'Lit Coffre 140x190 Blanc' }] }, bac.produits) === false);
   test('commande vide ou absente : non repérée, sans erreur', bac.aoCommande(null, bac.produits) === false && bac.aoCommande({}, bac.produits) === false);
-  const trouve = bac.stkTrouverProduit(ANCIEN, nomAncien);
+  const trouve = bac.produits.find(p => p.id === ANCIEN); // v7.5.198 : la base retrouve le produit par son identifiant (040)
   test('stock : l\'ancien pack est toujours retrouvé par son identifiant', !!trouve && trouve.id === ANCIEN, trouve && trouve.id);
   test('stock : ses composants (lit + matelas) sont toujours dans le catalogue', !!trouve && trouve.composants.length === 2 && trouve.composants.every(c => bac.produits.some(p => p.id === c.id)));
 

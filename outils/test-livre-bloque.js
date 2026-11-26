@@ -1,4 +1,4 @@
-// Banc de test du correctif v7.5.191 / v7.5.192 / v7.5.193 / v7.5.194 / v7.5.195 / v7.5.196 / v7.5.197 (26/11/2026) : le « livré » du livreur ne remontait plus depuis le 24/11.
+// Banc de test du correctif v7.5.191 / v7.5.192 / v7.5.193 / v7.5.194 / v7.5.195 / v7.5.196 / v7.5.197 / v7.5.198 (26-27/11/2026) : le « livré » du livreur ne remontait plus depuis le 24/11.
 // Usage : node outils/test-livre-bloque.js
 // Il EXTRAIT le vrai code de maxiconfort-v7.html (file d'attente hors ligne, sbSaveProduit, validerSig, contrôle
 // admin des livraisons non remontées) et l'exécute dans un bac à sable : aucune connexion à la base, aucune
@@ -72,22 +72,66 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
 // stock_deduit, refus « commande_non_livree » / « commande_introuvable », réponse { ok, deja, retraits, manques }.
 // b.absente → 404 PGRST202 (migration pas appliquée) ; b.panne → coupure AVANT la base ; b.perdre = n → l'effet est fait
 // en base puis la réponse est perdue (n fois) ; b.http = code → réponse HTTP d'erreur.
+// v7.5.198 : même contrat que la 040 révisée — rejeu « deja » avec le résultat COMPLET de la 1re déduction, operation_id,
+// stocks_actuels ; recrédit depuis les sorties de la dernière déduction ; mouvements manuels idempotents par clé.
 function baseRpc(cmds, stock) {
-  const b = { cmds, stock, appels: 0, deductions: 0, absente: false, perdre: 0, panne: false, http: 0 };
+  const b = { cmds, stock, appels: 0, deductions: 0, recredits: 0, mouvements: 0, absente: false, perdre: 0, panne: false, http: 0, ops: 0, cles: {} };
+  const actuels = (ids) => { const o = {}; ids.forEach(id => { if (id in b.stock) o[id] = b.stock[id]; }); return o; };
   b.reponse = (url, opt) => {
-    if (!/\/rest\/v1\/rpc\/deduire_stock_livraison$/.test(url)) return null;
+    const m = url.match(/\/rest\/v1\/rpc\/(deduire_stock_livraison|recrediter_stock_livraison|mouvement_stock_produit)$/);
+    if (!m) return null;
     b.appels++;
     if (b.panne) return 'reseau';
-    if (b.absente) return { status: 404, texte: JSON.stringify({ code: 'PGRST202', message: 'Could not find the function public.deduire_stock_livraison' }) };
+    if (b.absente) return { status: 404, texte: JSON.stringify({ code: 'PGRST202', message: 'Could not find the function public.' + m[1] }) };
     if (b.http) return { status: b.http, texte: '{}' };
-    const id = JSON.parse(opt.body).p_cmd_id, c = b.cmds[id];
+    const corps = JSON.parse(opt.body);
     let rep;
-    if (!c) rep = { ok: false, erreur: 'commande_introuvable' };
-    else if (c.stock_deduit) rep = { ok: true, deja: true, stock_deduit: true, retraits: [], manques: [] };
-    else if (c.statut !== 'livré') rep = { ok: false, erreur: 'commande_non_livree', statut: c.statut };
-    else {
-      const retraits = (c.lignes || []).map(l => { const av = b.stock[l.p]; b.stock[l.p] = Math.max(0, av - l.q); return { produit_id: l.p, nom: l.p, qte: av - b.stock[l.p], demande: l.q, stock_avant: av, stock_apres: b.stock[l.p] }; });
-      c.stock_deduit = true; b.deductions++; rep = { ok: true, deja: false, stock_deduit: true, retraits, manques: [] };
+    if (m[1] === 'deduire_stock_livraison') {
+      const id = corps.p_cmd_id, c = b.cmds[id];
+      if (!c) rep = { ok: false, erreur: 'commande_introuvable' };
+      else if (c.stock_deduit) rep = (c.derniere && c.derniere.nature === 'deduction')
+        ? Object.assign({}, c.derniere.resultat, { ok: true, deja: true, stock_deduit: true, operation_id: c.derniere.op, stocks_actuels: actuels(c.derniere.resultat.retraits.map(x => x.produit_id)) })
+        : { ok: true, deja: true, stock_deduit: true, resultat_inconnu: true, retraits: [], manques: [], stocks_actuels: {} };
+      else if (c.statut !== 'livré') rep = { ok: false, erreur: 'commande_non_livree', statut: c.statut };
+      else {
+        const retraits = [], manques = [];
+        (c.lignes || []).forEach(l => {
+          if (!(l.p in b.stock)) { manques.push({ produit_id: l.p, nom: l.p, raison: 'produit_introuvable', demande: l.q, retire: 0, manque: l.q }); return; }
+          const av = b.stock[l.p]; b.stock[l.p] = Math.max(0, av - l.q);
+          retraits.push({ produit_id: l.p, nom: l.p, qte: av - b.stock[l.p], demande: l.q, stock_avant: av, stock_apres: b.stock[l.p] });
+          if (av - b.stock[l.p] < l.q) manques.push({ produit_id: l.p, nom: l.p, raison: 'stock_insuffisant', demande: l.q, retire: av - b.stock[l.p], manque: l.q - (av - b.stock[l.p]) });
+        });
+        c.stock_deduit = true; b.deductions++;
+        c.derniere = { nature: 'deduction', op: ++b.ops, resultat: { retraits, manques } };
+        rep = Object.assign({}, c.derniere.resultat, { ok: true, deja: false, stock_deduit: true, operation_id: c.derniere.op, stocks_actuels: actuels(retraits.map(x => x.produit_id)) });
+      }
+    } else if (m[1] === 'recrediter_stock_livraison') {
+      const id = corps.p_cmd_id, c = b.cmds[id], sup = !!corps.p_suppression;
+      if (b.role && b.role !== 'admin' && b.role !== 'collab') rep = { ok: false, erreur: 'droits_insuffisants' };
+      else if (!c && !sup) rep = { ok: false, erreur: 'commande_introuvable' };
+      else if (c && !c.stock_deduit) rep = (c.derniere && c.derniere.nature === 'recredit')
+        ? Object.assign({}, c.derniere.resultat, { ok: true, deja: true, stock_deduit: false, operation_id: c.derniere.op, stocks_actuels: actuels(c.derniere.resultat.retours.map(x => x.produit_id)) })
+        : { ok: true, deja: true, stock_deduit: false, resultat_inconnu: true, retours: [], stocks_actuels: {} };
+      else if (c && c.statut === 'livré' && !sup) rep = { ok: false, erreur: 'commande_encore_livree', statut: c.statut };
+      else if (!c.derniere || c.derniere.nature !== 'deduction') rep = { ok: false, erreur: 'sans_journal' };
+      else {
+        const retours = c.derniere.resultat.retraits.filter(x => x.qte > 0).map(x => { const av = b.stock[x.produit_id]; b.stock[x.produit_id] = av + x.qte; return { produit_id: x.produit_id, nom: x.nom, qte: x.qte, demande: x.qte, stock_avant: av, stock_apres: av + x.qte }; });
+        c.stock_deduit = false; b.recredits++;
+        c.derniere = { nature: 'recredit', op: ++b.ops, resultat: { retours } };
+        rep = Object.assign({}, c.derniere.resultat, { ok: true, deja: false, stock_deduit: false, operation_id: c.derniere.op, stocks_actuels: actuels(retours.map(x => x.produit_id)) });
+      }
+    } else {
+      const k = corps.p_cle, pid = corps.p_produit_id;
+      if (b.role && b.role !== 'admin' && b.role !== 'collab') rep = { ok: false, erreur: 'droits_insuffisants' };
+      else if (b.cles[k]) rep = b.cles[k].pid !== pid ? { ok: false, erreur: 'cle_deja_utilisee' } : Object.assign({}, b.cles[k].resultat, { ok: true, deja: true, operation_id: b.cles[k].op, stocks_actuels: actuels([pid]) });
+      else if (!(pid in b.stock)) rep = { ok: false, erreur: 'produit_introuvable' };
+      else {
+        const av = b.stock[pid], q = corps.p_qte, t = corps.p_type;
+        b.stock[pid] = t === 'sortie' ? Math.max(0, av - q) : t === 'correction' ? q : av + q;
+        b.mouvements++;
+        b.cles[k] = { pid, op: ++b.ops, resultat: { produit_id: pid, type: t, qte: q, delta: b.stock[pid] - av, stock_avant: av, stock_apres: b.stock[pid] } };
+        rep = Object.assign({}, b.cles[k].resultat, { ok: true, deja: false, operation_id: b.cles[k].op, stocks_actuels: actuels([pid]) });
+      }
     }
     if (b.perdre > 0) { b.perdre--; return 'reseau'; } // effet fait en base, réponse perdue
     return { status: 200, texte: JSON.stringify(rep) };
@@ -100,7 +144,8 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
   console.log('\n1. LE REJEU NE BOUCLE PLUS QUAND UN PRODUIT ÉCHOUE');
   {
     // ancienne version (avant la correction : refus de la base) puis coupure réseau à chaque essai
-    const bac = nouveauBac({ role: 'livreur', reponse: () => 'reseau' });
+    // (v7.5.198 : fiche admin ; le livreur n'écrit plus jamais le stock d'une fiche)
+    const bac = nouveauBac({ role: 'admin', reponse: () => 'reseau' });
     bac.offlineQueueAdd('produit', PROD('p1', 3));
     bac.offlineQueueAdd('commande', { id: '#T1', statut: 'livré' });
     // une commande qui échoue et se remet en file à chaque rejeu (comme sbSaveCommande)
@@ -129,58 +174,54 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     test('ce qui est ajouté pendant le rejeu est gardé pour le rejeu suivant', bac.offlineQueue.length === 1 && bac.offlineQueue[0].type === 'tournee', bac.offlineQueue);
   }
 
-  console.log('\n2. LIVREUR : PATCH DU STOCK, JAMAIS D\'AJOUT (POST)');
+  console.log('\n2. (v7.5.198, réserve Codex n° 3) PLUS AUCUNE ÉCRITURE DU STOCK EN VALEUR ABSOLUE PAR L\'APPAREIL');
   {
     const bac = nouveauBac({ role: 'livreur' });
-    await bac.sbSaveProduit(PROD('p 7', 4));
-    const e = bac._envois[0] || {};
-    test('un seul envoi', bac._envois.length === 1, bac._envois.length);
-    test('méthode PATCH (pas de POST)', e.method === 'PATCH', e.method);
-    test('sur la fiche existante : produits?id=eq.<id>', /\/rest\/v1\/produits\?id=eq\.p%207(&|$)/.test(e.url), e.url);
-    test('corps = { stock, updated_at } seulement', e.body && Object.keys(e.body).sort().join(',') === 'stock,updated_at' && e.body.stock === 4, e.body);
-    test('pas de « merge-duplicates »', !/merge-duplicates/.test(e.prefer || ''), e.prefer);
-    test('aucune notification, file vide', bac._notifs.length === 0 && bac.offlineQueue.length === 0);
-  }
-  {
-    const bac = nouveauBac({ role: 'livreur', reponse: () => ({ status: 200, json: [] }) });
-    await bac.sbSaveProduit(PROD('p8', 1));
-    test('PATCH sans ligne modifiée : signalé, pas mis en file', bac._notifs.length === 1 && bac.offlineQueue.length === 0, [bac._notifs.length, bac.offlineQueue.length]);
+    const r = await bac.sbSaveProduit(PROD('p 7', 4));
+    test('livreur : aucun envoi (ni PATCH ni POST) — une valeur absolue du téléphone écraserait un stock plus récent', bac._envois.length === 0 && r === 'refus', [bac._envois.length, r]);
+    test('livreur : comptée dans le récapitulatif « 1 mises à jour de stock anciennes non envoyées (produits : Produit p 7) »', bac._notifs.length === 1 && /^1 mises à jour de stock anciennes non envoyées \(produits : Produit p 7\)/.test(bac._notifs[0][3]) && bac.offlineQueue.length === 0, bac._notifs.map(n => n[3]));
   }
   for (const r of ['admin', 'collab']) {
     const bac = nouveauBac({ role: r });
     await bac.sbSaveProduit(PROD('p9', 5));
     const e = bac._envois[0] || {};
-    test(r + ' : comportement inchangé (POST merge-duplicates, fiche complète)', e.method === 'POST' && /\/rest\/v1\/produits$/.test(e.url) && /merge-duplicates/.test(e.prefer) && e.body.nom === 'Produit p9' && e.body.stock === 5, [e.method, e.url, e.prefer]);
+    test(r + ' : fiche existante → POST merge-duplicates SANS le champ stock (la base garde son stock)', e.method === 'POST' && /\/rest\/v1\/produits$/.test(e.url) && /merge-duplicates/.test(e.prefer) && e.body.nom === 'Produit p9' && !('stock' in e.body), [e.method, e.url, e.prefer, e.body]);
+    const pN = Object.assign(PROD('pr-neuf', 6, 'Produit Neuf'), { _nouveau: true });
+    await bac.sbSaveProduit(pN);
+    const eN = bac._envois[1] || {};
+    test(r + ' : CRÉATION (marque _nouveau) → stock initial envoyé une fois, marque retirée après l\'enregistrement', eN.body && eN.body.stock === 6 && !('_nouveau' in eN.body) && !('_nouveau' in pN), [eN.body, pN]);
+    await bac.sbSaveProduit(pN);
+    test(r + ' : sauvegarde suivante du produit créé : sans le stock', !('stock' in (bac._envois[2] || {}).body), bac._envois[2] && bac._envois[2].body);
   }
 
   console.log('\n3. REFUS DÉFINITIF DE LA BASE (4xx) : PAS DE FILE, UNE SEULE NOTIFICATION PAR PRODUIT');
-  for (const r of ['livreur', 'admin']) {
+  for (const r of ['collab', 'admin']) {
     const bac = nouveauBac({ role: r, reponse: () => ({ status: 401, texte: 'new row violates row-level security policy' }) });
     await bac.sbSaveProduit(PROD('p1', 3, 'Matelas Test 140'));
     await bac.sbSaveProduit(PROD('p1', 2, 'Matelas Test 140'));
     await bac.sbSaveProduit(PROD('p2', 2, 'Sommier Test 140'));
     test(r + ' : refus 401 → rien en file', bac.offlineQueue.length === 0, bac.offlineQueue);
     test(r + ' : une notification par produit (2 produits, 3 refus → 2 notifications)', bac._notifs.length === 2, bac._notifs.map(n => n[2]));
-    const attendu = r === 'livreur' ? 'Stock non mis à jour : Matelas Test 140 — à vérifier' : 'Fiche produit non enregistrée : Matelas Test 140 (refus de la base) — à vérifier';
+    const attendu = 'Fiche produit non enregistrée : Matelas Test 140 (refus de la base) — à vérifier';
     test(r + ' : texte « ' + attendu + ' »', bac._notifs[0] && bac._notifs[0][2] === attendu, bac._notifs[0] && bac._notifs[0][2]);
     test(r + ' : pas de toast « réessai auto »', !bac._toasts.some(t => /réessai/.test(t[0])), bac._toasts);
   }
   {
-    const bac = nouveauBac({ role: 'livreur', reponse: () => 'reseau' });
+    const bac = nouveauBac({ role: 'admin', reponse: () => 'reseau' });
     await bac.sbSaveProduit(PROD('p1', 3)); await bac.sbSaveProduit(PROD('p1', 2)); await bac.sbSaveProduit(PROD('p2', 9));
     test('vraie coupure réseau → en file', bac.offlineQueue.length === 2, bac.offlineQueue.length);
     test('une seule entrée par produit, la plus récente (stock 2)', bac.offlineQueue.filter(i => i.data.id === 'p1').length === 1 && bac.offlineQueue.find(i => i.data.id === 'p1').data.stock === 2);
-    test('les nouveaux éléments portent le rôle qui les a mis en file', bac.offlineQueue.every(i => i.role === 'livreur' && i.oqv === 2), bac.offlineQueue.map(i => i.role));
+    test('les nouveaux éléments portent le rôle qui les a mis en file', bac.offlineQueue.every(i => i.role === 'admin' && i.oqv === 2), bac.offlineQueue.map(i => i.role));
   }
   {
-    const bac = nouveauBac({ role: 'livreur', reponse: () => ({ status: 403 }) });
+    const bac = nouveauBac({ role: 'admin', reponse: () => ({ status: 403 }) });
     bac.offlineQueue.push({ type: 'produit', data: PROD('p3', 1), ts: 1, oqv: 2 });
     await bac.offlineQueueFlush();
     test('rejeu d\'un produit refusé (403) : retiré de la file, pas remis', bac.offlineQueue.length === 0 && bac._envois.length === 1, [bac.offlineQueue.length, bac._envois.length]);
   }
 
   console.log('\n3 bis. (A) ERREURS TEMPORAIRES : GARDÉES EN FILE ET REJOUÉES');
-  for (const r of ['livreur', 'admin', 'collab']) {
+  for (const r of ['admin', 'collab']) {
     for (const st of [408, 425, 429, 500, 502, 503, 504, 520]) {
       const bac = nouveauBac({ role: r, reponse: () => ({ status: st, texte: 'temporaire' }) });
       await bac.sbSaveProduit(PROD('p1', 3, 'Matelas T'));
@@ -196,11 +237,11 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
   {
     // une 503 au premier envoi, puis la base répond : la valeur finit par arriver (le stock n'est pas faussé)
     let n = 0;
-    const bac = nouveauBac({ role: 'livreur', reponse: () => (++n === 1 ? { status: 503 } : { status: 200, json: [{ id: 'p1' }] }) });
-    await bac.sbSaveProduit(PROD('p1', 6));
+    const bac = nouveauBac({ role: 'admin', reponse: () => (++n === 1 ? { status: 503 } : { status: 201 }) });
+    await bac.sbSaveProduit(Object.assign(PROD('p1', 6), { _nouveau: true }));
     test('503 : en file', bac.offlineQueue.length === 1);
     await bac.offlineQueueFlush();
-    test('rejeu après la panne : PATCH du stock 6 envoyé, file vide', bac.offlineQueue.length === 0 && bac._envois.length === 2 && bac._envois[1].method === 'PATCH' && bac._envois[1].body.stock === 6, [bac.offlineQueue.length, bac._envois.map(e => e.method)]);
+    test('rejeu après la panne : fiche créée avec son stock initial 6, file vide', bac.offlineQueue.length === 0 && bac._envois.length === 2 && bac._envois[1].method === 'POST' && bac._envois[1].body.stock === 6, [bac.offlineQueue.length, bac._envois.map(e => e.method)]);
   }
   {
     // panne qui dure : à chaque rejeu un seul envoi, la file reste à un élément (rejeu borné, pas de boucle)
@@ -326,7 +367,7 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     const bac = nouveauBac({ role: 'livreur', reponse: () => ({ status: 403 }) });
     await bac.sbSaveProduit(PROD('p1', 3, 'Matelas L'));
     test('livreur : pas de liste de fiches (stock en valeur absolue, rien à relancer)', !('mx_produits_refuses' in bac._stockage));
-    test('livreur : relance impossible', (await bac.produitsRefusesRelancer()) === 0 && bac._envois.length === 1);
+    test('livreur : relance impossible (et rien envoyé, v7.5.198)', (await bac.produitsRefusesRelancer()) === 0 && bac._envois.length === 0);
   }
 
   console.log('\n5. (F) validerSig ENREGISTRE LA COMMANDE MÊME SI LA DÉDUCTION DU STOCK ÉCHOUE');
@@ -550,11 +591,11 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
   }
   {
     let n = 0;
-    const bac = nouveauBac({ role: 'livreur', fileStockee: [{ type: 'produit', data: PROD('p1', 5), ts: 1, oqv: 2, role: 'livreur' }],
-      reponse: () => { if (++n === 1) bac.offlineQueueAdd('produit', PROD('p1', 3)); return 'reseau'; } });
+    const bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p1', 5, 'Ancienne'), ts: 1, oqv: 2, role: 'admin' }],
+      reponse: () => { if (++n === 1) bac.offlineQueueAdd('produit', PROD('p1', 3, 'Nouvelle')); return 'reseau'; } });
     await bac.offlineQueueFlush();
     const ps = bac.offlineQueue.filter(i => i.type === 'produit');
-    test('produit : coupure pendant le rejeu de l\'ancien stock (5) + nouvelle valeur (3) → seule la nouvelle reste', ps.length === 1 && ps[0].data.stock === 3, ps.map(i => [i.data.stock, i.ts]));
+    test('fiche : coupure pendant le rejeu de l\'ancienne fiche + nouvelle fiche → seule la nouvelle reste', ps.length === 1 && ps[0].data.nom === 'Nouvelle', ps.map(i => [i.data.nom, i.ts]));
   }
   {
     const bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'commande', data: { id: '#C2', v: 1 }, ts: 1, oqv: 2 }] });
@@ -585,17 +626,17 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     const bac = nouveauBac({ role: rSess, fileStockee: [{ type: 'produit', data: PROD('p2', 4, 'Sommier L'), ts: 1, oqv: 2, role: 'livreur' }] });
     await bac.offlineQueueFlush();
     const e = bac._envois[0] || {};
-    test('élément du livreur rejoué en session ' + rSess + ' : PATCH { stock, updated_at } seulement', e.method === 'PATCH' && /produits\?id=eq\.p2/.test(e.url) && Object.keys(e.body || {}).sort().join(',') === 'stock,updated_at' && e.body.stock === 4 && bac.offlineQueue.length === 0, [e.method, e.body]);
+    test('ancien élément de stock du livreur rejoué en session ' + rSess + ' : jamais envoyé (v7.5.198), retiré, signalé au récapitulatif', bac._envois.length === 0 && bac.offlineQueue.length === 0 && bac._notifs.length === 1 && /Sommier L/.test(bac._notifs[0][3]), [e.method, bac._notifs.map(n => n[3])]);
   }
   {
-    const bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p3', 2), ts: 7, oqv: 2, role: 'livreur' }], reponse: () => 'reseau' });
+    const bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p3', 2), ts: 7, oqv: 2, role: 'livreur' }, { type: 'produit', data: PROD('p5', 1), ts: 8, oqv: 2, role: 'livreur' }], reponse: () => 'reseau' });
     await bac.offlineQueueFlush();
-    test('élément du livreur, coupure au rejeu en session admin : remis en file avec rôle livreur et date d\'origine', bac.offlineQueue.length === 1 && bac.offlineQueue[0].role === 'livreur' && bac.offlineQueue[0].ts === 7, bac.offlineQueue.map(i => [i.role, i.ts]));
+    test('deux anciens éléments du livreur : aucun envoi, retirés, UNE seule notification récapitulative (2)', bac._envois.length === 0 && bac.offlineQueue.length === 0 && bac._notifs.length === 1 && /^2 mises à jour/.test(bac._notifs[0][3]), bac._notifs.map(n => n[3]));
   }
   {
     const bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p4', 2, 'Matelas Z'), ts: 1, oqv: 2, role: 'livreur' }], reponse: () => ({ status: 403 }) });
     await bac.offlineQueueFlush();
-    test('élément du livreur refusé au rejeu en session admin : traité comme le livreur (pas de fiche gardée)', !('mx_produits_refuses' in bac._stockage) && bac._notifs.length === 1 && bac._notifs[0][2] === 'Stock non mis à jour : Matelas Z — à vérifier', bac._notifs.map(n => n[2]));
+    test('ancien élément du livreur en session admin : pas de fiche gardée, récapitulatif (Matelas Z)', !('mx_produits_refuses' in bac._stockage) && bac._notifs.length === 1 && /Matelas Z/.test(bac._notifs[0][3]), bac._notifs.map(n => n[3]));
   }
 
   console.log('\n11. (réserve 3, v7.5.193) CONTRÔLE ADMIN : UN NOUVEL ÉCART EST DE NOUVEAU CONTRÔLÉ');
@@ -671,7 +712,7 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     panne = false;
     await bac.offlineQueueFlush();
     const envoisP = bac._envois.filter(e => /produits/.test(e.url));
-    test('stockage revenu : 3 anciens éléments purgés et notifiés, seule la nouvelle valeur (2) envoyée', bac._notifs.length === 1 && /^3 mises à jour de stock anciennes/.test(bac._notifs[0][3]) && envoisP.length === 1 && envoisP[0].body.stock === 2 && bac.offlineQueue.length === 0, [bac._notifs.map(n => n[3]), envoisP.map(e => e.body)]);
+    test('stockage revenu : 3 anciens éléments purgés et notifiés ; la nouvelle valeur du livreur (valeur absolue) n\'est plus envoyée non plus (v7.5.198, récapitulatif 1), file vide', bac._notifs.length === 2 && /^3 mises à jour de stock anciennes/.test(bac._notifs[0][3]) && /^1 mises à jour de stock anciennes/.test(bac._notifs[1][3]) && envoisP.length === 0 && bac.offlineQueue.length === 0, [bac._notifs.map(n => n[3]), envoisP.map(e => e.body)]);
   }
   {
     // appareil admin : une nouvelle fiche mise en file AVANT la connexion ne retire pas les anciennes fiches
@@ -681,29 +722,24 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     bac.role = 'admin';
     await bac.offlineQueueFlush();
     const p2 = bac._envois.filter(e => /produits/.test(e.url) && e.body.id === 'p2');
-    test('session admin : la dernière fiche envoyée pour p2 est la plus récente (stock 9), file vide', p2.length >= 1 && p2[p2.length - 1].body.stock === 9 && bac.offlineQueue.length === 0, [p2.map(e => e.body.stock), bac.offlineQueue.length]);
+    test('session admin : une seule fiche envoyée pour p2, la plus récente (produit absent de la base : stock initial 9), file vide', p2.length === 1 && p2[0].body.stock === 9 && bac.offlineQueue.length === 0, [p2.map(e => e.body.stock), bac.offlineQueue.length]);
   }
 
-  console.log('\n14. (réserve 2, v7.5.194) STOCK DU LIVREUR ET FICHE ADMIN : DEUX INTENTIONS DISTINCTES');
+  console.log('\n14. (réserve 2, v7.5.194 ; v7.5.198) FICHE ADMIN EN FILE ET SESSION LIVREUR SUR LE MÊME APPAREIL');
   {
     let reseau = false;
-    const bac = nouveauBac({ role: 'admin', reponse: () => (reseau ? { status: 200, json: [{ id: 'p1' }] } : 'reseau') });
+    const bac = nouveauBac({ role: 'admin', reponse: () => (reseau ? { status: 201 } : 'reseau') });
     await bac.sbSaveProduit(Object.assign(PROD('p1', 5, 'Matelas K'), { prix: 150 })); // fiche admin, coupure
     bac.role = 'livreur'; // changement de session sur le même appareil
-    await bac.sbSaveProduit(PROD('p1', 4, 'Matelas K')); // stock du livreur, coupure
-    test('les deux intentions restent en file (fiche admin + stock du livreur)', bac.offlineQueue.length === 2 && bac.offlineQueue.map(i => i.role).sort().join(',') === 'admin,livreur', bac.offlineQueue.map(i => [i.role, i.data.stock]));
-    test('clés distinctes : produit|fiche|p1 et produit|stock|p1', bac.offlineQueue.map(i => bac.oqCle(i)).sort().join(',') === 'produit|fiche|p1,produit|stock|p1');
-    await bac.sbSaveProduit(PROD('p1', 3, 'Matelas K')); // nouvelle déduction du livreur, coupure
-    test('nouvelle valeur du livreur : remplace seulement l\'ancienne valeur du livreur (fiche admin intacte)', bac.offlineQueue.length === 2 && bac.offlineQueue.find(i => i.role === 'livreur').data.stock === 3 && bac.offlineQueue.find(i => i.role === 'admin').data.prix === 150);
-    test('dédoublonnage : les deux intentions survivent', bac.oqDedoublonner(bac.offlineQueue).length === 2);
-    reseau = true; const n0 = bac._envois.length; // les essais pendant la coupure sont enregistrés aussi
+    const r = await bac.sbSaveProduit(PROD('p1', 4, 'Matelas K')); // ancienne façon : stock du livreur
+    test('session livreur : aucune mise à jour de stock du livreur n\'entre en file (v7.5.198), la fiche admin reste', r === 'refus' && bac.offlineQueue.length === 1 && bac.offlineQueue[0].role === 'admin' && bac.oqCle(bac.offlineQueue[0]) === 'produit|fiche|p1', bac.offlineQueue.map(i => [i.role, i.data.stock]));
+    reseau = true; const n0 = bac._envois.length;
     await bac.offlineQueueFlush();
-    const env = bac._envois.slice(n0).filter(e => /produits/.test(e.url) && e.method === 'PATCH');
-    test('session livreur : le stock du livreur part (PATCH 3), la fiche admin attend', env.length === 1 && env[0].body.stock === 3 && bac.offlineQueue.length === 1 && bac.offlineQueue[0].role === 'admin');
+    test('rejeu en session livreur : la fiche admin attend (rien envoyé)', bac._envois.length === n0 && bac.offlineQueue.length === 1);
     bac.role = 'admin';
     await bac.offlineQueueFlush();
     const post = bac._envois.slice(n0).filter(e => e.method === 'POST');
-    test('session admin ensuite : la fiche complète part (POST, prix 150), file vide', post.length === 1 && post[0].body.prix === 150 && bac.offlineQueue.length === 0, post.map(e => e.body));
+    test('session admin ensuite : la fiche part (POST, prix 150), file vide', post.length === 1 && post[0].body.prix === 150 && bac.offlineQueue.length === 0, post.map(e => e.body));
   }
 
   console.log('\n15. (réserve 3, v7.5.194) FICHES REFUSÉES : VERSIONS COMPARÉES (RELANCE ET SAUVEGARDES CONCURRENTES)');
@@ -871,7 +907,7 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     const base = { p1: { id: 'p1', nom: 'Matelas', stock: 7, updated_at: iso(T0 - 30000) } }; // base modifiée AVANT la fiche
     const bac = bacBase(base, { role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p1', 5, 'Matelas Neuf'), ts: T0, oqv: 2, role: 'admin' }] });
     await bac.offlineQueueFlush();
-    test('base plus ancienne que la fiche : état final stock 5 (celui de la fiche)', base.p1.stock === 5 && base.p1.nom === 'Matelas Neuf', base.p1);
+    test('base plus ancienne que la fiche : la fiche (produit existant) n\'écrit JAMAIS le stock (v7.5.198) — état final stock 7, nom de la fiche', base.p1.stock === 7 && base.p1.nom === 'Matelas Neuf', base.p1);
   }
   {
     const bac = bacBase({}, { role: 'admin', fileStockee: [{ type: 'produit', data: PROD('pN', 4, 'Nouveau'), ts: T0, oqv: 2, role: 'admin' }] });
@@ -886,7 +922,7 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     const stock = { type: 'produit', data: PROD('p1', 2, 'Matelas'), ts: T0 + 10000, oqv: 2, role: 'livreur' };
     const bac = bacBase(base, { role: 'admin', fileStockee: ordre === 'fiche puis stock' ? [fiche, stock] : [stock, fiche] });
     await bac.offlineQueueFlush();
-    test(ordre + ' : état final en base stock 2 (livreur, plus récent), nom de la fiche, file vide', base.p1.stock === 2 && base.p1.nom === 'Matelas Neuf' && bac.offlineQueue.length === 0, [base.p1, bac.offlineQueue.length]);
+    test(ordre + ' : ni la fiche ni l\'ancienne valeur du livreur n\'écrivent le stock (base : 7), nom de la fiche, file vide', base.p1.stock === 7 && base.p1.nom === 'Matelas Neuf' && bac.offlineQueue.length === 0, [base.p1, bac.offlineQueue.length]);
   }
   {
     // fiche refusée relancée après une mise à jour du stock du livreur faite en base
@@ -900,7 +936,7 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     const base = { p1: { id: 'p1', nom: 'Matelas', stock: 3, updated_at: iso(Date.now() + 60000) } };
     const bac = bacBase(base, { role: 'admin' });
     await bac.sbSaveProduit(PROD('p1', 6, 'Matelas'));
-    test('sauvegarde faite à l\'instant (pas un rejeu) : aucune lecture, stock 6 envoyé (inchangé)', bac._lectures.length === 0 && base.p1.stock === 6, [bac._lectures.length, base.p1.stock]);
+    test('sauvegarde faite à l\'instant (pas un rejeu) : aucune lecture, stock NON envoyé (base : 3)', bac._lectures.length === 0 && base.p1.stock === 3, [bac._lectures.length, base.p1.stock]);
   }
   for (const lu of ['reseau', 503]) {
     const base = { p1: { id: 'p1', nom: 'Matelas', stock: 3, updated_at: iso(T0 - 1000) } };
@@ -920,14 +956,14 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
   console.log('\n21. (réserve 2 sur 6f88c79, v7.5.195) PLUS DE VARIABLE GLOBALE : UNE SAUVEGARDE INDÉPENDANTE PENDANT UN REJEU GARDE SA DATE ET SON RÔLE');
   test('_oqRejeuItem n\'existe plus dans la page', !/_oqRejeuItem/.test(html));
   {
-    // session admin : rejeu d'une mise à jour du stock du livreur (ts 1000) ; pendant l'attente réseau, l'admin
-    // enregistre la fiche du MÊME objet, qui échoue aussi
+    // session admin : rejeu d'une fiche (ts 1000) ; pendant l'attente réseau, l'admin enregistre une version plus
+    // récente du MÊME produit, qui échoue aussi : seule la plus récente reste (avec SA date)
     let n = 0, bac = null, indep = null;
-    bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p1', 5, 'Matelas C'), ts: 1000, oqv: 2, role: 'livreur' }],
-      reponse: () => { if (++n === 1) indep = bac.sbSaveProduit(bac.offlineQueue[0].data); return 'reseau'; } });
+    bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p1', 5, 'Matelas C'), ts: 1000, oqv: 2, role: 'admin' }],
+      reponse: () => { if (++n === 1) indep = bac.sbSaveProduit(PROD('p1', 5, 'Matelas C2')); return 'reseau'; } });
     await bac.offlineQueueFlush(); await indep;
-    const ps = bac.offlineQueue.filter(i => i.type === 'produit').map(i => [i.role, i.ts > 1000 ? 'récent' : i.ts]);
-    test('deux entrées distinctes : stock du livreur (ts 1000) ET fiche admin (date récente)', ps.length === 2 && ps.some(x => x[0] === 'livreur' && x[1] === 1000) && ps.some(x => x[0] === 'admin' && x[1] === 'récent'), ps);
+    const ps = bac.offlineQueue.filter(i => i.type === 'produit').map(i => [i.data.nom, i.ts > 1000 ? 'récent' : i.ts]);
+    test('une seule entrée : la sauvegarde indépendante (date récente), pas l\'ancienne version (ts 1000)', ps.length === 1 && ps[0][0] === 'Matelas C2' && ps[0][1] === 'récent', ps);
   }
   {
     // commande : rejeu (ts 1) ; pendant l'attente, une sauvegarde indépendante du même objet échoue (sans contexte)
@@ -1065,7 +1101,7 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     bac.sbSaveCommande = async () => { await bac.sbSaveProduit(PROD('p1', 9, 'Fiche récente')); };
     await bac.offlineQueueFlush();
     const posts = bac._envois.filter(e => e.method === 'POST');
-    test('fiche plus récente enregistrée pendant le rejeu : l\'ancienne n\'est pas envoyée (état final « Fiche récente », stock 9)', posts.length === 1 && base.p1.nom === 'Fiche récente' && base.p1.stock === 9 && bac.offlineQueue.length === 0, [posts.map(p => p.body.nom), base.p1]);
+    test('fiche plus récente enregistrée pendant le rejeu : l\'ancienne n\'est pas envoyée (état final « Fiche récente », stock de la base 2 gardé)', posts.length === 1 && base.p1.nom === 'Fiche récente' && base.p1.stock === 2 && bac.offlineQueue.length === 0, [posts.map(p => p.body.nom), base.p1]);
   }
   {
     const bac = nouveauBac({ role: 'admin', fileStockee: [{ type: 'produit', data: PROD('p1', 5, 'Fiche ancienne'), ts: 2, oqv: 2, role: 'admin' }] });
@@ -1173,29 +1209,163 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     test('« livré » pas encore enregistré : demande gardée, AUCUN appel à la base', rpcs(bac).length === 0 && bac.offlineQueue.map(i => i.type).sort().join() === 'commande,deduction', bac.offlineQueue.map(i => i.type));
   }
   {
-    // réserve Codex n° 5 sur 9473d23 : seule la sauvegarde qui suit un RECRÉDIT porte l'en-tête x-stock-recredit
-    let panne = true;
-    const bac = bacCommandeReelle({ role: 'admin', reponse: () => (panne ? { status: 503 } : { status: 201 }) });
-    const cmds = (b) => b._envois.filter(e => /\/rest\/v1\/commandes$/.test(e.url));
-    await bac.sbSaveCommande({ id: '#V1', statut: 'en-route', stockDeduit: false });
-    test('sauvegarde ordinaire (même avec stock_deduit faux) : PAS d\'en-tête de recrédit', cmds(bac).length === 1 && !('x-stock-recredit' in cmds(bac)[0].entetes), cmds(bac)[0] && cmds(bac)[0].entetes);
-    const c = { id: '#V2', statut: 'annulé', stockDeduit: false, _recredit: true };
-    await bac.sbSaveCommande(c);
-    test('sauvegarde après recrédit : en-tête x-stock-recredit: 1 ; échec (503) → gardée en file avec la marque', cmds(bac)[1].entetes['x-stock-recredit'] === '1' && bac.offlineQueue.some(i => i.data.id === '#V2' && i.data._recredit === true));
-    const st = JSON.parse(bac._stockage.mx_offline_queue || '[]');
-    test('… la marque survit au rechargement (file écrite sur l\'appareil)', st.some(i => i.data && i.data.id === '#V2' && i.data._recredit === true), st);
-    panne = false; await bac.offlineQueueFlush();
-    const der = cmds(bac)[cmds(bac).length - 1];
-    test('rejeu : en-tête toujours présent, puis marque effacée après le succès', der.body.id === '#V2' && der.entetes['x-stock-recredit'] === '1' && !('_recredit' in c), [der.entetes, c]);
-    await bac.sbSaveCommande(c);
-    test('sauvegarde suivante de la même commande : plus d\'en-tête de recrédit', !('x-stock-recredit' in cmds(bac)[cmds(bac).length - 1].entetes));
-    test('l\'en-tête ne part que si stock_deduit est faux (marque ignorée sinon)', (await bac.sbSaveCommande({ id: '#V3', statut: 'annulé', stockDeduit: true, _recredit: true }), !('x-stock-recredit' in cmds(bac)[cmds(bac).length - 1].entetes)));
+    // v7.5.198 : sbSaveCommande n'envoie plus stock_deduit ni d'en-tête de recrédit
+    const bac = bacCommandeReelle({ role: 'admin', reponse: () => ({ status: 201 }) });
+    await bac.sbSaveCommande({ id: '#V1', statut: 'annulé', stockDeduit: false, _recredit: true });
+    const e = bac._envois.find(x => /\/rest\/v1\/commandes$/.test(x.url)) || {};
+    test('sauvegarde de commande : ni stock_deduit dans le corps, ni en-tête x-stock-recredit', e.body && !('stock_deduit' in e.body) && !('x-stock-recredit' in e.entetes), [e.body && Object.keys(e.body).filter(k => /stock/.test(k)), e.entetes]);
+  }
+
+  console.log('\n29. (v7.5.198, réserve Codex n° 1) RÉPONSE PERDUE : LE REJEU RESTITUE LE RÉSULTAT COMPLET (MANQUES, INTROUVABLES)');
+  {
+    const { bac, b } = bacDeduction({ '#W1': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 3 }, { p: 'p-absent', q: 1 }] } }, { p1: 1 });
+    b.perdre = 1;
+    const c = { id: '#W1', statut: 'livré', client: 'Client Test' }; bac.commandes = [c];
+    const r1 = await bac.stkDemanderDeduction(c);
+    test('1re réponse perdue (déduction faite en base) : « reessayer », aucune alerte encore', r1 === 'reessayer' && b.deductions === 1 && bac._notifs.length === 0, [r1, bac._notifs]);
+    const r2 = await bac.stkDeductionEnvoyer('#W1', c);
+    const n = bac._notifs.find(x => /Stock insuffisant à la livraison #W1/.test(x[2]));
+    test('rejeu « deja » : l\'insuffisance (manque 2) ET le produit introuvable sont signalés', r2 === 'deja' && n && /p1 : manque 2/.test(n[3]) && /p-absent : introuvable/.test(n[3]), [r2, bac._notifs.map(x => x[2] + ' | ' + x[3])]);
+    test('… stock affiché = stock COURANT de la base (0), historique local écrit une fois', bac.produits[0].stock === 0 && bac.stkMouvements.filter(m => m.type === 'sortie-livraison').length === 1 && b.deductions === 1, [bac.produits[0].stock, bac.stkMouvements]);
+    const nNotifs = bac._notifs.length;
+    b.cmds['#W1'].stock_deduit = true; c.stockDeduit = false; // copie locale en retard : nouvel envoi
+    await bac.stkDeductionEnvoyer('#W1', c);
+    test('nouveau rejeu de la MÊME opération : ni historique ni alerte en double (operation_id déjà appliqué)', bac._notifs.length === nNotifs && bac.stkMouvements.filter(m => m.type === 'sortie-livraison').length === 1);
+    test('… opération retenue sur l\'appareil (mx_stock_ops_appliquees)', JSON.parse(bac._stockage.mx_stock_ops_appliquees || '[]').length === 1);
+  }
+  {
+    // commande déduite par une ancienne version : « deja » sans résultat connu → rien d'appliqué, demande retirée
+    const { bac, b } = bacDeduction({ '#W2': { statut: 'livré', stock_deduit: true, lignes: [{ p: 'p1', q: 1 }] } }, { p1: 4 });
+    const c = { id: '#W2', statut: 'livré' }; bac.commandes = [c];
+    const r = await bac.stkDemanderDeduction(c);
+    test('déduite ailleurs (résultat inconnu) : « deja », stock_deduit vrai, aucun historique, file vide', r === 'deja' && c.stockDeduit === true && bac.stkMouvements.length === 0 && bac.offlineQueue.length === 0 && b.stock.p1 === 4, [r, bac.offlineQueue]);
+  }
+
+  console.log('\n30. (v7.5.198, réserve Codex n° 2) RECRÉDIT À L\'ANNULATION FAIT PAR LA BASE, UNE SEULE FOIS');
+  const CODE_RECREDIT = extraireFonction('function stkReCrediterStock(cmdId, opts)');
+  function bacRecredit(cmdsBase, stockBase, opts) {
+    const r = bacDeduction(cmdsBase, stockBase, Object.assign({ role: 'admin' }, opts || {}));
+    vm.runInContext(CODE_RECREDIT, r.bac);
+    return r;
+  }
+  {
+    const { bac, b } = bacRecredit({ '#X1': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 3 }, { p: 'p2', q: 1 }] } }, { p1: 2, p2: 5 });
+    const c = { id: '#X1', statut: 'livré', client: 'Client Test' }; bac.commandes = [c];
+    await bac.stkDemanderDeduction(c);
+    test('livraison : retrait PARTIEL en base (p1 2 sur 3 → 0), p2 5 → 4', b.stock.p1 === 0 && b.stock.p2 === 4);
+    c.statut = 'annulé';
+    const r = await bac.stkReCrediterStock('#X1');
+    const rr = bac._envois.filter(e => /\/rpc\/recrediter_stock_livraison$/.test(e.url));
+    test('annulation : statut enregistré, puis UN appel recrediter_stock_livraison { p_cmd_id } sans aucune quantité', r === 'ok' && rr.length === 1 && JSON.stringify(Object.keys(rr[0].body).sort()) === JSON.stringify(['p_cmd_id', 'p_suppression']) && rr[0].body.p_suppression === false, rr.map(e => e.body));
+    test('… la base rend EXACTEMENT ce qui est sorti : p1 +2 (pas +3), p2 +1 ; stock affiché à jour ; stock_deduit faux', b.stock.p1 === 2 && b.stock.p2 === 5 && bac.produits.find(p => p.id === 'p1').stock === 2 && c.stockDeduit === false, [b.stock, bac.produits.map(p => p.stock)]);
+    test('… historique local « retour-annulation » (2 lignes), demande retirée de la file', bac.stkMouvements.filter(m => m.type === 'retour-annulation').length === 2 && !bac.offlineQueue.some(i => i.type === 'recredit'), bac.offlineQueue);
+    await bac.stkReCrediterStock('#X1');
+    test('recrédit redemandé : la base répond « deja » — aucun 2e recrédit, aucun historique en double', b.recredits === 1 && b.stock.p1 === 2 && bac.stkMouvements.filter(m => m.type === 'retour-annulation').length === 2);
+  }
+  {
+    // réponse perdue : la demande reste en file, le rejeu répond « deja » avec le même résultat (appliqué une fois)
+    const { bac, b } = bacRecredit({ '#X2': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 1 }] } }, { p1: 5 });
+    const c = { id: '#X2', statut: 'livré' }; bac.commandes = [c];
+    await bac.stkDemanderDeduction(c);
+    c.statut = 'annulé'; b.perdre = 1;
+    const r1 = await bac.stkReCrediterStock('#X2');
+    test('réponse du recrédit perdue : « reessayer », demande « recredit|#X2 » gardée en file (et sur l\'appareil)', r1 === 'reessayer' && bac.offlineQueue.some(i => bac.oqCle(i) === 'recredit|#X2') && fileDe(bac._stockage).some(i => i.type === 'recredit'), bac.offlineQueue);
+    await bac.offlineQueueFlush();
+    test('rejeu : « deja » → recrédit appliqué une fois à l\'affichage (p1 5), file vide, 1 seul recrédit en base', b.recredits === 1 && b.stock.p1 === 5 && bac.produits[0].stock === 5 && !bac.offlineQueue.length && bac.stkMouvements.filter(m => m.type === 'retour-annulation').length === 1, [b.recredits, bac.offlineQueue]);
+  }
+  {
+    // le nouveau statut n'est pas encore en base (coupure) : la base refuse « commande_encore_livree », la demande attend
+    const { bac, b } = bacRecredit({ '#X3': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 1 }] } }, { p1: 5 });
+    const c = { id: '#X3', statut: 'livré' }; bac.commandes = [c];
+    await bac.stkDemanderDeduction(c);
+    c.statut = 'annulé';
+    bac.sbSaveCommande = async (cc, ctx) => { bac.offlineQueueAdd('commande', cc, ctx); }; // coupure : statut gardé en file
+    const r = await bac.stkReCrediterStock('#X3');
+    test('statut pas encore enregistré : « reessayer », rien recrédité, demande gardée', r === 'reessayer' && b.recredits === 0 && bac.offlineQueue.some(i => i.type === 'recredit'), [r, bac.offlineQueue.map(i => i.type)]);
+    bac.sbSaveCommande = async (cc, ctx) => { b.cmds[cc.id].statut = cc.statut; bac.oqSucces('commande', cc, ctx && ctx.ts, null); };
+    await bac.offlineQueueFlush();
+    test('rejeu : le statut part D\'ABORD, puis le recrédit (p1 4 → 5), file vide', b.recredits === 1 && b.stock.p1 === 5 && !bac.offlineQueue.length, [b.recredits, bac.offlineQueue]);
+  }
+  {
+    // relivrée avant que le recrédit parte : rien à recréditer
+    const { bac, b } = bacRecredit({ '#X4': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 1 }] } }, { p1: 5 });
+    const c = { id: '#X4', statut: 'livré' }; bac.commandes = [c];
+    await bac.stkDemanderDeduction(c);
+    bac.offlineQueueAdd('recredit', { id: '#X4', suppression: false });
+    const r = await bac.stkRecreditEnvoyer('#X4');
+    test('commande de nouveau « livré » ici et en base : « abandon », rien recrédité, demande retirée', r === 'abandon' && b.recredits === 0 && !bac.offlineQueue.length);
+  }
+  {
+    const { bac, b } = bacRecredit({ '#X5': { statut: 'annulé', stock_deduit: true, lignes: [{ p: 'p1', q: 1 }] } }, { p1: 5 });
+    bac.commandes = [{ id: '#X5', statut: 'annulé', stockDeduit: true }];
+    const r = await bac.stkReCrediterStock('#X5');
+    test('déduite par une ancienne version (« sans_journal ») : rien recrédité, retirée, notification « Recrédit de stock à faire à la main »', r === 'refus' && b.stock.p1 === 5 && !bac.offlineQueue.length && bac._notifs.some(n => /^Recrédit de stock à faire à la main : #X5/.test(n[2])), bac._notifs.map(n => n[2]));
+  }
+  {
+    const { bac, b } = bacRecredit({ '#X6': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 2 }] } }, { p1: 5 });
+    const c = { id: '#X6', statut: 'livré' }; bac.commandes = [c];
+    await bac.stkDemanderDeduction(c);
+    let nSave = 0; bac.sbSaveCommande = async () => { nSave++; };
+    const r = await bac.stkReCrediterStock('#X6', { suppression: true });
+    test('suppression d\'une commande livrée : recrédit avec p_suppression = vrai, sans sauvegarde de la commande (p1 3 → 5)', r === 'ok' && nSave === 0 && b.stock.p1 === 5 && bac._envois.some(e => /recrediter/.test(e.url) && e.body.p_suppression === true));
+  }
+  for (const rS of ['collab', 'livreur']) {
+    const { bac, b } = bacRecredit({ '#X7': { statut: 'annulé', stock_deduit: true, lignes: [] } }, { p1: 5 }, { role: rS });
+    bac.commandes = [{ id: '#X7', statut: 'annulé' }];
+    const r = await bac.stkReCrediterStock('#X7');
+    if (rS === 'collab') test('collaboratrice : le recrédit est demandé à la base (même règle que la base)', bac._envois.some(e => /recrediter/.test(e.url)), r);
+    else test('livreur : aucun recrédit demandé', r === 'abandon' && !bac._envois.some(e => /recrediter/.test(e.url)) && !bac.offlineQueue.length);
+  }
+  {
+    // session livreur sur l'appareil : un recrédit en file attend la prochaine session admin / collab
+    const { bac } = bacRecredit({ '#X8': { statut: 'annulé', stock_deduit: false, lignes: [] } }, { p1: 5 }, { role: 'livreur', fileStockee: [{ type: 'recredit', data: { id: '#X8' }, ts: 1, oqv: 2, role: 'admin' }] });
+    await bac.offlineQueueFlush();
+    test('recrédit en file, session livreur : rien envoyé, gardé', !bac._envois.some(e => /rpc/.test(e.url)) && bac.offlineQueue.length === 1);
+  }
+  {
+    const { bac, b } = bacRecredit({ '#X9': { statut: 'annulé', stock_deduit: true, lignes: [] } }, { p1: 5 });
+    b.absente = true; bac.commandes = [{ id: '#X9', statut: 'annulé' }];
+    const r = await bac.stkReCrediterStock('#X9');
+    test('fonction absente (040 pas appliquée) : demande gardée, message « mise à jour de la base en attente »', r === 'reessayer' && bac.offlineQueue.some(i => i.type === 'recredit') && bac._toasts.some(t => /mise à jour de la base en attente/.test(t[0])));
+  }
+
+  console.log('\n31. (v7.5.198, réserve Codex n° 3) MOUVEMENTS MANUELS FAITS PAR LA BASE, IDEMPOTENTS');
+  {
+    const { bac, b } = bacRecredit({}, { p1: 10 });
+    const p = bac.produits[0];
+    const r = await bac.stkMouvementDemander(p, 'entree', 5, 'Arrivage fictif');
+    const e = bac._envois.find(x => /\/rpc\/mouvement_stock_produit$/.test(x.url)) || {};
+    test('entrée +5 : envoyée comme ÉCART (p_type entree, p_qte 5) avec une clé, jamais une valeur absolue calculée ici', r === 'ok' && e.body && e.body.p_type === 'entree' && e.body.p_qte === 5 && /^mv-/.test(e.body.p_cle) && !('stock' in e.body), e.body);
+    test('… stock de la base (15) affiché, file vide', b.stock.p1 === 15 && p.stock === 15 && !bac.offlineQueue.length);
+    b.stock.p1 = 12; // une livraison a retiré 3 entre-temps (autre appareil)
+    b.perdre = 1;
+    const r2 = await bac.stkMouvementDemander(p, 'sortie', 2, 'Casse');
+    test('réponse perdue : mouvement gardé en file (clé conservée)', r2 === 'reessayer' && bac.offlineQueue.length === 1 && bac.offlineQueue[0].type === 'mouvement', bac.offlineQueue);
+    await bac.offlineQueueFlush();
+    test('rejeu : « deja » (même clé) → une seule sortie en base (12 → 10), affichage 10, file vide', b.mouvements === 2 && b.stock.p1 === 10 && p.stock === 10 && !bac.offlineQueue.length, [b.mouvements, b.stock.p1, p.stock]);
+  }
+  {
+    const { bac, b } = bacRecredit({}, { p1: 10 });
+    b.panne = true;
+    await bac.stkMouvementDemander(bac.produits[0], 'correction', 7, 'Inventaire');
+    test('coupure : correction gardée en file et sur l\'appareil', bac.offlineQueue.length === 1 && fileDe(bac._stockage).some(i => i.type === 'mouvement' && i.data.type === 'correction' && i.data.qte === 7));
+    bac.role = 'livreur'; b.panne = false;
+    await bac.offlineQueueFlush();
+    test('session livreur : le mouvement attend (rien envoyé)', b.mouvements === 0 && bac.offlineQueue.length === 1);
+    bac.role = 'admin';
+    await bac.stkReprendreDeductions(true);
+    test('reprise en session admin : correction faite par la base (7), file vide', b.stock.p1 === 7 && !bac.offlineQueue.length);
+  }
+  {
+    const { bac, b } = bacRecredit({}, { p1: 10 });
+    const r = await bac.stkMouvementDemander({ id: 'p-absent', nom: 'Produit Absent' }, 'entree', 1, '');
+    test('produit absent en base : refus, retiré de la file, notification « Stock non mis à jour : Produit Absent — à vérifier »', r === 'refus' && !bac.offlineQueue.length && bac._notifs.some(n => n[2] === 'Stock non mis à jour : Produit Absent — à vérifier'), bac._notifs.map(n => n[2]));
   }
 
   console.log('\n7. TEXTE DU CODE');
   // v7.5.196 : chaque mise en file d'un produit est sur une ligne de coupure réseau (catch) ou d'erreur temporaire
   { const lignesE = CODE_PRODUIT.split('\n').filter(l => /sbSaveEchec\('produit'/.test(l));
-    test('un refus définitif de produit ne passe pas par sbSaveEchec (seulement coupure ou erreur temporaire)', lignesE.length >= 5 && lignesE.every(l => /catch\(e\)|httpTemporaire\(|etat === 'reseau' \|\| (essai|lu)\.etat === 'temp'/.test(l)), lignesE); }
+    test('un refus définitif de produit ne passe pas par sbSaveEchec (seulement coupure ou erreur temporaire)', lignesE.length >= 4 && lignesE.every(l => /catch\(e\)|httpTemporaire\(|etat === 'reseau' \|\| (essai|lu)\.etat === 'temp'/.test(l)), lignesE); }
   test('le rejeu lit une copie (_aRejouer), pas la file qui grandit', /_aRejouer\.length/.test(CODE_REJEU) && !/i < offlineQueue\.length/.test(CODE_REJEU));
   test('loginOk trie les anciens éléments dès que le rôle est connu', /function loginOk\(r\) \{\s*role=r;\s*\/\/[^\n]*\n\s*try \{ oqAppliquerRole\(r\); \}/.test(html));
   test('le bouton « Relancer » existe sur la page Stock', /id="stk-refus-btn"[^>]*onclick="produitsRefusesRelancer\(\)"/.test(html));
@@ -1213,7 +1383,12 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
   for (const [nom, re] of [['stkDeduireStock(', /stkDeduireStock\(/], ['mx_deductions_attente', /mx_deductions_attente/], ['PATCH conditionnel &stock=eq.', /&stock=eq\./],
     ['delta en file (oqCtx.delta / item.delta)', /\.delta\b/], ['uid / inclut des deltas', /oqUid\(|oqInclut\(|\.inclut\b/], ['sbPatchStockLivreur / sbLireStockProduit', /sbPatchStockLivreur|sbLireStockProduit/]])
     test('supprimé de l\'appli : ' + nom, !re.test(code), (code.match(re) || [])[0]);
-  test('recrédit de l\'administrateur : marque _recredit posée avant sa sauvegarde', /cmd\.stockDeduit = false;[\s\S]{0,300}cmd\._recredit = true;\s*\n\s*sbSaveCommande\(cmd\);/.test(html));
+  test('plus d\'en-tête x-stock-recredit ni de marque _recredit dans le code (v7.5.198 : recrédit par la base)', !/_entetes\['x-stock-recredit'\]|cmd\._recredit/.test(html));
+  test('chgStatut : recrédit APRÈS l\'enregistrement du nouveau statut (admin et collab)', /var _recredit = \(role === 'admin' \|\| role === 'collab'\) && ancienStatut === 'livré'/.test(html) && /var _pSc = sbSaveCommande\(c\);[\s\S]{0,200}if \(_recredit\) stkReCrediterStock\(id, \{ avant: _pSc \}\);/.test(html));
+  test('suppression d\'une commande livrée : recrédit par la base (p_suppression)', /if \(cmd\.statut === 'livré'\) stkReCrediterStock\(id, \{ suppression: true \}\);/.test(html));
+  test('ajustement manuel du stock : par la base (stkMouvementDemander), plus de sbSaveProduit', /stkMouvementDemander\(p, type, qte, motif\);/.test(extraireFonction('function sauvegarderAjustement()')) && !/sbSaveProduit\(/.test(extraireFonction('function sauvegarderAjustement()')));
+  test('fiche produit : stock modifié → correction par la base ; création marquée _nouveau', /stkMouvementDemander\(p, 'correction', data\.stock/.test(extraireFonction('function sauvegarderProduit()')) && /data\._nouveau = true;/.test(extraireFonction('function sauvegarderProduit()')));
+  test('sbSaveCommande n\'envoie plus stock_deduit (tenu par la base)', !/stock_deduit:/.test(CODE_CMD));
   test('un seul point d\'appel à la base pour la déduction (rpc/deduire_stock_livraison)', (code.match(/rpc\/deduire_stock_livraison/g) || []).length === 1);
 
   console.log('\n' + ok + ' réussi(s), ' + ko + ' échec(s)');
