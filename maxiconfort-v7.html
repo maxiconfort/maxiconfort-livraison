@@ -4023,6 +4023,63 @@ function venLignesRefusees(lignes, liste, ancienne, principal) {
   });
   return refus;
 }
+// v7.5.158 (revue Codex PR 26 sur 7e5c4cf + P2 natif) : commande EXISTANTE SANS LIGNES (commande ancienne, hors SAV) rouverte = sa ligne
+// d'origine est reconstruite EXPLICITEMENT : option FIGÉE au nom du produit principal, avec ses valeurs (quantité, prix unitaire déduit
+// du prix brut ou du prix hors port), même si ce produit est devenu non vendable ou ancienne offre. Plus de rapprochement par PREMIER
+// MOT du nom (avant : liste vide -> « Ajoutez au moins un produit » pour un simple changement d'adresse, ou un AUTRE produit choisi en
+// silence à la place du produit commandé). Produit du catalogue reconnu seulement par nom ou référence EXACTS (normalisés, venNorm),
+// sinon « _custom_ » + libellé. Ligne d'origine non touchée = la commande garde produit, quantité, prix et lignes d'origine (aucune
+// ligne recalculée), ce qui est exactement l'exemption « produit principal inchangé » de venLignesEffectives et de la base
+// (interne.l039_lignes_effectives). Ligne modifiée (quantité, remise, autre produit) = recalculée et contrôlée comme une autre.
+function venOptionPrincipale(c, liste) {
+  if (!c || !venNorm(c.produit)) return null;
+  var n = venNorm(c.produit);
+  var prod = (liste || []).find(function(p) { return !!p && ((!!venNorm(p.nom) && venNorm(p.nom) === n) || (!!venNorm(p.refInterne) && venNorm(p.refInterne) === n)); }) || null;
+  var q = venNombre(c.qte); if (q == null || q <= 0) q = 1;
+  var brut = venNombre(c.prixBrut);
+  var base = (brut != null && brut > 0) ? brut : Math.max(0, (venNombre(c.prix) || 0) - (venNombre(c.fraisPort) || 0));
+  var pu = venCentimes(base / q) || 0;
+  var etat = prod ? (aoEst(prod) ? ' · ANCIENNE OFFRE, NE PLUS UTILISER' : (!venEst(prod, liste) ? ' · NON VENDABLE (prix à définir)' : '')) : '';
+  return { value: prod ? prod.id : '_custom_' + c.produit, texte: c.produit + ' — ' + pu + ' €' + etat, qte: q,
+    dataset: { ancienne: '1', principal: '1', prixUnit: String(pu), customNom: String(c.produit) } };
+}
+// À appeler à l'ouverture, une fois la ligne reconstruite remplie (option choisie, quantité).
+function venMemoriserPrincipal(div, c) {
+  if (!div || !c || typeof div.querySelector !== 'function') return;
+  div._principalOrigine = { produit: c.produit, qte: c.qte, prix: c.prix };
+  div._saisieOrigine = venSaisieLigne(div);
+}
+// Vrai si le formulaire ne contient QUE la ligne d'origine reconstruite, non modifiée (produit, quantité, remise, type de remise),
+// toujours sur son option figée. Une autre ligne avec un produit choisi = commande modifiée.
+function venPrincipalInchange(divs) {
+  var principale = null, deux = false, autres = 0;
+  Array.prototype.slice.call(divs || []).forEach(function(div) {
+    if (!div || typeof div.querySelector !== 'function') return;
+    if (div._principalOrigine) { if (principale) deux = true; principale = div; return; }
+    var s = div.querySelector('.ligne-produit');
+    if (s && s.value) autres++;
+  });
+  if (!principale || deux || autres) return false;
+  var sel = principale.querySelector('.ligne-produit'), opt = sel && sel.selectedOptions && sel.selectedOptions[0];
+  if (!opt || !opt.dataset || opt.dataset.principal !== '1') return false;
+  return venSaisieLigne(principale) === principale._saisieOrigine;
+}
+// saveCmd : commande existante SANS LIGNES, ligne d'origine non touchée et remise globale inchangée -> produit principal gardé tel quel.
+function venPrincipalAGarder(ancienne, divs, remiseVal, remiseType) {
+  if (!ancienne || (Array.isArray(ancienne.lignes) && ancienne.lignes.length)) return false;
+  if ((parseFloat(remiseVal) || 0) !== (parseFloat(ancienne.remiseGlobaleVal) || 0)) return false;
+  if ((remiseType || 'pct') !== (ancienne.remiseGlobaleType || 'pct')) return false;
+  return venPrincipalInchange(divs);
+}
+function venGarderPrincipal(cmd, ancienne) {
+  cmd.produit = ancienne.produit;
+  cmd.lignes = ancienne.lignes == null ? null : ancienne.lignes;
+  cmd.qte = ancienne.qte;
+  cmd.prix = ancienne.prix;
+  cmd.prixBrut = ancienne.prixBrut;
+  cmd.remiseGlobale = ancienne.remiseGlobale || 0;
+  return cmd;
+}
 // Nom ou référence NORMALISÉ : minuscules, sans accents, « × » lu « x », espaces regroupés, « 140 x 190 » = « 140x190 ».
 // Même règle que interne.l039_norm (migration 039) et nomNormalise (fonctions serveur).
 function venNorm(s) {
@@ -9008,16 +9065,23 @@ function ouvrirEditionCommande(id) {
       if (ligneAo) venMemoriserLigne(document.querySelector('#lignes-produits > div:last-child'), l);
     });
   } else {
-    // Commande ancienne sans lignes — créer une ligne avec le produit principal
+    // Commande ancienne sans lignes — v7.5.158 : sa ligne d'origine est reconstruite TELLE QUELLE (venOptionPrincipale : option figée,
+    // produit principal et ses valeurs, y compris non vendable) ; plus de rapprochement par premier mot du nom.
     ajouterLigne();
-    var sel2 = document.querySelector('#lignes-produits > div:last-child .ligne-produit');
-    if (sel2) {
-      var prod2 = aoSelectionnables(produits).find(function(p){ return venEst(p, produits) && c.produit && c.produit.includes(p.nom.split(' ')[0]); });
-      if (prod2) sel2.value = prod2.id;
+    var div2 = document.querySelector('#lignes-produits > div:last-child');
+    var sel2 = div2 && div2.querySelector('.ligne-produit');
+    var op2 = venOptionPrincipale(c, produits);
+    if (sel2 && op2) {
+      var opt2 = document.createElement('option');
+      opt2.value = op2.value;
+      opt2.textContent = op2.texte;
+      opt2.selected = true;
+      Object.keys(op2.dataset).forEach(function(k) { opt2.dataset[k] = op2.dataset[k]; });
+      sel2.appendChild(opt2);
     }
-    var prixEl = document.querySelector('#lignes-produits > div:last-child .ligne-prix');
-    var qteEl2 = document.querySelector('#lignes-produits > div:last-child .ligne-qte');
-    if (qteEl2) qteEl2.value = c.qte || 1;
+    var qteEl2 = div2 && div2.querySelector('.ligne-qte');
+    if (qteEl2) qteEl2.value = op2 ? op2.qte : (c.qte || 1);
+    if (sel2 && op2) venMemoriserPrincipal(div2, c);
   }
 
   // Remise globale
@@ -9046,9 +9110,15 @@ function saveCmd() {
   const _ancienneDateLiv = existingCmd ? (existingCmd.date || '') : '';
   const isSavCmd = !!(existingCmd && (((existingCmd.origine || '').indexOf('SAV') === 0) || (String(existingCmd.id).indexOf('#SAV') === 0)));
   const lignes = getLignesData();
+  // v7.5.158 : commande existante sans lignes dont la ligne d'origine n'a pas été touchée -> produit principal gardé tel quel (venGarderPrincipal)
+  const _principalGarde = !!(isEdit && existingCmd && !isSavCmd && venPrincipalAGarder(existingCmd, document.querySelectorAll('#lignes-produits > div'),
+    document.getElementById('f-remise-val').value, document.getElementById('f-remise-type').value));
   if (!lignes.length && !isSavCmd) { toast('Ajoutez au moins un produit','err'); return; }
   // v7.5.136 : un produit non vendable (prix de vente à définir) ne peut pas être AJOUTÉ à une commande (la base le refuse aussi)
-  var _venRefus = isSavCmd ? [] : venLignesRefusees(lignes, produits, existingCmd);
+  // v7.5.158 : produit principal gardé -> contrôlé comme la base (commande sans lignes = son produit principal, inchangé)
+  var _venRefus = isSavCmd ? [] : _principalGarde
+    ? venLignesRefusees(existingCmd.lignes, produits, existingCmd, { produit: existingCmd.produit, qte: existingCmd.qte, prix: existingCmd.prix })
+    : venLignesRefusees(lignes, produits, existingCmd);
   if (_venRefus.length) { toast('Produit non vendable (prix de vente à définir) : ' + _venRefus.join(', '), 'err'); return; }
   const soustotal = lignes.reduce((s,l)=>s+l.sousTotal,0);
   const remGV = parseFloat(document.getElementById('f-remise-val').value)||0;
@@ -9132,6 +9202,8 @@ function saveCmd() {
       // marqueur SAV serait perdu (le SAV reapparaitrait dans les stats de CA)
       cmdData.origine = existingCmd.origine || '';
     }
+    // v7.5.158 : commande sans lignes, ligne d'origine non touchée -> produit, quantité, prix et lignes d'origine conservés
+    if (_principalGarde) venGarderPrincipal(cmdData, existingCmd);
     // Mise à jour commande existante
     const idx = commandes.findIndex(x => x.id === window._editingCmdId);
     if (idx > -1) {
