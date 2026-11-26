@@ -517,7 +517,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
       return b;
     };
     // même chemin que le gestionnaire temps réel « commandes » (sbStartRealtime) : file, puis application à la liste actuelle
-    const evenement = (b, p) => { b.cmdRtRecu(p); if (p.new && p.new.id) b.cmdAppliquerTempsReel(p.new); };
+    const evenement = (b, p) => { b.cmdRtRecu(p); b.cmdTempsReelAppliquer(p); };
     const ids = (b) => b.commandes.map((c) => c.id).sort();
     let b = await charger([ligne('#1')], (x) => evenement(x, { eventType: 'INSERT', new: ligne('#2', { updated_at: T2 }), old: {} }));
     test('insertion #2 PENDANT l’attente des tournées : #2 gardée après l’instantané (rejouée), preuve accordée (liste réellement complète)',
@@ -551,11 +551,64 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
       b.cmdComparerDates('2026-11-26T10:00:00.123456+00:00', '2026-11-26 10:00:00.123456+00') === 0 && b.cmdComparerDates('2026-11-26T10:00:00.123456Z', '2026-11-26T10:00:00.123457Z') === -1
       && b.cmdComparerDates('2026-11-26T11:00:00+01:00', '2026-11-26T10:00:00Z') === 0 && b.cmdComparerDates('', T1) === null && b.cmdComparerDates('hier', T1) === null);
     test('branchements : gestionnaire temps réel → file AVANT tout le reste (suppressions comprises) ; file ouverte avant la lecture ; updated_at lu',
-      /table:'commandes'\}, function\(payload\) \{\n\s*cmdRtRecu\(payload\);[^\n]*\n\s*var r = payload\.new;\n\s*if \(!r \|\| !r\.id\) return;\n\s*cmdAppliquerTempsReel\(r\);/.test(html)
+      /table:'commandes'\}, function\(payload\) \{\n\s*cmdRtRecu\(payload\);[^\n]*\n\s*\/\/[^\n]*\n\s*if \(!cmdTempsReelAppliquer\(payload\)\) return;\n/.test(html)
       && html.indexOf('_cmdFile = cmdRtOuvrir();') < html.indexOf("var rCmds = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS")
       && html.indexOf('_cmdFile = cmdRtOuvrir();') > html.indexOf('async function sbLoadAll() {')
       && /var CMD_SELECT_COLS = '[^']*,updated_at';/.test(html));
   }
+  console.log('\n7 septies. REVUE CODEX PR 27 SUR 8dc087f (suppression reçue par le temps réel APRÈS le chargement initial)');
+  {
+    const ligne = (id, x) => Object.assign({ id, client: 'Client fictif', prix: 100, statut: 'en-attente', updated_at: '2026-11-26T10:00:00.000001+00:00' }, x || {});
+    // même bac à sable que 7 sexies (25550c3) ; « base » = contenu FICTIF de la table, modifiable entre deux lectures complètes
+    const charger = async (rows) => {
+      const b = { console: { log() {}, warn() {} }, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, isFinite, Promise,
+        commandes: [], tournees: [], caissesRemises: {}, nextCmdId: 1, cmdTotalCount: 0, cmdAllLoaded: false, CMD_SELECT_COLS: 'id,client,statut,updated_at',
+        SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k', _base: rows,
+        localStorage: { getItem: () => null, setItem() {} }, AbortController: function () { this.signal = {}; this.abort = () => {}; },
+        setTimeout: () => 0, clearTimeout: () => {}, renderCmds() {}, renderDash() {}, renderTournees() {}, renderLivreur() {}, toast() {}, reconcilierTournees() {},
+        document: { querySelector: () => null, getElementById: () => null },
+        fetch: async (url) => {
+          const snapshot = b._base;
+          if (url.endsWith('/commandes?select=id')) return { ok: true, headers: { get: () => '0-0/' + snapshot.length }, json: async () => [] };
+          if (url.includes('/commandes?')) return { ok: true, headers: { get: (k) => (k === 'Content-Range' ? '0-' + (snapshot.length - 1) + '/' + snapshot.length : null) }, json: async () => JSON.parse(JSON.stringify(snapshot)) };
+          return { ok: true, headers: { get: () => null }, json: async () => [] };
+        } };
+      vm.createContext(b);
+      vm.runInContext(html.slice(html.indexOf('var cmdChargementComplet = false;'), html.indexOf('var _pollingInterval = null;')), b);
+      vm.runInContext(fonction('async function sbLoadAll() {'), b);
+      vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b);
+      b.cmdTempsReelStatut('SUBSCRIBED', 1);
+      await b.sbLoadAll();
+      return b;
+    };
+    // même chemin que le gestionnaire temps réel « commandes » (sbStartRealtime) : file des chargements en cours, puis liste actuelle
+    const recu = (b, p) => { b.cmdRtRecu(p); return b.cmdTempsReelAppliquer(p); };
+    const ids = (b) => b.commandes.map((c) => c.id).sort();
+    let b = await charger([ligne('#1'), ligne('#2'), ligne('#3')]);
+    test('départ : 3 commandes chargées en entier, preuve accordée', egal(ids(b), ['#1', '#2', '#3']) && b.tdbLocalComplet() === true, [ids(b), b.cmdChargementComplet]);
+    let signaux = 0; b.tdbSignaler = () => { signaux++; };
+    let change = recu(b, { eventType: 'DELETE', new: {}, old: { id: '#2' } });
+    test('suppression de #2 APRÈS le chargement (payload.old.id) : #2 retirée de la liste locale, affichage rafraîchi', change === true && egal(ids(b), ['#1', '#3']), ids(b));
+    test('…preuve toujours accordée (la liste reste exacte) : les chiffres locaux ne comptent plus #2', b.tdbLocalComplet() === true && !b.commandes.some((c) => c.id === '#2'));
+    const ancien = { commandes: [{ id: '#1' }, { id: '#2' }] }; { const p = { eventType: 'DELETE', new: {}, old: { id: '#2' } }; const r = p.new; if (!(!r || !r.id)) ancien.commandes = []; }
+    test('(preuve que le cas est couvert : l’ancien gestionnaire, arrêté faute de payload.new.id, gardait #2)', ancien.commandes.length === 2);
+    b = await charger([ligne('#1'), ligne('#2')]); signaux = 0; b.tdbSignaler = () => { signaux++; };
+    change = recu(b, { eventType: 'DELETE', new: {}, old: {} });
+    test('suppression SANS identifiant (ancienne ligne non transmise) : liste gardée, preuve RETIRÉE → le tableau lit la base par période, tableau prévenu',
+      change === true && egal(ids(b), ['#1', '#2']) && b.cmdChargementComplet === false && b.tdbLocalComplet() === false && signaux === 1, [ids(b), b.cmdChargementComplet, signaux]);
+    b = await charger([ligne('#1')]);
+    recu(b, { eventType: 'DELETE', new: {}, old: null });
+    test('suppression sans ancienne ligne du tout (old absent) : preuve retirée, sans erreur', b.tdbLocalComplet() === false);
+    b = await charger([ligne('#1'), ligne('#2')]); recu(b, { eventType: 'DELETE', new: {}, old: {} });
+    b._base = [ligne('#1')]; // #2 supprimée dans la base
+    await new Promise((r) => setTimeout(r, 5)); await b.sbLoadAll();
+    test('lecture complète suivante (commencée après la perte) : liste relue (#2 disparue), preuve rendue', egal(ids(b), ['#1']) && b.tdbLocalComplet() === true, [ids(b), b.cmdChargementComplet]);
+    b = await charger([ligne('#1')]);
+    test('insertion et modification : appliquées comme avant ; événement sans identifiant (hors suppression) : ignoré',
+      recu(b, { eventType: 'INSERT', new: ligne('#5'), old: {} }) === true && recu(b, { eventType: 'UPDATE', new: ligne('#1', { statut: 'livré' }), old: { id: '#1' } }) === true
+      && recu(b, { eventType: 'UPDATE', new: {}, old: {} }) === false && egal(ids(b), ['#1', '#5']) && b.commandes.find((c) => c.id === '#1').statut === 'livré' && b.tdbLocalComplet() === true);
+  }
+
   console.log('\n7 quinquies. REVUE CODEX PR 27 SUR a46f8aa (lectures suivies par période, champs échappés)');
   { // a) Mois → Semaine → Mois : la réponse de la période AFFICHÉE est toujours prise, aucune lecture redondante, quel que soit l'ordre
     const banc = () => {
@@ -630,6 +683,6 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
   }
   console.log('\n8. MISE EN LIGNE');
 
-test('CACHE_VERSION augmentée (v7-5-157 ou plus, au-dessus de la PR 26)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 157; })());
+test('CACHE_VERSION augmentée (v7-5-160 ou plus, au-dessus de la PR 26)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 160; })());
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

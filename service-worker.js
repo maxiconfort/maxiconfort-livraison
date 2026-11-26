@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.160 - Tableau de bord : suppression recue par le temps reel retiree de la liste locale (sans identifiant : preuve de chargement complet retiree) (26/11/2026)
 // v7.5.159 - Fusion des corrections arrivages v7.5.158 (commande ancienne sans lignes rouverte avec sa ligne d'origine) dans tableau de bord + menus (26/11/2026)
 // v7.5.158 - Commande ancienne sans lignes rouverte : ligne d'origine reconstruite telle quelle, plus de rapprochement par premier mot (26/11/2026)
 // v7.5.157 - Tableau de bord : evenements temps reel recus pendant le chargement complet rejoues sur l'instantane (preuve refusee si ordre indecidable), lecture paginee par cle (id) (26/11/2026)
@@ -26,7 +27,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-159';
+const CACHE_VERSION = 'maxiconfort-v7-5-160';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

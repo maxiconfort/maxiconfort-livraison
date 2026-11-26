@@ -5518,6 +5518,28 @@ function cmdAppliquerTempsReel(r) {
   if (idx > -1) commandes[idx] = mapped;
   else commandes.unshift(mapped);
 }
+// v7.5.160 (revue Codex PR 27 sur 8dc087f) : événement temps réel « commandes » appliqué à la liste ACTUELLE. Avant, le gestionnaire
+// s'arrêtait dès que payload.new n'avait pas d'identifiant, ce qui est le cas d'une SUPPRESSION : après le chargement initial, la
+// commande supprimée restait dans la liste locale et pouvait fausser les chiffres (tableau de bord calculé sur la liste chargée, preuve
+// de chargement complet toujours accordée). Désormais :
+//   * suppression avec payload.old.id → commande retirée de la liste ;
+//   * suppression SANS identifiant (ancienne ligne non transmise par le temps réel) → impossible de savoir laquelle retirer : la PREUVE
+//     de chargement complet est RETIRÉE (cmdSynchroPerdue ; le tableau de bord lit alors la base par période) et n'est rendue que par
+//     la lecture complète suivante (sbLoadAll, 60 s), qui relit toute la liste ; même règle que le rejeu (cmdDecisionRejeu : incertain) ;
+//   * insertion ou modification avec identifiant → appliquée comme avant ; autre événement sans identifiant → ignoré, comme avant.
+// Rend vrai si la liste ou la preuve a changé (affichage à rafraîchir).
+function cmdTempsReelAppliquer(payload) {
+  if (payload && payload.eventType === 'DELETE') {
+    var id = payload.old && payload.old.id;
+    if (!id) { cmdSynchroPerdue('suppression temps réel sans identifiant'); return true; }
+    commandes = commandes.filter(function(c) { return c.id !== id; });
+    return true;
+  }
+  var r = payload && payload.new;
+  if (!r || !r.id) return false;
+  cmdAppliquerTempsReel(r);
+  return true;
+}
 
 var _pollingInterval = null;
 function startPolling() {
@@ -5662,9 +5684,8 @@ function sbStartRealtime() {
   sbRealtimeChannel = sb.channel('maxiconfort-changes')
     .on('postgres_changes', {event:'*', schema:'public', table:'commandes'}, function(payload) {
       cmdRtRecu(payload); // v7.5.157 : rangé dans la file des chargements en cours (rejoué sur leur instantané), suppressions comprises
-      var r = payload.new;
-      if (!r || !r.id) return;
-      cmdAppliquerTempsReel(r); // v7.5.157 : même conversion qu'avant (cmdDepuisTempsReel)
+      // v7.5.160 : appliqué à la liste actuelle, SUPPRESSIONS comprises (retirée par payload.old.id ; sans identifiant -> preuve retirée)
+      if (!cmdTempsReelAppliquer(payload)) return;
       if (typeof tdbSignaler === 'function') tdbSignaler('commandes'); // v7.5.138
       renderDash(); renderCmds(); renderTournees(); renderLivreur();
     })
