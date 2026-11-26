@@ -985,6 +985,44 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     await bac.annulerRemiseCaisse('t_T-Q');
     test('annulation enregistrée -> remise annulée', !bac.caissesRemises['t_T-Q']);
   }
+  { // v7.5.195 (revue Codex PR 24 sur 59f3a26) : validation recontrôlée par la base (dépenses + arrêts), arrêts figés
+    const { bac: p } = nouveauBac('admin');
+    const arr = p.rtArretsCaisse([{ cmdId: '#1', client: 'X', statut: 'livré', gps: [1, 2], heure: '10:00', encTournee: { esp: 10 } }, { client: 'Y', statut: 'absent' }, null]);
+    test('rtArretsCaisse : champs sans effet caisse ignorés (GPS, heure), clés toujours présentes, client gardé seulement sans commande',
+      JSON.stringify(arr) === JSON.stringify([
+        { cmdId: '#1', client: null, statut: 'livré', paie: null, stpaie: null, encAvant: null, encTournee: { esp: 10 }, paie_especes: null, paie_cb: null, enc: null },
+        { cmdId: null, client: 'Y', statut: 'absent', paie: null, stpaie: null, encAvant: null, encTournee: null, paie_especes: null, paie_cb: null, enc: null },
+        { cmdId: null, client: null, statut: null, paie: null, stpaie: null, encAvant: null, encTournee: null, paie_especes: null, paie_cb: null, enc: null }]), arr);
+    test('rtArretsCaisse : liste absente -> []', JSON.stringify(p.rtArretsCaisse(null)) === '[]' && JSON.stringify(p.rtArretsCaisse({})) === '[]');
+    test('rtRefusCaisseChangee : 400 + CAISSE_CHANGEE oui ; 500, coupure ou autre refus non', p.rtRefusCaisseChangee(400, 'CAISSE_CHANGEE : …') && !p.rtRefusCaisseChangee(500, 'CAISSE_CHANGEE') && !p.rtRefusCaisseChangee(400, 'POINT_CAISSE_VALIDE'));
+    test('même liste de champs que la migration 038b (interne.l038b_arrets_caisse)', (() => {
+      const sql = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'migrations', '038b_depenses_verrou_caisse_validee.sql'), 'utf8');
+      const f = sql.slice(sql.indexOf('create or replace function interne.l038b_arrets_caisse'), sql.indexOf('revoke all on function interne.l038b_arrets_caisse'));
+      const cles = [...f.matchAll(/'([A-Za-z_]+)', (?:x\.e|case)/g)].map((x) => x[1]);
+      return JSON.stringify(cles) === JSON.stringify(p.RT_ARRET_CAISSE_CLES);
+    })());
+    test('la page envoie à la validation ce sur quoi le montant est calculé (dépenses en espèces, relevé des arrêts)', /depEsp: rtArrondi\(r\.depEspLv\), arrets: rtArretsCaisse\(r\.t\.stops\)/.test(html));
+    test('dépenses déduites : TOUTES celles de la tournée (liste complète, pas seulement la période affichée)', /var depEspDetail = depenses\.filter\(function\(d\)\{/.test(html));
+
+    const { bac } = nouveauBac('admin');
+    vm.runInContext(extraireFonction('function paiCalculRemise(attendu, saisie)'), bac);
+    vm.runInContext(extraireFonction('async function validerRemiseCaisse(key)'), bac);
+    bac.tournees = [{ id: 'T-Q', livreur: 'RANOU', date: '2026-11-24', statut: 'terminée', stops: [] }];
+    const arrets = [{ cmdId: '#9', client: null, statut: 'livré', paie: 'Espèces', stpaie: 'Payé', encAvant: null, encTournee: null, paie_especes: null, paie_cb: null, enc: null }];
+    let relus = { dep: 0, tour: [] };
+    bac.sbLoadDepenses = async () => { relus.dep++; }; bac.sbRechargerTournee = async (id) => { relus.tour.push(id); };
+    bac.finRender = () => { bac.window._paiRemisesAttendu = { 't_T-Q': { especes: 90, cb: 0, tournee: 'T-Q', livreur: 'RANOU', depEsp: 10.004, arrets } }; };
+    bac.window = {}; bac.caissesRemises = {};
+    let rep = ['90']; bac.prompt = () => rep.shift(); const env = [];
+    bac.fetch = async (url, opt) => { env.push(JSON.parse(opt.body)); return { ok: true, status: 201, text: async () => '' }; };
+    await bac.validerRemiseCaisse('t_T-Q');
+    test('validation : tournée ET dépenses relues avant, contrôles envoyés (controle_depenses 10 €, controle_arrets = relevé)', relus.tour[0] === 'T-Q' && relus.dep === 1 && env[0] && env[0].controle_depenses === 10 && JSON.stringify(env[0].controle_arrets) === JSON.stringify(arrets) && bac.caissesRemises['t_T-Q'].validee === true, env[0]);
+    bac.caissesRemises = {}; relus = { dep: 0, tour: [] }; rep = ['90'];
+    bac.fetch = async () => ({ ok: false, status: 400, text: async () => '{"code":"P0001","message":"CAISSE_CHANGEE : les dépenses ou les arrêts de la tournée T-Q ont changé"}' });
+    await bac.validerRemiseCaisse('t_T-Q');
+    const msg = (bac._toasts.pop() || [''])[0];
+    test('refus CAISSE_CHANGEE de la base -> rien de validé, tournée et dépenses RELUES de nouveau, message « recalculez »', !bac.caissesRemises['t_T-Q'] && relus.tour.length === 2 && relus.dep === 2 && /ont changé depuis le calcul/.test(msg) && /validez de nouveau/.test(msg), [relus, msg]);
+  }
 
   // ══════════ 6. Garde-fous (lecture du code) ══════════
   console.log('\n6. GARDE-FOUS (lecture du code)');
@@ -998,7 +1036,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
   test('Retour de tournée : bouton « Valider le point de caisse » branché sur validerRemiseCaisse (caisse_remises)', /validerRemiseCaisse\(\\'' \+ r\.caisseKey \+ '\\'\)"[^>]*>✅ Valider le point de caisse/.test(html));
   test('validerRemiseCaisse écrit toujours dans caisse_remises (mécanisme existant)', /rest\/v1\/caisse_remises', \{\s*method: 'POST'/.test(extraireFonction('async function validerRemiseCaisse(key)')));
   test('ancre JARVIS (bloc JVUE) présente', html.indexOf('// JVUE-DEBUT') > 0 && html.indexOf('// JVUE-FIN') > html.indexOf('// JVUE-DEBUT'));
-  test('CACHE_VERSION augmentée (v7-5-184 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(8[4-9]|9\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
+  test('CACHE_VERSION augmentée (v7-5-195 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-(19[5-9]|[2-9]\d\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
