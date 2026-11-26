@@ -763,15 +763,34 @@ begin
     check (motif in ('reassort', 'retour_gls', 'reprise_sav', 'correction') or motif like 'arrivage:%');
 end $$;
 
+-- TENTATIVES DE RÉCEPTION (revue Codex PR 26 sur 8adccd6) : chaque envoi de l'appli porte un identifiant de tentative (uuid tiré
+-- par l'appli). Une tentative est soit « appliquee » (la réception qu'elle portait a été écrite), soit « abandonnee » (l'appli a
+-- relu l'arrivage sans réponse à son envoi : cette tentative ne pourra PLUS JAMAIS être appliquée). Les deux inscriptions se font
+-- sous le même premier verrou (select … for update sur l'arrivage) : une requête retardée qui atteint la base APRÈS l'abandon est
+-- refusée (« tentative_abandonnee »), rien n'est écrit. Ajout seul : aucune fonction ne modifie ni ne supprime une tentative.
+-- Aucun droit direct pour l'application (anon, authenticated) : lecture et écriture uniquement par les deux fonctions ci-dessous.
+create table if not exists public.arrivage_tentatives (
+  tentative uuid primary key,
+  arrivage_id bigint not null references public.arrivages(id),
+  etat text not null check (etat in ('appliquee', 'abandonnee')),
+  cree_le timestamptz not null default now()
+);
+create index if not exists arrivage_tentatives_arrivage_idx on public.arrivage_tentatives (arrivage_id);
+alter table public.arrivage_tentatives enable row level security;
+alter table public.arrivage_tentatives force row level security;
+revoke all on table public.arrivage_tentatives from anon, authenticated, public;
+
 -- p_lignes = [{"ligne_id": 12, "recue": 38, "endommagee": 1, "manquante": 1}, …] : UNE entrée par ligne de l'arrivage,
 -- avec recue + endommagee + manquante = quantité attendue. Tout ou rien : la moindre erreur annule toute l'opération.
 -- p_empreinte (revue Codex PR 26 sur 17f631a) = empreinte des valeurs de valorisation VUES dans l'aperçu (interne.l039_empreinte) :
 -- obligatoire, comparée APRÈS les verrous à l'empreinte actuelle ; différente → « valorisation_modifiee », rien n'est écrit.
 -- (Ancienne signature à 2 arguments supprimée : aucune validation possible sans empreinte.)
 drop function if exists public.valider_reception_arrivage(bigint, jsonb);
+-- revue Codex PR 26 sur 8adccd6 : identifiant de tentative OBLIGATOIRE (ancienne signature à 3 arguments supprimée)
+drop function if exists public.valider_reception_arrivage(bigint, jsonb, text);
 -- Verrous, toujours dans le même ordre (comme recalculer_revient_arrivage) : arrivage → produits (par id) → produits_revient
 -- (par produit_id), AVANT toute lecture de l'ancienne valorisation.
-create or replace function public.valider_reception_arrivage(p_arrivage_id bigint, p_lignes jsonb, p_empreinte text) returns json
+create or replace function public.valider_reception_arrivage(p_arrivage_id bigint, p_lignes jsonb, p_empreinte text, p_tentative uuid) returns json
 language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
 declare
   a public.arrivages%rowtype;
@@ -788,6 +807,15 @@ begin
   -- verrou : deux validations simultanées attendent l'une l'autre ; la seconde voit le statut « recu » et est refusée
   select * into a from public.arrivages where id = p_arrivage_id for update;
   if not found then return json_build_object('ok', false, 'erreur', 'arrivage_introuvable'); end if;
+  -- tentative relue SOUS le verrou de l'arrivage (revue Codex PR 26 sur 8adccd6) : abandonnée par une relecture, ou déjà utilisée
+  -- -> refus, rien n'est écrit (une requête retardée ne peut plus valider d'anciennes quantités)
+  if p_tentative is null then return json_build_object('ok', false, 'erreur', 'tentative_requise'); end if;
+  if exists (select 1 from public.arrivage_tentatives where tentative = p_tentative and etat = 'abandonnee') then
+    return json_build_object('ok', false, 'erreur', 'tentative_abandonnee', 'statut', a.statut);
+  end if;
+  if exists (select 1 from public.arrivage_tentatives where tentative = p_tentative) then
+    return json_build_object('ok', false, 'erreur', 'tentative_deja_utilisee', 'statut', a.statut);
+  end if;
   if a.statut <> 'en_attente' then
     return json_build_object('ok', false, 'erreur', 'arrivage_deja_traite', 'statut', a.statut);
   end if;
@@ -883,7 +911,9 @@ begin
   end loop;
 
   update public.arrivages set statut = 'recu', recu_le = v_instant, ordre_reception = v_ordre, recu_par = 'admin', maj_at = now() where id = a.id;
-  return json_build_object('ok', true, 'arrivage', a.reference_interne, 'methode', v_methode, 'total_recu', v_total_recu, 'lignes', v_resultat);
+  -- tentative « appliquee », dans la MÊME opération que la réception (annulée avec elle en cas d'erreur)
+  insert into public.arrivage_tentatives (tentative, arrivage_id, etat) values (p_tentative, a.id, 'appliquee');
+  return json_build_object('ok', true, 'tentative', p_tentative, 'arrivage', a.reference_interne, 'methode', v_methode, 'total_recu', v_total_recu, 'lignes', v_resultat);
 end $$;
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1020,13 +1050,18 @@ end $$;
 -- chaque lecture faite après l'obtention du verrou voit les écritures validées). Attente bornée (lock_timeout 2 s) : au-delà,
 -- { ok: false, erreur: 'verification_occupee' } — l'appli garde alors le résultat INDÉTERMINÉ (aucun nouvel envoi) et propose de
 -- revérifier. Lecture seule : le verrou ne sert qu'à attendre, il est rendu à la fin de l'appel (rien n'est écrit).
--- Une réception dont la requête n'a pas encore ATTEINT la base n'est pas visible (rien à attendre) : si l'appli renvoie ensuite, la
--- base refuse l'un des deux envois (statut relu sous verrou : « arrivage_deja_traite ») ; une double réception reste impossible.
-create or replace function public.statut_reception_arrivage(p_arrivage_id bigint) returns json
+-- Une réception dont la requête n'a pas encore ATTEINT la base n'est pas visible (rien à attendre). Revue Codex PR 26 sur 8adccd6 :
+-- avec p_tentative (identifiant de l'envoi resté sans réponse), la fonction INSCRIT, sous ce même verrou, que la tentative est
+-- ABANDONNÉE si elle n'a pas été appliquée : la requête retardée, si elle arrive ensuite, est refusée (« tentative_abandonnee »).
+-- Réponse : etat_tentative = « appliquee » (cet envoi a validé) ou « abandonnee » (il ne pourra plus valider). C'est SEULEMENT
+-- après cette réponse que l'appli autorise un nouvel envoi. Seule écriture : cette inscription (ajout, jamais de modification).
+drop function if exists public.statut_reception_arrivage(bigint);
+create or replace function public.statut_reception_arrivage(p_arrivage_id bigint, p_tentative uuid default null) returns json
 language plpgsql volatile security definer set search_path = public, pg_catalog as $$
 declare
   a public.arrivages%rowtype;
   v_hist integer; v_qte integer; v_mvts integer;
+  t public.arrivage_tentatives%rowtype;
 begin
   if (select public.session_role()) is distinct from 'admin' then
     return json_build_object('ok', false, 'erreur', 'session_admin_requise');
@@ -1038,21 +1073,30 @@ begin
     return json_build_object('ok', false, 'erreur', 'verification_occupee');
   end;
   if not found then return json_build_object('ok', false, 'erreur', 'arrivage_introuvable'); end if;
+  if p_tentative is not null then
+    insert into public.arrivage_tentatives (tentative, arrivage_id, etat) values (p_tentative, a.id, 'abandonnee')
+      on conflict (tentative) do nothing;
+    select * into t from public.arrivage_tentatives where tentative = p_tentative;
+    if t.arrivage_id is distinct from a.id then
+      return json_build_object('ok', false, 'erreur', 'tentative_autre_arrivage');
+    end if;
+  end if;
   select count(*), coalesce(sum(quantite), 0) into v_hist, v_qte
     from public.prix_revient_historique where arrivage_id = a.id and source = 'arrivage';
   select count(*) into v_mvts from public.mouvements_stock where source = 'arrivage:' || a.reference_interne;
   return json_build_object('ok', true, 'id', a.id, 'statut', a.statut, 'recu_le', a.recu_le,
-                           'historique', v_hist, 'mouvements', v_mvts, 'quantite', v_qte);
+                           'historique', v_hist, 'mouvements', v_mvts, 'quantite', v_qte,
+                           'tentative', p_tentative, 'etat_tentative', t.etat);
 end $$;
 
-revoke all on function public.valider_reception_arrivage(bigint, jsonb, text) from public, anon, authenticated;
+revoke all on function public.valider_reception_arrivage(bigint, jsonb, text, uuid) from public, anon, authenticated;
 revoke all on function public.recalculer_revient_arrivage(bigint, numeric) from public, anon, authenticated;
 revoke all on function public.stock_entrant() from public, anon, authenticated;
-revoke all on function public.statut_reception_arrivage(bigint) from public, anon, authenticated;
-grant execute on function public.valider_reception_arrivage(bigint, jsonb, text) to anon;
+revoke all on function public.statut_reception_arrivage(bigint, uuid) from public, anon, authenticated;
+grant execute on function public.valider_reception_arrivage(bigint, jsonb, text, uuid) to anon;
 grant execute on function public.recalculer_revient_arrivage(bigint, numeric) to anon;
 grant execute on function public.stock_entrant() to anon;
-grant execute on function public.statut_reception_arrivage(bigint) to anon;   -- session administrateur exigée dans la fonction
+grant execute on function public.statut_reception_arrivage(bigint, uuid) to anon;   -- session administrateur exigée dans la fonction
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 -- 8. Contrôle à l'application de la migration : mouvements_stock accepte une entrée « entree » (essai annulé, rien n'est écrit)
@@ -1251,8 +1295,24 @@ begin
                     and p.prosrc ~ 'from public\.arrivages where id = p_arrivage_id for update') then
     f := 'valider_reception_arrivage : même premier verrou (for update sur l''arrivage) que statut_reception_arrivage';
   end if;
-  if has_function_privilege('authenticated', 'public.statut_reception_arrivage(bigint)', 'execute') then
+  if has_function_privilege('authenticated', 'public.statut_reception_arrivage(bigint, uuid)', 'execute') then
     f := 'statut_reception_arrivage : non exécutable par authenticated';
+  end if;
+  -- TENTATIVES (revue Codex PR 26 sur 8adccd6) : abandon inscrit et tentative relue APRÈS le premier verrou de l'arrivage
+  if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                  where n.nspname = 'public' and p.proname = 'valider_reception_arrivage'
+                    and p.prosrc ~ 'for update.*tentative = p_tentative and etat = ''abandonnee''.*tentative_abandonnee'
+                    and p.prosrc ~ 'insert into public\.arrivage_tentatives \(tentative, arrivage_id, etat\) values \(p_tentative, a\.id, ''appliquee''\)') then
+    f := 'valider_reception_arrivage : tentative abandonnée refusée sous le verrou, tentative appliquée inscrite';
+  end if;
+  if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                  where n.nspname = 'public' and p.proname = 'statut_reception_arrivage'
+                    and p.prosrc ~ 'for update.*insert into public\.arrivage_tentatives \(tentative, arrivage_id, etat\) values \(p_tentative, a\.id, ''abandonnee''\)') then
+    f := 'statut_reception_arrivage : abandon de la tentative inscrit sous le verrou de l''arrivage';
+  end if;
+  if has_table_privilege('anon', 'public.arrivage_tentatives', 'select') or has_table_privilege('anon', 'public.arrivage_tentatives', 'insert')
+     or has_table_privilege('authenticated', 'public.arrivage_tentatives', 'insert') then
+    f := 'arrivage_tentatives : aucun droit direct pour l''application';
   end if;
   if f is not null then
     raise exception 'Auto-contrôle 039 (revient / identification) en échec : cas « % ». Migration annulée.', f;
