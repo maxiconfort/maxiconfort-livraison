@@ -336,7 +336,10 @@ function nouveauBac(opts) {
     return { iA, iP, iR, iLit, iLitH, ok: iA > 0 && iP > iA && iR > iP && (iLit < 0 || iLit > iR) && (iLitH < 0 || iLitH > iR) }; };
   test('verrous de la réception : arrivage → produits → produits_revient, AVANT la lecture de l\'ancien revient', ordre(val).ok && ordre(val).iLit > 0, ordre(val));
   test('verrous du recalcul : même ordre (produits puis produits_revient) avant toute lecture', ordre(rec).ok && ordre(rec).iLitH > 0, ordre(rec));
-  test('verrous triés (par id / par produit_id)', (val.match(/order by id for update/g) || []).length === 1 && (val.match(/order by produit_id for update/g) || []).length === 1
+  // v7.5.147 : la réception verrouille aussi les LIGNES de l'arrivage (par id), juste après l'arrivage et avant les produits
+  test('verrous triés (par id / par produit_id)', (val.match(/order by id for update/g) || []).length === 2 && (val.match(/order by produit_id for update/g) || []).length === 1
+    && val.indexOf('perform 1 from public.arrivage_lignes where arrivage_id = a.id order by id for update;') > val.indexOf('from public.arrivages where id = p_arrivage_id for update')
+    && val.indexOf('perform 1 from public.arrivage_lignes where arrivage_id = a.id order by id for update;') < val.indexOf('perform 1 from public.produits where id in')
     && (rec.match(/order by id for update/g) || []).length === 1 && (rec.match(/order by produit_id for update/g) || []).length === 1);
   test('aucune commande touchée (marges passées jamais recalculées)', !/update public\.commandes|alter table public\.commandes/.test(sql));
 
@@ -365,10 +368,10 @@ function nouveauBac(opts) {
       trig.indexOf('v_new := interne.l039_lignes_identifiees(v_new);') > 0 && trig.indexOf('v_old := interne.l039_lignes_identifiees(v_old);') > trig.indexOf('into v_old from public.commandes')
       && trig.indexOf('v_new := interne.l039_lignes_identifiees(v_new);') < trig.indexOf('select array_agg(distinct p.id) into v_nv'));
     test('base : produitId EXISTANT fiable ; sinon nom (produit / nom) ou référence (reference / sku / _ugs / nom) d\'un produit NON VENDABLE',
-      ident.includes("when coalesce(e ->> 'produitId', '') <> '' and exists (select 1 from public.produits q where q.id = e ->> 'produitId'")
+      ident.includes("where q.id = e ->> 'produitId' or interne.l039_designe(e, q.nom, q.reference_interne)")
       && designe.includes("interne.l039_norm(p_nom) in (interne.l039_norm(e ->> 'produit'), interne.l039_norm(e ->> 'nom'))")
-      && ["'reference'", "'sku'", "'_ugs'"].every(k => designe.includes('interne.l039_norm(e ->> ' + k + ')')) && ident.includes('and interne.produit_non_vendable(q.id)')
-      && ident.includes('end order by t.ord') && sql.includes('revoke all on function interne.l039_lignes_identifiees(jsonb) from public, anon, authenticated;'));
+      && ["'reference'", "'sku'", "'_ugs'"].every(k => designe.includes('interne.l039_norm(e ->> ' + k + ')')) && ident.includes("'nv', interne.produit_non_vendable(q.id)")
+      && ident.includes('order by t.ord') && sql.includes('revoke all on function interne.l039_lignes_identifiees(jsonb) from public, anon, authenticated;'));
     test('base : normalisation SQL (minuscules, accents, ×, espaces, 140 x 190)', sql.includes("translate(lower(coalesce(p, '')), 'àâäáãåçéèêëíìîïñóòôöõúùûüýÿ×', 'aaaaaaceeeeiiiinooooouuuuyyx')")
       && sql.includes("'(\\d) ?x ?(\\d)', '\\1x\\2', 'g'"));
 
@@ -455,10 +458,13 @@ function nouveauBac(opts) {
     // même règle dans la base : identifiant gardé seulement s'il est DÉSIGNÉ par la ligne, sinon produit non vendable désigné
     const identQ = sql.slice(sql.indexOf('create or replace function interne.l039_lignes_identifiees'), sql.indexOf('revoke all on function interne.l039_lignes_identifiees'));
     const trigQ = sql.slice(sql.indexOf('create or replace function interne.commandes_produit_vendable_garde()'), sql.indexOf('create trigger commandes_produit_vendable_garde'));
+    // v7.5.147 (revue sur 17f631a) : décision déplacée dans la fonction PURE l039_ligne_identifiee (tous les champs examinés)
+    const ligneQ = sql.slice(sql.indexOf('create or replace function interne.l039_ligne_identifiee'), sql.indexOf('revoke all on function interne.l039_ligne_identifiee'));
     test('base : produitId existant gardé SEULEMENT si la ligne le désigne (l039_designe), plus de « existe = fiable »',
-      identQ.includes("exists (select 1 from public.produits q where q.id = e ->> 'produitId'\n") && identQ.includes('and interne.l039_designe(e, q.nom, q.reference_interne)) then e')
-      && !identQ.includes("where q.id = e ->> 'produitId') then e"));
-    test('base : sinon produit NON VENDABLE désigné par nom ou référence (même fonction l039_designe)', identQ.includes('where interne.l039_designe(e, q.nom, q.reference_interne)\n             and interne.produit_non_vendable(q.id)'));
+      identQ.includes("'designe', interne.l039_designe(e, q.nom, q.reference_interne)") && ligneQ.includes("c ->> 'id' = e ->> 'produitId'")
+      && ligneQ.includes("coalesce((c ->> 'designe')::boolean, false)") && !identQ.includes("where q.id = e ->> 'produitId') then e"));
+    test('base : sinon produit NON VENDABLE désigné par nom ou référence (même fonction l039_designe)', identQ.includes("'nv', interne.produit_non_vendable(q.id)")
+      && /where coalesce\(\(c ->> 'designe'\)::boolean, false\) and coalesce\(\(c ->> 'nv'\)::boolean, false\)\n\s+order by c ->> 'id' limit 1/.test(ligneQ));
     test('base : l039_designe pure (immutable), jamais NULL, accès retiré', sql.includes('create or replace function interne.l039_designe(e jsonb, p_nom text, p_ref text) returns boolean\nlanguage sql immutable as $')
       && sql.includes('revoke all on function interne.l039_designe(jsonb, text, text) from public, anon, authenticated;'));
     test('base : insertion ET upsert passent par la même identification (déclencheur before insert or update, lignes actuelles relues)',
@@ -491,9 +497,103 @@ function nouveauBac(opts) {
     test('serveur : plus d\'arrêt sur une page « incomplète » (page.length < taillePage)', !/page\.length < taillePage/.test(src) && src.includes('if (!page.length) break;') && src.includes('const debut = rows.length;'));
   }
 
+  console.log('\n8 quinquies. REVUE CODEX SUR 17f631a (tous les champs d\'une ligne examinés, valorisation revérifiée avant la validation)');
+  {
+    // --- point 1 : identifiant ET nom d'un produit vendable, mais sku / référence / _ugs / ancien « nom » d'un produit NON VENDABLE ---
+    ({ bac } = nouveauBac());
+    const R = (lignes, anc) => bac.venLignesRefusees(lignes, bac.produits, anc || null);
+    const contraSku = { produitId: 'pr-a', produit: 'Matelas Fictif A 140×190', sku: 'MC-TEST-1', qte: 1, prixUnit: 100 };
+    test('appli : identifiant + nom vendables, sku d\'un produit non vendable → refusé', JSON.stringify(R([contraSku])) === JSON.stringify(['Matelas Nouveau N (fictif)']), R([contraSku]));
+    test('appli : identifiant + nom vendables, référence / _ugs d\'un produit non vendable → refusé', R([{ produitId: 'pr-a', produit: 'Matelas Fictif A 140×190', reference: 'mc-test-1' }]).length === 1
+      && R([{ produitId: 'pr-a', produit: 'Matelas Fictif A 140×190', _ugs: ' MC-TEST-1 ' }]).length === 1);
+    test('appli : identifiant + nom vendables, ancien champ « nom » d\'un produit retiré → refusé', R([{ produitId: 'pr-a', produit: 'Matelas Fictif A 140×190', nom: 'Matelas Retiré R' }]).length === 1);
+    test('appli : venProduitDeLigne rapporte la ligne au produit non vendable', (bac.venProduitDeLigne(contraSku, bac.produits) || {}).id === 'pr-n');
+    test('appli : identifiant + nom vendables, aucun autre champ contradictoire → accepté (inchangé)', R([{ produitId: 'pr-a', produit: 'Matelas Fictif A 140×190', sku: 'AUTRE-SKU' }]).length === 0
+      && (bac.venProduitDeLigne({ produitId: 'pr-a', produit: 'Matelas Fictif A 140×190' }, bac.produits) || {}).id === 'pr-a');
+    test('appli : commande déjà prise avec cette ligne INCHANGÉE → reste modifiable', R([contraSku, { produitId: 'pr-s', produit: 'Sommier Fictif 140×190' }], { lignes: [contraSku] }).length === 0);
+    const auto10 = sql.slice(sql.indexOf('-- 10. Auto-contrôle à l\'application : revient d\'un lot'));
+    test('base : auto-contrôle EXÉCUTÉ de la décision pure (sku contradictoire, rien de non vendable, identifiant non vendable gardé, nom seul, ligne libre)',
+      ["identifiant et nom vendables, sku d''un produit non vendable", 'identifiant et nom vendables, rien de non vendable', 'identifiant non vendable désigné gardé', "nom seul d''un produit non vendable", 'ligne libre inchangée'].every(c => auto10.includes("f := '" + c + "'")));
+    test('base : l039_ligne_identifiee pure (immutable), accès retiré', sql.includes('create or replace function interne.l039_ligne_identifiee(e jsonb, p_cands jsonb) returns jsonb\nlanguage sql immutable as $')
+      && sql.includes('revoke all on function interne.l039_ligne_identifiee(jsonb, jsonb) from public, anon, authenticated;'));
+    // JARVIS : le texte dicté est la seule donnée de la ligne ; nom d'un vendable + référence interne d'un non vendable = refusé
+    const jl5 = await import('file:///' + path.join(racine, 'supabase', 'functions', '_shared', 'jarvis-action-logique.ts').replace(/\\/g, '/'));
+    const cat5 = jl5.catalogueDepuisBase([{ id: 'n', nom: 'Matelas Nouveau N (fictif)', prix: null, vendable: false, prix_vente_defini: false, reference_interne: 'MC-TEST-1' },
+      { id: 'a', nom: 'Matelas Fictif A 140×190', prix: 100, reference_interne: 'MC-A' }]);
+    test('JARVIS : référence interne du produit reprise dans le catalogue', cat5.get('n').ref === 'MC-TEST-1');
+    test('JARVIS : identifiant vendable + texte = référence d\'un produit non vendable → refusé', /pas encore vendable/.test(jl5.lignesCommande([{ produitId: 'a', produit: 'mc-test-1', qte: 1 }], cat5).erreur || ''));
+    test('JARVIS : sans identifiant, texte = référence d\'un produit non vendable → refusé', /pas encore vendable/.test(jl5.lignesCommande([{ produit: 'MC-TEST-1', qte: 1 }], cat5).erreur || ''));
+    test('JARVIS : identifiant + nom vendables → accepté (inchangé)', !jl5.lignesCommande([{ produitId: 'a', produit: 'Matelas Fictif A 140×190', qte: 1 }], cat5).erreur);
+
+    // --- point 2 : valorisation revérifiée entre l'aperçu et la validation ---
+    const arrV = () => Object.assign(arrivage('en_attente'), { taux_change: 1.1, frais_import_ht: 30, taux_provisoire: true });
+    const lignesV = () => [{ id: 72, arrivage_id: 7, produit_id: 'pr-n', quantite_attendue: 40, fob_unitaire: 20, revient_unitaire_ht: null },
+      { id: 71, arrivage_id: 7, produit_id: 'pr-a', quantite_attendue: 30, fob_unitaire: 10.5, revient_unitaire_ht: 12.25 }];
+    const revV = { 'pr-a': { produit_id: 'pr-a', prix_revient_ht: 40, provisoire: false } };
+    test('empreinte : MÊME texte que l\'auto-contrôle SQL (interne.l039_empreinte)', bac.arrEmpreinte(arrV(), lignesV(), revV, 'CUMP') === 'v1|CUMP|1.100000|30.00|t|71:pr-a:30:10.5000:12.2500:40.0000:f|72:pr-n:40:20.0000:::'
+      && auto10.includes("is distinct from 'v1|CUMP|1.100000|30.00|t|71:pr-a:30:10.5000:12.2500:40.0000:f|72:pr-n:40:20.0000:::'"), bac.arrEmpreinte(arrV(), lignesV(), revV, 'CUMP'));
+    test('empreinte : nombres reçus en texte ou en nombre → même empreinte (échelle fixe)', bac.arrEmpreinte(Object.assign(arrV(), { taux_change: '1.100000', frais_import_ht: '30.00' }), lignesV(), revV, 'CUMP') === bac.arrEmpreinte(arrV(), lignesV(), revV, 'CUMP'));
+    const base0 = bac.arrEmpreinte(arrV(), lignesV(), revV, 'CUMP');
+    const varie = [['FOB', arrV(), lignesV().map(l => l.id === 71 ? Object.assign(l, { fob_unitaire: 10.6 }) : l), revV, 'CUMP'],
+      ['taux', Object.assign(arrV(), { taux_change: 1.12 }), lignesV(), revV, 'CUMP'], ['frais', Object.assign(arrV(), { frais_import_ht: 31 }), lignesV(), revV, 'CUMP'],
+      ['taux provisoire', Object.assign(arrV(), { taux_provisoire: false }), lignesV(), revV, 'CUMP'],
+      ['quantité attendue', arrV(), lignesV().map(l => l.id === 72 ? Object.assign(l, { quantite_attendue: 41 }) : l), revV, 'CUMP'],
+      ['revient chargé', arrV(), lignesV().map(l => l.id === 72 ? Object.assign(l, { revient_unitaire_ht: 22 }) : l), revV, 'CUMP'],
+      ['revient actuel du produit', arrV(), lignesV(), { 'pr-a': { prix_revient_ht: 41, provisoire: false } }, 'CUMP'],
+      ['revient actuel devenu provisoire', arrV(), lignesV(), { 'pr-a': { prix_revient_ht: 40, provisoire: true } }, 'CUMP'],
+      ['méthode', arrV(), lignesV(), revV, 'DERNIER_PRIX']];
+    test('empreinte : FOB, taux, frais, taux provisoire, quantités, revient chargé, revient actuel, méthode → empreinte différente',
+      varie.every(v => bac.arrEmpreinte(v[1], v[2], v[3], v[4]) !== base0), varie.filter(v => bac.arrEmpreinte(v[1], v[2], v[3], v[4]) === base0).map(v => v[0]));
+    test('empreinte : ordre des lignes sans effet', bac.arrEmpreinte(arrV(), lignesV().reverse(), revV, 'CUMP') === base0);
+    // écran : l'empreinte de l'aperçu affiché est envoyée à la base
+    const repV = (opts) => (url) => url.includes('/rpc/valider_reception_arrivage') ? { ok: true, status: 200, corps: (opts && opts.rpc) || { ok: true, total_recu: 70 } }
+      : url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: paginer(url, (opts && opts.lignes) || lignesV()) } : { ok: true, status: 200, corps: [] };
+    const ouvrirV = (B) => { B.bac.ARR_ETAT.arrivages = [arrV()]; B.bac.ARR_ETAT.lignes = lignesV(); B.bac.ARR_ETAT.revients = JSON.parse(JSON.stringify(revV)); B.bac.arrOuvrir(7); };
+    B = nouveauBac({ repondre: repV() }); ouvrirV(B); await B.bac.arrValider();
+    let rpc = B.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage'));
+    test('validation : l\'empreinte de l\'aperçu affiché est envoyée (p_empreinte)', rpc.length === 1 && rpc[0].body.p_empreinte === base0, rpc[0] && rpc[0].body.p_empreinte);
+    // FOB modifié dans la base entre l'aperçu et la validation : rien n'est envoyé, saisies gardées, nouvel aperçu, nouvelle confirmation
+    let nbConfirm = 0;
+    B = nouveauBac({ repondre: repV({ lignes: lignesV().map(l => l.id === 71 ? Object.assign(l, { fob_unitaire: 11 }) : l) }) });
+    B.bac.confirm = () => { nbConfirm++; return true; };
+    ouvrirV(B); B.bac.arrSaisie(71, 'recue', '29'); B.bac.arrSaisie(71, 'manquante', '1'); await B.bac.arrValider();
+    test('FOB modifié avant l\'envoi : rien n\'est envoyé, message clair, saisies gardées, nouvel aperçu (FOB relu)',
+      !B.appels.some(a => a.url.includes('/rpc/')) && B.toasts.some(t => /FOB ou revient de l'arrivage modifié/.test(t.m)) && String(B.bac.ARR_ETAT.saisies[71].recue) === '29'
+      && B.bac.arrLignesDe(7).find(l => l.id === 71).fob_unitaire === 11 && B.bac.ARR_ETAT.vue.empreinte !== base0 && B.bac.ARR_ETAT.envoi === false, B.toasts);
+    const vue2 = B.bac.ARR_ETAT.vue.empreinte;
+    await B.bac.arrValider();
+    rpc = B.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage'));
+    test('… puis nouvelle validation : NOUVELLE confirmation demandée, empreinte du nouvel aperçu envoyée', nbConfirm === 2 && rpc.length === 1 && rpc[0].body.p_empreinte === vue2 && vue2 !== base0 && vue2.includes(':11.0000:'), { nbConfirm, n: rpc.length });
+    // taux / frais / revient actuel changés dans la base : la base refuse (valorisation_modifiee), l'écran relit tout et redemande
+    B = nouveauBac({ repondre: (url) => url.includes('/rpc/') ? { ok: true, status: 200, corps: { ok: false, erreur: 'valorisation_modifiee' } }
+      : url.includes('/arrivages?') ? { ok: true, status: 200, corps: paginer(url, [Object.assign(arrV(), { taux_change: 1.2 })]) }
+      : url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: paginer(url, lignesV()) }
+      : url.includes('/produits_revient?') ? { ok: true, status: 200, corps: [revV['pr-a']] } : { ok: true, status: 200, corps: [] } });
+    ouvrirV(B); B.bac.arrSaisie(71, 'recue', '29'); B.bac.arrSaisie(71, 'manquante', '1'); await B.bac.arrValider();
+    test('base : « valorisation_modifiee » → message clair, données relues (taux 1,2), nouvel aperçu, saisies gardées',
+      B.toasts.some(t => /taux, frais, FOB ou revient modifiés depuis l'aperçu/.test(t.m)) && B.bac.ARR_ETAT.arrivages[0].taux_change === 1.2
+      && B.bac.ARR_ETAT.vue && B.bac.ARR_ETAT.vue.empreinte !== base0 && String(B.bac.ARR_ETAT.saisies[71].recue) === '29' && B.bac.ARR_ETAT.envoi === false, B.toasts);
+    // valeurs changées en mémoire sans nouvel affichage (ex. revients rechargés par l'inventaire) : aucun envoi, aperçu refait
+    B = nouveauBac({ repondre: repV() }); ouvrirV(B); B.bac.ARR_ETAT.revients['pr-a'].prix_revient_ht = 45; await B.bac.arrValider();
+    test('revient changé en mémoire après l\'affichage : rien n\'est envoyé, aperçu refait', !B.appels.some(a => a.url.includes('/rpc/') || a.url.includes('/arrivage_lignes?')) && B.toasts.some(t => /Aperçu actualisé/.test(t.m)));
+    // base : empreinte obligatoire, comparée APRÈS les verrous et AVANT toute écriture
+    const valE = sql.slice(sql.indexOf('create or replace function public.valider_reception_arrivage'), sql.indexOf('create or replace function public.recalculer_revient_arrivage'));
+    const iCmp = valE.indexOf('if p_empreinte is distinct from interne.l039_empreinte_valorisation(a.id, v_methode) then');
+    test('base : empreinte obligatoire (empreinte_requise), signature à 3 arguments, ancienne signature supprimée',
+      valE.includes('valider_reception_arrivage(p_arrivage_id bigint, p_lignes jsonb, p_empreinte text) returns json') && valE.includes("if coalesce(p_empreinte, '') = '' then return json_build_object('ok', false, 'erreur', 'empreinte_requise'); end if;")
+      && sql.includes('drop function if exists public.valider_reception_arrivage(bigint, jsonb);') && sql.includes('grant execute on function public.valider_reception_arrivage(bigint, jsonb, text) to anon;')
+      && !/valider_reception_arrivage\(bigint, jsonb\) (to|from)/.test(sql));
+    test('base : empreinte comparée APRÈS les verrous produits / produits_revient et AVANT le numéro d\'ordre et toute écriture',
+      iCmp > valE.indexOf('perform 1 from public.produits_revient where produit_id in') && iCmp < valE.indexOf('v_ordre := nextval(') && iCmp < valE.indexOf('update public.') && valE.includes("'erreur', 'valorisation_modifiee'"));
+    const empF = sql.slice(sql.indexOf('create or replace function interne.l039_empreinte_valorisation'), sql.indexOf('revoke all on function interne.l039_fmt'));
+    test('base : empreinte lue dans arrivages, arrivage_lignes et produits_revient (taux, frais, provisoire, FOB, revient chargé, revient actuel)',
+      ['a.taux_change', 'a.frais_import_ht', 'a.taux_provisoire', "'fob_unitaire', l.fob_unitaire", "'revient_unitaire_ht', l.revient_unitaire_ht", "'revient_avant', r.prix_revient_ht", "'revient_avant_provisoire', r.provisoire", "'quantite_attendue', l.quantite_attendue"].every(k => empF.includes(k)));
+    test('base : auto-contrôle EXÉCUTÉ de l\'empreinte (texte attendu, taux et frais changés, échelle fixe)', ['empreinte de valorisation', 'empreinte : taux changé', 'empreinte : frais changés', 'nombre à échelle fixe'].every(c => auto10.includes("f := '" + c + "'")));
+  }
+
   console.log('\n9. VERSION');
   const m = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(sw);
-  test('CACHE_VERSION augmentée (v7-5-144 ou plus)', !!m && Number(m[1]) >= 144, m && m[0]);
+  test('CACHE_VERSION augmentée (v7-5-147 ou plus)', !!m && Number(m[1]) >= 147, m && m[0]);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

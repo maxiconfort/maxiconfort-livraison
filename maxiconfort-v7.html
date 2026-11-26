@@ -4022,7 +4022,9 @@ function venDesigne(l, x) {
 function venProduitDeLigne(l, liste) {
   if (!l) return null;
   var parId = l.produitId ? ((liste || []).find(function(x) { return x.id === l.produitId; }) || null) : null;
-  if (parId && venDesigne(l, parId)) return parId;
+  // v7.5.147 (revue Codex PR 26 sur 17f631a) : une seule concordance ne suffit plus — identifiant et nom d'un produit VENDABLE mais
+  // sku / référence / _ugs d'un produit NON VENDABLE = ligne contradictoire, rapportée au produit non vendable (interne.l039_ligne_identifiee).
+  if (parId && venDesigne(l, parId) && !venEst(parId, liste)) return parId;
   var cands = (liste || []).filter(function(x) { return !venEst(x, liste) && venDesigne(l, x); })
     .sort(function(a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; });
   return cands[0] || parId;
@@ -4066,11 +4068,26 @@ function arrApercu(lignes, saisies, liste, revients, methode) {
       revientApres: arrNouveauRevient(methode || ARR_METHODE_VALORISATION, sAv, rAv, r, l.revient_unitaire_ht) };
   });
 }
-function arrCorpsValidation(arrivageId, lignes, saisies) {
+function arrCorpsValidation(arrivageId, lignes, saisies, empreinte) {
   return { p_arrivage_id: arrivageId, p_lignes: (lignes || []).map(function(l) {
     var s = (saisies || {})[l.id] || {};
     return { ligne_id: l.id, recue: arrEntier(s.recue), endommagee: arrEntier(s.endommagee), manquante: arrEntier(s.manquante) };
-  }) };
+  }), p_empreinte: empreinte || '' };
+}
+// v7.5.147 (revue Codex PR 26 sur 17f631a) — EMPREINTE des valeurs de valorisation VUES dans l'aperçu : méthode, taux, frais, taux
+// provisoire, et par ligne (triées par id) identifiant, produit, quantité attendue, FOB, revient chargé, revient actuel du produit et
+// son caractère provisoire. Nombres à échelle FIXE (taux 6, frais 2, FOB et revients 4 décimales), vide si absent. MÊME texte que
+// interne.l039_empreinte (migration 039) : la base la recalcule après ses verrous et refuse la réception si elle diffère
+// (« valorisation_modifiee ») → nouvel aperçu et nouvelle confirmation. Le stock courant n'y entre pas (il bouge à chaque vente).
+function arrFmt(v, d) { return (v == null || v === '' || isNaN(parseFloat(v))) ? '' : parseFloat(v).toFixed(d); }
+function arrEmpreinte(a, lignes, revients, methode) {
+  if (!a) return '';
+  var ls = (lignes || []).slice().sort(function(x, y) { return x.id - y.id; });
+  return ['v1', methode || '', arrFmt(a.taux_change, 6), arrFmt(a.frais_import_ht, 2), a.taux_provisoire ? 't' : 'f'].concat(ls.map(function(l) {
+    var rv = (revients || {})[l.produit_id];
+    return [l.id, l.produit_id == null ? '' : l.produit_id, l.quantite_attendue == null ? '' : l.quantite_attendue, arrFmt(l.fob_unitaire, 4), arrFmt(l.revient_unitaire_ht, 4),
+      rv ? arrFmt(rv.prix_revient_ht, 4) : '', rv && rv.provisoire != null ? (rv.provisoire ? 't' : 'f') : ''].join(':');
+  })).join('|');
 }
 // Revient HT d'un LOT tel que la BASE le calcule à la réception (revue Codex PR 26 sur 66def07, interne.l039_revient_lot) :
 // FOB × taux de change + frais d'import répartis sur les quantités attendues, arrondi à 4 décimales. null = incalculable
@@ -4106,7 +4123,7 @@ function arrEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, funct
 function arrRevientTexte(v) { return (v == null || isNaN(parseFloat(v))) ? '—' : paiEur(v); }
 
 // ── Données et écran (administrateur) ──
-var ARR_ETAT = { arrivages: [], lignes: [], revients: {}, entrant: {}, ouvert: null, saisies: {}, envoi: false, erreur: '' };
+var ARR_ETAT = { arrivages: [], lignes: [], revients: {}, entrant: {}, ouvert: null, saisies: {}, envoi: false, erreur: '', vue: null };
 function arrEntetes() { return { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }; }
 async function arrChargerRevients() {
   if (role !== 'admin') { ARR_ETAT.revients = {}; return; }
@@ -4190,6 +4207,7 @@ function arrRendre() {
   var el = document.getElementById('arr-contenu'); if (!el) return;
   if (ARR_ETAT.erreur) { el.innerHTML = '<div class="card" style="padding:18px;color:var(--rd)">' + arrEsc(ARR_ETAT.erreur) + '</div>'; return; }
   var a = ARR_ETAT.ouvert != null ? ARR_ETAT.arrivages.find(function(x) { return x.id === ARR_ETAT.ouvert; }) : null;
+  ARR_ETAT.vue = null;
   if (!a) {
     el.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px;flex-wrap:wrap">' +
       '<div style="font-size:13px;color:var(--t2)">Méthode de valorisation du stock : <strong>' + arrEsc(ARR_METHODES[ARR_METHODE_VALORISATION] || ARR_METHODE_VALORISATION) + '</strong></div>' +
@@ -4209,6 +4227,8 @@ function arrRendre() {
   }
   var ls = arrLignesValorisees(a, arrLignesDe(a.id)), attente = arrPeutValider(a);
   var ap = arrApercu(ls, ARR_ETAT.saisies, produits, ARR_ETAT.revients, ARR_METHODE_VALORISATION);
+  // v7.5.147 : empreinte des valeurs de valorisation de CET aperçu (envoyée à la validation, contrôlée par la base)
+  if (attente) ARR_ETAT.vue = { id: a.id, empreinte: arrEmpreinte(a, arrLignesDe(a.id), ARR_ETAT.revients, ARR_METHODE_VALORISATION) };
   var champ = function(l, k) {
     var v = (ARR_ETAT.saisies[l.id] || {})[k];
     if (!attente) return '<td style="text-align:center;font-weight:700">' + (v == null ? '—' : arrEsc(v)) + '</td>';
@@ -4270,6 +4290,11 @@ async function arrValider() {
   if (!arrPeutValider(a)) { toast('Cet arrivage a déjà été traité', 'err'); return; }
   var ls = arrLignesDe(a.id), c = arrControleSaisies(ls, ARR_ETAT.saisies);
   if (!c.ok) { toast('Contrôle à corriger avant de valider', 'err'); arrMajControle(); return; }
+  // v7.5.147 : on ne valide que l'aperçu AFFICHÉ (empreinte posée par arrRendre pour cet arrivage) ; sinon, nouvel affichage
+  var vue = ARR_ETAT.vue;
+  if (!vue || vue.id !== a.id || vue.empreinte !== arrEmpreinte(a, ls, ARR_ETAT.revients, ARR_METHODE_VALORISATION)) {
+    toast('Aperçu actualisé : vérifiez-le puis validez de nouveau', 'err'); arrRendre(); return;
+  }
   var t = c.total;
   if (!confirm('Valider la réception de ' + a.reference_interne + ' ?\n\n• ' + t.recue + ' article(s) en bon état AJOUTÉS au stock\n• ' + t.endommagee + ' endommagé(s) : NON ajoutés\n• ' + t.manquante + ' manquant(s)\n\nPrix de revient recalculé (' + (ARR_METHODES[ARR_METHODE_VALORISATION] || ARR_METHODE_VALORISATION) + ').\nCette validation est DÉFINITIVE (une seule fois).')) return;
   ARR_ETAT.envoi = true; arrMajControle();
@@ -4285,15 +4310,30 @@ async function arrValider() {
     toast('Réception NON validée : les lignes de l\'arrivage ont changé — vérifiez la saisie puis validez de nouveau', 'err');
     arrOuvrir(a.id); return;
   }
+  // v7.5.147 (revue Codex PR 26 sur 17f631a) : FOB ou revient chargé modifié entre l'aperçu et la validation → rien n'est envoyé ;
+  // les saisies sont gardées, l'aperçu est recalculé et une NOUVELLE confirmation est exigée. Taux, frais et revient actuel des
+  // produits sont contrôlés par la base (empreinte comparée après ses verrous).
+  if (arrEmpreinte(a, relu.rows, ARR_ETAT.revients, ARR_METHODE_VALORISATION) !== vue.empreinte) {
+    ARR_ETAT.envoi = false;
+    ARR_ETAT.lignes = ARR_ETAT.lignes.filter(function(l) { return l.arrivage_id !== a.id; }).concat(relu.rows);
+    toast('Réception NON validée : FOB ou revient de l\'arrivage modifié — vérifiez le nouvel aperçu puis validez de nouveau', 'err');
+    arrRendre(); return;
+  }
   var j = null, http = 0;
   try {
     var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/valider_reception_arrivage', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()),
-      body: JSON.stringify(arrCorpsValidation(a.id, ls, ARR_ETAT.saisies)) });
+      body: JSON.stringify(arrCorpsValidation(a.id, ls, ARR_ETAT.saisies, vue.empreinte)) });
     http = r.status; try { j = await r.json(); } catch(e) {}
   } catch(e) { j = { ok: false, erreur: 'pas de connexion' }; }
   if (!j || j.ok !== true) {
     ARR_ETAT.envoi = false;
     var msg = (j && (j.erreur || j.message)) || ('HTTP ' + http);
+    // v7.5.147 : valeurs de valorisation changées dans la base (taux, frais, FOB, revient actuel…) : rien n'a été écrit ; données
+    // relues, saisies gardées, NOUVEL aperçu à vérifier et à confirmer
+    if (j && j.erreur === 'valorisation_modifiee') {
+      toast('Réception NON validée : taux, frais, FOB ou revient modifiés depuis l\'aperçu — vérifiez le nouvel aperçu puis validez de nouveau', 'err');
+      await arrCharger(); arrRendre(); return;
+    }
     toast('Réception NON validée : ' + msg, 'err');
     if (j && j.erreur === 'arrivage_deja_traite') { await arrCharger(); arrRendre(); return; }
     arrMajControle(); return;
