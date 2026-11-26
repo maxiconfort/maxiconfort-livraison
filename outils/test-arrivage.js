@@ -165,6 +165,20 @@ function nouveauBac(opts) {
   test('ensemble dont un composant est non vendable : pas proposé', !opts.includes('value="pr-e2"'));
   test('les produits vendables restent proposés (A, B, sommier, ensemble A)', ['pr-a', 'pr-b', 'pr-s', 'pr-e1'].every(id => opts.includes('value="' + id + '"')));
   test('venEst : ensemble avec composant non vendable = non vendable', bac.venEst(bac.produits.find(p => p.id === 'pr-e2'), bac.produits) === false && bac.venEst(bac.produits.find(p => p.id === 'pr-e1'), bac.produits) === true);
+  // v7.5.152 (revue Codex PR 26 sur 2ce2dad) : composant identifié mais introuvable (ou inactif) = ensemble non vendable, comme la base
+  {
+    const ens = (composants) => ({ id: 'pr-ex', nom: 'Ensemble Fictif X', cat: 'Ensemble', prix: 210, stock: 0, seuil: 2, composants });
+    const cat = bac.produits.concat([{ id: 'pr-inactif', nom: 'Sommier Inactif (fictif)', cat: 'Sommier', prix: 70, stock: 0, seuil: 2, actif: false }]);
+    test('venEst : composant identifié mais INTROUVABLE dans le catalogue → ensemble non vendable', bac.venEst(ens([{ id: 'pr-a', qte: 1 }, { id: 'pr-disparu', qte: 1 }]), cat) === false);
+    test('venEst : composant INACTIF (absent du catalogue chargé, ou actif = false) → ensemble non vendable', bac.venEst(ens([{ id: 'pr-a', qte: 1 }, { id: 'pr-inactif', qte: 1 }]), cat) === false);
+    test('venEst : composant sans identifiant ignoré (comme la base) ; composants tous présents et vendables → vendable', bac.venEst(ens([{ id: 'pr-a', qte: 1 }, { qte: 1 }, { id: '', qte: 1 }]), cat) === true && bac.venEst(ens([{ id: 'pr-a' }, { id: 'pr-s' }]), cat) === true);
+    test('venEst : catalogue vide (pas encore chargé) → un ensemble n\'est pas proposé', bac.venEst(ens([{ id: 'pr-a', qte: 1 }]), []) === false);
+    const avant = bac.produits; bac.produits = cat.concat([ens([{ id: 'pr-a', qte: 1 }, { id: 'pr-disparu', qte: 1 }])]);
+    test('nouvelle commande : l\'ensemble au composant introuvable n\'est plus proposé', !bac.buildProduitOptions().includes('value="pr-ex"'));
+    bac.produits = avant;
+    test('base : composant introuvable = non vendable (q.id is null), composant sans identifiant ignoré',
+      /interne\.produit_non_vendable[\s\S]{0,900}left join public\.produits q on q\.id = c ->> 'id'[\s\S]{0,200}coalesce\(c ->> 'id', ''\) <> ''[\s\S]{0,120}q\.id is null/.test(sql));
+  }
   test('enregistrement d\'une commande : ligne nouvelle avec produit non vendable refusée', JSON.stringify(bac.venLignesRefusees([{ produitId: 'pr-a' }, { produitId: 'pr-n' }], bac.produits, null)) === JSON.stringify(['Matelas Nouveau N (fictif)']));
   test('commande déjà prise qui le contenait : reste modifiable (ligne figée)', bac.venLignesRefusees([{ produitId: 'pr-retire' }], bac.produits, { lignes: [{ produitId: 'pr-retire' }] }).length === 0);
   test('produit hors catalogue (commande du site) : comportement inchangé', bac.venLignesRefusees([{ produitId: '_custom_X' }], bac.produits, null).length === 0);
@@ -708,6 +722,20 @@ function nouveauBac(opts) {
       bac.venSignature({ qte: 0, prixUnit: '10', remiseType: 'pct' }) === bac.venSignature({ prixUnit: 10, remiseType: 'pct' })
       && bac.venSignature({ prixUnit: 'abc' }) === bac.venSignature({ prixUnit: null }) && bac.venSignature({ qte: 2 }) !== bac.venSignature({ qte: 1 })
       && sqlS.includes("'qte', coalesce(nullif(interne.l039_nombre(e -> 'qte'), 0), 1)"));
+    // v7.5.152 (P2 Codex PR 26 sur 2ce2dad) : montants comparés au centime, des deux côtés
+    test('appli lignes figées : montants au centime (59.699999999999996 = 59.7 ; 59.71 ≠ 59.7 ; 1.005 → 1.01 ; texte non numérique → null)',
+      bac.venSignature({ qte: 3, prixUnit: 19.9, prixBrut: 3 * 19.9, sousTotal: 3 * 19.9 }) === bac.venSignature({ qte: 3, prixUnit: 19.9, prixBrut: 59.7, sousTotal: 59.7 })
+      && bac.venSignature({ prixBrut: 59.71 }) !== bac.venSignature({ prixBrut: 59.7 }) && bac.venCentimes(1.005) === 1.01 && bac.venCentimes(-2.345) === -2.35
+      && bac.venCentimes('abc') === null && bac.venCentimes(null) === null);
+    test('appli lignes figées : commande importée 3 × 19,90 (59.7) puis ligne recalculée (59.699999999999996) → acceptée ; quantité changée → refusée',
+      bac.venLignesRefusees([{ produitId: 'pr-n', produit: 'Matelas Nouveau N (fictif)', qte: 3, prixUnit: 19.9, prixBrut: 3 * 19.9, remiseLigne: 0, remiseVal: 0, remiseType: 'pct', sousTotal: 3 * 19.9 }], cat,
+        { lignes: [{ produitId: 'pr-n', produit: 'Matelas Nouveau N (fictif)', qte: 3, prixUnit: 19.9, prixBrut: 59.7, remiseLigne: 0, remiseVal: 0, remiseType: 'pct', sousTotal: 59.7 }] }).length === 0
+      && bac.venLignesRefusees([{ produitId: 'pr-n', qte: 4, prixUnit: 19.9, prixBrut: 4 * 19.9, sousTotal: 4 * 19.9 }], cat,
+        { lignes: [{ produitId: 'pr-n', qte: 3, prixUnit: 19.9, prixBrut: 59.7, sousTotal: 59.7 }] }).length === 1);
+    test('base : signature des lignes au centime (interne.l039_centimes = round(…, 2) pour prix, remises, sous-total) + auto-contrôle 59.7',
+      sqlS.includes('select round(interne.l039_nombre(p), 2)')
+      && ['prixUnit', 'prixBrut', 'remiseLigne', 'remiseVal', 'sousTotal'].every(k => sqlS.includes("'" + k + "', interne.l039_centimes(e -> '" + k + "')"))
+      && sqlS.includes('"prixBrut":59.699999999999996') && sqlS.includes("f := 'arrondi au centime'") && sqlS.includes("f := 'un centime d''écart'"));
 
     // --- 4. catalogue WhatsApp sans plafond ---
     const rows250 = [];
@@ -780,7 +808,7 @@ function nouveauBac(opts) {
 
   console.log('\n9. VERSION');
   const m = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(sw);
-  test('CACHE_VERSION augmentée (v7-5-150 ou plus)', !!m && Number(m[1]) >= 150, m && m[0]);
+  test('CACHE_VERSION augmentée (v7-5-152 ou plus)', !!m && Number(m[1]) >= 152, m && m[0]);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
