@@ -8217,6 +8217,11 @@ var CMDF_CLE = 'mx_cmd_filtres_v1';
 var CMDF_DEFAUT = { du: '', au: '', champ: 'livraison', tri: '', sens: 'desc', ouvert: false };
 var CMDF_FILTRES = ['cmd-filter-transporteur', 'cmd-filter-origine', 'cmd-filter-ville', 'cmd-filter-produit', 'cmd-filter-paiement'];
 var cmdfEtat = null;
+// v7.5.194 (revue Codex PR 28 sur 096b938) : période MÉMORISÉE mise de côté pendant une vue JARVIS ({ du, au }), sinon null.
+// Tant qu'elle est posée, toute écriture des réglages (tri, panneau « Filtres », date de prise / livraison) garde CETTE période dans
+// localStorage : la période vidée à l'écran pour JARVIS n'est jamais enregistrée. Seul un choix EXPLICITE de période (Du / Au,
+// « Effacer ») la remplace. Au prochain chargement de la page, la période mémorisée revient d'elle-même.
+var cmdfPeriodeMemo = null;
 function cmdfDateOk(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s); }
 // Réglages relus (ou reçus) → toujours un état valide ; toute valeur inattendue retombe sur le défaut.
 function cmdfNormaliser(o) {
@@ -8233,7 +8238,13 @@ function cmdfNormaliser(o) {
   return e;
 }
 function cmdfLire() { try { var s = localStorage.getItem(CMDF_CLE); return cmdfNormaliser(s ? JSON.parse(s) : null); } catch (e) { return cmdfNormaliser(null); } }
-function cmdfEcrire(e) { try { localStorage.setItem(CMDF_CLE, JSON.stringify(cmdfNormaliser(e))); } catch (x) {} }
+// Réglages à enregistrer : ceux de l'écran, sauf la période mise de côté pour JARVIS (cmdfPeriodeMemo), remise telle quelle.
+function cmdfAEnregistrer(e) {
+  var n = cmdfNormaliser(e);
+  if (cmdfPeriodeMemo) { n.du = cmdfPeriodeMemo.du; n.au = cmdfPeriodeMemo.au; n = cmdfNormaliser(n); }
+  return n;
+}
+function cmdfEcrire(e) { try { localStorage.setItem(CMDF_CLE, JSON.stringify(cmdfAEnregistrer(e))); } catch (x) {} }
 function cmdfJour(v) { return v ? String(v).split('T')[0] : ''; }
 // Date de la commande utilisée par la période et le tri : prise = dateCmd, livraison = date.
 function cmdfDateDe(c, champ) { return cmdfJour(champ === 'prise' ? c.dateCmd : c.date); }
@@ -8324,14 +8335,21 @@ function cmdfPeriodeChange() {
   var e = cmdfEtatCourant();
   e.du = (document.getElementById('cmdf-du') || {}).value || '';
   e.au = (document.getElementById('cmdf-au') || {}).value || '';
+  cmdfPeriodeMemo = null; // v7.5.194 : choix EXPLICITE de période → c'est lui qui est mémorisé
   cmdfEtat = cmdfNormaliser(e); cmdfEcrire(cmdfEtat); cmdAppliquerFiltres();
 }
 function cmdfChamp(v) { var e = cmdfEtatCourant(); e.champ = v; cmdfEtat = cmdfNormaliser(e); cmdfEcrire(cmdfEtat); cmdAppliquerFiltres(); }
 function cmdfTrierPar(col) { cmdfEtat = cmdfClicTri(cmdfEtatCourant(), col); cmdfEcrire(cmdfEtat); cmdAppliquerFiltres(); }
 // Bouton « Effacer » : la période est remise à zéro (et mémorisée vide) ; le tri et l'état du panneau sont des préférences, gardés.
-function cmdfEffacerPeriode() { var e = cmdfEtatCourant(); e.du = ''; e.au = ''; e.champ = CMDF_DEFAUT.champ; cmdfEtat = cmdfNormaliser(e); cmdfEcrire(cmdfEtat); }
+function cmdfEffacerPeriode() { var e = cmdfEtatCourant(); e.du = ''; e.au = ''; e.champ = CMDF_DEFAUT.champ; cmdfPeriodeMemo = null; cmdfEtat = cmdfNormaliser(e); cmdfEcrire(cmdfEtat); }
 // Vue JARVIS (#jarvis=commandes…) : montre EXACTEMENT ce qui est demandé → période ignorée pour cette vue, sans toucher au choix mémorisé.
-function cmdfViderPeriode() { var e = cmdfEtatCourant(); e.du = ''; e.au = ''; }
+// v7.5.194 (revue Codex PR 28 sur 096b938) : la période mémorisée est mise de côté (cmdfPeriodeMemo) AVANT d'être vidée à l'écran ;
+// un clic ultérieur sur le tri ou sur « Filtres » l'enregistre donc intacte. Plusieurs vues JARVIS d'affilée gardent la première.
+function cmdfViderPeriode() {
+  var e = cmdfEtatCourant();
+  if (!cmdfPeriodeMemo) cmdfPeriodeMemo = { du: e.du, au: e.au };
+  e.du = ''; e.au = '';
+}
 // CMDF-FIN
 
 function cmdFiltreRapide(preset) {
