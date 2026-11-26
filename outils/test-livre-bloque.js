@@ -1,4 +1,4 @@
-// Banc de test du correctif v7.5.191 / v7.5.192 / v7.5.193 / v7.5.194 / v7.5.195 / v7.5.196 (26/11/2026) : le « livré » du livreur ne remontait plus depuis le 24/11.
+// Banc de test du correctif v7.5.191 / v7.5.192 / v7.5.193 / v7.5.194 / v7.5.195 / v7.5.196 / v7.5.197 (26/11/2026) : le « livré » du livreur ne remontait plus depuis le 24/11.
 // Usage : node outils/test-livre-bloque.js
 // Il EXTRAIT le vrai code de maxiconfort-v7.html (file d'attente hors ligne, sbSaveProduit, validerSig, contrôle
 // admin des livraisons non remontées) et l'exécute dans un bac à sable : aucune connexion à la base, aucune
@@ -24,7 +24,8 @@ const CODE_REJEU = extraireBloc('// v7.5.191 : un seul rejeu à la fois', '// D�
 const CODE_PRODUIT = extraireBloc('// v7.5.191 : refus de la base sur un produit', 'async function sbDeleteProduit');
 const CODE_CONTROLE = extraireBloc('// v7.5.191 (bug du 24/11) : contrôle ADMIN', 'var _pollingInterval');
 const CODE_SIG = extraireFonction('function validerSig()');
-const CODE_STK = extraireBloc('// v7.5.192 : lance un enregistrement asynchrone', '// v7.5.79 : "Actualiser"');
+// v7.5.197 : la déduction du stock d'une livraison (stkDemanderDeduction, stkDeductionEnvoyer, stkReprendreDeductions)
+// fait partie de CODE_FILE ; l'ancien calcul sur le téléphone (stkDeduireStock) est supprimé.
 const CODE_CMD = extraireFonction('async function sbSaveCommande(cmd, oqCtx)'); // v7.5.196
 
 function fauxElement(id) { return { id, value: '', checked: true, style: {}, dataset: {}, innerHTML: '', textContent: '', classList: { add() {}, remove() {}, contains() { return false; } } }; }
@@ -67,6 +68,33 @@ function nouveauBac({ role = 'livreur', fileStockee = null, stockage = {}, repon
 let ok = 0, ko = 0;
 const test = (nom, cond, det) => { if (cond) { ok++; console.log('  OK    ' + nom); } else { ko++; console.log('  ÉCHEC ' + nom + (det !== undefined ? ' — ' + JSON.stringify(det) : '')); } };
 const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'matelas', dim: '140x190', prix: 100, stock, seuil: 2 });
+// v7.5.197 : base simulée de la fonction public.deduire_stock_livraison (migration 040) — même contrat : idempotente par
+// stock_deduit, refus « commande_non_livree » / « commande_introuvable », réponse { ok, deja, retraits, manques }.
+// b.absente → 404 PGRST202 (migration pas appliquée) ; b.panne → coupure AVANT la base ; b.perdre = n → l'effet est fait
+// en base puis la réponse est perdue (n fois) ; b.http = code → réponse HTTP d'erreur.
+function baseRpc(cmds, stock) {
+  const b = { cmds, stock, appels: 0, deductions: 0, absente: false, perdre: 0, panne: false, http: 0 };
+  b.reponse = (url, opt) => {
+    if (!/\/rest\/v1\/rpc\/deduire_stock_livraison$/.test(url)) return null;
+    b.appels++;
+    if (b.panne) return 'reseau';
+    if (b.absente) return { status: 404, texte: JSON.stringify({ code: 'PGRST202', message: 'Could not find the function public.deduire_stock_livraison' }) };
+    if (b.http) return { status: b.http, texte: '{}' };
+    const id = JSON.parse(opt.body).p_cmd_id, c = b.cmds[id];
+    let rep;
+    if (!c) rep = { ok: false, erreur: 'commande_introuvable' };
+    else if (c.stock_deduit) rep = { ok: true, deja: true, stock_deduit: true, retraits: [], manques: [] };
+    else if (c.statut !== 'livré') rep = { ok: false, erreur: 'commande_non_livree', statut: c.statut };
+    else {
+      const retraits = (c.lignes || []).map(l => { const av = b.stock[l.p]; b.stock[l.p] = Math.max(0, av - l.q); return { produit_id: l.p, nom: l.p, qte: av - b.stock[l.p], demande: l.q, stock_avant: av, stock_apres: b.stock[l.p] }; });
+      c.stock_deduit = true; b.deductions++; rep = { ok: true, deja: false, stock_deduit: true, retraits, manques: [] };
+    }
+    if (b.perdre > 0) { b.perdre--; return 'reseau'; } // effet fait en base, réponse perdue
+    return { status: 200, texte: JSON.stringify(rep) };
+  };
+  return b;
+}
+const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.test(e.url));
 
 (async () => {
   console.log('\n1. LE REJEU NE BOUCLE PLUS QUAND UN PRODUIT ÉCHOUE');
@@ -182,16 +210,13 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     test('panne durable : 1 élément en file, 4 envois au total (1 + 3 rejeux)', bac.offlineQueue.length === 1 && bac._envois.length === 4, [bac.offlineQueue.length, bac._envois.length]);
   }
   {
-    // déduction de stock du livreur : 504 pendant la livraison → la valeur déduite reste en file pour le rejeu
+    // v7.5.197 : déduction de stock d'une livraison : 504 → la DEMANDE (sans quantité) reste en file pour le rejeu
     const bac = nouveauBac({ role: 'livreur', reponse: () => ({ status: 504 }) });
-    Object.assign(bac, { produits: [PROD('p1', 5, 'Matelas D')], stkMouvements: [], finRender() {}, stkRender() {} });
-    bac.stkTrouverProduit = () => bac.produits[0];
-    bac.commandes = [{ id: '#D1', produit: 'Matelas D', qte: 2, client: 'Client Test' }];
-    vm.runInContext(CODE_STK, bac);
-    bac.stkDeduireStock('#D1');
-    for (let k = 0; k < 5; k++) await new Promise(r => setImmediate(r));
-    const it = bac.offlineQueue.find(i => i.type === 'produit');
-    test('stkDeduireStock + 504 : la nouvelle valeur (3) reste en file pour le rejeu', it && it.data.stock === 3, bac.offlineQueue);
+    Object.assign(bac, { produits: [PROD('p1', 5, 'Matelas D')], stkMouvements: [] });
+    bac.commandes = [{ id: '#D1', produit: 'Matelas D', qte: 2, client: 'Client Test', statut: 'livré' }];
+    const r = await bac.stkDemanderDeduction(bac.commandes[0]);
+    const it = bac.offlineQueue.find(i => i.type === 'deduction');
+    test('déduction + 504 : demande « deduction|#D1 » gardée en file, aucun stock calculé ni envoyé', r === 'reessayer' && it && it.data.id === '#D1' && !('stock' in it.data) && bac.produits[0].stock === 5 && !bac._envois.some(e => /produits/.test(e.url)), [r, bac.offlineQueue]);
   }
 
   console.log('\n4. (B, C) ANCIENS ÉLÉMENTS PRODUIT : TRI SELON LE RÔLE, RÉCAPITULATIF DURABLE');
@@ -315,7 +340,8 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
       brevoSendSMS: async () => false, societe: { tel: '' }, paiTraceEncaissement: () => '',
       sbSaveTournee(t) { ordre.push('tournee'); },
       sbSaveCommande: async (c) => { ordre.push('commande:' + c.statut); },
-      stkDeduireStock(id) { ordre.push('stock'); if (deduction === 'leve') throw new Error('produit introuvable'); if (deduction === 'rejette') return Promise.reject(new Error('déduction rejetée')); },
+      // v7.5.197 : faux stkDemanderDeduction (la vraie fonction est testée plus bas et en sections 8, 16, 23, 28)
+      stkDemanderDeduction(c) { ordre.push('stock'); if (deduction === 'leve') throw new Error('produit introuvable'); if (deduction === 'rejette') return Promise.reject(new Error('déduction rejetée')); },
     });
     vm.runInContext('var sigStopId=null, sigPaieEncaisse=false, sigPaieMode="Espèces", sigPrepaidMode=null, sigCmdMarketplace=null, sigCodActif=false, sigCodChoix=null, sigCodMontant=0;', bac);
     vm.runInContext(CODE_SIG, bac);
@@ -348,23 +374,20 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     test('déduction juste après la fin de l\'enregistrement', ordre.indexOf('commande:fin') < ordre.indexOf('stock'), ordre);
   }
   {
-    // VRAIE fonction stkDeduireStock, dont les enregistrements asynchrones (produit, commande) rejettent
+    // VRAIE demande de déduction (v7.5.197), base injoignable, et une sauvegarde de commande qui rejette
     const { bac, ordre } = bacSignature('normal');
     let nCmd = 0;
-    Object.assign(bac, { produits: [PROD('p1', 5, 'Matelas S')], stkMouvements: [], finRender() {}, stkRender() {} });
-    bac.stkTrouverProduit = () => bac.produits[0];
-    vm.runInContext(CODE_STK, bac); // remplace le faux stkDeduireStock par le vrai
-    bac.sbSaveProduit = async () => { ordre.push('produit:rejet'); throw new Error('panne produit'); };
-    bac.sbSaveCommande = async (c) => { nCmd++; ordre.push('commande:' + c.statut + (nCmd > 1 ? ':rejet' : '')); if (nCmd > 1) throw new Error('panne commande'); };
+    Object.assign(bac, { produits: [PROD('p1', 5, 'Matelas S')], stkMouvements: [] });
+    vm.runInContext(CODE_FILE.slice(CODE_FILE.indexOf('// v7.5.197 (décision de Borhen')), bac); // remplace le faux par la vraie fonction
+    bac.fetch = async () => { ordre.push('rpc:coupure'); throw new Error('Failed to fetch'); };
+    bac.sbSaveCommande = async (c) => { nCmd++; ordre.push('commande:' + c.statut); if (nCmd > 1) throw new Error('panne commande'); };
     bac.commandes[0].produit = 'Matelas S';
     let erreur = null;
     try { bac.validerSig(); } catch (e) { erreur = e; }
     for (let k = 0; k < 10; k++) await new Promise(r => setImmediate(r));
-    test('vraie déduction, enregistrements qui rejettent : validerSig ne lève pas', erreur === null, erreur && erreur.message);
-    // v7.5.196 (réserve Codex 2 sur a84fa19) : sauvegarde produit en échec (exception) → stock_deduit N'EST PAS enregistré
-    test('vraie déduction : commande enregistrée « livré » d\'abord, puis stock (rejeté) traité, stock_deduit non enregistré', ordre[0] === 'commande:livré' && ordre.includes('produit:rejet') && !ordre.includes('commande:livré:rejet') && !bac.commandes[0].stockDeduit, ordre);
-    test('vraie déduction en échec : notification « Déduction de stock en échec : #T10 — stock à vérifier »', bac._notifs.some(n => n[2] === 'Déduction de stock en échec : #T10 — stock à vérifier'), bac._notifs.map(n => n[2]));
-    test('vraie déduction : stock local déduit (5 → 4) et commande toujours « livré »', bac.produits[0].stock === 4 && bac.commandes[0].statut === 'livré', [bac.produits[0].stock, bac.commandes[0].statut]);
+    test('vraie demande, base injoignable : validerSig ne lève pas', erreur === null, erreur && erreur.message);
+    test('vraie demande : commande enregistrée « livré » d\'abord, puis UNE demande à la base, aucune 2e sauvegarde de commande', ordre[0] === 'commande:livré' && ordre.filter(x => x === 'rpc:coupure').length === 1 && nCmd === 1, ordre);
+    test('vraie demande en échec : gardée en file (deduction|#T10), stock_deduit faux, stock local NON touché (5)', bac.offlineQueue.some(i => i.type === 'deduction' && i.data.id === '#T10') && !bac.commandes[0].stockDeduit && bac.produits[0].stock === 5 && bac.commandes[0].statut === 'livré', bac.offlineQueue.map(i => i.type));
   }
   await new Promise(r => setTimeout(r, 20));
   test('aucun rejet de promesse non traité pendant toute la section 5', rejetsNonTraites.length === 0, rejetsNonTraites);
@@ -429,23 +452,33 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
   }
 
   console.log('\n8. (P2, v7.5.193) LE « LIVRÉ » VALIDÉ N\'EST JAMAIS ANNULÉ PAR UNE RELÈVE PÉRIMÉE');
+  // v7.5.197 : vraie demande de déduction à la base simulée (baseRpc) ; la sauvegarde du « livré » met la commande
+  // « livré » dans la base simulée
   function bacLivraison() {
     const { bac } = bacSignature('normal');
-    Object.assign(bac, { produits: [PROD('p1', 5, 'Matelas P')], stkMouvements: [], finRender() {}, stkRender() {} });
-    bac.stkTrouverProduit = () => bac.produits[0];
-    vm.runInContext(CODE_STK, bac); // vraie fonction stkDeduireStock
-    bac.sbSaveProduit = async () => 'ok'; // v7.5.196 : la sauvegarde produit renvoie son résultat
+    Object.assign(bac, { produits: [PROD('p1', 5, 'Matelas P')], stkMouvements: [] });
+    vm.runInContext(CODE_FILE.slice(CODE_FILE.indexOf('// v7.5.197 (décision de Borhen')), bac); // vraie fonction
+    const b = baseRpc({ '#T10': { statut: 'en-route', stock_deduit: false, lignes: [{ p: 'p1', q: 1 }] } }, { p1: 5 });
+    let retenir = null;
+    bac.fetch = async (url, opt = {}) => {
+      bac._envois.push({ url, method: opt.method || 'GET', body: opt.body ? JSON.parse(opt.body) : null });
+      if (bac.retenirRpc) await new Promise(r => { retenir = r; });
+      const r = b.reponse(url, opt) || { status: 200 };
+      if (r === 'reseau') throw new Error('Failed to fetch');
+      return { ok: r.status >= 200 && r.status < 300, status: r.status, text: async () => r.texte || '', json: async () => [] };
+    };
     bac.commandes[0].produit = 'Matelas P'; bac.commandes[0].stockDeduit = false;
     const saves = []; let finir = null;
     bac.sbSaveCommande = (c) => { saves.push({ statut: c.statut, stockDeduit: !!c.stockDeduit, stpaie: c.stpaie, montantEnc: c.montantEnc });
-      if (saves.length === 1) return new Promise(r => { finir = r; }); return Promise.resolve(); };
-    return { bac, saves, finirPremier: () => finir && finir() };
+      const enBase = () => { b.cmds[c.id].statut = c.statut; if (c.stockDeduit) b.cmds[c.id].stock_deduit = true; };
+      if (saves.length === 1) return new Promise(r => { finir = () => { enBase(); r(); }; }); enBase(); return Promise.resolve(); };
+    return { bac, saves, b, finirPremier: () => finir && finir(), libererRpc: () => retenir && retenir() };
   }
   const ANCIEN = (min) => new Date(Date.now() - (min || 1) * 60000).toISOString();
   const perimee = (extra) => Object.assign({ id: '#T10', client: 'Client Test', prix: 100, statut: 'en-route', paie: 'Espèces', stpaie: 'Non payé', montantEnc: 0, stockDeduit: true, updatedAt: ANCIEN(1) }, extra || {});
   {
     // scénario exact de la revue : une relève lit l'ancien statut pendant le premier enregistrement
-    const { bac, saves, finirPremier } = bacLivraison();
+    const { bac, saves, b, finirPremier } = bacLivraison();
     bac.validerSig();
     await new Promise(r => setImmediate(r));
     const valide = bac.commandes[0];
@@ -453,11 +486,14 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     const changé = bac.cmdPollingAppliquer(perimee());
     test('relève périmée (en-route) pendant l\'enregistrement : refusée, la liste garde l\'objet validé', changé === false && bac.commandes[0] === valide && bac.commandes[0].statut === 'livré', [changé, bac.commandes[0].statut]);
     test('Realtime pendant l\'enregistrement : même une version « plus récente » est refusée (verrou)', bac.cmdDistanteAcceptable(valide, perimee({ updatedAt: new Date(Date.now() + 60000).toISOString() })) === false);
+    test('pendant le 1er enregistrement : aucune demande de déduction envoyée', rpcs(bac).length === 0);
     finirPremier();
     for (let k = 0; k < 10; k++) await new Promise(r => setImmediate(r));
-    test('2e sauvegarde = {livré, stockDeduit:true} (et non {en-route, stockDeduit:true})', saves.length === 2 && saves[1].statut === 'livré' && saves[1].stockDeduit === true, saves);
-    test('l\'encaissement est conservé dans la 2e sauvegarde (Payé, 100)', saves[1].stpaie === 'Payé' && saves[1].montantEnc === 100, saves[1]);
-    test('stock déduit une fois (5 → 4)', bac.produits[0].stock === 4, bac.produits[0].stock);
+    // v7.5.197 : plus de 2e sauvegarde de la commande : la base pose elle-même stock_deduit
+    test('après le « livré » : UNE demande rpc/deduire_stock_livraison { p_cmd_id: #T10 }, aucune 2e sauvegarde', rpcs(bac).length === 1 && rpcs(bac)[0].body.p_cmd_id === '#T10' && Object.keys(rpcs(bac)[0].body).join() === 'p_cmd_id' && saves.length === 1, [rpcs(bac).map(e => e.body), saves]);
+    test('l\'encaissement est dans la sauvegarde du « livré » (Payé, 100)', saves[0].stpaie === 'Payé' && saves[0].montantEnc === 100, saves[0]);
+    test('stock déduit une fois PAR LA BASE (5 → 4) ; stock affiché mis à jour depuis la réponse (4)', b.deductions === 1 && b.stock.p1 === 4 && bac.produits[0].stock === 4, [b.deductions, b.stock, bac.produits[0].stock]);
+    test('stock_deduit vrai sur l\'objet validé, demande retirée de la file', bac.commandes[0].stockDeduit === true && !bac.offlineQueue.some(i => i.type === 'deduction'));
     test('verrou relâché à la fin', !bac._livEnCours['#T10']);
     test('après la fin : relève périmée (updated_at antérieur au « livré ») toujours refusée', bac.cmdPollingAppliquer(perimee()) === false && bac.commandes[0].statut === 'livré');
     test('après la fin : version sans updated_at et non livrée refusée', bac.cmdPollingAppliquer(perimee({ updatedAt: '' })) === false && bac.commandes[0].statut === 'livré');
@@ -467,23 +503,15 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
   {
     // ceinture et bretelles : même si la liste a été remplacée pendant l'enregistrement, la déduction
     // travaille sur l'objet validé, et la liste le récupère à la fin
-    const { bac, saves, finirPremier } = bacLivraison();
+    const { bac, saves, b, finirPremier } = bacLivraison();
     bac.validerSig();
     await new Promise(r => setImmediate(r));
     const valide = bac.commandes[0];
     bac.commandes[0] = perimee(); bac.commandes[0].stockDeduit = false; // remplacement forcé (ancien comportement)
     finirPremier();
     for (let k = 0; k < 10; k++) await new Promise(r => setImmediate(r));
-    test('liste remplacée de force : la 2e sauvegarde reste {livré, stockDeduit:true}', saves.length === 2 && saves[1].statut === 'livré' && saves[1].stockDeduit === true, saves);
-    test('liste remplacée de force : l\'objet validé y est remis à la fin', bac.commandes[0] === valide && bac.commandes[0].statut === 'livré');
-  }
-  {
-    // témoin : l'ancien appel (recherche dans la liste) reproduisait bien le bug
-    const { bac, saves } = bacLivraison();
-    bac.commandes[0] = perimee({ stockDeduit: false });
-    bac.stkDeduireStock('#T10');
-    for (let k = 0; k < 5; k++) await new Promise(r => setImmediate(r)); // v7.5.196 : stock_deduit après la réponse produit
-    test('témoin : sans l\'objet validé, la déduction réenregistrait {en-route, stockDeduit:true}', saves.length === 1 && saves[0].statut === 'en-route' && saves[0].stockDeduit === true, saves);
+    test('liste remplacée de force : une seule sauvegarde {livré}, une seule déduction par la base', saves.length === 1 && saves[0].statut === 'livré' && b.deductions === 1, [saves, b.deductions]);
+    test('liste remplacée de force : l\'objet validé y est remis à la fin (stock_deduit vrai)', bac.commandes[0] === valide && bac.commandes[0].statut === 'livré' && valide.stockDeduit === true);
   }
   {
     // rechargement complet (sbLoadAll) : la version locale livrée est gardée si la version lue est périmée
@@ -719,42 +747,29 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     test('relance réussie APRÈS le refus d\'une version plus récente : la plus récente reste gardée (stock 7)', o.p1 && o.p1.data.stock === 7, o);
   }
 
-  console.log('\n16. (réserve 4, v7.5.194) LE VERROU DU « LIVRÉ » ATTEND AUSSI LES SAUVEGARDES PRODUIT');
+  console.log('\n16. (réserve 4, v7.5.194 ; v7.5.197) LE VERROU DU « LIVRÉ » ATTEND AUSSI LA RÉPONSE DE LA BASE À LA DÉDUCTION');
   {
-    const { bac, saves, finirPremier } = bacLivraison();
-    let finirProduit = null, produitFini = false;
-    bac.sbSaveProduit = () => new Promise(r => { finirProduit = () => { produitFini = true; r('ok'); }; });
+    const { bac, saves, b, finirPremier, libererRpc } = bacLivraison();
+    bac.retenirRpc = true;
     bac.validerSig();
     await new Promise(r => setImmediate(r));
     finirPremier();
     for (let k = 0; k < 10; k++) await new Promise(r => setImmediate(r));
-    // v7.5.196 (réserve Codex 2 sur a84fa19) : stock_deduit attend la réponse du produit
-    test('réponse produit retardée : seul le « livré » est enregistré, pas encore stock_deduit', saves.length === 1 && saves[0].statut === 'livré' && saves[0].stockDeduit === false, saves);
-    test('réponse produit retardée : le verrou du « livré » est TOUJOURS posé', !!bac._livEnCours['#T10'] && !produitFini);
+    test('réponse de la base retardée : seul le « livré » est enregistré, demande envoyée', saves.length === 1 && saves[0].statut === 'livré' && rpcs(bac).length === 1, [saves, rpcs(bac).length]);
+    test('réponse de la base retardée : le verrou du « livré » est TOUJOURS posé', !!bac._livEnCours['#T10'] && !bac.commandes[0].stockDeduit);
     test('pendant ce temps, une relève périmée reste refusée', bac.cmdPollingAppliquer(perimee({ updatedAt: new Date(Date.now() + 60000).toISOString() })) === false && bac.commandes[0].statut === 'livré');
-    finirProduit();
+    libererRpc();
     for (let k = 0; k < 10; k++) await new Promise(r => setImmediate(r));
-    test('réponse produit arrivée (ok) : stock_deduit enregistré ensuite, puis verrou relâché', saves.length === 2 && saves[1].stockDeduit === true && saves[1].statut === 'livré' && !bac._livEnCours['#T10'], saves);
+    test('réponse arrivée : stock_deduit vrai (posé par la base), stock affiché 4, verrou relâché', bac.commandes[0].stockDeduit === true && bac.produits[0].stock === 4 && b.deductions === 1 && !bac._livEnCours['#T10']);
   }
   {
     const { bac } = bacLivraison();
-    bac.sbSaveCommande = async () => {};
-    let fin = null; bac.sbSaveProduit = () => new Promise(r => { fin = r; });
-    let resolu = false;
-    bac.stkDeduireStock('#T10').then(() => { resolu = true; });
+    bac.fetch = async () => { throw new Error('Failed to fetch'); };
+    let resolu = null, rejete = false;
+    bac.commandes[0].statut = 'livré';
+    bac.stkDemanderDeduction(bac.commandes[0], Promise.reject(new Error('panne commande'))).then(r => { resolu = r; }, () => { rejete = true; });
     for (let k = 0; k < 5; k++) await new Promise(r => setImmediate(r));
-    test('stkDeduireStock : sa promesse attend la sauvegarde produit', resolu === false);
-    fin(); for (let k = 0; k < 5; k++) await new Promise(r => setImmediate(r));
-    test('stkDeduireStock : promesse tenue après la sauvegarde produit', resolu === true);
-  }
-  {
-    const { bac } = bacLivraison();
-    bac.sbSaveCommande = async () => {};
-    bac.sbSaveProduit = async () => { throw new Error('panne produit'); };
-    let resolu = false, rejete = false;
-    bac.stkDeduireStock('#T10').then(() => { resolu = true; }, () => { rejete = true; });
-    for (let k = 0; k < 5; k++) await new Promise(r => setImmediate(r));
-    test('sauvegarde produit en échec : la promesse est tenue (jamais rejetée)', resolu && !rejete);
+    test('stkDemanderDeduction : « livré » en échec puis base injoignable → promesse tenue (« reessayer »), jamais rejetée', resolu === 'reessayer' && !rejete, [resolu, rejete]);
   }
 
   console.log('\n17. (réserve 5, v7.5.194) COMMANDE ABSENTE LUE « LIVRÉE » : RELUE TOUTES LES 10 MIN');
@@ -965,64 +980,62 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     } }));
     return bac;
   }
-  function brancherStock(bac, produits, commandes) {
-    Object.assign(bac, { produits, stkMouvements: [], finRender() {}, stkRender() {} });
-    bac.stkTrouverProduit = (pid, nom) => bac.produits.find(p => p.id === pid || p.nom === nom) || null;
-    if (commandes) bac.commandes = commandes;
-    vm.runInContext(CODE_STK, bac);
+  // v7.5.197 : base simulée (baseRpc) branchée sur un bac complet ; sbSaveCommande met la commande à jour dans la base
+  function bacDeduction(cmdsBase, stockBase, opts) {
+    const b = baseRpc(cmdsBase, stockBase);
+    const bac = nouveauBac(Object.assign({ role: 'livreur' }, opts || {}, { reponse: (url, opt) => b.reponse(url, opt) || { status: 200 } }));
+    Object.assign(bac, { produits: Object.keys(stockBase).map(k => PROD(k, stockBase[k], 'Produit ' + k)), stkMouvements: [] });
+    bac.sbSaveCommande = async (c, ctx) => { if (b.cmds[c.id]) { b.cmds[c.id].statut = c.statut; if (c.stockDeduit) b.cmds[c.id].stock_deduit = true; } bac.oqSucces('commande', c, ctx && ctx.ts, null); };
+    return { bac, b };
   }
-  const dedDe = (st) => { try { return JSON.parse(st.mx_deductions_attente || '{}'); } catch (e) { return {}; } };
   const fileDe = (st) => { try { return JSON.parse(st.mx_offline_queue || '[]'); } catch (e) { return []; } };
-  const patchs = (bac) => bac._envois.filter(e => e.method === 'PATCH');
 
-  console.log('\n23. (P2 sur a84fa19, v7.5.196) FERMETURE PENDANT LA SAUVEGARDE DU « LIVRÉ » PUIS RECHARGEMENT : DÉDUCTION REPRISE UNE FOIS');
+  console.log('\n23. (v7.5.197) FERMETURE PENDANT LA SAUVEGARDE DU « LIVRÉ » OU PENDANT L\'ENVOI DE LA DEMANDE : REPRISE, UNE SEULE DÉDUCTION');
   let stockageFerme = null;
   {
     const { bac } = bacSignature('normal');
-    brancherStock(bac, [PROD('p1', 5, 'Matelas R')]);
+    vm.runInContext(CODE_FILE.slice(CODE_FILE.indexOf('// v7.5.197 (décision de Borhen')), bac);
+    Object.assign(bac, { produits: [PROD('p1', 5, 'Matelas R')], stkMouvements: [] });
     bac.commandes[0].produit = 'Matelas R'; bac.commandes[0].stockDeduit = false;
     let nSave = 0; bac.sbSaveCommande = () => { nSave++; return new Promise(() => {}); }; // l'envoi n'aboutit jamais : application fermée
     bac.validerSig(); await attendre();
-    const ded = dedDe(bac._stockage)['#T10'], wa = fileDe(bac._stockage).find(i => i.type === 'commande' && i.data.id === '#T10');
-    test('avant l\'envoi du « livré » : déduction « a_deduire » gardée sur l\'appareil', ded && ded.etat === 'a_deduire' && ded.lignes[0].nom === 'Matelas R', ded);
+    const f = fileDe(bac._stockage);
+    const wa = f.find(i => i.type === 'commande' && i.data.id === '#T10'), wd = f.find(i => i.type === 'deduction' && i.data.id === '#T10');
+    test('avant l\'envoi du « livré » : demande « deduction|#T10 » gardée dans la file de l\'appareil', !!wd && bac.oqCle(wd) === 'deduction|#T10', f.map(i => i.type));
     test('avant l\'envoi : le « livré » et son encaissement sont gardés dans la file (Payé, 100)', wa && wa.data.statut === 'livré' && wa.data.stpaie === 'Payé' && wa.data.montantEnc === 100, wa);
-    test('fermeture pendant l\'envoi : aucune déduction lancée, stock_deduit pas encore vrai', patchs(bac).length === 0 && nSave === 1 && !bac.commandes[0].stockDeduit, [patchs(bac).length, nSave]);
+    test('fermeture pendant l\'envoi du « livré » : aucune demande envoyée à la base', rpcs(bac).length === 0 && nSave === 1, [rpcs(bac).length, nSave]);
     stockageFerme = JSON.parse(JSON.stringify(bac._stockage));
   }
   {
-    // rechargement : la base a reçu le « livré » (stock_deduit faux) ; produits relus
-    const base = { p1: { id: 'p1', nom: 'Matelas R', stock: 5 } };
-    const bac = bacStock(base, { role: 'livreur', stockage: JSON.parse(JSON.stringify(stockageFerme)) });
-    brancherStock(bac, [PROD('p1', 5, 'Matelas R')], [{ id: '#T10', client: 'Client Test', prix: 100, statut: 'livré', stpaie: 'Payé', montantEnc: 100, produit: 'Matelas R', qte: 1, stockDeduit: false }]);
-    const saves = []; bac.sbSaveCommande = async (c) => { saves.push({ statut: c.statut, stockDeduit: !!c.stockDeduit, stpaie: c.stpaie }); };
-    await bac.dedReprendre(); await attendre();
-    test('rechargement : déduction reprise, PATCH conditionnel stock=eq.5 → 4', patchs(bac).length === 1 && /&stock=eq\.5&/.test(patchs(bac)[0].url) && base.p1.stock === 4, [patchs(bac).map(e => e.url), base.p1.stock]);
-    test('rechargement : stock_deduit = vrai enregistré (livré gardé), suivi effacé', saves.some(s => s.stockDeduit && s.statut === 'livré' && s.stpaie === 'Payé') && !dedDe(bac._stockage)['#T10'], [saves, dedDe(bac._stockage)]);
-    await bac.dedReprendre(); await attendre();
-    test('une seule fois : nouvelle reprise sans nouvel envoi (stock 4)', patchs(bac).length === 1 && base.p1.stock === 4, patchs(bac).length);
-    await bac.offlineQueueFlush();
-    test('le « livré » gardé dans la file est rejoué (livré, Payé)', saves.filter(s => s.statut === 'livré' && s.stpaie === 'Payé').length >= 2, saves);
+    // rechargement : le « livré » n'était PAS arrivé en base ; rejeu de la file : livré d'abord, puis la demande
+    const { bac, b } = bacDeduction({ '#T10': { statut: 'en-route', stock_deduit: false, lignes: [{ p: 'p1', q: 1 }] } }, { p1: 5 }, { stockage: JSON.parse(JSON.stringify(stockageFerme)) });
+    bac.commandes = [{ id: '#T10', statut: 'en-route', stockDeduit: false }];
+    test('rechargement : la demande et le « livré » sont relus depuis l\'appareil', bac.offlineQueue.some(i => i.type === 'deduction') && bac.offlineQueue.some(i => i.type === 'commande'));
+    await bac.offlineQueueFlush(); await attendre();
+    test('rejeu : « livré » enregistré puis UNE déduction par la base (5 → 4), file vide', b.cmds['#T10'].statut === 'livré' && b.deductions === 1 && b.stock.p1 === 4 && rpcs(bac).length === 1 && bac.offlineQueue.length === 0, [b.cmds['#T10'], b.deductions, rpcs(bac).length, bac.offlineQueue]);
+    await bac.offlineQueueFlush(); await bac.stkReprendreDeductions(true); await attendre();
+    test('ensuite : plus aucun envoi (une seule fois)', rpcs(bac).length === 1 && b.deductions === 1);
   }
   {
-    // rechargement : le « livré » n'était PAS arrivé en base (en-route) ; il attend dans la file
-    const base = { p1: { id: 'p1', nom: 'Matelas R', stock: 5 } };
-    const bac = bacStock(base, { role: 'livreur', stockage: JSON.parse(JSON.stringify(stockageFerme)) });
-    brancherStock(bac, [PROD('p1', 5, 'Matelas R')], [{ id: '#T10', client: 'Client Test', prix: 100, statut: 'en-route', produit: 'Matelas R', qte: 1, stockDeduit: false }]);
-    const saves = []; bac.sbSaveCommande = async (c, ctx) => { saves.push({ statut: c.statut, stockDeduit: !!c.stockDeduit }); bac.oqSucces('commande', c, ctx && ctx.ts, null); };
-    await bac.dedReprendre(); await attendre();
-    test('« livré » pas encore en base : aucune déduction (rien n\'est deviné)', patchs(bac).length === 0 && dedDe(bac._stockage)['#T10'].etat === 'a_deduire');
-    await bac.offlineQueueFlush();
-    test('rejeu de la file : le « livré » perdu est renvoyé', saves.length === 1 && saves[0].statut === 'livré', saves);
-    bac.commandes[0].statut = 'livré'; // la relève relit la commande « livré »
-    await bac.dedReprendre(); await attendre(); await bac.dedReprendre(); await attendre();
-    test('ensuite : déduction faite une seule fois (5 → 4) et stock_deduit enregistré', patchs(bac).length === 1 && base.p1.stock === 4 && saves.some(s => s.stockDeduit), [patchs(bac).length, base.p1.stock, saves]);
+    // fermeture PENDANT l'envoi de la demande (la base a déduit, la réponse n'est jamais arrivée) puis rechargement
+    const { bac, b } = bacDeduction({ '#T11': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 2 }] } }, { p1: 5 });
+    bac.commandes = [{ id: '#T11', statut: 'livré', stockDeduit: false }];
+    bac.stkDeductionPoser(bac.commandes[0]);
+    b.perdre = 1; await bac.stkDeductionEnvoyer('#T11', bac.commandes[0]);
+    const st = JSON.parse(JSON.stringify(bac._stockage));
+    test('réponse perdue : la base a déduit (5 → 3), la demande reste dans la file de l\'appareil', b.deductions === 1 && b.stock.p1 === 3 && fileDe(st).some(i => i.type === 'deduction' && i.data.id === '#T11'));
+    const bac2 = nouveauBac({ role: 'livreur', stockage: st, reponse: (url, opt) => b.reponse(url, opt) || { status: 200 } }); // même base, appareil rechargé
+    Object.assign(bac2, { produits: [PROD('p1', 3)], stkMouvements: [] });
+    bac2.commandes = [{ id: '#T11', statut: 'livré', stockDeduit: false }];
+    await bac2.stkReprendreDeductions(true); await attendre();
+    test('rechargement : demande renvoyée, la base répond « deja » : stock toujours 3, demande retirée, stock_deduit vrai', b.deductions === 1 && b.stock.p1 === 3 && !bac2.offlineQueue.some(i => i.type === 'deduction') && bac2.commandes[0].stockDeduit === true, [b.deductions, b.stock, bac2.offlineQueue]);
   }
   {
-    // commande annulée entre-temps : la déduction suivie est abandonnée sans envoi
-    const bac = bacStock({ p1: { id: 'p1', stock: 5 } }, { role: 'livreur', stockage: JSON.parse(JSON.stringify(stockageFerme)) });
-    brancherStock(bac, [PROD('p1', 5, 'Matelas R')], [{ id: '#T10', statut: 'annulé', produit: 'Matelas R', stockDeduit: false }]);
-    await bac.dedReprendre();
-    test('commande annulée : suivi effacé, aucun envoi', patchs(bac).length === 0 && !dedDe(bac._stockage)['#T10']);
+    // commande annulée entre-temps : la base refuse (commande_non_livree) → demande abandonnée, rien de déduit
+    const { bac, b } = bacDeduction({ '#T12': { statut: 'annulé', stock_deduit: false, lignes: [{ p: 'p1', q: 1 }] } }, { p1: 5 }, { fileStockee: [{ type: 'deduction', data: { id: '#T12' }, ts: 1, oqv: 2, role: 'livreur' }] });
+    bac.commandes = [{ id: '#T12', statut: 'annulé', stockDeduit: false }];
+    await bac.stkReprendreDeductions(true);
+    test('commande annulée : demande retirée de la file, rien de déduit', !bac.offlineQueue.length && b.deductions === 0 && b.stock.p1 === 5, bac.offlineQueue);
   }
 
   console.log('\n24. (réserve 1 sur a84fa19, v7.5.196) UNE VERSION EN FILE N\'ÉCRASE JAMAIS UNE VERSION PLUS RÉCENTE ENREGISTRÉE');
@@ -1060,109 +1073,6 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     test('fiche : succès direct plus récent → l\'ancienne fiche en file est retirée', bac.offlineQueue.length === 0, bac.offlineQueue);
   }
 
-  console.log('\n25. (réserve 2 sur a84fa19, v7.5.196) stock_deduit = vrai SEULEMENT QUAND TOUS LES PRODUITS SONT ENREGISTRÉS');
-  function cmdDeux(id) { return { id, client: 'Client D', statut: 'livré', stockDeduit: false, lignes: [{ produitId: 'p1', nom: 'Matelas 1', qte: 1 }, { produitId: 'p2', nom: 'Sommier 2', qte: 1 }] }; }
-  {
-    const base = { p1: { id: 'p1', stock: 5 }, p2: { id: 'p2', stock: 5 } };
-    const bac = bacStock(base, { role: 'livreur' });
-    bac.avantReponse = () => {};
-    const rep0 = bac.fetch; bac.fetch = async (url, opt) => (/id=eq\.p2/.test(url) && opt && opt.method === 'PATCH') ? { ok: false, status: 403, text: async () => 'refus', json: async () => [] } : rep0(url, opt);
-    brancherStock(bac, [PROD('p1', 5, 'Matelas 1'), PROD('p2', 5, 'Sommier 2')], [cmdDeux('#D2')]);
-    const saves = []; bac.sbSaveCommande = async (c) => { saves.push(!!c.stockDeduit); };
-    await bac.stkDeduireStock('#D2', bac.commandes[0]); await attendre();
-    test('un produit refusé définitivement : stock_deduit reste faux (aucune sauvegarde stock_deduit = vrai)', !bac.commandes[0].stockDeduit && !saves.includes(true), saves);
-    test('état « echec » gardé + notification « Déduction de stock en échec : #D2 — stock à vérifier »', dedDe(bac._stockage)['#D2'].etat === 'echec' && bac._notifs.some(n => n[2] === 'Déduction de stock en échec : #D2 — stock à vérifier'), [dedDe(bac._stockage), bac._notifs.map(n => n[2])]);
-    const n0 = bac._envois.length; await bac.stkDeduireStock('#D2', bac.commandes[0]); await bac.dedReprendre(); await attendre();
-    test('en échec : jamais redéduite automatiquement (aucun nouvel envoi)', bac._envois.length === n0 && base.p1.stock === 4, [bac._envois.length - n0, base.p1.stock]);
-  }
-  {
-    const base = { p1: { id: 'p1', stock: 5 }, p2: { id: 'p2', stock: 5 } };
-    const bac = bacStock(base, { role: 'livreur' });
-    let coupure = true; bac.panne = (url) => coupure && /id=eq\.p2/.test(url);
-    brancherStock(bac, [PROD('p1', 5, 'Matelas 1'), PROD('p2', 5, 'Sommier 2')], [cmdDeux('#D3')]);
-    const saves = []; bac.sbSaveCommande = async (c) => { saves.push(!!c.stockDeduit); };
-    await bac.stkDeduireStock('#D3', bac.commandes[0]); await attendre();
-    const e = dedDe(bac._stockage)['#D3'];
-    test('un produit gardé en file (coupure) : « déduction en attente », stock_deduit faux', e && e.etat === 'envoi' && Object.keys(e.produits).join() === 'p2' && !bac.commandes[0].stockDeduit && !saves.includes(true), [e, saves]);
-    coupure = false; await bac.offlineQueueFlush(); await attendre();
-    test('rejeu réussi du produit : stock_deduit = vrai enregistré, suivi effacé (p2 5 → 4)', bac.commandes[0].stockDeduit === true && saves.includes(true) && !dedDe(bac._stockage)['#D3'] && base.p2.stock === 4, [saves, dedDe(bac._stockage), base.p2]);
-  }
-  {
-    // tout réussit : comportement normal (stock_deduit vrai, suivi effacé)
-    const base = { p1: { id: 'p1', stock: 5 }, p2: { id: 'p2', stock: 5 } };
-    const bac = bacStock(base, { role: 'livreur' });
-    brancherStock(bac, [PROD('p1', 5, 'Matelas 1'), PROD('p2', 5, 'Sommier 2')], [cmdDeux('#D4')]);
-    const saves = []; bac.sbSaveCommande = async (c) => { saves.push(!!c.stockDeduit); };
-    await bac.stkDeduireStock('#D4', bac.commandes[0]); await attendre();
-    test('tous les produits enregistrés : stock_deduit vrai, suivi effacé, 4/4', saves.includes(true) && !dedDe(bac._stockage)['#D4'] && base.p1.stock === 4 && base.p2.stock === 4, [saves, base]);
-  }
-
-  {
-    // deux livraisons du même produit : la 1re en file (coupure), la 2e enregistrée tout de suite → la 1re reste
-    // « en attente » (le succès de la 2e ne la conclut pas) ; conclue après SON rejeu
-    const base = { p1: { id: 'p1', stock: 5 } };
-    const bac = bacStock(base, { role: 'livreur' });
-    let coupure = true; bac.panne = () => coupure;
-    const c1 = { id: '#D5', statut: 'livré', stockDeduit: false, produit: 'Matelas 1', qte: 1 }, c2 = { id: '#D6', statut: 'livré', stockDeduit: false, produit: 'Matelas 1', qte: 1 };
-    brancherStock(bac, [PROD('p1', 5, 'Matelas 1')], [c1, c2]);
-    const saves = []; bac.sbSaveCommande = async (c) => { saves.push([c.id, !!c.stockDeduit]); };
-    await bac.stkDeduireStock('#D5', c1); await attendre();
-    coupure = false; await bac.stkDeduireStock('#D6', c2); await attendre();
-    test('2e livraison enregistrée : la 1re (en file) n\'est PAS conclue, la 2e l\'est', !c1.stockDeduit && c2.stockDeduit === true && dedDe(bac._stockage)['#D5'].etat === 'envoi' && !dedDe(bac._stockage)['#D6'], [c1.stockDeduit, c2.stockDeduit, dedDe(bac._stockage)]);
-    await bac.offlineQueueFlush(); await attendre();
-    test('rejeu de la 1re : conclue (stock_deduit vrai), stock final 3 (deux déductions)', c1.stockDeduit === true && !dedDe(bac._stockage)['#D5'] && base.p1.stock === 3, [c1.stockDeduit, dedDe(bac._stockage), base.p1]);
-  }
-
-  console.log('\n26. (réserve 3 sur a84fa19, v7.5.196) PATCH DU LIVREUR CONDITIONNEL (stock=eq.<avant>), DELTA RÉAPPLIQUÉ UNE FOIS');
-  {
-    const base = { p1: { id: 'p1', stock: 5 } };
-    const bac = bacStock(base, { role: 'livreur' });
-    const r = await bac.sbSaveProduit(PROD('p1', 4), { avant: 5, delta: 1 });
-    test('sans conflit : un PATCH …&stock=eq.5, base 4, résultat « ok »', r === 'ok' && patchs(bac).length === 1 && /&stock=eq\.5&/.test(patchs(bac)[0].url) && base.p1.stock === 4, [r, patchs(bac).map(e => e.url), base.p1]);
-  }
-  {
-    const base = { p1: { id: 'p1', stock: 7 } }; // réassort fait ailleurs : 7 au lieu de 5
-    const bac = bacStock(base, { role: 'livreur' });
-    const r = await bac.sbSaveProduit(PROD('p1', 4), { avant: 5, delta: 1 });
-    test('conflit (stock changé ailleurs) : relecture puis delta réappliqué → 6 (le réassort n\'est pas écrasé)', r === 'ok' && base.p1.stock === 6 && patchs(bac).length === 2 && /&stock=eq\.7&/.test(patchs(bac)[1].url) && bac._notifs.length === 0, [r, base.p1, patchs(bac).map(e => e.url)]);
-  }
-  {
-    const base = { p1: { id: 'p1', stock: 7 } };
-    const bac = bacStock(base, { role: 'livreur' });
-    let n = 0; bac.avantReponse = (url, opt) => { if (opt.method === 'PATCH' && ++n === 2) base.p1.stock = 8; }; // encore changé entre la relecture et le 2e essai
-    const r = await bac.sbSaveProduit(PROD('p1', 4, 'Matelas Z'), { avant: 5, delta: 1 });
-    test('deux conflits : rien d\'écrasé (8), « Stock non mis à jour : Matelas Z — à vérifier », pas de file', r === 'refus' && base.p1.stock === 8 && bac._notifs.some(x => x[2] === 'Stock non mis à jour : Matelas Z — à vérifier') && bac.offlineQueue.length === 0, [r, base.p1, bac._notifs.map(x => x[2])]);
-  }
-  {
-    // deux déductions du même produit en coupure : un seul élément en file, les deltas s'additionnent
-    const base = { p1: { id: 'p1', stock: 6 } }; // +1 réassort pendant la coupure (5 → 6)
-    const bac = bacStock(base, { role: 'livreur' });
-    let coupure = true; bac.panne = () => coupure;
-    await bac.sbSaveProduit(PROD('p1', 4), { avant: 5, delta: 1 });
-    await bac.sbSaveProduit(PROD('p1', 3), { avant: 4, delta: 1 });
-    const it = bac.offlineQueue[0] || {};
-    test('coupure : un seul élément en file, avant 5, delta 2', bac.offlineQueue.length === 1 && it.avant === 5 && it.delta === 2, bac.offlineQueue);
-    coupure = false; await bac.offlineQueueFlush();
-    test('rejeu : conflit (6 ≠ 5) → 6 − 2 = 4 (aucune déduction perdue, réassort gardé), file vide', base.p1.stock === 4 && bac.offlineQueue.length === 0, [base.p1, bac.offlineQueue]);
-  }
-  {
-    // un rejeu réussit pendant qu'une nouvelle déduction (qui l'avait fusionné) attend : pas de double compte
-    const base = { p1: { id: 'p1', stock: 5 } };
-    const bac = bacStock(base, { role: 'livreur', fileStockee: [{ type: 'produit', data: PROD('p1', 4), ts: 1, oqv: 2, role: 'livreur', avant: 5, delta: 1 }] });
-    let n = 0; bac.avantReponse = (url, opt) => { if (opt.method === 'PATCH' && ++n === 1) bac.offlineQueueAdd('produit', PROD('p1', 3), { ts: 2, role: 'livreur', avant: 4, delta: 1 }); };
-    await bac.offlineQueueFlush();
-    const it = bac.offlineQueue[0] || {};
-    test('rejeu réussi (5 → 4) : l\'élément récent ne garde que SON delta (avant 4, delta 1)', base.p1.stock === 4 && bac.offlineQueue.length === 1 && it.avant === 4 && it.delta === 1, [base.p1, bac.offlineQueue]);
-    await bac.offlineQueueFlush();
-    test('second rejeu : 4 → 3 (deux déductions, ni plus ni moins)', base.p1.stock === 3 && bac.offlineQueue.length === 0, [base.p1, bac.offlineQueue]);
-  }
-  {
-    const base = { p1: { id: 'p1', stock: 5 } };
-    const bac = bacStock(base, { role: 'livreur', fileStockee: [{ type: 'produit', data: PROD('p1', 2), ts: 1, oqv: 2, role: 'livreur' }] });
-    await bac.offlineQueueFlush();
-    test('ancien élément sans delta (v7.5.191-195) : valeur absolue comme avant (PATCH sans condition)', base.p1.stock === 2 && patchs(bac).length === 1 && !/stock=eq/.test(patchs(bac)[0].url), patchs(bac).map(e => e.url));
-  }
-
   console.log('\n27. (réserve 4 sur a84fa19, v7.5.196) ANCIENNES FICHES ADMIN : DÉDOUBLONNÉES APRÈS LE TRI AVEC LES FICHES RÉCENTES, SELON LEUR DATE');
   for (const [lib, tsAncien, tsRecent, gagnant] of [['ancienne fiche plus ANCIENNE', 5, 10, 'Fiche oqv'], ['ancienne fiche plus RÉCENTE', 10, 5, 'Fiche sans oqv']]) {
     const base = { p1: { id: 'p1', nom: 'Matelas', stock: 1, updated_at: new Date(0).toISOString() } };
@@ -1178,6 +1088,91 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
     test(lib + ' : un seul envoi, état final « ' + gagnant + ' »', posts.length === 1 && base.p1.nom === gagnant, [posts.map(p => p.body.nom), base.p1.nom]);
   }
 
+  console.log('\n28. (v7.5.197) DÉDUCTION PAR LA BASE : UN APPEL PAR LIVRÉ, REJEU SANS DOUBLE EFFET, FONCTION ABSENTE, STOCKAGE INDISPONIBLE');
+  {
+    // un seul appel par « livré », même si plusieurs chemins le demandent en même temps (validerSig + setLvSt + relève)
+    const { bac, b } = bacDeduction({ '#U1': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 1 }, { p: 'p2', q: 2 }] } }, { p1: 5, p2: 5 });
+    const c = { id: '#U1', statut: 'livré', stockDeduit: false };
+    bac.commandes = [c];
+    const rs = await Promise.all([bac.stkDemanderDeduction(c), bac.stkDemanderDeduction(c), bac.stkReprendreDeductions(true)]);
+    test('trois demandes simultanées : UN seul appel à la base, une seule déduction', rpcs(bac).length === 1 && b.deductions === 1 && rs[0] === 'ok' && rs[1] === 'ok', [rpcs(bac).length, rs]);
+    test('stock affiché depuis la réponse (p1 4, p2 3), historique local « sortie-livraison »', bac.produits[0].stock === 4 && bac.produits[1].stock === 3 && bac.stkMouvements.length === 2 && bac.stkMouvements.every(m => m.type === 'sortie-livraison'), [bac.produits.map(p => p.stock), bac.stkMouvements]);
+    test('aucun envoi de stock par le téléphone (ni PATCH ni POST produits)', !bac._envois.some(e => /\/rest\/v1\/produits/.test(e.url)));
+    await bac.stkDemanderDeduction(c);
+    test('commande déjà déduite : plus aucun appel', rpcs(bac).length === 1);
+  }
+  {
+    // réponse perdue (coupure APRÈS l'effet en base) puis rejeu de la file : pas de double effet
+    const { bac, b } = bacDeduction({ '#U2': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 1 }] } }, { p1: 5 });
+    const c = { id: '#U2', statut: 'livré', stockDeduit: false }; bac.commandes = [c];
+    b.perdre = 2;
+    const r1 = await bac.stkDemanderDeduction(c);
+    test('réponse perdue : « reessayer », demande gardée en file, stock_deduit local encore faux', r1 === 'reessayer' && bac.offlineQueue.some(i => i.type === 'deduction') && !c.stockDeduit && b.deductions === 1);
+    await bac.offlineQueueFlush();
+    test('1er rejeu, réponse encore perdue : toujours en file, toujours UNE déduction', bac.offlineQueue.some(i => i.type === 'deduction') && b.deductions === 1 && b.stock.p1 === 4);
+    await bac.offlineQueueFlush();
+    test('2e rejeu : « deja » → demande retirée, stock_deduit vrai, stock 4 (aucune 2e déduction)', !bac.offlineQueue.length && c.stockDeduit === true && b.deductions === 1 && b.stock.p1 === 4 && rpcs(bac).length === 3, [bac.offlineQueue, b.deductions, rpcs(bac).length]);
+  }
+  {
+    // fonction absente de la base (migration 040 pas encore appliquée) : rien n'est perdu
+    const { bac, b } = bacDeduction({ '#U3': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 1 }] }, '#U4': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 1 }] } }, { p1: 5 });
+    const c3 = { id: '#U3', statut: 'livré', stockDeduit: false }, c4 = { id: '#U4', statut: 'livré', stockDeduit: false }; bac.commandes = [c3, c4];
+    b.absente = true;
+    await bac.stkDemanderDeduction(c3); await bac.stkDemanderDeduction(c4); await bac.offlineQueueFlush();
+    const msg = bac._toasts.filter(t => /mise à jour de la base en attente/.test(t[0]));
+    test('404 PGRST202 : les deux demandes restent en file, rien de déduit', bac.offlineQueue.filter(i => i.type === 'deduction').length === 2 && b.deductions === 0, bac.offlineQueue);
+    test('« mise à jour de la base en attente » affiché UNE fois, aucune notification d\'erreur', msg.length === 1 && bac._notifs.length === 0, [msg, bac._notifs.map(n => n[2])]);
+    await bac.stkReprendreDeductions(false);
+    test('relève : pas de nouvel essai avant le délai (5 min)', rpcs(bac).length === 4, rpcs(bac).length);
+    b.absente = false; await bac.offlineQueueFlush();
+    test('migration appliquée ensuite : les deux déductions sont faites, une fois chacune (5 → 3)', !bac.offlineQueue.length && b.deductions === 2 && b.stock.p1 === 3 && c3.stockDeduit && c4.stockDeduit, [bac.offlineQueue, b.deductions]);
+  }
+  {
+    // stockage local indisponible : signalé clairement, demande gardée EN MÉMOIRE et envoyée au retour du réseau
+    const { bac, b } = bacDeduction({ '#U5': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 1 }] } }, { p1: 5 });
+    const vraiSet = bac.localStorage.setItem;
+    bac.localStorage.setItem = (k, v) => { if (k === 'mx_offline_queue') throw new Error('QuotaExceededError'); return vraiSet(k, v); };
+    const c = { id: '#U5', statut: 'livré', stockDeduit: false }; bac.commandes = [c];
+    b.panne = true;
+    await bac.stkDemanderDeduction(c); await bac.offlineQueueFlush();
+    const n = bac._notifs.filter(x => /Stockage de l'appareil indisponible/.test(x[2]));
+    test('stockage refusé : UNE notification urgente « Stockage de l\'appareil indisponible — ne pas fermer l\'application »', n.length === 1 && n[0][0] === 'urgent' && /gardées en mémoire seulement/.test(n[0][3]), bac._notifs.map(x => x[2]));
+    test('… et un message à l\'écran', bac._toasts.some(t => /Stockage de l'appareil plein ou bloqué/.test(t[0])));
+    test('la demande est gardée en mémoire (file), rien dans le téléphone', bac.offlineQueue.some(i => i.type === 'deduction' && i.data.id === '#U5') && !('mx_offline_queue' in bac._stockage));
+    bac.offlineQueue = bac.offlineQueue.filter(i => i.type !== 'deduction'); // demande sortie de la file (pire cas)
+    b.panne = false; await bac.stkReprendreDeductions(true); await attendre();
+    test('demande sortie de la file sans réponse : la relève la remet (commande livrée sur cet appareil) et la base déduit une fois', b.deductions === 1 && c.stockDeduit === true && !bac.offlineQueue.length, [b.deductions, bac.offlineQueue]);
+    bac.localStorage.setItem = vraiSet; bac.offlineQueueAdd('tournee', { id: 'T-X' });
+    test('stockage revenu : file réécrite dans le téléphone', fileDe(bac._stockage).length === 1);
+  }
+  {
+    // refus définitif (commande d'un autre livreur ou livraison de plus de 2 jours) : retirée + signalée
+    const { bac, b } = bacDeduction({}, { p1: 5 });
+    const c = { id: '#U6', statut: 'livré', stockDeduit: false }; bac.commandes = [c];
+    const r = await bac.stkDemanderDeduction(c);
+    test('« commande_introuvable » : demande retirée, notification « Déduction de stock refusée : #U6 — à faire par le bureau »', r === 'refus' && !bac.offlineQueue.length && bac._notifs.some(n => n[2] === 'Déduction de stock refusée : #U6 — à faire par le bureau'), [r, bac._notifs.map(n => n[2])]);
+    await bac.stkReprendreDeductions(true);
+    test('… jamais renvoyée ensuite', rpcs(bac).length === 1 && b.deductions === 0);
+  }
+  {
+    // session expirée (401) : gardée, signalée une fois, renvoyée après reconnexion
+    const { bac, b } = bacDeduction({ '#U7': { statut: 'livré', stock_deduit: false, lignes: [{ p: 'p1', q: 1 }] } }, { p1: 5 });
+    const c = { id: '#U7', statut: 'livré', stockDeduit: false }; bac.commandes = [c];
+    b.http = 401; await bac.stkDemanderDeduction(c); await bac.offlineQueueFlush();
+    test('HTTP 401 : gardée en file, UNE notification « Déduction de stock en attente : #U7 — réessai automatique »', bac.offlineQueue.length === 1 && bac._notifs.filter(n => n[2] === 'Déduction de stock en attente : #U7 — réessai automatique').length === 1, bac._notifs.map(n => n[2]));
+    b.http = 0; await bac.offlineQueueFlush();
+    test('après reconnexion : déduite une fois', b.deductions === 1 && !bac.offlineQueue.length);
+  }
+  {
+    // le « livré » rejoué échoue encore : la demande attend (pas d'appel inutile refusé « commande_non_livree »)
+    const { bac } = bacDeduction({ '#U8': { statut: 'en-route', stock_deduit: false, lignes: [{ p: 'p1', q: 1 }] } }, { p1: 5 }, { fileStockee: [
+      { type: 'deduction', data: { id: '#U8' }, ts: 1, oqv: 2, role: 'livreur' },
+      { type: 'commande', data: { id: '#U8', statut: 'livré' }, ts: 2, oqv: 2, role: 'livreur' }] });
+    bac.sbSaveCommande = async (cm, ctx) => { bac.offlineQueueAdd('commande', cm, ctx); }; // échec : remise en file
+    await bac.offlineQueueFlush();
+    test('« livré » pas encore enregistré : demande gardée, AUCUN appel à la base', rpcs(bac).length === 0 && bac.offlineQueue.map(i => i.type).sort().join() === 'commande,deduction', bac.offlineQueue.map(i => i.type));
+  }
+
   console.log('\n7. TEXTE DU CODE');
   // v7.5.196 : chaque mise en file d'un produit est sur une ligne de coupure réseau (catch) ou d'erreur temporaire
   { const lignesE = CODE_PRODUIT.split('\n').filter(l => /sbSaveEchec\('produit'/.test(l));
@@ -1188,11 +1183,18 @@ const PROD = (id, stock, nom) => ({ id, nom: nom || ('Produit ' + id), cat: 'mat
   test('relève (polling) : passe par cmdPollingAppliquer et lit updated_at', /select=' \+ CMD_SELECT_COLS \+ ',updated_at&order=updated_at\.desc/.test(html) && /if \(cmdPollingAppliquer\(mapped\)\) updated = true;/.test(html));
   test('Realtime : une version périmée ne remplace pas la commande (cmdDistanteAcceptable)', /if \(!cmdDistanteAcceptable\(commandes\[idx\], mapped\)\) return;/.test(html));
   test('rechargement complet : cmdFusionnerChargees + updated_at lu', /commandes = cmdFusionnerChargees\(commandes, _cmdsAvant\)/.test(html) && /select=' \+ CMD_SELECT_COLS \+ ',updated_at&order=created_at\.desc'/.test(html));
-  test('setLvSt : « livré » marqué et déduction sur l\'objet validé', /livMarquer\(cLv\.id\);[^\n]*\n[^\n]*\n\s*try \{ stkDeduireStock\(cLv\.id, cLv\); \}/.test(html));
+  test('setLvSt : « livré » marqué, demande de déduction posée sur l\'objet validé', /livMarquer\(cLv\.id\);[^\n]*\n(\s*\/\/[^\n]*\n)*\s*try \{ stkDeductionPoser\(cLv\); \}/.test(html));
+  test('setLvSt et chgStatut : déduction demandée APRÈS l\'enregistrement du « livré »', /var _pLv = sbSaveCommande\(cmd\);[^\n]*\n\s*if \(st === 'livré'\) stkDemanderDeduction\(cmd, _pLv\);/.test(html) && /var _pSc = sbSaveCommande\(c\);[^\n]*\n\s*if \(st === 'livré'\) stkDemanderDeduction\(c, _pSc\);/.test(html));
   const sw = fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8');
-  test('CACHE_VERSION augmenté (v7-5-196 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-(19[6-9]|[2-9]\d\d)'/.test(sw));
-  test('validerSig garde la déduction et le « livré » AVANT l\'envoi (dedPoser, offlineQueueAdd, puis sbSaveCommande)', /dedPoser\(_cmdLivre\);[\s\S]{0,200}offlineQueueAdd\('commande', _cmdLivre\);[\s\S]{0,200}_pLivre = sbSaveCommande\(_cmdLivre\)/.test(CODE_SIG));
-  test('reprise des déductions au chargement et à la relève (dedReprendre)', (html.match(/dedReprendre\(\)/g) || []).length >= 2);
+  test('CACHE_VERSION augmenté (v7-5-197 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-(19[7-9]|[2-9]\d\d)'/.test(sw));
+  test('validerSig garde la demande de déduction et le « livré » AVANT l\'envoi (stkDeductionPoser, offlineQueueAdd, puis sbSaveCommande)', /stkDeductionPoser\(_cmdLivre\);[\s\S]{0,200}offlineQueueAdd\('commande', _cmdLivre\);[\s\S]{0,200}_pLivre = sbSaveCommande\(_cmdLivre\)/.test(CODE_SIG));
+  test('reprise des demandes au chargement et à la relève (stkReprendreDeductions)', /stkReprendreDeductions\(true\)/.test(html) && /stkReprendreDeductions\(false\)/.test(html));
+  // v7.5.197 : la mécanique supprimée n'existe plus dans l'application (déduction calculée sur le téléphone)
+  const code = html.split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');
+  for (const [nom, re] of [['stkDeduireStock(', /stkDeduireStock\(/], ['mx_deductions_attente', /mx_deductions_attente/], ['PATCH conditionnel &stock=eq.', /&stock=eq\./],
+    ['delta en file (oqCtx.delta / item.delta)', /\.delta\b/], ['uid / inclut des deltas', /oqUid\(|oqInclut\(|\.inclut\b/], ['sbPatchStockLivreur / sbLireStockProduit', /sbPatchStockLivreur|sbLireStockProduit/]])
+    test('supprimé de l\'appli : ' + nom, !re.test(code), (code.match(re) || [])[0]);
+  test('un seul point d\'appel à la base pour la déduction (rpc/deduire_stock_livraison)', (code.match(/rpc\/deduire_stock_livraison/g) || []).length === 1);
 
   console.log('\n' + ok + ' réussi(s), ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

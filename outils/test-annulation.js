@@ -27,7 +27,7 @@ function nouveauBac(roleS) {
     fetch: async (url, opt) => { envois.push({ url, body: JSON.parse(opt.body) }); return { ok: true, text: async () => '' }; },
     offlineQueueAdd() {}, showSync() {}, toast(m, t) { bac._toasts.push([m, t]); }, _toasts: [], _fenetre: null,
     commandes: [], tournees: [], livNom: roleS === 'livreur' ? 'RANOU' : '', role: roleS, stockCamion: [],
-    stkDeduireStock() {}, stkReCrediterStock() {}, reconcilierTournees() {}, renderCmds() {}, renderDash() {}, renderTournees() {}, renderLivreur() {}, suiviAppliquerFiltres() {},
+    stkDeductionPoser() {}, stkDemanderDeduction() { return Promise.resolve('ok'); }, stkReCrediterStock() {}, reconcilierTournees() {}, renderCmds() {}, renderDash() {}, renderTournees() {}, renderLivreur() {}, suiviAppliquerFiltres() {},
     closePanel() {}, ouvrirCmd() {}, sbSaveTournee(t) { tournee.push(JSON.parse(JSON.stringify(t))); }, retirerStockCamion() {}, paiVerrouBody() {}, findCmdForStop(s) { return bac.commandes.find(c => c.id === s.cmdId) || null; } };
   vm.createContext(bac);
   vm.runInContext(extraireBloc('// ANN-DEBUT', '// ANN-FIN'), bac);

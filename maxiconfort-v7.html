@@ -2988,6 +2988,23 @@ try {
   var _oq = localStorage.getItem('mx_offline_queue');
   if (_oq) offlineQueue = JSON.parse(_oq) || [];
 } catch(e) {}
+// v7.5.197 (réserve Codex n° 2) : écriture de la file sur l'appareil. Si le stockage local refuse (plein, navigation
+// privée, bloqué), la file reste ENTIÈRE EN MÉMOIRE (rejouée tant que l'application reste ouverte, réécrite à chaque
+// changement) et l'échec est SIGNALÉ clairement (une notification, renouvelée seulement après une écriture réussie).
+var _oqStockageKo = false;
+function oqEcrire() {
+  try { localStorage.setItem('mx_offline_queue', JSON.stringify(offlineQueue)); _oqStockageKo = false; return true; }
+  catch(e) {
+    console.warn('[file] stockage local indisponible :', e && e.message);
+    if (!_oqStockageKo) {
+      _oqStockageKo = true;
+      var n = offlineQueue.length;
+      try { toast('⚠️ Stockage de l\'appareil plein ou bloqué : ' + n + ' action(s) gardée(s) en mémoire seulement — ne pas fermer l\'application', 'err'); } catch(e2) {}
+      try { notifAjout('urgent', 'stock', 'Stockage de l\'appareil indisponible — ne pas fermer l\'application', n + ' action(s) en attente (livraisons, déductions de stock…) sont gardées en mémoire seulement : elles seront envoyées dès le retour du réseau, mais seraient perdues si l\'application était fermée avant. Libérer de la place sur le téléphone.', 'Voir', 'stock'); } catch(e2) {}
+    }
+    return false;
+  }
+}
 
 // v7.5.191 / v7.5.192 (bug du 24/11 : le « livré » du livreur ne remontait plus) : les éléments `produit` mis en
 // file par une version précédente (sans marque `oqv`) n'indiquent pas qui les a mis en file. On décide selon le
@@ -3047,7 +3064,7 @@ function oqAppliquerRole(r) {
   // dédoublonnées AVEC les fiches récentes déjà en file, selon leur date : une seule fiche par produit, la plus
   // récente, quel que soit l'ordre dans la file.
   offlineQueue = oqDedoublonner(res.file);
-  try { localStorage.setItem('mx_offline_queue', JSON.stringify(offlineQueue)); } catch(e) {}
+  oqEcrire();
   return true;
 }
 function oqSignalerPurge() {
@@ -3073,6 +3090,7 @@ function oqGenreProduit(r) { return r === 'livreur' ? 'stock' : 'fiche'; }
 function oqCle(it) {
   if (!it || !it.data || !it.data.id) return null;
   if (it.type === 'commande') return 'commande|' + it.data.id;
+  if (it.type === 'deduction') return 'deduction|' + it.data.id; // v7.5.197 : une seule demande par commande
   if (it.type === 'produit' && it.oqv) return 'produit|' + oqGenreProduit(it.role) + '|' + it.data.id;
   return null;
 }
@@ -3096,174 +3114,194 @@ function offlineQueueAdd(type, data, oqCtx) {
   var ts = (oqCtx && Number(oqCtx.ts)) || Date.now();
   var r = (oqCtx && oqCtx.role) ? oqCtx.role : oqRoleCourant();
   var nouvel = { type: type, data: data, ts: ts, oqv: 2, role: r };
-  // v7.5.196 (réserve Codex 3 sur a84fa19) : une mise à jour du stock du livreur porte son DELTA (quantité retirée)
-  // et le stock attendu en base (avant) : elle est envoyée en PATCH conditionnel (cf. sbSaveProduit). Deux deltas
-  // du même produit S'ADDITIONNENT (aucune déduction perdue). Chaque delta a un identifiant unique (uid, gardé au
-  // rejeu) ; inclut = identifiants des deltas fusionnés dans celui-ci (jamais comptés deux fois).
-  if (oqCtx && typeof oqCtx.delta === 'number' && typeof oqCtx.avant === 'number') {
-    nouvel.avant = oqCtx.avant; nouvel.delta = oqCtx.delta;
-    nouvel.uid = oqCtx.uid || ('d' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
-    if (Array.isArray(oqCtx.inclut) && oqCtx.inclut.length) nouvel.inclut = oqCtx.inclut.slice();
-  }
-  var estDelta = typeof nouvel.delta === 'number';
   // v7.5.135 / v7.5.191 : une seule entrée par commande et par produit dans la file : la plus récente (ts)
   // v7.5.194 : seulement entre éléments de MÊME clé (oqCle : type + intention) ; les anciens éléments sans oqv
   // et l'autre intention (stock du livreur / fiche admin) ne sont jamais retirés ici.
+  // v7.5.197 : plus aucun « delta » de stock en file : la déduction d'une livraison est faite par la base (demande
+  // « deduction|<commande> », sans quantité, rejouable sans double effet).
   var cleN = oqCle(nouvel);
   if (cleN) {
     // v7.5.196 (réserve Codex 1 sur a84fa19) : une version PLUS ANCIENNE qu'une version déjà enregistrée avec
-    // succès (oqSucces) n'entre jamais en file (elle l'écraserait au rejeu). Ne vaut pas pour un delta (additif).
-    if (!estDelta && Number(_oqDernierSucces[cleN]) > ts) return;
-    var plusRecente = null;
-    offlineQueue.forEach(function(it) { if (oqCle(it) === cleN && (Number(it.ts) || 0) > ts) plusRecente = it; });
-    if (plusRecente) {
-      // une modification plus récente est déjà en file : l'ancienne n'y revient pas ; un delta pas encore compté y
-      // est ajouté (le plus récent a été calculé sur le stock local, qui contient déjà cette déduction)
-      if (estDelta && typeof plusRecente.delta === 'number' && oqUid(plusRecente) !== nouvel.uid && !oqInclut(plusRecente, nouvel.uid)) {
-        plusRecente.avant = nouvel.avant; plusRecente.delta += nouvel.delta;
-        plusRecente.inclut = (plusRecente.inclut || []).concat([nouvel.uid], nouvel.inclut || []);
-        try { localStorage.setItem('mx_offline_queue', JSON.stringify(offlineQueue)); } catch(e) {}
-      }
-      return;
-    }
-    if (estDelta) offlineQueue.forEach(function(it) {
-      // même clé, plus ancien : delta fusionné dans le nouvel élément (sauf s'il s'agit du même élément remis en file
-      // par son rejeu — même uid — ou d'un élément déjà compté)
-      var uI = oqUid(it);
-      if (oqCle(it) !== cleN || typeof it.delta !== 'number' || uI === nouvel.uid || oqInclut(nouvel, uI)) return;
-      nouvel.avant = it.avant; nouvel.delta += it.delta;
-      nouvel.inclut = [uI].concat(it.inclut || [], nouvel.inclut || []);
-    });
+    // succès (oqSucces) n'entre jamais en file (elle l'écraserait au rejeu).
+    if (Number(_oqDernierSucces[cleN]) > ts) return;
+    // une modification plus récente est déjà en file : l'ancienne n'y revient pas
+    if (offlineQueue.some(function(it) { return oqCle(it) === cleN && (Number(it.ts) || 0) > ts; })) return;
     offlineQueue = offlineQueue.filter(function(it) { return oqCle(it) !== cleN; });
   }
   offlineQueue.push(nouvel); // v7.5.191 : oqv = mis en file par une version corrigée ; v7.5.192 : rôle qui l'a mis en file
-  try { localStorage.setItem('mx_offline_queue', JSON.stringify(offlineQueue)); } catch(e) {}
+  oqEcrire();
   // Afficher indicateur
   var ind = document.getElementById('offline-indicator');
   if (ind) { ind.style.display = 'flex'; ind.textContent = '📵 ' + offlineQueue.length + ' action(s) en attente'; }
 }
 
-// v7.5.196 : options de rejeu d'un produit (rôle d'origine, date de version, delta conditionnel du livreur)
-function oqOptsProduit(item, rOrig) {
-  var o = { role: rOrig, ts: Number(item.ts) || 0 };
-  if (typeof item.delta === 'number' && typeof item.avant === 'number') { o.avant = item.avant; o.delta = item.delta; o.uid = oqUid(item); if (item.inclut) o.inclut = item.inclut.slice(); }
-  return o;
-}
-function oqInclut(it, u) { return !!(it && Array.isArray(it.inclut) && it.inclut.indexOf(u) >= 0); }
-function oqUid(it) { return (it && it.uid) || ('t' + ((it && Number(it.ts)) || 0)); } // élément sans uid (mis en file à la main) : sa date
+// v7.5.196 : options de rejeu d'un produit (rôle d'origine, date de version)
+function oqOptsProduit(item, rOrig) { return { role: rOrig, ts: Number(item.ts) || 0 }; }
 function oqIndicateur() {
   var ind = document.getElementById('offline-indicator'); if (!ind) return;
   if (offlineQueue.length) { ind.style.display = 'flex'; ind.textContent = '📵 ' + offlineQueue.length + ' action(s) en attente'; } else ind.style.display = 'none';
 }
 // v7.5.196 (réserve Codex 1 sur a84fa19) : une sauvegarde RÉUSSIE (directe ou rejouée) invalide les versions plus
 // anciennes de MÊME clé encore en file (elles l'écraseraient au rejeu) et retient sa date (_oqDernierSucces : une
-// version plus ancienne qui échoue ensuite n'entre plus en file). Un delta de stock n'est jamais « périmé » : un
-// élément en file qui l'avait fusionné (inclut, par uid) en est seulement déduit (avant = valeur écrite).
+// version plus ancienne qui échoue ensuite n'entre plus en file).
 var _oqDernierSucces = {};
-function oqSucces(type, data, tsV, r, d) {
+function oqSucces(type, data, tsV, r) {
   var cle = oqCle({ type: type, data: data, oqv: 2, role: r });
   if (!cle) return;
-  var ts = Number(tsV) || 0, change = false, dd = !!(d && typeof d.delta === 'number');
+  var ts = Number(tsV) || 0, change = false;
   if (!(Number(_oqDernierSucces[cle]) >= ts)) _oqDernierSucces[cle] = ts;
   offlineQueue = offlineQueue.filter(function(it) {
     if (oqCle(it) !== cle) return true;
-    if (typeof it.delta === 'number') {
-      if (dd && d.uid && oqInclut(it, d.uid)) {
-        it.delta -= d.delta; if (typeof d.ecrit === 'number') it.avant = d.ecrit;
-        var retires = [d.uid].concat(d.inclut || []);
-        it.inclut = it.inclut.filter(function(x) { return retires.indexOf(x) < 0; });
-        change = true;
-      }
-      return true;
-    }
     if ((Number(it.ts) || 0) <= ts) { change = true; return false; } // version plus ancienne : périmée
     return true;
   });
-  if (change) { try { localStorage.setItem('mx_offline_queue', JSON.stringify(offlineQueue)); } catch(e) {} }
+  if (change) { oqEcrire(); }
   try { oqIndicateur(); } catch(e) {}
 }
 
-// v7.5.196 (réserves Codex P2 et 2 sur a84fa19) : DÉDUCTIONS DE STOCK SUIVIES SUR L'APPAREIL (mx_deductions_attente),
-// une entrée par commande, jusqu'à ce que stock_deduit = vrai soit enregistré :
-//  - 'a_deduire' : posée par validerSig AVANT l'enregistrement du « livré » (fermeture ou rechargement pendant cet
-//    enregistrement : la déduction est reprise au chargement suivant, une seule fois — garde stockDeduit) ;
-//  - 'envoi' : stock local déduit, sauvegardes produit lancées ; produits = ceux pas encore enregistrés ;
-//  - 'fait' : toutes les sauvegardes produit réussies → stock_deduit = vrai en cours d'enregistrement ;
-//  - 'echec' : un produit refusé définitivement (ou envoi incertain) → stock_deduit reste FAUX, notification
-//    « Déduction de stock en échec : <commande> — stock à vérifier » ; jamais redéduite automatiquement.
-// stock_deduit = vrai n'est enregistré QUE lorsque toutes les sauvegardes produit ont réussi.
-var DED_CLE = 'mx_deductions_attente', _dedEnCours = {};
-function dedLire() { try { var o = JSON.parse(localStorage.getItem(DED_CLE) || '{}'); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; } catch(e) { return {}; } }
-function dedEcrire(o) { try { if (Object.keys(o).length) localStorage.setItem(DED_CLE, JSON.stringify(o)); else localStorage.removeItem(DED_CLE); return true; } catch(e) { console.warn('[stock] déductions suivies non écrites :', e && e.message); return false; } }
-function dedMaj(id, champs) { var o = dedLire(); o[id] = Object.assign(o[id] || {}, champs); dedEcrire(o); return o[id]; }
-function dedRetirer(id) { var o = dedLire(); if (o[id]) { delete o[id]; dedEcrire(o); } }
-function dedPoser(cmd) {
-  if (!cmd || !cmd.id || cmd.stockDeduit || dedLire()[cmd.id]) return;
-  var lignes = (cmd.lignes && cmd.lignes.length) ? cmd.lignes.map(function(l) { return { produitId: l.produitId || null, nom: l.nom || l.produit || '', qte: l.qte || 1 }; }) : [{ produitId: null, nom: cmd.produit || '', qte: cmd.qte || 1 }];
-  dedMaj(cmd.id, { etat: 'a_deduire', ts: Date.now(), lignes: lignes });
+// v7.5.197 (décision de Borhen du 26/11, solution A ; 6 retours de Codex) : LE RETRAIT DE STOCK D'UNE LIVRAISON EST FAIT
+// PAR LA BASE (fonction public.deduire_stock_livraison, migration 040), en une seule opération et UNE SEULE FOIS par
+// commande. Le téléphone n'envoie plus aucun stock calculé : seulement « déduire le stock de <commande> ».
+//  - la demande est gardée dans la file (clé « deduction|<commande> ») AVANT tout envoi et n'en sort qu'après une réponse
+//    de la base : coupure, réponse perdue, application fermée pendant l'envoi → rejouée (retour réseau, démarrage,
+//    relève) ; un rejeu ne déduit jamais deux fois (la base répond « deja ») ;
+//  - fonction absente de la base (migration 040 pas encore appliquée : 404 / PGRST202) : rien n'est perdu, la demande
+//    reste en file, « mise à jour de la base en attente » est affiché une fois ;
+//  - le stock affiché est mis à jour depuis la réponse (stock_apres de chaque produit retiré).
+var DED_BASE_ABSENTE_MSG = '⏳ Stock : mise à jour de la base en attente — la déduction sera faite automatiquement';
+var _dedEnvoi = {}, _dedBaseAbsenteVue = false, _dedErreurVue = {}, _dedProchain = {};
+var DED_PAUSE_MS = 60000, DED_PAUSE_ABSENTE_MS = 300000; // relève : pas plus d'un essai par minute (5 min si fonction absente)
+function dedEnFile(id) { return offlineQueue.some(function(q) { return oqCle(q) === 'deduction|' + id; }); }
+function dedFileRetirer(id) {
+  var n = offlineQueue.length;
+  offlineQueue = offlineQueue.filter(function(q) { return oqCle(q) !== 'deduction|' + id; });
+  if (offlineQueue.length !== n) { oqEcrire(); }
+  try { oqIndicateur(); } catch(e) {}
 }
-function dedEchec(id, detail) {
-  var e = dedLire()[id]; if (!e || e.etat === 'echec') return;
-  dedMaj(id, { etat: 'echec', detail: detail || '' });
-  try { notifAjout('urgent', 'stock', 'Déduction de stock en échec : ' + id + ' — stock à vérifier', 'La livraison est enregistrée, mais le stock de ' + (detail || 'certains produits') + ' n\'a pas pu être déduit en base. Rien n\'est redéduit automatiquement : vérifier le stock.', 'Gérer le stock', 'stock'); } catch(e) {}
+function dedCommande(id, cmdV) {
+  if (cmdV && cmdV.id === id) return cmdV;
+  return (typeof commandes !== 'undefined' && Array.isArray(commandes)) ? (commandes.find(function(c) { return c && c.id === id; }) || null) : null;
 }
-// toutes les sauvegardes produit ont réussi → stock_deduit = vrai (état 'fait' gardé jusqu'à la fin de l'envoi)
-function dedConclure(id, cmd) {
-  var e = dedLire()[id];
-  if (!e || e.etat !== 'envoi' || Object.keys(e.produits || {}).length || !cmd) return Promise.resolve();
-  dedMaj(id, { etat: 'fait' });
-  cmd.stockDeduit = true;
-  return Promise.resolve(stkSansRejet(function() { return sbSaveCommande(cmd); }, 'commande')).then(function() { dedRetirer(id); });
+// demande posée dans la file (durable) : appelée AVANT l'enregistrement du « livré ». _dedSession garde aussi, EN
+// MÉMOIRE, les commandes livrées sur cet appareil pendant cette session : si la demande a quitté la file sans réponse de
+// la base (stockage local défaillant…), la relève la remet en file tant que stock_deduit reste faux.
+var _dedSession = {};
+function stkDeductionPoser(cmd) {
+  if (!cmd || !cmd.id || cmd.stockDeduit) return false;
+  _dedSession[cmd.id] = true;
+  if (!dedEnFile(cmd.id)) offlineQueueAdd('deduction', { id: cmd.id });
+  return true;
 }
-// résultat d'une sauvegarde produit ('ok', 'file', 'refus') reporté sur les déductions suivies ; uids = identifiants
-// des deltas portés par cette sauvegarde (le sien + ceux fusionnés) : seule la déduction correspondante est touchée
-// (une autre sauvegarde réussie du même produit ne conclut jamais une déduction encore en file)
-function dedSuiviProduit(pid, r, uids) {
-  if (!pid) return;
-  var o = dedLire(), change = false, aConclure = [], refus = [];
-  Object.keys(o).forEach(function(id) {
-    var e = o[id]; if (!e || e.etat !== 'envoi' || !e.produits || !e.produits[pid]) return;
-    var u = e.produits[pid].uid;
-    if (u && (!uids || uids.indexOf(u) < 0)) return;
-    if (r === 'ok') { delete e.produits[pid]; change = true; if (!Object.keys(e.produits).length && !_dedEnCours[id]) aConclure.push(id); }
-    else if (r === 'refus') refus.push([id, String(e.produits[pid].nom || pid)]);
-  });
-  if (change) dedEcrire(o);
-  refus.forEach(function(x) { dedEchec(x[0], x[1]); });
-  aConclure.forEach(function(id) {
-    var c = (typeof commandes !== 'undefined' && Array.isArray(commandes)) ? commandes.find(function(k) { return k && k.id === id; }) : null;
-    if (c) dedConclure(id, c); // commande pas dans la liste : conclue par dedReprendre
-  });
-}
-function oqProduitEnFile(pid, uid) {
-  return offlineQueue.some(function(q) {
-    if (!q || q.type !== 'produit' || !q.data || (q.data.id || q.data.nom) !== pid) return false;
-    return !uid || !q.uid || q.uid === uid || oqInclut(q, uid); // delta suivi : le sien ou un élément qui l'a fusionné
-  });
-}
-// au chargement (commandes et produits lus) et à chaque relève : reprise des déductions suivies, une seule fois
-function dedReprendre() {
-  var o = dedLire(), p = [];
-  Object.keys(o).forEach(function(id) {
-    var e = o[id];
-    if (!e || _dedEnCours[id] || (typeof _livEnCours !== 'undefined' && _livEnCours[id])) return;
-    var cmd = (typeof commandes !== 'undefined' && Array.isArray(commandes)) ? commandes.find(function(c) { return c && c.id === id; }) : null;
-    if (!cmd) return; // pas encore chargée : au prochain passage
-    if (cmd.stockDeduit || /^annul/.test(String(cmd.statut || ''))) { dedRetirer(id); return; } // déjà déduite / annulée
-    if (e.etat === 'a_deduire') {
-      // le « livré » doit être dans la liste (lu en base) ; sinon il attend dans la file (enregistrement préventif)
-      if (String(cmd.statut || '') === 'livré' || String(cmd.statut || '') === 'livre') p.push(stkSansRejet(function() { return stkDeduireStock(id, cmd); }, 'reprise'));
-    } else if (e.etat === 'fait') {
-      if (offlineQueue.some(function(q) { return oqCle(q) === 'commande|' + id; })) return; // stock_deduit attend dans la file
-      cmd.stockDeduit = true;
-      p.push(Promise.resolve(stkSansRejet(function() { return sbSaveCommande(cmd); }, 'commande')).then(function() { dedRetirer(id); }));
-    } else if (e.etat === 'envoi') {
-      var restants = Object.keys(e.produits || {});
-      var perdus = restants.filter(function(pid) { return !oqProduitEnFile(pid, (e.produits[pid] || {}).uid); });
-      // ni enregistré, ni en file : l'application a été fermée pendant l'envoi → résultat inconnu, pas de redéduction
-      if (perdus.length) dedEchec(id, perdus.map(function(pid) { return String((e.produits[pid] || {}).nom || pid); }).join(', ') + ' (application fermée pendant l\'envoi)');
-      else if (!restants.length) p.push(dedConclure(id, cmd));
+// réponse de la base appliquée à l'affichage (stock des produits retirés, historique local, alertes)
+function dedAppliquer(id, rep, cmdV) {
+  var cmd = dedCommande(id, cmdV);
+  if (cmd) cmd.stockDeduit = true;
+  var cL = dedCommande(id, null); if (cL && cL !== cmd) cL.stockDeduit = true;
+  if (rep.deja) return;
+  var jour = new Date().toISOString().split('T')[0];
+  (Array.isArray(rep.retraits) ? rep.retraits : []).forEach(function(x) {
+    if (!x) return;
+    var p = (typeof produits !== 'undefined' && Array.isArray(produits)) ? produits.find(function(pp) { return pp && pp.id === x.produit_id; }) : null;
+    var apres = Number(x.stock_apres), nom = (p && p.nom) || x.nom || x.produit_id;
+    if (p && isFinite(apres)) p.stock = apres;
+    try {
+      stkMouvements.unshift({ date: jour, produit: nom, type: 'sortie-livraison', qte: -(Number(x.qte) || 0), stockApres: apres, auto: true, substitue: !!x.substitue_de,
+        motif: 'Livraison ' + id + ((cmd && cmd.client) ? ' → ' + cmd.client : '') + (x.composant_de ? ' (composant de ' + x.composant_de + ')' : '')
+             + (x.substitue_de ? ' [SUBSTITUTION auto : remplace ' + x.substitue_de + ' en rupture]' : '') });
+    } catch(e) {}
+    if (!p || !isFinite(apres)) return;
+    if (apres === 0) {
+      try { toast('❌ RUPTURE : ' + nom, 'err'); } catch(e) {}
+      try { notifAjout('urgent', 'stock', 'Rupture — ' + nom, 'Stock épuisé après livraison.', 'Gérer le stock', 'stock'); } catch(e) {}
+    } else if (apres <= p.seuil) {
+      try { toast('⚠️ Stock bas : ' + nom + ' (' + apres + ' restants)', 'info'); } catch(e) {}
+      try { notifAjout('warn', 'stock', 'Stock bas — ' + nom, apres + ' unité(s). Seuil: ' + p.seuil, 'Réapprovisionner', 'stock'); } catch(e) {}
     }
+  });
+  var manques = Array.isArray(rep.manques) ? rep.manques : [];
+  if (manques.length) {
+    try { notifAjout('warn', 'stock', 'Stock insuffisant à la livraison ' + id + ' — à vérifier', manques.map(function(m) { return (m.nom || m.produit_id || '?') + (m.raison === 'stock_insuffisant' ? ' : manque ' + m.manque : ' : introuvable'); }).join(', ') + '. Le stock en base ne descend jamais sous 0.', 'Gérer le stock', 'stock'); } catch(e) {}
+  }
+  try { var pStock = document.getElementById('p-stock'); if (pStock && pStock.classList.contains('on')) stkRender(); } catch(e) {}
+  try { if (typeof role !== 'undefined' && role !== 'collab' && typeof finRender === 'function') finRender(); } catch(e) {}
+}
+function dedErreurSignaler(id, detail) {
+  if (_dedErreurVue[id]) return; _dedErreurVue[id] = true;
+  try { notifAjout('urgent', 'stock', 'Déduction de stock en attente : ' + id + ' — réessai automatique', 'La base n\'a pas encore accepté la déduction du stock de cette livraison (' + detail + '). La demande reste sur l\'appareil et sera renvoyée (jamais deux fois).', 'Gérer le stock', 'stock'); } catch(e) {}
+}
+// UN envoi : 'ok' | 'deja' (déjà déduite) | 'reessayer' (gardée en file) | 'refus' / 'abandon' (retirée de la file)
+async function stkDeductionEnvoyer(id, cmdV) {
+  if (!id) return 'abandon';
+  if (_dedEnvoi[id]) return _dedEnvoi[id]; // un seul envoi à la fois par commande
+  var envoi = (async function() {
+    var resp, corps = null, txt = '';
+    try {
+      resp = await fetch(SUPABASE_URL + '/rest/v1/rpc/deduire_stock_livraison', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
+        body: JSON.stringify({ p_cmd_id: id })
+      });
+    } catch(e) { return 'reessayer'; } // coupure, ou réponse perdue après la déduction : le rejeu répondra « deja »
+    try { txt = await resp.text(); corps = txt ? JSON.parse(txt) : null; } catch(e) { corps = null; }
+    if (!resp.ok) {
+      if (resp.status === 404 || (corps && corps.code === 'PGRST202')) { // fonction absente : migration 040 pas appliquée
+        if (!_dedBaseAbsenteVue) { _dedBaseAbsenteVue = true; try { toast(DED_BASE_ABSENTE_MSG, 'info'); } catch(e) {} }
+        return 'absente';
+      }
+      if (!httpTemporaire(resp.status)) dedErreurSignaler(id, 'HTTP ' + resp.status);
+      return 'reessayer';
+    }
+    if (!corps || typeof corps !== 'object') return 'reessayer'; // réponse illisible : le rejeu tranchera
+    if (corps.ok) { dedAppliquer(id, corps, cmdV); dedFileRetirer(id); return corps.deja ? 'deja' : 'ok'; }
+    if (corps.erreur === 'commande_non_livree') {
+      var c = dedCommande(id, cmdV), cq = offlineQueue.find(function(q) { return oqCle(q) === 'commande|' + id; });
+      // le « livré » n'est pas encore enregistré en base (commande livrée ici, ou « livré » encore dans la file)
+      if ((c && livEstLivre(c.statut)) || (cq && cq.data && livEstLivre(cq.data.statut))) return 'reessayer';
+      dedFileRetirer(id); return 'abandon';               // commande plus « livrée » ici : rien à déduire
+    }
+    if (corps.erreur === 'commande_introuvable' || corps.erreur === 'commande_requise') {
+      dedFileRetirer(id);
+      try { notifAjout('urgent', 'stock', 'Déduction de stock refusée : ' + id + ' — à faire par le bureau', 'La base a refusé la déduction du stock de cette livraison (commande introuvable pour cette session, ou livraison de plus de 2 jours). Rien n\'a été retiré : vérifier le stock.', 'Gérer le stock', 'stock'); } catch(e) {}
+      return 'refus';
+    }
+    return 'reessayer'; // session expirée ou autre : gardée, renvoyée après reconnexion
+  })();
+  // un deuxième appelant pendant l'envoi reçoit le MÊME résultat final (« absente » → « reessayer » : jamais retiré)
+  var fin = envoi.catch(function() { return 'reessayer'; }).then(function(r) {
+    delete _dedEnvoi[id];
+    if (r === 'absente' || r === 'reessayer') _dedProchain[id] = Date.now() + (r === 'absente' ? DED_PAUSE_ABSENTE_MS : DED_PAUSE_MS);
+    else delete _dedProchain[id];
+    if (r === 'refus' || r === 'abandon') delete _dedSession[id];
+    return r === 'absente' ? 'reessayer' : r;
+  });
+  _dedEnvoi[id] = fin;
+  return fin;
+}
+// demande complète : posée en file, puis envoyée APRÈS l'enregistrement du « livré » (pAvant) ; ne rejette jamais
+function stkDemanderDeduction(cmd, pAvant) {
+  if (!cmd || !cmd.id || cmd.stockDeduit) return Promise.resolve('deja');
+  try { stkDeductionPoser(cmd); } catch(e) { console.warn('[stock] demande de déduction :', e && e.message); }
+  return Promise.resolve(pAvant).catch(function() {}).then(function() { return stkDeductionEnvoyer(cmd.id, cmd); })
+    .catch(function(e) { console.warn('[stock] déduction :', e && e.message); return 'reessayer'; });
+}
+// reprise (chargement, relève) des demandes restées en file : commande déjà déduite → retirée ; sinon renvoyée
+function stkReprendreDeductions(force) {
+  var p = [], now = Date.now();
+  // commandes livrées sur cet appareil pendant cette session, stock_deduit encore faux, demande sortie de la file sans
+  // réponse de la base : remise en file (jamais pour une commande livrée ailleurs : un ancien téléphone déduit lui-même)
+  Object.keys(_dedSession).forEach(function(id) {
+    var c = dedCommande(id, null);
+    if (!c || c.stockDeduit || !livEstLivre(c.statut)) { if (c && c.stockDeduit) delete _dedSession[id]; return; }
+    if (!dedEnFile(id) && !_dedEnvoi[id]) { try { offlineQueueAdd('deduction', { id: id }); } catch(e) {} }
+  });
+  offlineQueue.filter(function(q) { return q && q.type === 'deduction' && q.data && q.data.id; }).forEach(function(q) {
+    var id = q.data.id, c = dedCommande(id, null);
+    if (c && c.stockDeduit) { dedFileRetirer(id); return; }
+    if (typeof _livEnCours !== 'undefined' && _livEnCours[id]) return; // validerSig l'envoie lui-même
+    // le « livré » de la commande attend encore dans la file : le rejeu de la file l'enverra d'abord, puis la demande
+    if (offlineQueue.some(function(x) { return oqCle(x) === 'commande|' + id; })) return;
+    if (!force && Number(_dedProchain[id]) > now) return;
+    p.push(stkDeductionEnvoyer(id, c));
   });
   return Promise.all(p).then(function() {});
 }
@@ -3300,14 +3338,27 @@ async function offlineQueueFlush() {
   var flushed = 0;
   // v7.5.135 / v7.5.191 : on rejoue une COPIE. Avant, la boucle lisait `offlineQueue.length` pendant que chaque
   // échec y rajoutait un élément → boucle sans fin (≈ 16 000 envois refusés le 26/11, aucun « livré » envoyé).
-  var _aRejouer = offlineQueue.slice();
+  // v7.5.197 : les demandes de déduction du stock passent APRÈS tous les autres éléments (le « livré » de la commande
+  // doit être enregistré avant que la base accepte de déduire son stock).
+  var _aRejouer = offlineQueue.filter(function(it) { return !(it && it.type === 'deduction'); })
+    .concat(offlineQueue.filter(function(it) { return it && it.type === 'deduction'; }));
   try {
     for (var i = 0; i < _aRejouer.length; i++) {
       var item = _aRejouer[i];
       if (!item) continue;
       // v7.5.196 (réserve Codex 1 sur a84fa19) : élément retiré de la file entre-temps (version plus récente
-      // enregistrée avec succès, ou delta fusionné dans un élément plus récent) : jamais renvoyé
+      // enregistrée avec succès, déduction faite) : jamais renvoyé
       if (offlineQueue.indexOf(item) < 0) continue;
+      // v7.5.197 : demande de déduction : gardée tant que la base n'a pas répondu (rejeu sans double effet)
+      if (item.type === 'deduction') {
+        // le « livré » de cette commande n'a pas pu être enregistré dans ce rejeu : la demande attend le prochain
+        // (remis en file par son propre échec, ou gardé) — un « livré » enregistré a quitté la file (oqSucces)
+        var _cleC = item.data ? 'commande|' + item.data.id : '';
+        if (_cleC && (remaining.concat(offlineQueue)).some(function(x) { return oqCle(x) === _cleC; })) { remaining.push(item); continue; }
+        var _rd = (item.data && item.data.id) ? await stkDeductionEnvoyer(item.data.id, null) : 'abandon';
+        if (_rd === 'reessayer') remaining.push(item); else if (_rd === 'ok' || _rd === 'deja') flushed++;
+        continue;
+      }
       // v7.5.193 (réserve Codex 4) : un ancien élément produit pas encore trié (purge reportée) n'est jamais rejoué
       if (item.type === 'produit' && !item.oqv) { remaining.push(item); continue; }
       // v7.5.193 (réserve Codex 2) : un produit est rejoué selon le rôle qui l'a mis en file. Fiche admin / collab :
@@ -3320,7 +3371,7 @@ async function offlineQueueFlush() {
         if (item.type === 'commande') await sbSaveCommande(item.data, _ctx);
         else if (item.type === 'tournee') await sbSaveTournee(item.data);
         else if (item.type === 'depense') await sbSaveDepense(item.data);
-        else if (item.type === 'produit') await sbSaveProduit(item.data, oqOptsProduit(item, _rOrig)); // v7.5.194 : version = date de mise en file ; v7.5.196 : delta
+        else if (item.type === 'produit') await sbSaveProduit(item.data, oqOptsProduit(item, _rOrig)); // v7.5.194 : version = date de mise en file
         else if (item.type === 'vehicule') await sbSaveVehicule(item.data);
         else if (item.type === 'entretien') await sbSaveEntretien(item.data);
         else if (item.type === 'livreur') await sbSaveLivreur(item.data);
@@ -3333,7 +3384,7 @@ async function offlineQueueFlush() {
     // v7.5.135 : garder aussi ce qui a été ajouté à la file PENDANT le rejeu (échecs, autres écrans) ; rejoué au
     // prochain retour réseau ou démarrage, jamais dans ce même rejeu.
     offlineQueue = oqDedoublonner(remaining.concat(offlineQueue.filter(function(it) { return _aRejouer.indexOf(it) < 0; })));
-    try { localStorage.setItem('mx_offline_queue', JSON.stringify(offlineQueue)); } catch(e) {}
+    oqEcrire();
     _oqFlushEnCours = false;
   }
   var ind = document.getElementById('offline-indicator');
@@ -4786,7 +4837,7 @@ function cmdFusionnerChargees(nouvelles, anciennes) {
   return nouvelles.map(function(n) { var l = n && parId[n.id]; return (l && !cmdDistanteAcceptable(l, n)) ? l : n; });
 }
 
-var _pollingInterval = null, _catPromesse = null;
+var _pollingInterval = null;
 function startPolling() {
   if (_pollingInterval) return;
   oqSignalerPurge(); // v7.5.191 : anciennes mises à jour de stock retirées de la file → une notification
@@ -4893,9 +4944,8 @@ function startPolling() {
       });
     });
     if (_syncNeeded) renderLivreur();
-    // v7.5.196 (réserve Codex P2) : déductions de stock en attente sur cet appareil (commande devenue « livré »
-    // dans la liste après le rejeu de la file, produits enregistrés…) : reprises une seule fois
-    try { if (_catPromesse) dedReprendre().catch(function() {}); } catch(e) {}
+    // v7.5.197 : demandes de déduction du stock restées en file : renvoyées (au plus une fois par minute)
+    try { if (navigator.onLine) stkReprendreDeductions(false).catch(function() {}); } catch(e) {}
 
     } catch(e) { console.warn('Polling erreur:', e.message); }
   }, 10000); // toutes les 10 secondes
@@ -5889,8 +5939,9 @@ function buildUI(r) {
   sbLoadLivreurs().then(function() {
     sbLoadAll().then(function() {
       renderDash(); renderCmds(); renderTournees(); renderLivreur();
-      // v7.5.196 (réserve Codex P2) : déductions de stock restées à faire sur cet appareil (fermeture pendant un envoi)
-      Promise.resolve(_catPromesse).catch(function() {}).then(function() { return dedReprendre(); }).catch(function(e) { console.warn('[stock] reprise des déductions :', e && e.message); });
+      // v7.5.197 : reprise des demandes de déduction restées en file (fermeture ou coupure pendant l'envoi) pour les
+      // commandes livrées dont stock_deduit est encore faux : renvoyées (la base ne déduit jamais deux fois)
+      try { stkReprendreDeductions(true).catch(function(e) { console.warn('[stock] reprise des déductions :', e && e.message); }); } catch(e) {}
       populateCmdChecklist();
       sbLoadDepenses().then(function() {
         finRender(); renderDash();
@@ -5912,7 +5963,7 @@ function buildUI(r) {
   });
   sbStartRealtime();
   startPolling();
-  _catPromesse = sbSyncCatalogueInitial(); // v7.5.196 : attendu avant la reprise des déductions de stock
+  sbSyncCatalogueInitial();
   sbStartRealtimeProduits();
 
   goTo(cfg.firstPage, document.querySelector(`[data-p="${cfg.firstPage}"]`));
@@ -8931,9 +8982,10 @@ function chgStatut(id, st, _annOk) {
     vers: st,
     par: role + (livNom ? ' (' + livNom + ')' : '')
   });
-  // Déduire le stock si livré
+  // Déduire le stock si livré — v7.5.197 : demande posée en file ici, envoyée à la base APRÈS l'enregistrement du
+  // « livré » (sbSaveCommande plus bas) ; la base déduit une seule fois
   if (st === 'livré') {
-    stkDeduireStock(id);
+    try { stkDeductionPoser(c); } catch(e) { console.warn('[stock] demande de déduction :', e && e.message); }
   }
   // Recréditer le stock si annulé/reporté après livraison (admin uniquement)
   if (role === 'admin' && ancienStatut === 'livré' && (st === 'annulé' || st === 'reporté' || st === 'en-attente' || st === 'en-route')) {
@@ -8946,7 +8998,8 @@ function chgStatut(id, st, _annOk) {
   renderCmds(); renderDash(); renderTournees(); renderLivreur();
   // v7.5.39 : re-render Suivi logistique (sinon le statut reste l'ancien)
   if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres();
-  sbSaveCommande(c); // Sync Supabase
+  var _pSc = sbSaveCommande(c); // Sync Supabase
+  if (st === 'livré') stkDemanderDeduction(c, _pSc); // v7.5.197 : après l'enregistrement du « livré »
   closePanel(); ouvrirCmd(id);
   toast('Statut mis à jour : ' + st, 'ok');
 }
@@ -11240,8 +11293,9 @@ function setLvSt(tid, idx, st, _annOk) {
     if(cLv){
       cLv.statut='livré';
       livMarquer(cLv.id); // v7.5.193 : une relève périmée ne rétrograde pas ce « livré »
-      // v7.5.191 : une erreur de stock n'empêche jamais l'enregistrement du « livré » (sbSaveCommande plus bas)
-      try { stkDeduireStock(cLv.id, cLv); } catch(e) { console.warn('[stock] déduction à la livraison :', e && e.message); }
+      // v7.5.197 : demande de déduction posée en file AVANT l'enregistrement du « livré » ; envoyée à la base après
+      // (plus bas) ; une erreur de stock n'empêche jamais l'enregistrement du « livré »
+      try { stkDeductionPoser(cLv); } catch(e) { console.warn('[stock] demande de déduction :', e && e.message); }
       // v7.1.7 : Retirer du stock camion (camion → livré client)
       try {
         var itemsCamion = stockCamion.filter(function(sc){
@@ -11262,7 +11316,8 @@ function setLvSt(tid, idx, st, _annOk) {
   if(cmd) {
     cmd.statut=st;
     if (st === 'livré') { try { offlineQueueAdd('commande', cmd); } catch(e) {} } // v7.5.196 : « livré » gardé dans la file jusqu'au succès
-    sbSaveCommande(cmd); // ✅ Sync commande Supabase → Realtime admin
+    var _pLv = sbSaveCommande(cmd); // ✅ Sync commande Supabase → Realtime admin
+    if (st === 'livré') stkDemanderDeduction(cmd, _pLv); // v7.5.197 : déduction par la base, après le « livré »
   }
   renderCmds(); renderDash();
   toast({'en-route':'🚚 En route !','arrivé':'📍 Arrivé !','reporté':'📅 Reporté','absent':'🔔 Absent signalé'}[st]||'Statut mis à jour','info');
@@ -11502,25 +11557,25 @@ function validerSig(){
       }
     }
     // v7.5.191 (bug du 24/11) : le « livré » est enregistré AVANT la déduction du stock, et la déduction vient
-    // APRÈS la fin de cet enregistrement (elle réenregistre la commande avec stock_deduit : l'ordre reste
-    // garanti). Une erreur de stock (exception, refus de la base) n'empêche jamais l'enregistrement du « livré ».
+    // APRÈS la fin de cet enregistrement (v7.5.197 : la base n'accepte de déduire que d'une commande « livré » et pose
+    // elle-même stock_deduit). Une erreur de stock (exception, refus de la base) n'empêche jamais l'enregistrement du « livré ».
     var _cmdLivre = cmd, _pLivre = null;
     // v7.5.193 (réserve Codex P2) : verrou pendant TOUT l'enregistrement (livré + déduction + stock_deduit) : la
     // relève et le Realtime ne remplacent pas la commande ; la déduction travaille sur L'OBJET VALIDÉ (_cmdLivre),
     // jamais sur une nouvelle recherche dans la liste.
     livDebut(_cmdLivre.id);
-    // v7.5.196 (réserve Codex P2 sur a84fa19) : AVANT l'envoi, l'appareil garde (1) la déduction à faire
-    // (mx_deductions_attente, reprise au chargement si l'application est fermée ou rechargée pendant
-    // l'enregistrement) et (2) le « livré » avec son encaissement dans la file (retiré dès que l'envoi réussit,
-    // rejoué sinon) : ni le « livré » ni l'encaissement ni la déduction ne dépendent d'un envoi qui aboutit.
-    try { dedPoser(_cmdLivre); } catch(e) { console.warn('[stock] déduction à reprendre :', e && e.message); }
+    // v7.5.196 / v7.5.197 : AVANT l'envoi, l'appareil garde dans la file (1) la demande de déduction du stock à la
+    // base (« deduction|<commande> », reprise au chargement si l'application est fermée ou rechargée pendant
+    // l'enregistrement) et (2) le « livré » avec son encaissement (retiré dès que l'envoi réussit, rejoué sinon) : ni
+    // le « livré » ni l'encaissement ni la déduction ne dépendent d'un envoi qui aboutit.
+    try { stkDeductionPoser(_cmdLivre); } catch(e) { console.warn('[stock] demande de déduction :', e && e.message); }
     try { offlineQueueAdd('commande', _cmdLivre); } catch(e) { console.warn('[livré] enregistrement préventif :', e && e.message); }
     try { _pLivre = sbSaveCommande(_cmdLivre); } catch(e) { console.warn('[livré] enregistrement :', e && e.message); } // ✅ Sync commande Supabase → Realtime admin
     // v7.5.192 : la déduction est RENVOYÉE dans la chaîne (exception ou promesse rejetée → même .catch final) :
     // aucun rejet de promesse ne remonte sans être traité.
     Promise.resolve(_pLivre)
       .catch(function(e) { console.warn('[livré] enregistrement :', e && e.message); })
-      .then(function() { return stkDeduireStock(_cmdLivre.id, _cmdLivre); })
+      .then(function() { return stkDemanderDeduction(_cmdLivre); }) // v7.5.197 : la base déduit, une seule fois
       .catch(function(e) { console.warn('[stock] déduction à la livraison :', e && e.message); })
       .then(function() {
         livFin(_cmdLivre.id);
@@ -13063,7 +13118,7 @@ let produits = [
 // Mouvements de stock (historique)
 // v7.5.85 : démarre VIDE. Avant, 5 mouvements de DÉMO (Mme Lemaire, Mme Perrin, #1042…)
 // polluaient l'historique des mouvements de stock. Les VRAIS mouvements s'ajoutent via
-// stkDeduireStock/stkReCrediterStock (sortie-livraison / retour-annulation).
+// dedAppliquer (réponse de la base, v7.5.197) / stkReCrediterStock (sortie-livraison / retour-annulation).
 let stkMouvements = [];
 
 let editProduitId = null;
@@ -13251,180 +13306,9 @@ function getStockDispo(p) {
   return dispo === Infinity ? 0 : dispo;
 }
 
-// v7.5.192 : lance un enregistrement asynchrone sans laisser remonter d'erreur (exception immédiate ou promesse
-// rejetée) : la déduction du stock ne doit jamais casser la livraison.
-function stkSansRejet(fn, quoi) {
-  try { return Promise.resolve(fn()).catch(function(e) { console.warn('[stock] enregistrement ' + (quoi || '') + ' :', e && e.message); }); }
-  catch(e) { console.warn('[stock] enregistrement ' + (quoi || '') + ' :', e && e.message); return Promise.resolve(); }
-}
-
-function stkDeduireStock(cmdId, cmdValidee) {
-  // v7.5.193 (réserve Codex P2) : l'objet validé par la livraison est prioritaire sur la liste (qu'une relève a
-  // pu remplacer par une version périmée)
-  var cmd = (cmdValidee && cmdValidee.id === cmdId) ? cmdValidee : commandes.find(function(c){ return c.id === cmdId; });
-  if (!cmd) return;
-
-  // v7.5.79 : garde anti double-déduction sur un FLAG DURABLE (cmd.stockDeduit, persisté
-  // en base) au lieu de stkMouvements (volatil, réinitialisé à chaque rechargement) ->
-  // avant, une commande livrée puis rouverte après un rechargement était déduite 2 fois.
-  if (cmd.stockDeduit) return;
-  // v7.5.196 (réserves Codex P2 et 2 sur a84fa19) : une déduction déjà calculée sur cet appareil (envoi en cours,
-  // terminée ou en échec) n'est JAMAIS recalculée (sinon double déduction) ; une seule à la fois par commande.
-  var _dedE = dedLire()[cmdId];
-  if (_dedEnCours[cmdId] || (_dedE && _dedE.etat !== 'a_deduire')) return;
-  // v7.5.196 : chaque produit touché est envoyé UNE fois à la fin, avec son stock d'avant et la quantité retirée
-  var _aEnv = {}, _ordreEnv = [];
-  function aEnvoyer(prodX, ancien) {
-    var k = prodX.id || prodX.nom;
-    if (!_aEnv[k]) { _aEnv[k] = { prod: prodX, avant: Number(ancien) || 0 }; _ordreEnv.push(k); }
-  }
-
-  // v7.5.194 (réserve Codex 4) : TOUS les enregistrements lancés (produits + commande) sont attendus avant de rendre
-  // la main : validerSig ne relâche le verrou du « livré » qu'à la fin de toutes ces sauvegardes.
-  var _pEnr = [];
-
-  // Fonction interne de déduction pour un produit (par ID d'abord, repli nom)
-  function deduire(produitId, nomProduit, qte) {
-    var prod = stkTrouverProduit(produitId, nomProduit);
-    if (!prod) { console.warn('Stock: produit non trouvé:', nomProduit, produitId); return; }
-
-    var qteADeduire = Math.max(1, parseInt(qte) || 1);
-
-    // NOUVEAU : si produit est un ENSEMBLE (composants definis),
-    // decrementer les composants au lieu du produit lui-meme.
-    // SUBSTITUTION AUTO : si composant en rupture, chercher un produit
-    // de meme categorie + meme dimension avec stock suffisant.
-    if (prod.composants && Array.isArray(prod.composants) && prod.composants.length > 0) {
-      prod.composants.forEach(function(c) {
-        var composantProd = produits.find(function(x){ return x.id === c.id; });
-        if (!composantProd) { console.warn('Stock: composant non trouve:', c.id); return; }
-        var qteRequise = (c.qte || 1) * qteADeduire;
-
-        // Recherche substitut si stock insuffisant
-        var cible = composantProd;
-        var substitue = false;
-        if (composantProd.stock < qteRequise) {
-          // Critere : meme cat + meme dim (apres normalisation), actif, stock suffisant
-          var dimRef = (composantProd.dim || '').toLowerCase().replace(/\s+/g, '');
-          var substitut = produits.find(function(x){
-            if (x.id === composantProd.id) return false;
-            if (x.actif === false) return false;
-            if (x.cat !== composantProd.cat) return false;
-            var dimX = (x.dim || '').toLowerCase().replace(/\s+/g, '');
-            if (!dimRef || !dimX || !dimX.includes(dimRef.split('×')[0]+'×'+dimRef.split('×')[1])) {
-              // fallback : meme dim brute
-              if (dimX !== dimRef) return false;
-            }
-            return x.stock >= qteRequise;
-          });
-          if (substitut) {
-            cible = substitut;
-            substitue = true;
-          }
-        }
-
-        var ancienStockComp = cible.stock;
-        cible.stock = Math.max(0, cible.stock - qteRequise);
-
-        stkMouvements.unshift({
-          date: new Date().toISOString().split('T')[0],
-          produit: cible.nom,
-          type: 'sortie-livraison',
-          qte: -(ancienStockComp - cible.stock),
-          stockApres: cible.stock,
-          motif: 'Livraison ' + cmdId + ' → ' + (cmd.client||'') + ' (composant de ' + prod.nom + ' ×' + qteADeduire + ')'
-               + (substitue ? ' [SUBSTITUTION auto : remplace ' + composantProd.nom + ' en rupture]' : ''),
-          auto: true,
-          substitue: substitue,
-        });
-
-        aEnvoyer(cible, ancienStockComp); // v7.5.196 : envoyé à la fin (une fois par produit)
-
-        // Alertes (silencieuses si juste substitution sans nouveau probleme)
-        if (cible.stock === 0) {
-          toast('❌ RUPTURE composant : ' + cible.nom, 'err');
-          notifAjout('urgent','stock','Rupture — '+cible.nom,'Composant epuise apres livraison ensemble.','Gerer le stock','stock');
-        } else if (cible.stock <= cible.seuil) {
-          toast('⚠️ Stock bas composant : ' + cible.nom + ' (' + cible.stock + ' restants)', 'info');
-        }
-      });
-      return; // L'ensemble lui-meme n'est PAS decremente
-    }
-
-    // Cas produit simple — comportement historique
-    var ancienStock = prod.stock;
-    prod.stock = Math.max(0, prod.stock - qteADeduire);
-
-    // Enregistrer le mouvement
-    stkMouvements.unshift({
-      date: new Date().toISOString().split('T')[0],
-      produit: prod.nom,
-      type: 'sortie-livraison',
-      qte: -(ancienStock - prod.stock),
-      stockApres: prod.stock,
-      motif: 'Livraison ' + cmdId + ' → ' + (cmd.client||''),
-      auto: true,
-    });
-
-    // Sync Supabase — v7.5.196 : envoyé à la fin (une fois par produit)
-    aEnvoyer(prod, ancienStock);
-
-    // Alertes stock
-    if (prod.stock === 0) {
-      toast('❌ RUPTURE : ' + prod.nom, 'err');
-      notifAjout('urgent','stock','Rupture — '+prod.nom,'Stock épuisé après livraison.','Gérer le stock','stock');
-    } else if (prod.stock <= prod.seuil) {
-      toast('⚠️ Stock bas : ' + prod.nom + ' (' + prod.stock + ' restants)', 'info');
-      notifAjout('warn','stock','Stock bas — '+prod.nom, prod.stock+' unité(s). Seuil: '+prod.seuil,'Réapprovisionner','stock');
-    }
-  }
-
-  // Gérer les lignes multiples si elles existent
-  if (cmd.lignes && cmd.lignes.length > 0) {
-    cmd.lignes.forEach(function(l) {
-      deduire(l.produitId, l.nom || l.produit, l.qte || 1);
-    });
-  } else {
-    // Produit unique
-    deduire(null, cmd.produit, cmd.qte || 1);
-  }
-
-  // v7.5.196 (réserves Codex P2 et 2 sur a84fa19) : l'état « envoi » (produits à enregistrer, stock d'avant, quantité
-  // retirée) est écrit sur l'appareil AVANT tout envoi ; stock_deduit = vrai (v7.5.79 : anti double-déduction
-  // durable, recrédit à l'annulation) n'est enregistré QUE lorsque toutes les sauvegardes produit ont réussi
-  // (dedConclure). Produit gardé en file : « déduction en attente », conclue après son rejeu réussi ; produit
-  // refusé ou envoi incertain : « en échec » (notification), stock_deduit reste faux.
-  var _suivi = {};
-  _ordreEnv.forEach(function(k) { var e = _aEnv[k]; _suivi[k] = { nom: e.prod.nom || String(k), avant: e.avant, delta: e.avant - (Number(e.prod.stock) || 0), uid: 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8) }; });
-  _dedEnCours[cmdId] = true;
-  dedMaj(cmdId, { etat: 'envoi', ts: (_dedE && _dedE.ts) || Date.now(), produits: _suivi });
-  _ordreEnv.forEach(function(k) {
-    var e = _aEnv[k];
-    _pEnr.push(stkSansRejet(function() { return sbSaveProduit(e.prod, { avant: _suivi[k].avant, delta: _suivi[k].delta, uid: _suivi[k].uid }); }, 'produit')); // v7.5.192 : aucun rejet non traité ; v7.5.194 : attendu
-  });
-
-  // Rafraîchir stock si page ouverte
-  var pStock = document.getElementById('p-stock');
-  if (pStock && pStock.classList.contains('on')) stkRender();
-  if (role !== 'collab') finRender();
-  // v7.5.193 / v7.5.194 : fin de TOUS les enregistrements (stkSansRejet ne rejette jamais ; allSettled par sûreté),
-  // y compris celui de stock_deduit : validerSig ne relâche le verrou du « livré » qu'après.
-  return Promise.allSettled(_pEnr).then(function(res) {
-    delete _dedEnCours[cmdId];
-    // résultat de chaque produit (dans l'ordre des envois) : 'ok' retiré des produits à enregistrer, 'refus' ou
-    // résultat inconnu (exception) = échec ; 'file' = déduction en attente (conclue après le rejeu réussi)
-    var e = dedLire()[cmdId], echecs = [];
-    if (!e || e.etat !== 'envoi') return;
-    res.forEach(function(x, n) {
-      var v = x && x.status === 'fulfilled' ? x.value : undefined, k = _ordreEnv[n];
-      if (v === 'ok') { if (e.produits) delete e.produits[k]; }
-      else if (v !== 'file') echecs.push(_suivi[k] ? _suivi[k].nom : String(k));
-    });
-    dedMaj(cmdId, { produits: e.produits || {} });
-    if (echecs.length) { dedEchec(cmdId, echecs.join(', ')); return; }
-    return dedConclure(cmdId, cmd);
-  });
-}
+// v7.5.197 : stkDeduireStock (calcul du nouveau stock sur le téléphone, envoyé produit par produit) est SUPPRIMÉ : le
+// retrait est fait par la base (public.deduire_stock_livraison, migration 040 ; cf. stkDemanderDeduction). Les mêmes
+// règles y sont reproduites : lignes / produit, quantités, ENSEMBLE → composants, substitution automatique en rupture.
 
 // v7.5.79 : "Actualiser" recharge le VRAI stock depuis Supabase (avant : simple re-render
 // mémoire -> ne montrait pas les changements faits ailleurs).
@@ -15246,7 +15130,7 @@ function smsUpdateCounters() {
 // ── AMÉLIORATION MOBILE LIVREUR ──
 // Ajout notification auto lors de changement statut
 const _origSetLvSt = setLvSt;
-// (setLvSt est déjà défini, on patche via notifAjout dans stkDeduireStock)
+// (setLvSt est déjà défini, on patche via notifAjout dans dedAppliquer)
 
 // ════════════════════════════════════════
 // SUPABASE — SYNC PRODUITS
@@ -15339,49 +15223,9 @@ function produitRefusSignaler(p, status, detail, rEnv, tsV) {
   } catch(e) {}
 }
 
-// v7.5.196 (réserve Codex 2 sur a84fa19) : chaque sauvegarde produit RENVOIE son résultat : 'ok' (enregistrée),
-// 'file' (gardée en file pour le rejeu) ou 'refus' (refus définitif, signalé) ; il est reporté sur les déductions
-// suivies (dedSuiviProduit) : stock_deduit = vrai seulement quand tous les produits d'une livraison sont 'ok'.
+// v7.5.196 : chaque sauvegarde produit RENVOIE son résultat : 'ok' (enregistrée), 'file' (gardée en file pour le
+// rejeu) ou 'refus' (refus définitif, signalé). v7.5.197 : plus de suivi de déduction (fait par la base).
 async function sbSaveProduit(p, opts) {
-  var r = await sbSaveProduitEnvoyer(p, opts);
-  try { if (p) dedSuiviProduit(p.id || p.nom, r, (opts && opts.uid) ? [opts.uid].concat(opts.inclut || []) : null); } catch(e) { console.warn('[stock] suivi de déduction :', e && e.message); }
-  return r;
-}
-// PATCH du stock par le livreur, conditionnel si avant est un nombre ; etat = ok | conflit (0 ligne) | reseau | temp | refus
-async function sbPatchStockLivreur(id, avant, valeur) {
-  var resp;
-  try {
-    resp = await fetch(SUPABASE_URL + '/rest/v1/produits?id=eq.' + encodeURIComponent(id) + (typeof avant === 'number' ? '&stock=eq.' + avant : '') + '&select=id', {
-      method: 'PATCH',
-      headers: {
-        'Content-Type':  'application/json',
-        'apikey':        SUPABASE_KEY,
-        'Authorization': 'Bearer ' + SUPABASE_KEY,
-        'Prefer':        'return=representation',
-      },
-      body: JSON.stringify({ stock: valeur, updated_at: new Date().toISOString() })
-    });
-  } catch(e) { return { etat: 'reseau', detail: e && e.message }; } // vraie coupure réseau
-  if (!resp.ok) {
-    var err = ''; try { err = await resp.text(); } catch(e) {}
-    return { etat: httpTemporaire(resp.status) ? 'temp' : 'refus', status: resp.status, detail: err }; // v7.5.192 : temporaire → file
-  }
-  try { var lignes = await resp.json(); if (Array.isArray(lignes) && lignes.length === 0) return { etat: 'conflit', status: resp.status }; } catch(e) {}
-  return { etat: 'ok' };
-}
-// lecture seule du stock actuel d'un produit (après un conflit) ; etat = ok | absent | reseau | temp | refus
-async function sbLireStockProduit(id) {
-  var resp;
-  try { resp = await fetch(SUPABASE_URL + '/rest/v1/produits?select=id,stock&id=eq.' + encodeURIComponent(id), { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } }); }
-  catch(e) { return { etat: 'reseau', detail: e && e.message }; }
-  if (!resp.ok) return { etat: httpTemporaire(resp.status) ? 'temp' : 'refus', status: resp.status };
-  var lu = null; try { lu = await resp.json(); } catch(e) { lu = null; }
-  if (!Array.isArray(lu)) return { etat: 'refus', status: resp.status, detail: 'réponse illisible' };
-  if (!lu.length || !lu[0]) return { etat: 'absent' };
-  var s = parseInt(lu[0].stock, 10);
-  return isFinite(s) ? { etat: 'ok', stock: s } : { etat: 'refus', status: resp.status, detail: 'stock illisible' };
-}
-async function sbSaveProduitEnvoyer(p, opts) {
   if (!p) return 'refus';
   // v7.5.193 (réserve Codex 2) : au rejeu, le rôle d'ORIGINE de l'élément décide du mode d'envoi
   var rEnv = (opts && opts.role) || ((typeof role !== 'undefined') ? role : null);
@@ -15391,32 +15235,25 @@ async function sbSaveProduitEnvoyer(p, opts) {
   // v7.5.191 : une session LIVREUR n'a que le droit de MODIFIER le stock (politique sess_livreur_stock) : pas
   // d'ajout, donc pas d'« upsert » (POST merge-duplicates = INSERT … ON CONFLICT, refusé HTTP 401 depuis le 24/11).
   // Le livreur envoie seulement { stock, updated_at } par PATCH sur la fiche existante. Admin / collab : inchangé.
+  // v7.5.197 : la livraison ne passe plus par ici (déduction faite par la base) ; PATCH conditionnel et delta retirés.
   if (rEnv === 'livreur') {
     if (!p.id) { produitRefusSignaler(p, '', 'produit sans identifiant', rEnv, tsV); return 'refus'; }
-    // v7.5.196 (réserve Codex 3 sur a84fa19) : une déduction connue (opts.avant = stock attendu en base, opts.delta =
-    // quantité retirée) part en PATCH CONDITIONNEL : …&stock=eq.<avant>. 0 ligne modifiée = le stock a changé
-    // ailleurs (conflit) → relecture du stock actuel (lecture seule) puis UN nouvel essai avec le delta réappliqué
-    // (…&stock=eq.<actuel>, stock = actuel − delta) ; nouveau conflit → « Stock non mis à jour : <produit> — à
-    // vérifier ». Sans delta connu (anciens éléments en file) : envoi de la valeur absolue comme avant.
-    var cond = !!(opts && typeof opts.avant === 'number' && typeof opts.delta === 'number');
-    if (cond) { oqCtx.avant = opts.avant; oqCtx.delta = opts.delta; if (opts.uid) oqCtx.uid = opts.uid; if (Array.isArray(opts.inclut) && opts.inclut.length) oqCtx.inclut = opts.inclut.slice(); }
-    var cible = cond ? Math.max(0, opts.avant - opts.delta) : (p.stock || 0);
-    var essai = await sbPatchStockLivreur(p.id, cond ? opts.avant : null, cible);
-    if (essai.etat === 'conflit' && cond) {
-      var lu = await sbLireStockProduit(p.id);
-      if (lu.etat === 'reseau' || lu.etat === 'temp') { sbSaveEchec('produit', p, 'Produit', lu.status || '', lu.detail || '', oqCtx); return 'file'; }
-      if (lu.etat === 'absent') { produitRefusSignaler(p, 200, 'aucune ligne modifiée', rEnv, tsV); return 'refus'; }
-      if (lu.etat !== 'ok') { produitRefusSignaler(p, lu.status || '', lu.detail || 'relecture du stock refusée', rEnv, tsV); return 'refus'; }
-      oqCtx.avant = lu.stock; // le prochain essai (file) partira du stock relu
-      cible = Math.max(0, lu.stock - opts.delta);
-      essai = await sbPatchStockLivreur(p.id, lu.stock, cible);
-      if (essai.etat === 'conflit') { produitRefusSignaler(p, 200, 'stock modifié ailleurs pendant l\'envoi (deux essais)', rEnv, tsV); return 'refus'; }
+    var respL;
+    try {
+      respL = await fetch(SUPABASE_URL + '/rest/v1/produits?id=eq.' + encodeURIComponent(p.id) + '&select=id', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'return=representation' },
+        body: JSON.stringify({ stock: p.stock || 0, updated_at: new Date().toISOString() })
+      });
+    } catch(e) { sbSaveEchec('produit', p, 'Produit', '', e && e.message, oqCtx); return 'file'; } // vraie coupure réseau : file
+    if (!respL.ok) {
+      var errL = ''; try { errL = await respL.text(); } catch(e) {}
+      if (httpTemporaire(respL.status)) { sbSaveEchec('produit', p, 'Produit', respL.status, errL, oqCtx); return 'file'; } // v7.5.192
+      produitRefusSignaler(p, respL.status, errL, rEnv, tsV); return 'refus';
     }
-    if (essai.etat === 'reseau' || essai.etat === 'temp') { sbSaveEchec('produit', p, 'Produit', essai.status || '', essai.detail || '', oqCtx); return 'file'; } // coupure ou erreur temporaire : file
-    if (essai.etat === 'refus') { produitRefusSignaler(p, essai.status, essai.detail, rEnv, tsV); return 'refus'; }
-    // aucune ligne modifiée sans condition (fiche absente ou refusée par la base sans erreur) : signalé, pas de file
-    if (essai.etat === 'conflit') { produitRefusSignaler(p, 200, 'aucune ligne modifiée', rEnv, tsV); return 'refus'; }
-    oqSucces('produit', p, tsV, rEnv, cond ? { delta: opts.delta, ecrit: cible, uid: opts.uid, inclut: opts.inclut } : null); // v7.5.196
+    // aucune ligne modifiée (fiche absente ou refusée par la base sans erreur) : signalé, pas de file
+    try { var lignesL = await respL.json(); if (Array.isArray(lignesL) && lignesL.length === 0) { produitRefusSignaler(p, 200, 'aucune ligne modifiée', rEnv, tsV); return 'refus'; } } catch(e) {}
+    oqSucces('produit', p, tsV, rEnv);
     return 'ok';
   }
   // v7.5.195 (réserve Codex 1 sur 6f88c79) : une fiche admin / collab REJOUÉE ou RELANCÉE (opts.ts = date de sa
