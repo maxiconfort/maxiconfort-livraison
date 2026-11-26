@@ -605,9 +605,61 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
     await new Promise((r) => setTimeout(r, 5)); await b.sbLoadAll();
     test('lecture complète suivante (commencée après la perte) : liste relue (#2 disparue), preuve rendue', egal(ids(b), ['#1']) && b.tdbLocalComplet() === true, [ids(b), b.cmdChargementComplet]);
     b = await charger([ligne('#1')]);
-    test('insertion et modification : appliquées comme avant ; événement sans identifiant (hors suppression) : ignoré',
+    test('insertion et modification AVEC identifiant : appliquées comme avant, preuve gardée',
       recu(b, { eventType: 'INSERT', new: ligne('#5'), old: {} }) === true && recu(b, { eventType: 'UPDATE', new: ligne('#1', { statut: 'livré' }), old: { id: '#1' } }) === true
-      && recu(b, { eventType: 'UPDATE', new: {}, old: {} }) === false && egal(ids(b), ['#1', '#5']) && b.commandes.find((c) => c.id === '#1').statut === 'livré' && b.tdbLocalComplet() === true);
+      && egal(ids(b), ['#1', '#5']) && b.commandes.find((c) => c.id === '#1').statut === 'livré' && b.tdbLocalComplet() === true);
+    // v7.5.170 (revue Codex PR 27 sur d0f6efd) : modification SANS identifiant = même règle que la suppression sans identifiant
+    signaux = 0; b.tdbSignaler = () => { signaux++; };
+    change = recu(b, { eventType: 'UPDATE', new: {}, old: {} });
+    test('modification SANS identifiant après le chargement : liste gardée, preuve RETIRÉE → lecture par période, tableau prévenu (avant : ignorée, preuve gardée)',
+      change === true && egal(ids(b), ['#1', '#5']) && b.cmdChargementComplet === false && b.tdbLocalComplet() === false && signaux === 1, [ids(b), b.cmdChargementComplet, signaux]);
+    b = await charger([ligne('#1')]);
+    recu(b, { eventType: 'INSERT', new: null, old: {} });
+    test('insertion sans ligne du tout (new absent) : preuve retirée, sans erreur', b.tdbLocalComplet() === false);
+    b = await charger([ligne('#1')]); recu(b, { eventType: 'UPDATE', new: { client: 'sans id' }, old: {} });
+    b._base = [ligne('#1', { statut: 'livré' })]; // la commande modifiée, relue en entier
+    await new Promise((r) => setTimeout(r, 5)); await b.sbLoadAll();
+    test('lecture complète suivante : commande à jour (livré), preuve rendue', b.commandes[0].statut === 'livré' && b.tdbLocalComplet() === true, [b.commandes, b.cmdChargementComplet]);
+    test('rejeu pendant un chargement : modification ou insertion sans identifiant = ordre indécidable (preuve refusée), comme une suppression',
+      b.cmdDecisionRejeu({ eventType: 'UPDATE', new: {}, old: {} }, null) === 'incertain' && b.cmdDecisionRejeu({ eventType: 'INSERT', new: null }, null) === 'incertain'
+      && b.cmdDecisionRejeu({ eventType: 'DELETE', new: {}, old: {} }, null) === 'incertain');
+  }
+  console.log('\n7 octies. REVUE CODEX PR 27 SUR d0f6efd (P2 : prix de revient relus après une réception faite sur un autre appareil)');
+  {
+    let lectures = 0, revientBase = 10, attente = null; const el = { innerHTML: '' }, minuteurs = [];
+    let gestionnaire = null;
+    const b = { console: { log() {}, warn() {} }, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, isFinite, Promise, zones: [],
+      role: 'admin', commandes: [], cmdChargementComplet: false, produits: [{ id: 'p', nom: 'Matelas fictif', cat: 'Matelas', prix: 30, stock: 10, seuil: 1 }],
+      ARR_ETAT: { revients: {} }, SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k', getZoneFromAdresse: () => null,
+      setTimeout: (f, ms) => { minuteurs.push({ f, ms }); return minuteurs.length; }, clearTimeout: () => {}, renderDash: () => {},
+      stkRender() {}, buildProduitOptions() {}, aoDepuisBase: () => false, venDepuisBase: () => ({ vendable: true, prixDefini: true }),
+      document: { getElementById: (id) => (id === 'tdb-contenu' ? el : id === 'p-dashboard' ? { classList: { contains: () => true } } : id === 'dash-periode' ? { value: 'jour' } : null) },
+      fetch: async () => ({ ok: true, json: async () => [] }),
+      // lecture FICTIVE de produits_revient : le revient moyen de la base au moment de la lecture
+      arrChargerRevients: () => { lectures++; const v = revientBase; const fin = () => { b.ARR_ETAT.revients = { p: { prix_revient_ht: String(v) } }; return true; };
+        if (attente === 'bloquer') return new Promise((ok) => { attente = () => ok(fin()); }); return Promise.resolve(fin()); },
+      sb: { channel: () => ({ on(ev, f, fn) { gestionnaire = fn; return this; }, subscribe() { return this; } }) } };
+    vm.createContext(b);
+    vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b);
+    vm.runInContext(fonction('function sbStartRealtimeProduits() {'), b);
+    b.sbStartRealtimeProduits();
+    const tic = () => new Promise((r) => setImmediate(r));
+    const valeur = () => b.tdbStock(b.produits, b.ARR_ETAT.revients, true).valeurRevient;
+    b.tdbRendre(); await tic();
+    test('départ : 10 u au revient de 10 € → 100 € (une lecture des revients)', lectures === 1 && valeur() === 100, { lectures, v: valeur() });
+    // réception sur un AUTRE appareil : +10 u à 30 € → revient moyen 20 €, 20 u ; l'appli ne reçoit que la mise à jour du produit
+    revientBase = 20;
+    gestionnaire({ eventType: 'UPDATE', new: { id: 'p', nom: 'Matelas fictif', cat: 'Matelas', prix: 30, stock: 20, seuil: 1 }, old: { id: 'p' } });
+    test('mise à jour distante du stock : prix de revient à relire (revientsDemandes remis à false)', b.produits[0].stock === 20 && b.TDB_ETAT.revientsDemandes === false);
+    b.tdbRendre(); await tic();
+    test('20 u au revient moyen de 20 € → 400 € (et non 200 € avec l\'ancien coût)', lectures === 2 && valeur() === 400 && el.innerHTML.includes('400'), { lectures, v: valeur() });
+    // signal pendant une lecture en cours : pas de seconde lecture en parallèle, relecture à l'arrivée de la première
+    attente = 'bloquer'; b.tdbSignaler('revients'); b.tdbRendre();
+    const enCours = attente; revientBase = 25; b.tdbSignaler('revients'); b.tdbRendre();
+    test('nouveau signal PENDANT une lecture : aucune lecture en parallèle', lectures === 3 && b.TDB_ETAT.revientsVol === true, lectures);
+    attente = null; enCours(); await tic(); await tic();
+    test('…à l\'arrivée de la lecture en cours : relecture aussitôt (revient le plus récent : 20 u × 25 € = 500 €)', lectures === 4 && valeur() === 500 && b.TDB_ETAT.revientsVol === false, { lectures, v: valeur() });
+    test('branchement : le temps réel produits signale aussi « revients »', /tdbSignaler\('produits'\);[^\n]*\n(\s*\/\/[^\n]*\n)*\s*if \(typeof tdbSignaler === 'function'\) tdbSignaler\('revients'\);/.test(fonction('function sbStartRealtimeProduits() {')));
   }
 
   console.log('\n7 quinquies. REVUE CODEX PR 27 SUR a46f8aa (lectures suivies par période, champs échappés)');

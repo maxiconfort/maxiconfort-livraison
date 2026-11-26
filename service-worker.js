@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.170 - Tableau de bord : modification temps reel sans identifiant = preuve de chargement retiree ; prix de revient relus apres une mise a jour distante du stock (revue Codex sur d0f6efd) (26/11/2026)
 // v7.5.164 - Arrivage : verrou de validation garde pendant toute l'operation (navigation bloquee), banc 039 en echec si pglite manque (revue Codex sur 636f873) (26/11/2026)
 // v7.5.164 - Fusion des corrections arrivages v7.5.163 (creation a prix nul = prix a definir, homonyme refuse ; correction de taux refusee sur rupture de continuite) dans tableau de bord + menus (26/11/2026)
 // v7.5.163 - Produits : creation a prix nul = prix a definir (non vendable), homonyme d'une reference en attente refuse ; arrivage : correction de taux refusee si le revient a change hors historique (26/11/2026)

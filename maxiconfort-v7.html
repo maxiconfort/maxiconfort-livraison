@@ -5597,7 +5597,7 @@ function cmdMemeVersion(r, s) {
 function cmdDecisionRejeu(payload, snap) {
   var r = payload && payload.new;
   if (payload && payload.eventType === 'DELETE') return (payload.old && payload.old.id) ? 'supprimer' : 'incertain';
-  if (!r || !r.id) return 'ignorer';
+  if (!r || !r.id) return 'incertain'; // v7.5.170 (revue Codex PR 27 sur d0f6efd) : commande inconnue -> ordre indécidable, preuve refusée
   if (!snap) return 'appliquer';
   var d = cmdComparerDates(r.updated_at, snap.updated_at);
   if (d === 1) return 'appliquer';
@@ -5648,7 +5648,10 @@ function cmdAppliquerTempsReel(r) {
 //   * suppression SANS identifiant (ancienne ligne non transmise par le temps réel) → impossible de savoir laquelle retirer : la PREUVE
 //     de chargement complet est RETIRÉE (cmdSynchroPerdue ; le tableau de bord lit alors la base par période) et n'est rendue que par
 //     la lecture complète suivante (sbLoadAll, 60 s), qui relit toute la liste ; même règle que le rejeu (cmdDecisionRejeu : incertain) ;
-//   * insertion ou modification avec identifiant → appliquée comme avant ; autre événement sans identifiant → ignoré, comme avant.
+//   * insertion ou modification avec identifiant → appliquée comme avant ;
+//   * v7.5.170 (revue Codex PR 27 sur d0f6efd) : insertion ou modification SANS identifiant → la commande concernée ne peut pas être
+//     mise à jour dans la liste locale, qui peut rester périmée : même règle que la suppression sans identifiant (preuve RETIRÉE,
+//     lecture par période jusqu'à la lecture complète suivante). Avant : ignorée, preuve gardée (chiffres locaux possiblement faux).
 // Rend vrai si la liste ou la preuve a changé (affichage à rafraîchir).
 function cmdTempsReelAppliquer(payload) {
   if (payload && payload.eventType === 'DELETE') {
@@ -5658,7 +5661,7 @@ function cmdTempsReelAppliquer(payload) {
     return true;
   }
   var r = payload && payload.new;
-  if (!r || !r.id) return false;
+  if (!r || !r.id) { cmdSynchroPerdue(((payload && payload.eventType) || 'événement') + ' temps réel sans identifiant'); return true; }
   cmdAppliquerTempsReel(r);
   return true;
 }
@@ -7379,7 +7382,7 @@ function tdbHtml(e) {
 var TDB_COLS = 'id,prix,date_commande,date_livraison,statut,stpaie,montant_enc,origine,adresse,livreur';
 // v7.5.151 (revue Codex PR 27 sur a46f8aa) : lectures suivies PAR PÉRIODE — vols[clé] = numéro de la lecture EN COURS pour cette
 // période (plus une seule « enCours » globale) ; cache[clé] = lecture réussie d'une période qui n'était plus affichée à son arrivée.
-var TDB_ETAT = { cle: '', lignes: null, at: 0, vols: {}, cache: {}, erreur: '', revientsDemandes: false, gen: 0, req: 0, echecs: 0, reessaiA: 0 };
+var TDB_ETAT = { cle: '', lignes: null, at: 0, vols: {}, cache: {}, erreur: '', revientsDemandes: false, revientsGen: 0, revientsVol: false, gen: 0, req: 0, echecs: 0, reessaiA: 0 };
 var TDB_DUREE = 60000; // durée de vie de la lecture « par période » (ms)
 // v7.5.149 (revue Codex PR 27 sur 5cca91d) : après un ÉCHEC de lecture, l'avertissement reste affiché et AUCUNE relecture immédiate
 // n'est relancée (avant : tdbRendre relançait aussitôt la lecture, l'erreur était remplacée par « Mise à jour… » et, base injoignable,
@@ -7400,7 +7403,9 @@ function tdbVisible() { var p = document.getElementById('p-dashboard'); return !
  *  Le tableau, s'il est affiché, est redessiné une fois (regroupement 0,8 s) ; sinon à sa prochaine ouverture (goTo). */
 function tdbSignaler(quoi) {
   if (quoi === 'commandes') { TDB_ETAT.gen++; TDB_ETAT.at = 0; }
-  if (quoi === 'revients') TDB_ETAT.revientsDemandes = false;
+  // v7.5.170 (revue Codex PR 27 sur d0f6efd, P2) : « revients » = relecture demandée ; si une lecture est déjà en cours, elle est
+  // refaite à son arrivée (génération), jamais deux lectures en même temps (une réponse ancienne ne remplace pas une récente)
+  if (quoi === 'revients') { TDB_ETAT.revientsDemandes = false; TDB_ETAT.revientsGen++; }
   clearTimeout(_tdbSignal);
   _tdbSignal = setTimeout(function () { _tdbSignal = null; if (tdbVisible()) renderDash(); }, 800);
 }
@@ -7516,7 +7521,11 @@ function tdbRendre() {
     }
     else { lignes = locales(); note = 'Mise à jour depuis la base…'; }
   }
-  if (admin && !TDB_ETAT.revientsDemandes && typeof arrChargerRevients === 'function') { TDB_ETAT.revientsDemandes = true; arrChargerRevients().then(function () { tdbRendre(); }); }
+  if (admin && !TDB_ETAT.revientsDemandes && !TDB_ETAT.revientsVol && typeof arrChargerRevients === 'function') {
+    var gRev = TDB_ETAT.revientsGen; TDB_ETAT.revientsDemandes = true; TDB_ETAT.revientsVol = true;
+    var finRev = function () { TDB_ETAT.revientsVol = false; if (gRev !== TDB_ETAT.revientsGen) TDB_ETAT.revientsDemandes = false; tdbRendre(); };
+    arrChargerRevients().then(finRev, finRev);
+  }
   var revients = admin && typeof ARR_ETAT !== 'undefined' ? ARR_ETAT.revients : {};
   var d = tdbDonnees(lignes, P, admin, tdbZoneDe);
   el.innerHTML = tdbHtml({ P: P, admin: admin, note: note, reessayer: reessayer, cur: d.cur, prev: d.prev, zones: d.zones, livreurs: d.livreurs,
@@ -16844,6 +16853,9 @@ function sbStartRealtimeProduits() {
       stkRender();
       buildProduitOptions();
       if (typeof tdbSignaler === 'function') tdbSignaler('produits'); // v7.5.138
+      // v7.5.170 (revue Codex PR 27 sur d0f6efd, P2) : stock modifié à distance (ex. réception d'arrivage sur un autre appareil, qui
+      // change aussi produits_revient) -> prix de revient relus, sinon la valeur du stock est calculée avec les anciens coûts
+      if (typeof tdbSignaler === 'function') tdbSignaler('revients');
     })
     .subscribe();
 }
