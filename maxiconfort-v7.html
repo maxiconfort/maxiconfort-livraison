@@ -3930,11 +3930,18 @@ function venDepuisBase(r) {
 function venEst(p, liste) {
   if (!p) return false;
   if (p.vendable === false || p.prixDefini === false) return false;
+  // v7.5.152 (revue Codex PR 26 sur 2ce2dad) : un composant IDENTIFIÉ (identifiant non vide) mais INTROUVABLE dans le catalogue rend
+  // l'ensemble NON VENDABLE, comme la base (interne.produit_non_vendable : q.id is null) — avant, il était ignoré et l'ensemble restait
+  // proposé alors que la base refusait la ligne. Le catalogue de l'appli ne charge que les produits ACTIFS (sbLoadProduits,
+  // actif=eq.true) : un composant inactif y est absent (ou gardé avec actif = false après le temps réel) ; il est donc aussi traité
+  // comme non vendable (règle plus stricte que la base, jamais plus permissive). Composant sans identifiant : ignoré, comme la base.
   if (p.composants && Array.isArray(p.composants) && p.composants.length) {
     for (var i = 0; i < p.composants.length; i++) {
       var c = p.composants[i] || {};
-      var cp = (liste || []).find(function(x) { return x.id === c.id; });
-      if (cp && (cp.vendable === false || cp.prixDefini === false)) return false;
+      var cid = (c.id == null) ? '' : String(c.id);
+      if (!cid) continue;
+      var cp = (liste || []).find(function(x) { return x && String(x.id) === cid; });
+      if (!cp || cp.actif === false || cp.vendable === false || cp.prixDefini === false) return false;
     }
   }
   return true;
@@ -3956,11 +3963,41 @@ function venNombre(v) {
   if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) return null;
   var n = parseFloat(s); return isFinite(n) ? n : null;
 }
+// v7.5.152 (P2 Codex PR 26 sur 2ce2dad) : montants comparés AU CENTIME (interne.l039_centimes) — une commande importée arrondie au
+// centime (tiktok-sync : 3 × 19,90 = 59.7) et la même ligne recalculée ici (3 * 19.9 = 59.699999999999996) sont égales.
+// Arrondi au plus proche, demi-centime loin de zéro (comme round(numeric, 2)) ; la petite marge absorbe l'erreur binaire (1.005 → 1.01).
+function venCentimes(v) {
+  var n = venNombre(v);
+  if (n == null) return null;
+  var c = Math.round(Math.abs(n) * 100 + 1e-7) / 100;
+  return (n < 0 && c !== 0) ? -c : c;
+}
 // Signature d'une ligne (interne.l039_signature_ligne) : quantité (absente ou 0 = 1), prix unitaire, prix brut, remises, sous-total.
 function venSignature(l) {
   var e = l || {}, q = venNombre(e.qte);
-  return JSON.stringify([(q == null || q === 0) ? 1 : q, venNombre(e.prixUnit), venNombre(e.prixBrut), venNombre(e.remiseLigne),
-    venNombre(e.remiseVal), e.remiseType === undefined ? null : e.remiseType, venNombre(e.sousTotal)]);
+  return JSON.stringify([(q == null || q === 0) ? 1 : q, venCentimes(e.prixUnit), venCentimes(e.prixBrut), venCentimes(e.remiseLigne),
+    venCentimes(e.remiseVal), e.remiseType === undefined ? null : e.remiseType, venCentimes(e.sousTotal)]);
+}
+// v7.5.152 (P2 Codex PR 26 sur 2ce2dad) : une ligne FIGÉE (ancienne offre ou produit non vendable) d'une commande rouverte garde ses
+// valeurs D'ORIGINE tant que ses champs modifiables (produit, quantité, remise, type de remise) n'ont pas été touchés : changer
+// l'adresse ou la date n'oblige plus à régénérer la ligne (avant, getLignesData la recalculait et la base pouvait la refuser).
+// venMemoriserLigne : appelée à l'ouverture de la commande, après le remplissage de la ligne ; venLigneOrigine : copie de la ligne
+// d'origine si rien n'a changé, sinon null (la ligne est alors recalculée comme avant).
+function venSaisieLigne(div) {
+  var v = function(s) { var e = div.querySelector(s); return e ? String(e.value == null ? '' : e.value) : ''; };
+  return JSON.stringify([v('.ligne-produit'), v('.ligne-qte'), v('.ligne-remise'), v('.ligne-remise-type')]);
+}
+function venMemoriserLigne(div, l) {
+  if (!div || !l || typeof div.querySelector !== 'function') return;
+  div._ligneOrigine = JSON.parse(JSON.stringify(l));
+  div._saisieOrigine = venSaisieLigne(div);
+}
+function venLigneOrigine(div) {
+  if (!div || !div._ligneOrigine || div._saisieOrigine == null || typeof div.querySelector !== 'function') return null;
+  var sel = div.querySelector('.ligne-produit'), opt = sel && sel.selectedOptions && sel.selectedOptions[0];
+  if (!opt || !opt.dataset || opt.dataset.ancienne !== '1') return null;
+  if (venSaisieLigne(div) !== div._saisieOrigine) return null;
+  return JSON.parse(JSON.stringify(div._ligneOrigine));
 }
 function venLignesRefusees(lignes, liste, ancienne) {
   var pidDe = function(l) { var p = venProduitDeLigne(l, liste); return p ? p.id : (l && l.produitId); };
@@ -8803,6 +8840,9 @@ function getLignesData() {
     const inpRem  = div.querySelector('.ligne-remise');
     const selRT   = div.querySelector('.ligne-remise-type');
     if (!selProd?.value) return;
+    // v7.5.152 : ligne figée non modifiée -> valeurs d'origine de la commande, telles quelles (venLigneOrigine)
+    const _orig = venLigneOrigine(div);
+    if (_orig) { lignes.push(_orig); return; }
     const prod  = produits.find(p => p.id === selProd.value);
     // v7.4.0 : si le produit n'est plus en catalogue, reconstruire les valeurs depuis dataset
     // v7.5.118 : calcul confié à aoLigne (ligne figée = nom et prix de la commande d'origine)
@@ -8952,6 +8992,8 @@ function ouvrirEditionCommande(id) {
       if (remEl) remEl.value = l.remiseVal || 0;
       var remTEl = document.querySelector('#lignes-produits > div:last-child .ligne-remise-type');
       if (remTEl) remTEl.value = l.remiseType || 'pct';
+      // v7.5.152 : ligne figée -> valeurs d'origine gardées tant que produit, quantité et remise ne changent pas (venLigneOrigine)
+      if (ligneAo) venMemoriserLigne(document.querySelector('#lignes-produits > div:last-child'), l);
     });
   } else {
     // Commande ancienne sans lignes — créer une ligne avec le produit principal

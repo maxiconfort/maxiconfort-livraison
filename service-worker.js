@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.152 - Produits non vendables : composant introuvable ou inactif = ensemble non vendable ; lignes figees gardees telles quelles, comparees au centime (26/11/2026)
 // v7.5.150 - Arrivage : stock dans l'empreinte, quantites figees, revients pagines ; lignes figees comme la base ; catalogue WhatsApp complet (26/11/2026)
 // v7.5.147 - Produits non vendables : tous les champs d'une ligne examines ; arrivage : valorisation de l'apercu reverifiee par la base (26/11/2026)
 // v7.5.144 - Produits non vendables : identifiant et nom contradictoires refuses, catalogue serveur lu jusqu'a une page vide (26/11/2026)
@@ -12,7 +13,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-150';
+const CACHE_VERSION = 'maxiconfort-v7-5-152';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

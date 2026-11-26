@@ -69,6 +69,31 @@ let ok = 0, ko = 0; const test = (nom, cond, det) => { if (cond) { ok++; console
   test('produit hors catalogue (commande du site) : comportement inchangé', l[0].produitId === '_custom_Produit du site' && l[0].produit === 'Produit du site' && l[0].prixUnit === 193.23 && l[0].qte === 2, l[0]);
   B = nouveauBac([ligne(null, 1)]); test('ligne sans produit choisi : ignorée, comme avant', B.bac.getLignesData().length === 0);
 
+  console.log('\n3 bis. COMMANDE IMPORTÉE (3 × 19,90) DONT LE PRODUIT EST DEVENU NON VENDABLE : SIMPLE CHANGEMENT D\'ADRESSE (v7.5.152, P2 Codex PR 26)');
+  {
+    // ligne telle que tiktok-sync l'enregistre (prixBrut et sousTotal arrondis au centime), valeurs FICTIVES
+    const NV = { id: 'pr-taie-nv', nom: 'Taie Fictive NV', cat: 'Linge', prix: 19.9, vendable: false, stock: 0, seuil: 2 };
+    const origine = { produitId: '', produit: 'Taie Fictive NV', sku: 'SKU-FICTIF-1', qte: 3, prixUnit: 19.9, prixBrut: 59.7, remiseLigne: 0, remiseVal: 0, remiseType: 'pct', sousTotal: 59.7 };
+    // ligne du formulaire MODIFIABLE (mêmes sélecteurs que le vrai formulaire), remplie comme à l'ouverture de la commande
+    const divModifiable = () => { const opt = option(NV.id, 'Taie Fictive NV — 19.9 € · NON VENDABLE (prix à définir)', { ancienne: '1', prixUnit: '19.9', customNom: 'Taie Fictive NV' });
+      const champs = { '.ligne-produit': { value: NV.id, selectedOptions: [opt] }, '.ligne-qte': { value: '3' }, '.ligne-remise': { value: '0' }, '.ligne-remise-type': { value: 'pct' }, '.ligne-sous-total': { textContent: '', style: {} } };
+      return { _c: champs, querySelector: s => champs[s] || null }; };
+    let d = divModifiable(); B = nouveauBac([d]); bac = B.bac; bac.produits.push(NV); bac.venMemoriserLigne(d, origine);
+    l = bac.getLignesData();
+    test('adresse ou date seule modifiée : la ligne figée part TELLE QUELLE (valeurs d\'origine, champs importés compris)', l.length === 1 && JSON.stringify(l[0]) === JSON.stringify(origine), l);
+    test('…et l\'appli ne la refuse pas', bac.venLignesRefusees(l, bac.produits, { lignes: [origine] }).length === 0);
+    test('la copie gardée est indépendante (modifier la ligne envoyée ne change pas l\'origine)', (() => { l[0].qte = 99; return bac.getLignesData()[0].qte === 3; })());
+    d = divModifiable(); B = nouveauBac([d]); bac = B.bac; bac.produits.push(NV); l = bac.getLignesData();
+    test('ligne recalculée (non mémorisée) : 3 * 19.9 = 59.699999999999996 acceptée quand même (comparaison au centime)', l.length === 1 && l[0].prixBrut !== 59.7 && bac.venLignesRefusees(l, bac.produits, { lignes: [origine] }).length === 0, l[0]);
+    d = divModifiable(); B = nouveauBac([d]); bac = B.bac; bac.produits.push(NV); bac.venMemoriserLigne(d, origine); d._c['.ligne-qte'].value = '4'; l = bac.getLignesData();
+    test('quantité changée (3 → 4) : la ligne est recalculée et refusée (produit non vendable)', l.length === 1 && l[0].qte === 4 && JSON.stringify(bac.venLignesRefusees(l, bac.produits, { lignes: [origine] })) === JSON.stringify(['Taie Fictive NV']), l[0]);
+    d = divModifiable(); B = nouveauBac([d]); bac = B.bac; bac.produits.push(NV); bac.venMemoriserLigne(d, origine); d._c['.ligne-remise'].value = '5'; l = bac.getLignesData();
+    test('remise changée : la ligne est recalculée (plus la ligne d\'origine) et refusée', l[0].remiseVal === 5 && bac.venLignesRefusees(l, bac.produits, { lignes: [origine] }).length === 1, l[0]);
+    const dOk = { querySelector: s => s === '.ligne-produit' ? { value: 'pr-mat', selectedOptions: [option('pr-mat', 'Matelas 140×190×20 — 189 €')] } : s === '.ligne-qte' ? { value: '1' } : s === '.ligne-remise' ? { value: '0' } : s === '.ligne-remise-type' ? { value: 'pct' } : null };
+    B = nouveauBac([dOk]); bac = B.bac; bac.venMemoriserLigne(dOk, { produitId: 'pr-mat', produit: 'Matelas 140×190×20', qte: 1, prixUnit: 150, sousTotal: 150 }); l = bac.getLignesData();
+    test('ligne d\'un produit VENDABLE (non figée) : prix du catalogue, comme avant (la mémorisation ne vaut que pour une ligne figée)', l[0].prixUnit === 189, l[0]);
+  }
+
   console.log('\n4. HISTORIQUE ET STOCK : MENTION VISIBLE, DÉDUCTION INTACTE');
   ({ bac } = nouveauBac());
   test('libellé exact « ANCIENNE OFFRE — NE PLUS UTILISER »', bac.AO_LIBELLE === 'ANCIENNE OFFRE — NE PLUS UTILISER' && bac.aoBadge().includes('ANCIENNE OFFRE — NE PLUS UTILISER'));
