@@ -4120,6 +4120,17 @@ function venNorm(s) {
   return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/×/g, 'x')
     .replace(/\s+/g, ' ').trim().replace(/(\d) ?x ?(\d)/g, '$1x$2');
 }
+// v7.5.163 (revue Codex PR 26 sur a0c1bf8) : état d'un produit CRÉÉ dans l'application. Même règle que interne.l039_creation_etat
+// (migration 039) : prix absent ou ≤ 0 → 'a_definir' (non vendable, quel que soit le rôle) ; hors administrateur, prix > 0 mais un produit
+// « prix à définir » du même nom (normalisé) existe → 'homonyme_refuse' ; hors administrateur sinon → 'vendable' (flux actuel gardé) ;
+// administrateur avec prix > 0 → null (état saisi).
+function venCreationEtat(estAdmin, prix, nom, liste) {
+  if (!((parseFloat(prix) || 0) > 0)) return 'a_definir';
+  if (estAdmin) return null;
+  var n = venNorm(nom);
+  var homonyme = !!n && (liste || []).some(function(q){ return q && q.prixDefini === false && venNorm(q.nom) === n; });
+  return homonyme ? 'homonyme_refuse' : 'vendable';
+}
 // Produit d'une ligne de commande : produitId d'un produit connu (fiable) ; sinon produit NON VENDABLE dont le nom normalisé est celui
 // de la ligne (« produit » ou « nom »), ou dont la référence interne est celle de la ligne (« reference », « sku », « _ugs » ou le nom) :
 // la ligne est ambiguë et rapportée à ce produit. Sinon null (hors catalogue). Même règle que interne.l039_lignes_identifiees.
@@ -14663,6 +14674,11 @@ function sauvegarderProduit() {
       data.prix = _pAvant.prix;
     }
   }
+  // v7.5.163 (revue Codex PR 26 sur a0c1bf8) : CRÉATION — même décision que la base (interne.l039_creation_etat) : prix nul =
+  // « prix à définir », non vendable ; hors administrateur, un homonyme d'un produit « à définir » est refusé.
+  var _creation = editProduitId ? null : venCreationEtat(role === 'admin', data.prix, nom, produits);
+  if (_creation === 'homonyme_refuse') { toast('« ' + nom + ' » attend son prix de vente : seul l\'administrateur le fixe', 'err'); return; }
+  if (_creation === 'a_definir') { data.prix = 0; data.prixDefini = false; data.vendable = false; }
   if (editProduitId) {
     const p = produits.find(x => x.id === editProduitId);
     Object.assign(p, data);
@@ -14670,7 +14686,7 @@ function sauvegarderProduit() {
   } else {
     data.id = 'pr' + Date.now();
     produits.push(data);
-    toast('Produit ajouté au catalogue ✓', 'ok');
+    toast(_creation === 'a_definir' ? 'Produit ajouté — ' + VEN_LIBELLE + ' (l\'administrateur fixera le prix) ✓' : 'Produit ajouté au catalogue ✓', 'ok');
   }
   closeModal('m-produit');
   // Sync Supabase

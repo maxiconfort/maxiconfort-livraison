@@ -100,9 +100,29 @@ returns text language sql immutable as $$
 $$;
 revoke all on function interne.l039_etat_vente_refus(text, boolean, boolean, boolean, numeric) from public, anon, authenticated;
 
+-- CRÉATION d'un produit (revue Codex PR 26 sur a0c1bf8 : la garde protégeait les marqueurs en modification, pas à la création — une
+-- collaboratrice pouvait créer un produit VENDABLE à prix nul, y compris sous un autre identifiant que celui d'une référence en attente).
+-- Décision PURE sur une VRAIE création (aucun produit de cet identifiant ; l'« upsert » d'un produit existant garde sa règle) :
+--   'a_definir'        : prix absent ou ≤ 0, QUEL QUE SOIT le rôle → créé « prix à définir », NON VENDABLE, prix NULL ;
+--                        seul l'administrateur fixera ensuite le prix (passage « à définir » → « défini » : prix > 0, administrateur) ;
+--   'homonyme_refuse'  : session non administrateur, prix > 0, mais un produit « prix à définir » porte déjà ce nom (normalisé) :
+--                        refusé — on ne contourne pas une référence en attente en la recréant sous un autre identifiant ;
+--   'vendable'         : session non administrateur, prix > 0, sans homonyme en attente → vendable avec son prix (flux ACTUEL de
+--                        l'application : la collaboratrice ajoute des produits du catalogue depuis l'écran Stock, gardé volontairement) ;
+--   NULL               : administrateur ou serveur (pas de session), prix > 0 → état proposé tel quel.
+create or replace function interne.l039_creation_etat(p_admin boolean, p_prix numeric, p_homonyme_a_definir boolean)
+returns text language sql immutable as $$
+  select case
+    when coalesce(p_prix, 0) <= 0 then 'a_definir'
+    when p_admin is not true and p_homonyme_a_definir is true then 'homonyme_refuse'
+    when p_admin is not true then 'vendable'
+  end
+$$;
+revoke all on function interne.l039_creation_etat(boolean, numeric, boolean) from public, anon, authenticated;
+
 create or replace function interne.produits_vente_garde() returns trigger
 language plpgsql security definer set search_path = public, interne, pg_catalog as $$
-declare r text := (select public.session_role()); v_refus text; v_ex record;
+declare r text := (select public.session_role()); v_refus text; v_ex record; v_existe boolean := false; v_creation text;
 begin
   if tg_op = 'UPDATE' and r is not null and r <> 'admin' then
     new.vendable := old.vendable;
@@ -110,21 +130,35 @@ begin
     new.reference_interne := old.reference_interne;
     new.caracteristiques := old.caracteristiques;
   end if;
+  if tg_op = 'INSERT' then
+    select p.prix_vente_defini, p.vendable, p.prix into v_ex from public.produits p where p.id = new.id;
+    v_existe := found;
+  end if;
   if tg_op = 'INSERT' and r is not null and r <> 'admin' then
     new.reference_interne := null; new.caracteristiques := null;
-    -- création ordinaire depuis l'application : produit vendable avec son prix, comme avant
-    new.vendable := true; new.prix_vente_defini := true;
+    -- « upsert » d'un produit existant : marqueurs comme avant (en cas de conflit, la ligne proposée n'écrase pas les marqueurs)
+    if v_existe then new.vendable := true; new.prix_vente_defini := true; end if;
+  end if;
+  -- VRAIE création (revue Codex PR 26 sur a0c1bf8) : décision PURE interne.l039_creation_etat (auto-contrôle section 10)
+  if tg_op = 'INSERT' and not v_existe then
+    v_creation := interne.l039_creation_etat(r is null or r = 'admin', new.prix,
+      (r is not null and r <> 'admin') and exists (select 1 from public.produits q
+         where q.prix_vente_defini = false and interne.l039_norm(q.nom) is not null and interne.l039_norm(q.nom) = interne.l039_norm(new.nom)));
+    if v_creation = 'a_definir' then
+      new.prix := null; new.prix_vente_defini := false; new.vendable := false;
+    elsif v_creation = 'homonyme_refuse' then
+      raise exception 'PRIX DE VENTE : « % » attend son prix de vente ; seul l''administrateur le fixe (création refusée)', new.nom using errcode = 'P0001';
+    elsif v_creation = 'vendable' then
+      new.vendable := true; new.prix_vente_defini := true;
+    end if;
   end if;
   -- Enregistrement « upsert » de l'application (INSERT … ON CONFLICT, sbSaveProduit) d'un produit DÉJÀ présent dont le prix n'est pas
   -- encore défini (relecture complète PR 26 sur fd751b8) : la ligne proposée (prix NULL, prix_vente_defini par défaut à true) passe
   -- par ce déclencheur et par les contraintes AVANT la détection du conflit. Elle reprend donc l'état de vente ACTUEL du produit
   -- (« à définir », non vendable, prix NULL) : la modification ordinaire (stock, emplacement…) reste possible et ne fixe pas de prix ;
   -- le déclencheur UPDATE garde ensuite les mêmes règles qu'avant.
-  if tg_op = 'INSERT' then
-    select p.prix_vente_defini, p.vendable, p.prix into v_ex from public.produits p where p.id = new.id;
-    if found and v_ex.prix_vente_defini = false then
-      new.prix_vente_defini := false; new.vendable := v_ex.vendable; new.prix := v_ex.prix;
-    end if;
+  if tg_op = 'INSERT' and v_existe and v_ex.prix_vente_defini = false then
+    new.prix_vente_defini := false; new.vendable := v_ex.vendable; new.prix := v_ex.prix;
   end if;
   if not new.prix_vente_defini then
     if tg_op = 'UPDATE' and old.prix_vente_defini = false then new.prix := old.prix;  -- reste « à définir »
@@ -542,6 +576,36 @@ returns boolean language sql immutable as $$
   end
 $$;
 
+-- CONTINUITÉ DE LA VALORISATION (revue Codex PR 26 sur a0c1bf8) : le rejeu d'une correction de taux (recalculer_revient_arrivage) ne
+-- connaît QUE l'historique des lots. Si le revient courant d'un produit a changé autrement (écriture directe d'un administrateur côté
+-- serveur, reprise manuelle, autre source future), le rejeu l'écraserait avec une valeur fausse. Solution prudente retenue : avant toute
+-- écriture, on rejoue l'historique TEL QU'IL EST (revient effectif de chaque lot, sans la correction demandée) ; si le résultat n'est pas
+-- le revient courant (produits_revient), la continuité est ROMPUE et la correction est REFUSÉE en entier (rien n'est écrit).
+-- Revient du produit obtenu en rejouant son historique actuel (même algorithme que le rejeu de recalculer_revient_arrivage).
+create or replace function interne.l039_revient_rejoue(p_produit_id text) returns numeric
+language plpgsql stable security definer set search_path = public, interne, pg_catalog as $$
+declare x record; v_cur numeric; v_premier boolean := true;
+begin
+  for x in
+    select o.methode, o.stock_avant, o.quantite, o.revient_moyen_avant, coalesce(c.revient_ht, o.revient_ht) as revient_effectif
+      from public.prix_revient_historique o
+      join public.arrivages ar on ar.id = o.arrivage_id
+      left join public.prix_revient_historique c on c.id = o.remplace_par
+     where o.produit_id = p_produit_id and o.source = 'arrivage'
+     order by ar.ordre_reception nulls last, ar.id, o.id
+  loop
+    if v_premier then v_cur := x.revient_moyen_avant; v_premier := false; end if;
+    v_cur := interne.revient_apres(x.methode, x.stock_avant, v_cur, x.quantite, x.revient_effectif);
+  end loop;
+  return v_cur;
+end $$;
+revoke all on function interne.l039_revient_rejoue(text) from public, anon, authenticated;
+-- Décision PURE : la continuité est-elle rompue ? Revient courant (NULL = ligne produits_revient absente) comparé au rejeu, à 4 décimales
+-- (précision de produits_revient). Rejeu NULL et revient absent = rien à comparer (continuité gardée).
+create or replace function interne.l039_continuite_rompue(p_courant numeric, p_rejoue numeric) returns boolean
+language sql immutable as $$ select round(p_courant, 4) is distinct from round(p_rejoue, 4) $$;
+revoke all on function interne.l039_continuite_rompue(numeric, numeric) from public, anon, authenticated;
+
 -- Revient unitaire HT d'un LOT (revue Codex PR 26 sur 66def07) : CALCULÉ PAR LA BASE, jamais cru sur parole —
 --   FOB unitaire × taux de change + frais d'import répartis uniformément sur les quantités ATTENDUES de l'arrivage
 --   (frais_u = frais_import_ht / Σ quantite_attendue), arrondi à 4 décimales. Même formule que recalculer_revient_arrivage.
@@ -750,13 +814,16 @@ end $$;
 -- (remplace_par) ; les autres lots ne changent pas de revient et gardent leurs lignes telles quelles.
 -- Verrous dans le même ordre que valider_reception_arrivage : arrivage → produits → produits_revient, avant toute lecture.
 -- Les commandes ne sont jamais touchées.
+-- Rupture de continuité (revue Codex PR 26 sur a0c1bf8) : si le revient courant d'un produit concerné n'est plus celui que redonne
+-- l'historique (interne.l039_revient_rejoue / interne.l039_continuite_rompue), la correction est refusée AVANT toute écriture
+-- (erreur 'rupture_continuite', produits et valeurs listés) : le rejeu ne doit jamais écraser une valeur qu'il ne connaît pas.
 create or replace function public.recalculer_revient_arrivage(p_arrivage_id bigint, p_nouveau_taux numeric) returns json
 language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
 declare
   a public.arrivages%rowtype; l record; h record; x record;
   v_total integer; v_frais_u numeric; v_rev numeric; v_id bigint; v_res jsonb := '[]'::jsonb;
   v_cur numeric; v_prov boolean; v_premier boolean; v_nb integer;
-  v_h_avant numeric; v_h_prov_avant boolean; v_h_apres numeric; v_h_prov_apres boolean;
+  v_h_avant numeric; v_h_prov_avant boolean; v_h_apres numeric; v_h_prov_apres boolean; v_ruptures jsonb;
 begin
   if (select public.session_role()) is distinct from 'admin' then
     return json_build_object('ok', false, 'erreur', 'session_admin_requise');
@@ -776,6 +843,21 @@ begin
   if a.statut = 'recu' then
     perform 1 from public.produits where id in (select produit_id from public.arrivage_lignes where arrivage_id = a.id) order by id for update;
     perform 1 from public.produits_revient where produit_id in (select produit_id from public.arrivage_lignes where arrivage_id = a.id) order by produit_id for update;
+    -- CONTINUITÉ (revue Codex PR 26 sur a0c1bf8), AVANT toute écriture : pour chaque produit valorisé par cet arrivage, le rejeu de
+    -- l'historique actuel doit redonner le revient courant ; sinon le revient a changé hors historique → correction REFUSÉE en entier.
+    select coalesce(jsonb_agg(jsonb_build_object('produit_id', k.produit_id, 'revient_courant', k.courant, 'revient_rejoue', k.rejoue) order by k.produit_id), '[]'::jsonb)
+      into v_ruptures
+      from (select d.produit_id, pr.prix_revient_ht as courant, interne.l039_revient_rejoue(d.produit_id) as rejoue
+              from (select distinct produit_id from public.prix_revient_historique
+                     where arrivage_id = a.id and source = 'arrivage' and remplace_par is null) d
+              left join public.produits_revient pr on pr.produit_id = d.produit_id) k
+     where interne.l039_continuite_rompue(k.courant, k.rejoue);
+    if jsonb_array_length(v_ruptures) > 0 then
+      return json_build_object('ok', false, 'erreur', 'rupture_continuite', 'produits', v_ruptures,
+        'message', 'CORRECTION DE TAUX REFUSÉE : le prix de revient actuel de ' || jsonb_array_length(v_ruptures)
+          || ' produit(s) a été modifié en dehors de l''historique des arrivages ; le rejeu l''écraserait. Rien n''a été modifié : '
+          || 'vérifier le revient de ces produits (et l''historique) avant de corriger le taux.');
+    end if;
   end if;
   for l in select * from public.arrivage_lignes where arrivage_id = a.id order by produit_id loop
     v_rev := round(l.fob_unitaire * p_nouveau_taux + v_frais_u, 4);
@@ -956,7 +1038,7 @@ begin
   if interne.l039_etat_vente_refus('UPDATE', false, true, true, 0) is distinct from 'prix_obligatoire' then f := 'modification prix défini à 0'; end if;
   if interne.l039_etat_vente_refus('INSERT', null, false, true, null) is distinct from 'sans_prix_vendable' then f := 'insertion vendable sans prix défini'; end if;
   if interne.l039_etat_vente_refus('INSERT', null, false, false, null) is not null then f := 'insertion à définir non vendable acceptée'; end if;
-  if interne.l039_etat_vente_refus('INSERT', null, true, true, 0) is not null then f := 'création ordinaire (prix 0) acceptée'; end if;
+  if interne.l039_etat_vente_refus('INSERT', null, true, true, 0) is not null then f := 'ligne à prix 0 et prix défini non refusée (upsert d''un produit existant ; une vraie création passe d''abord « à définir »)'; end if;
   if interne.l039_etat_vente_refus('UPDATE', false, true, true, 120) is not null then f := 'prix fixé (> 0) accepté'; end if;
   if interne.l039_etat_vente_refus('UPDATE', true, true, false, 90) is not null then f := 'retrait de la vente accepté'; end if;
   if interne.l039_empreinte('CUMP', 1.1, 30, true, '[]') = interne.l039_empreinte('CUMP', 1.2, 30, true, '[]') then f := 'empreinte : taux changé'; end if;
@@ -1001,6 +1083,21 @@ begin
     then f := 'remise globale : montant modifié d''un centime'; end if;
   if interne.l039_remise_signature('10', 'pct', '15') = interne.l039_remise_signature(null, null, null)
     then f := 'remise globale effacée'; end if;
+  -- CRÉATION d'un produit (revue Codex PR 26 sur a0c1bf8) : prix nul ⇒ « à définir », homonyme d'une référence en attente refusé
+  if interne.l039_creation_etat(false, 0, false) is distinct from 'a_definir' then f := 'création collaboratrice à prix 0 : à définir'; end if;
+  if interne.l039_creation_etat(false, null, false) is distinct from 'a_definir' then f := 'création collaboratrice sans prix : à définir'; end if;
+  if interne.l039_creation_etat(false, -5, false) is distinct from 'a_definir' then f := 'création à prix négatif : à définir'; end if;
+  if interne.l039_creation_etat(true, 0, false) is distinct from 'a_definir' then f := 'création administrateur à prix 0 : à définir'; end if;
+  if interne.l039_creation_etat(false, 0, true) is distinct from 'a_definir' then f := 'homonyme sans prix : à définir (rien de vendable)'; end if;
+  if interne.l039_creation_etat(false, 199, true) is distinct from 'homonyme_refuse' then f := 'création collaboratrice avec prix d''un homonyme en attente refusée'; end if;
+  if interne.l039_creation_etat(false, 199, false) is distinct from 'vendable' then f := 'création collaboratrice ordinaire avec prix : vendable'; end if;
+  if interne.l039_creation_etat(true, 199, true) is not null then f := 'création administrateur avec prix : état proposé'; end if;
+  -- CONTINUITÉ de la valorisation (revue Codex PR 26 sur a0c1bf8)
+  if interne.l039_continuite_rompue(21, 21.00004) then f := 'continuité : même revient à 4 décimales'; end if;
+  if not interne.l039_continuite_rompue(25, 21) then f := 'continuité rompue : revient modifié hors historique'; end if;
+  if not interne.l039_continuite_rompue(null, 21) then f := 'continuité rompue : revient courant absent'; end if;
+  if not interne.l039_continuite_rompue(21, null) then f := 'continuité rompue : revient sans historique'; end if;
+  if interne.l039_continuite_rompue(null, null) then f := 'continuité : rien à comparer'; end if;
   if f is not null then
     raise exception 'Auto-contrôle 039 (revient / identification) en échec : cas « % ». Migration annulée.', f;
   end if;

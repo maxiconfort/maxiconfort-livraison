@@ -346,9 +346,15 @@ function nouveauBac(opts) {
       recevoir(a, recuLe, stockAvant, q, rev) { arr[a] = { recuLe, ordre: ++ordre, prov: true }; // ordre = séquence tirée après les verrous
         const r = { id: ++idh, a, source: 'arrivage', st: stockAvant, q, rev, prov: true, moyAv: cur, moyAvProv: prov, remplace: null };
         prov = provApres('CUMP', stockAvant, cur, q, prov, true); cur = N('CUMP', stockAvant, cur, q, rev); hist.push(r); },
+      // revient modifié EN DEHORS de l'historique (écriture directe côté serveur) : rupture de continuité
+      modifierHorsHistorique(v) { cur = v; },
       finaliser(a, revDef) {
         const h = hist.find(x => x.a === a && x.source === 'arrivage' && x.remplace === null);
         const lots = hist.filter(x => x.source === 'arrivage').sort((x, y) => arr[x.a].ordre - arr[y.a].ordre || (x.a < y.a ? -1 : 1) || x.id - y.id);
+        // CONTINUITÉ (revue Codex PR 26 sur a0c1bf8, interne.l039_revient_rejoue) : rejeu de l'historique ACTUEL, sans la correction
+        let cA = null, premA = true;
+        for (const x of lots) { const corr = x.remplace ? hist.find(y => y.id === x.remplace) : null; if (premA) { cA = x.moyAv; premA = false; } cA = N('CUMP', x.st, cA, x.q, corr ? corr.rev : x.rev); }
+        if (Math.round((cur == null ? NaN : cur) * 1e4) !== Math.round((cA == null ? NaN : cA) * 1e4) && !(cur == null && cA == null)) return 'rupture_continuite';
         let c = null, p = false, premier = true;
         for (const x of lots) {
           const corr = x.remplace ? hist.find(y => y.id === x.remplace) : null;
@@ -357,7 +363,7 @@ function nouveauBac(opts) {
           p = provApres('CUMP', x.st, c, x.q, p, provEff); c = N('CUMP', x.st, c, x.q, revEff);
         }
         const corr = { id: ++idh, a, source: 'recalcul_taux', rev: revDef, prov: false, remplace: null }; hist.push(corr); h.remplace = corr.id;
-        cur = c; prov = p; arr[a].prov = false; },
+        cur = c; prov = p; arr[a].prov = false; return 'ok'; },
       get revient() { return cur; }, get provisoire() { return prov; }, hist };
   }
   // scénario Codex 2 : A 10 à 100 puis B 10 à 200 (stock nul au départ) ; A finalisé à 120, B à 220 → (10×120 + 10×220) / 20 = 170
@@ -377,6 +383,28 @@ function nouveauBac(opts) {
   // réceptions qui se chevauchent : B a commencé AVANT A (heure de début de transaction plus ancienne) mais a obtenu les verrous APRÈS
   const M2 = modele(); M2.recevoir('A', 5, 0, 10, 100); M2.recevoir('B', 1, 10, 10, 200); M2.finaliser('A', 120); M2.finaliser('B', 220);
   test('réceptions qui se chevauchent : le rejeu suit l\'ordre réel (séquence), pas l\'heure de début ⇒ 170', M2.revient === 170, M2.revient);
+  // RUPTURE DE CONTINUITÉ (revue Codex PR 26 sur a0c1bf8) : revient changé hors historique entre deux arrivages ⇒ correction REFUSÉE
+  let MR = modele(); MR.recevoir('A', 1, 0, 10, 100); MR.modifierHorsHistorique(150); MR.recevoir('B', 2, 10, 10, 200);
+  const revAvantR = MR.revient, nbHistR = MR.hist.length;
+  test('rupture : revient modifié entre A et B hors historique ⇒ correction de A refusée, rien n\'est écrit (revient et historique inchangés)',
+    MR.finaliser('A', 120) === 'rupture_continuite' && MR.revient === revAvantR && MR.hist.length === nbHistR && MR.hist.every(x => x.remplace === null), { r: MR.revient });
+  MR = modele(); MR.recevoir('A', 1, 0, 10, 100); MR.recevoir('B', 2, 10, 10, 200); MR.modifierHorsHistorique(99);
+  test('rupture : revient modifié après le dernier lot ⇒ correction refusée', MR.finaliser('B', 220) === 'rupture_continuite' && MR.revient === 99);
+  MR = modele(); MR.recevoir('A', 1, 0, 10, 100); MR.recevoir('B', 2, 10, 10, 200);
+  test('continuité gardée (aucune écriture hors historique) ⇒ corrections successives acceptées', MR.finaliser('B', 220) === 'ok' && MR.finaliser('A', 120) === 'ok' && MR.revient === 170);
+  test('base : rupture de continuité contrôlée AVANT toute écriture, correction refusée en entier (rupture_continuite)',
+    rec.includes("where interne.l039_continuite_rompue(k.courant, k.rejoue);") && rec.includes("'erreur', 'rupture_continuite'")
+    && rec.indexOf("'rupture_continuite'") < rec.indexOf('update public.arrivage_lignes set revient_unitaire_ht')
+    && rec.indexOf("'rupture_continuite'") > rec.indexOf('from public.produits_revient where produit_id in')
+    && rec.includes('interne.l039_revient_rejoue(d.produit_id)') && rec.includes('left join public.produits_revient pr on pr.produit_id = d.produit_id'));
+  const rejF = sql.slice(sql.indexOf('create or replace function interne.l039_revient_rejoue'), sql.indexOf('revoke all on function interne.l039_revient_rejoue'));
+  test('base : l039_revient_rejoue = même rejeu que la correction (ordre de réception, revient effectif, sans la correction demandée)',
+    rejF.includes('order by ar.ordre_reception nulls last, ar.id, o.id') && rejF.includes('coalesce(c.revient_ht, o.revient_ht) as revient_effectif')
+    && rejF.includes("where o.produit_id = p_produit_id and o.source = 'arrivage'") && rejF.includes('v_cur := interne.revient_apres(x.methode, x.stock_avant, v_cur, x.quantite, x.revient_effectif);'));
+  const auto10c = sql.slice(sql.indexOf("-- 10. Auto-contrôle à l'application : revient d'un lot"));
+  test('base : auto-contrôle EXÉCUTÉ de la continuité (même revient, modifié, absent, sans historique, rien à comparer)',
+    ['continuité : même revient à 4 décimales', 'continuité rompue : revient modifié hors historique', 'continuité rompue : revient courant absent',
+     'continuité rompue : revient sans historique', 'continuité : rien à comparer'].every(c => auto10c.includes("f := '" + c + "'")));
   const valO = sql.slice(sql.indexOf('create or replace function public.valider_reception_arrivage'), sql.indexOf('create or replace function public.recalculer_revient_arrivage'));
   test('ordre de réception tiré par séquence APRÈS les verrous produits et produits_revient, enregistré sur l\'arrivage',
     valO.indexOf("v_ordre := nextval('public.arrivages_ordre_reception_seq');") > valO.indexOf('perform 1 from public.produits_revient where produit_id in')
@@ -681,11 +709,46 @@ function nouveauBac(opts) {
       && sqlS.includes('revoke all on function interne.l039_etat_vente_refus(text, boolean, boolean, boolean, numeric) from public, anon, authenticated;'));
     test('base : auto-contrôle EXÉCUTÉ de l\'état de vente (insertion et modification, prix NULL, 0, prix fixé, retrait)',
       ['insertion prix défini sans prix', 'modification prix retiré, prix défini', 'modification non vendable, prix défini sans prix', 'modification prix défini sans prix',
-       'modification prix défini à 0', 'insertion vendable sans prix défini', 'création ordinaire (prix 0) acceptée', 'prix fixé (> 0) accepté', 'retrait de la vente accepté'].every(c => auto10.includes("f := '" + c + "'")));
+       'modification prix défini à 0', 'insertion vendable sans prix défini', "ligne à prix 0 et prix défini non refusée (upsert d''un produit existant ; une vraie création passe d''abord « à définir »)", 'prix fixé (> 0) accepté', 'retrait de la vente accepté'].every(c => auto10.includes("f := '" + c + "'")));
     test('base : upsert de l\'application (sbSaveProduit) d\'un produit « à définir » existant : état de vente actuel repris AVANT les contraintes',
-      garde.indexOf("select p.prix_vente_defini, p.vendable, p.prix into v_ex from public.produits p where p.id = new.id;") > garde.indexOf("if tg_op = 'INSERT' and r is not null and r <> 'admin' then")
+      garde.indexOf("select p.prix_vente_defini, p.vendable, p.prix into v_ex from public.produits p where p.id = new.id;") < garde.indexOf("if tg_op = 'INSERT' and r is not null and r <> 'admin' then")
+      && garde.includes('v_existe := found;')
+      && garde.includes("if tg_op = 'INSERT' and v_existe and v_ex.prix_vente_defini = false then")
       && garde.includes('new.prix_vente_defini := false; new.vendable := v_ex.vendable; new.prix := v_ex.prix;')
       && garde.indexOf('new.prix := v_ex.prix;') < garde.indexOf('v_refus := interne.l039_etat_vente_refus('));
+    // --- 1 bis. CRÉATION (revue Codex PR 26 sur a0c1bf8) : prix nul ⇒ « à définir », homonyme d'une référence en attente refusé ---
+    test('base : vraie création (aucun produit de cet identifiant) contrôlée par la décision PURE l039_creation_etat, tous rôles',
+      garde.includes("if tg_op = 'INSERT' and not v_existe then") && garde.includes("v_creation := interne.l039_creation_etat(r is null or r = 'admin', new.prix,")
+      && garde.includes("if v_creation = 'a_definir' then\n      new.prix := null; new.prix_vente_defini := false; new.vendable := false;")
+      && garde.includes("elsif v_creation = 'homonyme_refuse' then") && garde.includes('seul l\'\'administrateur le fixe (création refusée)')
+      && garde.includes('q.prix_vente_defini = false and interne.l039_norm(q.nom) is not null and interne.l039_norm(q.nom) = interne.l039_norm(new.nom)')
+      && garde.indexOf("if tg_op = 'INSERT' and not v_existe then") < garde.indexOf('v_refus := interne.l039_etat_vente_refus(')
+      && !/if tg_op = 'INSERT' and r is not null and r <> 'admin' then[\s\S]{0,200}\n    new\.vendable := true; new\.prix_vente_defini := true;/.test(garde)
+      && sqlS.includes('revoke all on function interne.l039_creation_etat(boolean, numeric, boolean) from public, anon, authenticated;'));
+    test('base : auto-contrôle EXÉCUTÉ de la création (prix 0, sans prix, négatif, administrateur, homonyme, ordinaire)',
+      ['création collaboratrice à prix 0 : à définir', 'création collaboratrice sans prix : à définir', 'création à prix négatif : à définir', 'création administrateur à prix 0 : à définir',
+       'homonyme sans prix : à définir (rien de vendable)', "création collaboratrice avec prix d''un homonyme en attente refusée", 'création collaboratrice ordinaire avec prix : vendable',
+       'création administrateur avec prix : état proposé'].every(c => auto10.includes("f := '" + c + "'")));
+    const catC = [{ id: 'pr-n', nom: 'Matelas Nouveau N (fictif)', prixDefini: false, vendable: false }, { id: 'pr-a', nom: 'Matelas Fictif A 140×190', prix: 100 }];
+    test('appli : venCreationEtat = même décision que la base (prix 0 / vide / négatif, homonyme, ordinaire, administrateur)',
+      bac.venCreationEtat(false, 0, 'Nouveau', catC) === 'a_definir' && bac.venCreationEtat(false, '', 'Nouveau', catC) === 'a_definir' && bac.venCreationEtat(true, -1, 'X', catC) === 'a_definir'
+      && bac.venCreationEtat(false, 0, 'matelas nouveau n (FICTIF)', catC) === 'a_definir' && bac.venCreationEtat(false, 199, '  matelas  nouveau n (fictif) ', catC) === 'homonyme_refuse'
+      && bac.venCreationEtat(false, 199, 'Matelas Fictif A 140 x 190', catC) === 'vendable' && bac.venCreationEtat(true, 199, 'Matelas Nouveau N (fictif)', catC) === null);
+    // sauvegarderProduit (création) exécuté : prix vide ⇒ « à définir » envoyé en prix NULL ; homonyme refusé sans rien envoyer
+    const bacC = (r, prix, nom) => { const B = nouveauBac({ role: r }); B.bac.produits = catC.map(x => Object.assign({}, x));
+      Object.assign(B.bac, { editProduitId: null, closeModal() {}, VEN_LIBELLE: 'Prix à définir — non vendable', venDefinirPrix() {} });
+      vm.runInContext(extraireFonction('async function sbSaveProduit(p)'), B.bac); vm.runInContext(extraireFonction('function sauvegarderProduit()'), B.bac);
+      const d = B.bac.document.getElementById; d('p-nom').value = nom; d('p-prix').value = prix; d('p-cat').value = 'Matelas'; B.bac.sauvegarderProduit(); return B; };
+    let BC = bacC('collab', '', 'Matelas Nouveau Z (fictif)'); await new Promise(r => setTimeout(r, 0));
+    const envC = BC.appels.find(a => a.methode === 'POST' && a.url.includes('/rest/v1/produits'));
+    test('appli : création par la collaboratrice sans prix ⇒ produit « à définir », non vendable, prix NULL envoyé',
+      !!envC && envC.body.prix === null && BC.bac.produits.some(p => p.nom === 'Matelas Nouveau Z (fictif)' && p.prixDefini === false && p.vendable === false), envC && envC.body);
+    BC = bacC('collab', '199', 'Matelas Nouveau N (fictif)'); await new Promise(r => setTimeout(r, 0));
+    test('appli : création par la collaboratrice d\'un homonyme d\'une référence en attente ⇒ refusée, rien envoyé ni ajouté',
+      !BC.appels.some(a => a.methode === 'POST') && BC.bac.produits.length === 2 && BC.toasts.some(t => t.t === 'err'));
+    BC = bacC('collab', '199', 'Sommier Fictif S'); await new Promise(r => setTimeout(r, 0));
+    const envO = BC.appels.find(a => a.methode === 'POST' && a.url.includes('/rest/v1/produits'));
+    test('appli : création ordinaire par la collaboratrice avec un prix ⇒ inchangée (vendable, prix envoyé)', !!envO && envO.body.prix === 199, envO && envO.body);
     const nvF = sqlS.slice(sqlS.indexOf('create or replace function interne.produit_non_vendable'), sqlS.indexOf('revoke all on function interne.produit_non_vendable'));
     test('base : produit_non_vendable — prix NULL et composant INTROUVABLE = non vendable', nvF.includes('or p.prix is null') && nvF.includes('left join public.produits q') && nvF.includes('q.id is null or not q.vendable'));
     test('appli : prix NULL = prix non défini (même « prix défini » en base)', bac.venDepuisBase({ prix: null, prix_vente_defini: true }).prixDefini === false && bac.venDepuisBase({ prix: 10 }).prixDefini === true);
@@ -918,7 +981,7 @@ function nouveauBac(opts) {
 
   console.log('\n9. VERSION');
   const m = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(sw);
-  test('CACHE_VERSION augmentée (v7-5-161 ou plus)', !!m && Number(m[1]) >= 161, m && m[0]);
+  test('CACHE_VERSION augmentée (v7-5-163 ou plus)', !!m && Number(m[1]) >= 163, m && m[0]);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
