@@ -844,9 +844,21 @@ function nouveauBac(opts) {
       valS.includes("v_end := (s ->> 'endommagee')::integer; v_man := (s ->> 'manquante')::integer;") && valS.includes('if v_rec is null or v_end is null or v_man is null') && !valS.includes("coalesce((s ->> 'endommagee')::integer, 0)"));
   }
 
+  console.log('\n8 ter. COMMANDE ANCIENNE SANS LIGNES ROUVERTE (v7.5.158, revue Codex PR 26 sur 7e5c4cf + P2 natif)');
+  {
+    const ouvrir = html.slice(html.indexOf('// Commande ancienne sans lignes'), html.indexOf('// Remise globale', html.indexOf('// Commande ancienne sans lignes')));
+    test('ouverture : plus de rapprochement par premier mot du nom ni de filtre « vendable » sur le produit principal',
+      !ouvrir.includes("split(' ')[0]") && !ouvrir.includes('aoSelectionnables') && ouvrir.includes('venOptionPrincipale(c, produits)') && ouvrir.includes('venMemoriserPrincipal(div2, c)'));
+    const sv = extraireFonction('function saveCmd()');
+    test('enregistrement : ligne d\'origine non touchée → produit principal gardé (venGarderPrincipal) et contrôlé comme la base',
+      sv.includes('venPrincipalAGarder(existingCmd,') && sv.includes('if (_principalGarde) venGarderPrincipal(cmdData, existingCmd);')
+      && sv.includes('venLignesRefusees(existingCmd.lignes, produits, existingCmd, { produit: existingCmd.produit, qte: existingCmd.qte, prix: existingCmd.prix })')
+      && sv.indexOf('venGarderPrincipal(cmdData') > sv.indexOf('if (isSavCmd) {'));
+  }
+
   console.log('\n9. VERSION');
   const m = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(sw);
-  test('CACHE_VERSION augmentée (v7-5-155 ou plus)', !!m && Number(m[1]) >= 155, m && m[0]);
+  test('CACHE_VERSION augmentée (v7-5-158 ou plus)', !!m && Number(m[1]) >= 158, m && m[0]);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
