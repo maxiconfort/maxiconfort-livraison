@@ -232,7 +232,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
   // branchements dans l'appli
   const f = (e) => fonction(e);
   // v7.5.170 : sbSaveCommande renvoie un résultat (PR 24, v7.5.135) : le signal est dans le « finally », atteint dans tous les cas
-  test('sauvegarde locale d’une commande → signal (dans le finally : enregistrée, en attente, refusée ou erreur)', /\} finally \{[\s\S]*?tdbSignaler\('commandes'\)[^\n]*\n  \}\n\}$/.test(f('async function sbSaveCommande(cmd, opts) {')));
+  test('sauvegarde locale d’une commande → signal (dans le finally : enregistrée, en attente, refusée ou erreur)', /\} finally \{[\s\S]*?tdbSignaler\('commandes'\)[^\n]*\n  \}\n\}$/.test(f('async function sbSaveCommande(cmd, oqCtx) {')));
   test('temps réel commandes → signal', /table:'commandes'\}, function\(payload\) \{[\s\S]*?tdbSignaler\('commandes'\)[\s\S]*?renderDash\(\); renderCmds\(\)/.test(html));
   test('relève périodique (polling) → signal', /if \(updated\) \{\n\s*if \(typeof tdbSignaler === 'function'\) tdbSignaler\('commandes'\);/.test(f('function startPolling() {')));
   test('ajustement de stock → signal produits', f('function sauvegarderAjustement() {').includes("tdbSignaler('produits')"));

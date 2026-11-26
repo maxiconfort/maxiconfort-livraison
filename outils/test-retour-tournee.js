@@ -33,7 +33,8 @@ function nouveauBac(role) {
     fetch: async (url, opt) => { envois.push({ url, body: JSON.parse(opt.body) }); return { ok: true, text: async () => '' }; },
     offlineQueueAdd() {}, showSync() {}, toast(m, t) { bac._toasts.push([m, t]); }, _toasts: [],
     commandes: [], tournees: [], depenses: [], livNom: 'RANOU', role: role || 'livreur', societe: { tel: '' }, stockCamion: [], LV_APERCU_ACTIF: false,
-    stkDeduireStock() {}, clearSig() {}, renderLivreur() {}, renderTournees() {}, renderCmds() {}, renderDash() {}, finRender() {},
+    stkDeduireStock() {}, clearSig() {}, livDebut() {}, livFin() {}, livMarquer() {}, cmdDistanteAcceptable: () => true, stkDeductionPoser() {}, stkDemanderDeduction() {}, oqSucces() {}, // v7.5.198 (fusion PR 29) : déduction par la base, hors sujet ici
+    renderLivreur() {}, renderTournees() {}, renderCmds() {}, renderDash() {}, finRender() {},
     sbSaveTournee(t) { tourneesSauvees.push(JSON.parse(JSON.stringify(t))); }, notifAjout(...a) { bac._notifs.push(a); }, _notifs: [],
     confirm: () => bac._confirm, _confirm: true, genererBonLivraison() {}, brevoSendSMS: async () => false, cmdOrigineMarketplace: () => null,
     findCmdForStop(s) { return bac.commandes.find((c) => c.id === s.cmdId) || null; }, findStopForCmd: () => null, retirerStockCamion() {}, _mx: {}, mxLire(k) { return Object.prototype.hasOwnProperty.call(bac._mx, k) ? bac._mx[k] : null; }, mxEcrire(k, v) { bac._mx[k] = v; }, mxSupprimer(k) { delete bac._mx[k]; },
@@ -42,7 +43,7 @@ function nouveauBac(role) {
   vm.createContext(bac);
   vm.runInContext(extraireBloc('var PAI_MODE_SITE', '// PAI-FIN'), bac);
   vm.runInContext(extraireBloc('// ── RT-DEBUT', '// RT-FIN'), bac);
-  vm.runInContext(extraireFonction('function syncRefusDefinitif(status)') + ' ' + extraireFonction('function syncMessageRefus(status, texte)') + ' ' + extraireFonction('async function sbSaveCommande(cmd, opts)'), bac);
+  vm.runInContext(extraireFonction('function syncRefusDefinitif(status)') + ' ' + extraireFonction('function syncMessageRefus(status, texte)') + ' ' + extraireFonction('async function sbSaveCommande(cmd, oqCtx)'), bac);
   vm.runInContext('var sigStopId=null, sigPaieEncaisse=false, sigPaieMode="Espèces", sigPrepaidMode=null, sigCmdMarketplace=null, sigCtx=null, scv=null, sigCodActif=false, sigCodChoix=null, sigCodMontant=0;', bac);
   vm.runInContext(extraireBloc('// v7.5.129 : choix simple Espèces / Carte bleue / Déjà payé.', 'var sigCodActif = false;'), bac);
   vm.runInContext('var MODES_PAIE = ' + JSON.stringify([{ id: 'LeBonCoin', cat: 'prepaye' }, { id: 'Déjà payé', cat: 'prepaye' }, { id: 'Espèces', cat: 'livreur' }]) + ';', bac);
@@ -57,7 +58,7 @@ function nouveauBac(role) {
     // v7.5.171 : verrou du point de caisse validé (tous les chemins des dépenses)
     'function depVerrouCaisse(etats)',
     // v7.5.175 : refus du verrou de la base (migration 038b)
-    'async function sbSaveDepense(d)', 'function sbSaveEchec(type, data, ctx, status, detail)'])
+    'async function sbSaveDepense(d)', 'function sbSaveEchec(type, data, ctx, status, detail, oqCtx)'])
     vm.runInContext(extraireFonction(f), bac);
   vm.runInContext('var lvReportCible = null, depLvCatSelected = "", depLvCible = null, currentLvTourneeId = null;', bac);
   let _n = 0; bac.generateId = (p) => p + '-test-' + (++_n);
@@ -650,8 +651,9 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     test('classement : 400 / 401 / 403 / 404 / 409 / 422 = définitif ; 0 / 408 / 429 / 500 / 503 = passager', [400, 401, 403, 404, 409, 422].every((s) => p.syncRefusDefinitif(s)) && [0, 408, 429, 500, 503].every((s) => !p.syncRefusDefinitif(s)));
     // vraie file d'attente : un refus définitif en sort, une erreur passagère y reste UNE fois, aucune boucle
     const { bac: q } = nouveauBac('admin'); const appels = [];
-    delete q.offlineQueueAdd; vm.runInContext('var offlineQueue = [];', q);
-    vm.runInContext(extraireFonction('function offlineQueueAdd(type, data)') + ' ' + extraireFonction('async function offlineQueueFlush()'), q);
+    // v7.5.198 (fusion de la PR 29) : vraie file corrigée (clé par intention, date d'origine, oqSucces) + son rejeu
+    delete q.offlineQueueAdd; delete q.oqSucces; q.navigator = { onLine: true };
+    vm.runInContext(extraireBloc('var offlineQueue = [];', '// v7.5.68 : échec') + ' ' + extraireBloc('// v7.5.191 : un seul rejeu à la fois', '// Détecter retour en ligne'), q);
     q.fetch = async (url, opt) => { const id = JSON.parse(opt.body).id; appels.push(id); if (appels.length > 20) throw new Error('boucle'); return id === '#DEF' ? { ok: false, status: 400, text: async () => '{"message":"refus"}' } : { ok: false, status: 503, text: async () => '' }; };
     q.offlineQueueAdd('commande', LBC({ id: '#DEF' })); q.offlineQueueAdd('commande', LBC({ id: '#TMP' })); q.offlineQueueAdd('commande', LBC({ id: '#TMP', instr: 'version plus récente' }));
     test('file : une seule entrée par commande (la plus récente)', q.offlineQueue.length === 2 && q.offlineQueue[1].data.instr === 'version plus récente');

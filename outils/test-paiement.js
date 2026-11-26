@@ -30,14 +30,15 @@ function nouveauBac() {
     fetch: async (url, opt) => { envois.push({ url, body: JSON.parse(opt.body) }); return { ok: true, text: async () => '' }; },
     offlineQueueAdd() {}, showSync() {}, toast(m, t) { bac._toasts.push([m, t]); }, _toasts: [],
     commandes: [], tournees: [], livNom: 'RANOU', role: 'livreur', societe: { tel: '' },
-    stkDeduireStock() {}, clearSig() {}, renderLivreur() {}, renderTournees() {}, renderCmds() {}, renderDash() {}, finRender() {},
+    stkDeduireStock() {}, livDebut() {}, livFin() {}, cmdDistanteAcceptable() { return true; }, // v7.5.193 : verrou du « livré » (testé dans test-livre-bloque.js)
+    clearSig() {}, renderLivreur() {}, renderTournees() {}, renderCmds() {}, renderDash() {}, finRender() {},
     sbSaveTournee(t) { sauvegardesTournee.push(JSON.parse(JSON.stringify(t))); }, notifAjout(...a) { bac._notifs.push(a); }, _notifs: [],
     confirm: () => false, genererBonLivraison() {}, brevoSendSMS: async () => false, cmdOrigineMarketplace: () => null,
     findCmdForStop(s) { return bac.commandes.find(c => c.id === s.cmdId) || null; },
   };
   vm.createContext(bac);
   vm.runInContext(extraireBloc('var PAI_MODE_SITE', '// PAI-FIN'), bac);
-  vm.runInContext(extraireFonction('function syncRefusDefinitif(status)') + ' ' + extraireFonction('function syncMessageRefus(status, texte)') + ' ' + extraireFonction('async function sbSaveCommande(cmd, opts)'), bac);
+  vm.runInContext(extraireFonction('function syncRefusDefinitif(status)') + ' ' + extraireFonction('function syncMessageRefus(status, texte)') + ' ' + extraireFonction('async function sbSaveCommande(cmd, oqCtx)'), bac);
   vm.runInContext('var sigStopId=null, sigPaieEncaisse=false, sigPaieMode="Espèces", sigPrepaidMode=null, sigCmdMarketplace=null, sigCtx=null, scv=null;', bac);
   vm.runInContext('var sigCodActif=false, sigCodChoix=null, sigCodMontant=0;', bac);
   // v7.5.171 : règles « Déjà payé » et fin des livraisons (bloc RT) utilisées par validerSig / setLvSt

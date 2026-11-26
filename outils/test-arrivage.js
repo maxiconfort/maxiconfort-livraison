@@ -305,7 +305,7 @@ function nouveauBac(opts) {
   const compo = extraireFonction('function composRenderList()');
   test('composition d\'un ensemble : composant non vendable signalé', compo.includes('NON VENDABLE'));
   test('stock : badge « Prix à définir — non vendable » et prix « à définir »', bac.VEN_LIBELLE === 'Prix à définir — non vendable' && extraireFonction('function stkRender()').includes('venBadge()') && extraireFonction('function stkRender()').includes("p.prixDefini===false?"));
-  const save = extraireFonction('async function sbSaveProduit(p)');
+  const save = extraireFonction('async function sbSaveProduit(p'); // v7.5.198 : signature (p, opts) de la PR 29
   test('fiche produit : un produit sans prix n\'est jamais renvoyé avec un prix 0', save.includes('prix: (p.prixDefini === false) ? null : (p.prix||0)'));
   test('fiche produit : seul l\'administrateur fixe le prix (puis vendable)', extraireFonction('async function venDefinirPrix(p, prix)').includes("role !== 'admin'") && extraireFonction('function sauvegarderProduit()').includes("role === 'admin' && data.prix > 0"));
   // chargement depuis la base : les marqueurs arrivent dans le catalogue en mémoire
@@ -837,7 +837,8 @@ function nouveauBac(opts) {
     // sauvegarderProduit (création) exécuté
     const bacC = (r, prix, nom) => { const B = nouveauBac({ role: r }); B.bac.produits = catC.map(x => Object.assign({}, x));
       Object.assign(B.bac, { editProduitId: null, closeModal() {}, VEN_LIBELLE: 'Prix à définir — non vendable', venDefinirPrix() {} });
-      vm.runInContext(extraireFonction('async function sbSaveProduit(p)'), B.bac); vm.runInContext(extraireFonction('function sauvegarderProduit()'), B.bac);
+      Object.assign(B.bac, { sbSaveEchec() {}, oqSucces() {}, offlineQueue: [] }); // v7.5.198 (fusion PR 29) : file hors sujet ici
+      vm.runInContext(extraireFonction('function oqRoleCourant()') + '\n' + extraireBloc('// v7.5.191 : refus de la base sur un produit', 'async function sbSaveProduit(p') + '\n' + extraireFonction('async function sbSaveProduit(p'), B.bac); vm.runInContext(extraireFonction('function sauvegarderProduit()'), B.bac);
       const d = B.bac.document.getElementById; d('p-nom').value = nom; d('p-prix').value = prix; d('p-cat').value = 'Matelas'; B.bac.sauvegarderProduit(); return B; };
     const envoi = (B) => B.appels.find(a => a.methode === 'POST' && a.url.includes('/rest/v1/produits'));
     const aDefinir = (B, nom) => B.bac.produits.some(p => p.nom === nom && p.prixDefini === false && p.vendable === false);
@@ -853,7 +854,10 @@ function nouveauBac(opts) {
       !!envoi(BC) && envoi(BC).body.prix === null && BC.bac.produits.length === 3 && BC.bac.produits.every(p => p.id === 'pr-a' || (p.prixDefini === false && p.vendable === false))
       && msgCollab(BC) && !BC.toasts.some(t => t.t === 'err'), BC.toasts);
     BC = bacC('livreur', '199', 'Oreiller Fictif O'); await new Promise(r => setTimeout(r, 0));
-    test('appli : livreur avec un prix ⇒ « à définir » (seul l\'administrateur rend vendable)', !!envoi(BC) && envoi(BC).body.prix === null && aDefinir(BC, 'Oreiller Fictif O'));
+    // v7.5.198 (fusion de la PR 29) : une session livreur n'envoie plus que son stock (PATCH, politique sess_livreur_stock) :
+    // aucun prix ne part vers la base, quel que soit le chemin
+    test('appli : livreur avec un prix ⇒ « à définir » (seul l\'administrateur rend vendable), aucun prix envoyé', aDefinir(BC, 'Oreiller Fictif O')
+      && !BC.appels.some(a => a.url.includes('/rest/v1/produits') && a.body && a.body.prix !== undefined && a.body.prix !== null));
     BC = bacC('admin', '199', 'Sommier Fictif S'); await new Promise(r => setTimeout(r, 0));
     test('appli : administrateur AVEC un prix ⇒ flux inchangé (vendable, prix envoyé)', !!envoi(BC) && envoi(BC).body.prix === 199
       && BC.bac.produits.some(p => p.nom === 'Sommier Fictif S' && p.prixDefini !== false && p.vendable !== false) && BC.toasts.some(t => t.m === 'Produit ajouté au catalogue ✓'), envoi(BC) && envoi(BC).body);

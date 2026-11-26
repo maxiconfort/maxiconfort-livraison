@@ -1,5 +1,13 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.198 - Fusion de la PR 29 (v7.5.197 : stock d'une livraison deduit par la base, migration 040) dans Commandes filtres (v7.5.190) : refus definitif de la base (v7.5.135) garde dans la file corrigee, livre local protege aussi dans le temps reel factorise (26/11/2026)
+// v7.5.197 - Stock d'une livraison deduit PAR LA BASE (fonction deduire_stock_livraison, migration 040), une seule fois par commande ; demande gardee en file et rejouee sans double effet ; calcul du stock sur le telephone supprime (26/11/2026)
+// v7.5.196 - Deductions de stock suivies sur l'appareil (reprises apres fermeture), stock_deduit seulement si tous les produits sont enregistres, PATCH du livreur conditionnel (delta), versions anciennes invalidees apres un succes (26/11/2026)
+// v7.5.195 - File : contexte de rejeu en parametre (plus de variable globale), fiche relancee garde sa date, fiche admin rejouee sans ecraser un stock plus recent, rotation des lectures du controle admin (26/11/2026)
+// v7.5.194 - File : cle par intention (stock livreur / fiche admin), anciens elements jamais retires sans recapitulatif, fiches refusees versionnees et gardees en memoire, verrou du livre jusqu'aux sauvegardes produit, relecture 10 min (26/11/2026)
+// v7.5.193 - Livre protege des releves perimees, rejeu par date et role d'origine, nouveaux ecarts controles, purge apres recapitulatif (26/11/2026)
+// v7.5.192 - File : erreurs temporaires rejouees, fiches admin conservees, recapitulatif durable, controle admin par lecture en base (26/11/2026)
+// v7.5.191 - Livreur : le « livre » remonte de nouveau (file d'attente sans boucle, stock du livreur par PATCH) (26/11/2026)
 // v7.5.187 - Tableau de bord + menus : fusion de la PR 26 (v7.5.186 ; PR 25 v7.5.185 et PR 24 v7.5.184 incluses : relecture complete du verrou de caisse) (26/11/2026)
 // v7.5.186 - Arrivage : fusion de la PR 25 (v7.5.185, PR 24 v7.5.184 incluse : relecture complete du verrou de caisse) (26/11/2026)
 // v7.5.185 - Habillage style D : fusion de la PR 24 (v7.5.184, relecture complete du verrou de caisse) (26/11/2026)
@@ -47,7 +55,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-190';
+const CACHE_VERSION = 'maxiconfort-v7-5-198';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

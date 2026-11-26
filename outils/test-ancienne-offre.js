@@ -33,11 +33,14 @@ function nouveauBac(lignes) { const envois = [], memoire = {}, champs = { 'f-rem
     document: { getElementById: id => champs[id] || null, querySelectorAll: s => s === '#lignes-produits > div' ? (lignes || []) : [], querySelector: () => null },
     localStorage: { setItem(k, v) { memoire[k] = v; }, getItem(k) { return memoire[k] || null; } },
     fetch: async (url, opt) => { envois.push({ url, methode: (opt && opt.method) || 'GET', body: opt && opt.body ? JSON.parse(opt.body) : null }); return { ok: true, text: async () => '', json: async () => bac._reponse || [] }; },
-    stkRender() { bac._rendus++; }, sbSaveEchec() { bac._echecs++; }, _rendus: 0, _echecs: 0, _reponse: null };
+    stkRender() { bac._rendus++; }, sbSaveEchec() { bac._echecs++; }, oqSucces() {}, // v7.5.196 / v7.5.197 : file hors sujet ici
+    _rendus: 0, _echecs: 0, _reponse: null };
   vm.createContext(bac);
   vm.runInContext(extraireBloc('// AO-DEBUT', '// AO-FIN'), bac);
   vm.runInContext(extraireBloc('// ARR-DEBUT', '// ARR-FIN'), bac); // v7.5.136 : buildProduitOptions écarte aussi les produits non vendables
-  for (const f of ['function buildProduitOptions()', 'function recalcTotal()', 'function getLignesData()', 'function stkTrouverProduit(produitId, nomProduit)', 'async function sbLoadProduits()', 'async function sbSaveProduit(p)']) vm.runInContext(extraireFonction(f), bac);
+  // v7.5.192 : sbSaveProduit s'appuie sur les fonctions de refus et de fiches refusées définies juste avant elle
+  vm.runInContext(extraireFonction('function oqRoleCourant()') + '\n' + extraireBloc('// v7.5.191 : refus de la base sur un produit', 'async function sbSaveProduit(p'), bac);
+  for (const f of ['function buildProduitOptions()', 'function recalcTotal()', 'function getLignesData()', 'function stkTrouverProduit(produitId, nomProduit)', 'async function sbLoadProduits()', 'async function sbSaveProduit(p']) vm.runInContext(extraireFonction(f), bac);
   return { bac, envois, memoire, champs }; }
 let ok = 0, ko = 0; const test = (nom, cond, det) => { if (cond) { ok++; console.log('  OK   ' + nom); } else { ko++; console.log('  ÉCHEC ' + nom + (det !== undefined ? ' — ' + JSON.stringify(det) : '')); } };
 
