@@ -150,7 +150,7 @@ test('bloc « Paiements — mois » retiré du tableau de bord (et sa fonction, 
 test('admin : carte Encaissé cliquable → page Encaissements', /tdb-carte tdb-lien" role="link"[^>]*onclick="tdbAller\('finance'\)"[^>]*><div class="tdb-carte-l">Encaissé/.test(hA), hA.match(/.{80}Encaissé.{20}/));
 test('collab : aucune carte vers Encaissements', !hC.includes("tdbAller('finance')"));
 test('Commandes récentes : colonne Montant pour l’admin seulement', /var A = role === 'admin'[\s\S]*?\(A \? '<th>Montant<\/th>' : ''\)/.test(fonction('function tdbRecentes() {')));
-test('lecture de la base : SELECT seulement, limitée à la période, par pages de 1 000', (() => { const f = tranche('async function tdbLire(filtre) {', 'async function tdbCharger'); return /Range/.test(f) && !/method|POST|PATCH|DELETE/.test(f) && f.includes("'/rest/v1/commandes?select='"); })());
+test('lecture de la base : SELECT seulement, limitée à la période, par pages de 1 000 (clé : id croissant, après le dernier reçu)', (() => { const f = tranche('async function tdbLire(filtre) {', 'async function tdbCharger'); return f.includes("'&id=gt.' + encodeURIComponent(dernier)") && f.includes("'&order=id.asc&limit=' + TDB_PAGE") && /var TDB_PAGE = 1000;/.test(html) && !/Range|offset/.test(f) && !/method|POST|PATCH|DELETE/.test(f) && f.includes("'/rest/v1/commandes?select='"); })());
 test('aucune écriture dans le bloc TDB', !/sbSave|rpcPin|method:\s*'(POST|PATCH|DELETE)'|localStorage\.setItem|\.insert\(|\.update\(/.test(tranche('// TDB-DEBUT', '// TDB-FIN')));
 
 console.log('\n6. MENUS');
@@ -282,8 +282,8 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
       role: 'admin', commandes: [{ id: '#1' }], cmdTotalCount: 5000, produits: [], SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
       setTimeout: () => 0, clearTimeout: () => {}, renderDash: () => {}, getZoneFromAdresse: () => null, arrChargerRevients: () => new Promise(() => {}),
       document: { getElementById: (id) => (id === 'tdb-contenu' ? el : id === 'p-dashboard' ? { classList: { contains: () => true } } : id === 'dash-periode' ? periode : null) },
-      // v7.5.154 : page suivante d'une base FICTIVE dont tout tient sur une page → vide, aussitôt (tdbLire lit jusqu'à une page vide)
-      fetch: (u, o) => { if (o && o.headers && !/^0-/.test(o.headers.Range)) return Promise.resolve({ ok: true, json: async () => [] }); lectures++; return new Promise((ok) => { enCours.push((rows) => ok({ ok: true, json: async () => rows })); }); } };
+      // v7.5.157 : page suivante (filtre id=gt.) d'une base FICTIVE dont tout tient sur une page → vide, aussitôt (tdbLire lit jusqu'à une page vide)
+      fetch: (u, o) => { if (/[?&]id=gt\./.test(u)) return Promise.resolve({ ok: true, json: async () => [] }); lectures++; return new Promise((ok) => { enCours.push((rows) => ok({ ok: true, json: async () => rows })); }); } };
     vm.createContext(b5); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b5);
     const attendre = async () => { for (let k = 0; k < 6; k++) await new Promise((r) => setImmediate(r)); };
     const ligne = (id) => ({ id, prix: 1, statut: 'livré', stpaie: '', montant_enc: 0, date_commande: '2026-11-01', date_livraison: '2026-11-01', origine: '', adresse: '', livreur: '' });
@@ -305,24 +305,70 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
     test('puis la récente (Jour) : gardée et affichée', b5.TDB_ETAT.cle.indexOf('jour:') === 0 && egal(b5.TDB_ETAT.lignes.map((l) => l.id), ['#J']) && Object.keys(b5.TDB_ETAT.vols).length === 0);
   }
   { // 4. pagination complète, garde-fou explicite
-    let pages = 0;
-    const b6 = { console, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, Promise, SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
-      // base FICTIVE de 31 005 lignes ; Range « début-fin » demandé, au plus « plafond » lignes rendues par réponse (max-rows)
-      plafond: 1000,
-      fetch: (url, o) => { pages++; const [deb, fin] = o.headers.Range.split('-').map(Number); const n = Math.max(0, Math.min(fin - deb + 1, b6.plafond, 31005 - deb)); return Promise.resolve({ ok: true, json: async () => Array.from({ length: n }, (_, k) => ({ id: '#' + (deb + k) })) }); } };
+    // v7.5.157 (revue Codex PR 27 sur 25550c3, point 2) : pagination par CLÉ (id croissant, &id=gt.<dernier reçu>, &limit=)
+    // base FICTIVE triée par identifiant ; au plus « plafond » lignes rendues par réponse (réglage max-rows) ; « pendant » modifie la base
+    // juste avant de répondre à une page (insertion / suppression pendant la lecture)
+    let pages = 0; const urls = [];
+    const idDe = (n) => 'C' + String(n).padStart(6, '0');
+    const b6 = { console, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, Promise, encodeURIComponent, SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
+      plafond: 1000, base: [], pendant: null,
+      fetch: (url, o) => {
+        pages++; urls.push(url);
+        if (b6.pendant) b6.pendant(pages);
+        const m = /[?&]id=gt\.([^&]*)/.exec(url), apres = m ? decodeURIComponent(m[1]) : null;
+        const lim = Number((/[?&]limit=(\d+)/.exec(url) || [])[1] || 1e9);
+        const tri = b6.base.slice().sort();
+        const rows = tri.filter((id) => apres == null || id > apres).slice(0, Math.min(lim, b6.plafond)).map((id) => ({ id }));
+        return Promise.resolve({ ok: true, json: async () => rows });
+      } };
     vm.createContext(b6); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b6);
+    b6.base = Array.from({ length: 31005 }, (_, k) => idDe(k));
     const tout = await b6.tdbLire('');
     test('au-delà de 30 pages : la lecture continue jusqu’à la dernière (31 005 lignes, 32 pages + page vide de fin)', tout.length === 31005 && pages === 33 && new Set(tout.map((r) => r.id)).size === 31005, [tout.length, pages]);
-    // v7.5.154 (revue Codex PR 27 sur aa07e1e) : base qui plafonne chaque réponse SOUS 1 000 lignes (réglage max-rows)
-    b6.plafond = 300; pages = 0;
+    test('pagination par clé : 1re page sans filtre d’identifiant, suivantes après le DERNIER identifiant reçu (encodé), ordre id croissant, aucune plage « Range »',
+      !/id=gt\./.test(urls[0]) && urls[1].includes('&id=gt.' + encodeURIComponent(idDe(999)) + '&order=id.asc&limit=1000') && urls.every((u) => u.includes('&order=id.asc&limit=1000'))
+      && !/Range|offset=/.test(tranche('async function tdbLire(filtre) {', 'async function tdbCharger')), urls.slice(0, 2));
+    // base qui plafonne chaque réponse SOUS 1 000 lignes (réglage max-rows)
+    b6.plafond = 300; pages = 0; urls.length = 0;
     const tout300 = await b6.tdbLire('');
-    test('plafond de la base à 300 lignes par réponse : TOUT est lu (31 005 lignes, sans trou ni doublon), page suivante après les lignes reçues',
-      tout300.length === 31005 && new Set(tout300.map((r) => r.id)).size === 31005 && tout300[300].id === '#300' && pages === Math.ceil(31005 / 300) + 1, [tout300.length, pages]);
-    b6.plafond = 1000; pages = 0;
-    const deb0 = []; const f0 = b6.fetch; b6.fetch = (u, o) => { deb0.push(o.headers.Range); return Promise.resolve({ ok: true, json: async () => (deb0.length === 1 ? [{ id: '#a' }, { id: '#b' }] : []) }); };
+    test('plafond de la base à 300 lignes par réponse : TOUT est lu (31 005 lignes, sans trou ni doublon), page suivante après le dernier reçu',
+      tout300.length === 31005 && new Set(tout300.map((r) => r.id)).size === 31005 && tout300[300].id === idDe(300) && pages === Math.ceil(31005 / 300) + 1 && urls[1].includes('&id=gt.' + idDe(299)), [tout300.length, pages]);
+    b6.plafond = 1000;
+    // INSERTIONS et SUPPRESSIONS pendant la lecture : ni trou ni doublon pour les lignes présentes du début à la fin
+    b6.base = Array.from({ length: 5000 }, (_, k) => idDe(2 * k)); // identifiants pairs : C000000, C000002, …, C009998
+    const initiale = b6.base.slice();
+    const supprimees = [idDe(10), idDe(500), idDe(1998), idDe(4000), idDe(9000)]; // 3 déjà lues à la 2e page, 2 pas encore
+    b6.pendant = (n) => {
+      if (n === 2) { b6.base = b6.base.filter((id) => supprimees.indexOf(id) < 0); b6.base.push(idDe(11), idDe(13), idDe(501), idDe(4001), idDe(9001)); }
+      if (n === 4) { b6.base.push(idDe(3)); b6.base = b6.base.filter((id) => id !== idDe(1000)); }
+    };
+    const presentes = initiale.filter((id) => supprimees.indexOf(id) < 0 && id !== idDe(1000)); // présentes du début à la fin
+    pages = 0; urls.length = 0;
+    const lu = await b6.tdbLire(''); b6.pendant = null;
+    const vus = {}; let doublons = 0; lu.forEach((r) => { if (vus[r.id]) doublons++; vus[r.id] = 1; });
+    const trous = presentes.filter((id) => !vus[id]);
+    test('insertion / suppression PENDANT la lecture : toutes les lignes présentes du début à la fin lues une fois (aucun trou), aucun doublon',
+      trous.length === 0 && doublons === 0 && presentes.length === 4994 && pages >= 6 && !vus[idDe(4000)] && !vus[idDe(9000)], { trous: trous.slice(0, 5), doublons, n: lu.length, pages });
+    test('… les lignes insérées après le curseur sont lues (C004001, C009001), celles insérées avant ne le sont pas (lecture stable)',
+      !!vus[idDe(4001)] && !!vus[idDe(9001)] && !vus[idDe(3)] && !vus[idDe(11)], Object.keys(vus).filter((k) => /C0000(0[0-9]|1[0-3])$/.test(k)));
+    { // ancienne pagination par DÉCALAGE sur le même scénario : un trou (preuve que le test couvre le défaut)
+      let base2 = initiale.slice(), n2 = 0; const lus2 = {};
+      for (let deb = 0; ; deb += 1000) {
+        n2++; if (n2 === 2) { base2 = base2.filter((id) => supprimees.indexOf(id) < 0); }
+        const page = base2.slice().sort().slice(deb, deb + 1000); if (!page.length) break; page.forEach((id) => { lus2[id] = 1; });
+      }
+      test('(par décalage, la même suppression aurait fait sauter des lignes présentes)', initiale.filter((id) => supprimees.indexOf(id) < 0).some((id) => !lus2[id]));
+    }
+    const deb0 = []; const f0 = b6.fetch; b6.fetch = (u, o) => { deb0.push(u); return Promise.resolve({ ok: true, json: async () => (deb0.length === 1 ? [{ id: '#a' }, { id: '#b' }] : []) }); };
     const court = await b6.tdbLire('');
-    test('page de 2 lignes puis page vide : 2 lignes, la 2e requête part de la ligne 2 (Range 2-1001)', court.length === 2 && deb0.length === 2 && deb0[0] === '0-999' && deb0[1] === '2-1001', deb0);
-    b6.fetch = f0;
+    test('page de 2 lignes puis page vide : 2 lignes, la 2e requête part de l’identifiant #b (encodé %23b)', court.length === 2 && deb0.length === 2 && !/id=gt/.test(deb0[0]) && deb0[1].includes('&id=gt.%23b&'), deb0);
+    b6.fetch = () => Promise.resolve({ ok: true, json: async () => [{ id: '#a' }, { id: '#b' }] }); let errI = '';
+    try { await b6.tdbLire(''); } catch (e) { errI = e.message; }
+    test('page qui renvoie un identifiant déjà lu (filtre ignoré) : erreur explicite, jamais de doublon ni de boucle', /identifiant déjà lu/.test(errI) && /chiffres non calculés/.test(errI), errI);
+    b6.fetch = () => Promise.resolve({ ok: true, json: async () => [{ prix: 1 }] }); errI = '';
+    try { await b6.tdbLire(''); } catch (e) { errI = e.message; }
+    test('ligne sans identifiant : erreur explicite', /identifiant absent/.test(errI), errI);
+    b6.fetch = f0; b6.base = Array.from({ length: 31005 }, (_, k) => idDe(k));
     b6.TDB_PAGES_MAX = 3; let err = '';
     try { await b6.tdbLire(''); } catch (e) { err = e.message; }
     test('garde-fou atteint : erreur explicite (jamais de chiffres tronqués en silence)', /chiffres non calculés/.test(err), err);
@@ -438,7 +484,77 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
       html.includes('if (_sbCanalNo === sbRealtimeCanalNo) cmdTempsReelStatut(status);') && html.includes("} else cmdSynchroPerdue('relève HTTP ' + rC.status);")
       && html.includes("console.warn('Polling erreur:', e.message); cmdSynchroPerdue('relève');") && html.includes('cmdVisibilite(document.visibilityState);')
       && /if \(sbRealtimeChannel\) \{\s*\/\/[^\n]*\n\s*cmdTempsReelStatut\('CLOSED'\);/.test(html)
-      && html.includes('cmdChargementComplet = cmdsComplet && cmdSynchroGarantieDepuis(_cmdDebutLecture);'));
+      && html.includes('cmdChargementComplet = cmdsComplet && _rejeu.incertains === 0 && cmdSynchroGarantieDepuis(_cmdDebutLecture);'));
+  }
+  console.log('\n7 sexies. REVUE CODEX PR 27 SUR 25550c3 (événements temps réel reçus pendant le chargement complet)');
+  { // a) un événement reçu entre la lecture de la liste et la fin de l'attente des tournées n'est plus écrasé par l'instantané
+    const T1 = '2026-11-26T10:00:00.000001+00:00', T0 = '2026-11-26 09:59:59.999999+00', T2 = '2026-11-26T10:00:05+00:00';
+    const ligne = (id, o) => Object.assign({ id, client: 'Client fictif', statut: 'en-attente', updated_at: T1 }, o || {});
+    const charger = async (snapshot, pendantTournees, opts) => {
+      const o = opts || {};
+      const b = { console: { log() {}, warn() {} }, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, isFinite, Promise,
+        commandes: [], tournees: [], caissesRemises: {}, nextCmdId: 1, cmdTotalCount: 0, cmdAllLoaded: false, CMD_SELECT_COLS: 'id,client,statut,updated_at',
+        SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
+        localStorage: { getItem: () => null, setItem() {} }, AbortController: function () { this.signal = {}; this.abort = () => {}; },
+        setTimeout: () => 0, clearTimeout: () => {}, renderCmds() {}, renderDash() {}, renderTournees() {}, renderLivreur() {}, toast() {}, reconcilierTournees() {},
+        document: { querySelector: () => null, getElementById: () => null },
+        fetch: async (url, init) => {
+          if (url.endsWith('/commandes?select=id')) return { ok: true, headers: { get: () => '0-0/' + snapshot.length }, json: async () => [] };
+          if (url.includes('/commandes?')) {
+            if (o.echec) throw new Error('réseau');
+            return { ok: true, headers: { get: (k) => (k === 'Content-Range' ? '0-' + (snapshot.length - 1) + '/' + snapshot.length : null) }, json: async () => JSON.parse(JSON.stringify(snapshot)) };
+          }
+          if (url.includes('/tournees?')) { if (pendantTournees) pendantTournees(b); return { ok: true, headers: { get: () => null }, json: async () => [] }; }
+          return { ok: true, headers: { get: () => null }, json: async () => [] };
+        } };
+      vm.createContext(b);
+      vm.runInContext(html.slice(html.indexOf('var cmdChargementComplet = false;'), html.indexOf('var _pollingInterval = null;')), b);
+      vm.runInContext(fonction('async function sbLoadAll() {'), b);
+      vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b);
+      b.cmdTempsReelStatut('SUBSCRIBED', 1);
+      if (o.avant) o.avant(b);
+      await b.sbLoadAll();
+      return b;
+    };
+    // même chemin que le gestionnaire temps réel « commandes » (sbStartRealtime) : file, puis application à la liste actuelle
+    const evenement = (b, p) => { b.cmdRtRecu(p); if (p.new && p.new.id) b.cmdAppliquerTempsReel(p.new); };
+    const ids = (b) => b.commandes.map((c) => c.id).sort();
+    let b = await charger([ligne('#1')], (x) => evenement(x, { eventType: 'INSERT', new: ligne('#2', { updated_at: T2 }), old: {} }));
+    test('insertion #2 PENDANT l’attente des tournées : #2 gardée après l’instantané (rejouée), preuve accordée (liste réellement complète)',
+      egal(ids(b), ['#1', '#2']) && b.cmdChargementComplet === true && b.tdbLocalComplet() === true, [ids(b), b.cmdChargementComplet]);
+    const sansRejeu = await charger([ligne('#1')], (x) => evenement(x, { eventType: 'INSERT', new: ligne('#2', { updated_at: T2 }), old: {} }), { avant: (x) => { x.cmdRejouerFile = () => ({ incertains: 0 }); } });
+    test('(preuve que le test couvre le défaut : sans rejeu, l’instantané écrase #2 — la liste ne contient que #1)', egal(ids(sansRejeu), ['#1']), ids(sansRejeu));
+    b = await charger([ligne('#1')], (x) => evenement(x, { eventType: 'UPDATE', new: ligne('#1', { statut: 'livré', updated_at: T2 }), old: { id: '#1' } }));
+    test('modification PLUS RÉCENTE que l’instantané : appliquée (livré), preuve accordée', b.commandes.length === 1 && b.commandes[0].statut === 'livré' && b.cmdChargementComplet === true, b.commandes);
+    b = await charger([ligne('#1', { statut: 'livré' })], (x) => evenement(x, { eventType: 'UPDATE', new: ligne('#1', { statut: 'en-attente', updated_at: T0 }), old: { id: '#1' } }));
+    test('événement PLUS ANCIEN que l’instantané (arrivé en retard) : ignoré, l’instantané gagne, preuve accordée', b.commandes[0].statut === 'livré' && b.cmdChargementComplet === true, b.commandes);
+    b = await charger([ligne('#1')], (x) => evenement(x, { eventType: 'UPDATE', new: ligne('#1', { updated_at: '2026-11-26 10:00:00.000001+00' }), old: { id: '#1' } }));
+    test('même date (écrite autrement) et mêmes valeurs : ignoré, preuve accordée', b.commandes[0].statut === 'en-attente' && b.cmdChargementComplet === true);
+    b = await charger([ligne('#1')], (x) => evenement(x, { eventType: 'UPDATE', new: ligne('#1', { statut: 'livré' }), old: { id: '#1' } }));
+    test('même date mais valeurs DIFFÉRENTES (ordre indécidable) : instantané gardé, preuve REFUSÉE', b.commandes[0].statut === 'en-attente' && b.cmdChargementComplet === false && b.tdbLocalComplet() === false);
+    b = await charger([ligne('#1')], (x) => evenement(x, { eventType: 'UPDATE', new: ligne('#1', { statut: 'livré', updated_at: null }), old: { id: '#1' } }));
+    test('date de mise à jour absente : preuve REFUSÉE', b.cmdChargementComplet === false);
+    b = await charger([ligne('#1'), ligne('#3')], (x) => evenement(x, { eventType: 'DELETE', new: {}, old: { id: '#3' } }));
+    test('suppression #3 pendant l’attente : retirée de l’instantané, preuve accordée', egal(ids(b), ['#1']) && b.cmdChargementComplet === true, ids(b));
+    b = await charger([ligne('#1')], (x) => evenement(x, { eventType: 'DELETE', new: {}, old: {} }));
+    test('suppression sans identifiant : preuve REFUSÉE', b.cmdChargementComplet === false);
+    b = await charger([ligne('#1')], (x) => { evenement(x, { eventType: 'INSERT', new: ligne('#2', { updated_at: T2 }), old: {} }); evenement(x, { eventType: 'UPDATE', new: ligne('#2', { statut: 'livré', updated_at: '2026-11-26T10:00:06+00:00' }), old: { id: '#2' } }); });
+    test('insertion puis modification de #2 pendant l’attente : rejouées dans l’ordre (#2 livrée)', egal(ids(b), ['#1', '#2']) && b.commandes.find((c) => c.id === '#2').statut === 'livré' && b.cmdChargementComplet === true);
+    test('file fermée à la fin du chargement : un événement ultérieur n’est plus mis en file', b.cmdRtFiles.length === 0);
+    b = await charger([ligne('#1')], null, { echec: true, avant: (x) => { x.commandes = [{ id: '#9' }]; } });
+    test('chargement en échec : file fermée, liste gardée, pas de preuve', b.cmdRtFiles.length === 0 && ids(b).join() === '#9' && b.cmdChargementComplet === false);
+    // deux chargements simultanés : chacun reçoit l'événement dans SA file
+    b = await charger([ligne('#1')], null);
+    const f1 = b.cmdRtOuvrir(), f2 = b.cmdRtOuvrir(); b.cmdRtRecu({ eventType: 'INSERT', new: ligne('#4'), old: {} }); b.cmdRtFermer(f1); b.cmdRtFermer(f2);
+    test('deux chargements simultanés : l’événement est rangé dans les deux files', f1.length === 1 && f2.length === 1 && b.cmdRtFiles.length === 0);
+    test('horodatages : écritures équivalentes égales, microsecondes comparées, fuseau appliqué, illisible → null',
+      b.cmdComparerDates('2026-11-26T10:00:00.123456+00:00', '2026-11-26 10:00:00.123456+00') === 0 && b.cmdComparerDates('2026-11-26T10:00:00.123456Z', '2026-11-26T10:00:00.123457Z') === -1
+      && b.cmdComparerDates('2026-11-26T11:00:00+01:00', '2026-11-26T10:00:00Z') === 0 && b.cmdComparerDates('', T1) === null && b.cmdComparerDates('hier', T1) === null);
+    test('branchements : gestionnaire temps réel → file AVANT tout le reste (suppressions comprises) ; file ouverte avant la lecture ; updated_at lu',
+      /table:'commandes'\}, function\(payload\) \{\n\s*cmdRtRecu\(payload\);[^\n]*\n\s*var r = payload\.new;\n\s*if \(!r \|\| !r\.id\) return;\n\s*cmdAppliquerTempsReel\(r\);/.test(html)
+      && html.indexOf('_cmdFile = cmdRtOuvrir();') < html.indexOf("var rCmds = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS")
+      && html.indexOf('_cmdFile = cmdRtOuvrir();') > html.indexOf('async function sbLoadAll() {')
+      && /var CMD_SELECT_COLS = '[^']*,updated_at';/.test(html));
   }
   console.log('\n7 quinquies. REVUE CODEX PR 27 SUR a46f8aa (lectures suivies par période, champs échappés)');
   { // a) Mois → Semaine → Mois : la réponse de la période AFFICHÉE est toujours prise, aucune lecture redondante, quel que soit l'ordre
@@ -448,8 +564,8 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
         role: 'admin', commandes: [{ id: '#1' }], cmdTotalCount: 5000, produits: [], SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
         setTimeout: () => 0, clearTimeout: () => {}, renderDash: () => {}, getZoneFromAdresse: () => null, arrChargerRevients: () => new Promise(() => {}),
         document: { getElementById: (id) => (id === 'tdb-contenu' ? s.el : id === 'p-dashboard' ? { classList: { contains: () => true } } : id === 'dash-periode' ? s.periode : null) },
-        // v7.5.154 : page suivante d'une base FICTIVE dont tout tient sur une page → vide, aussitôt (tdbLire lit jusqu'à une page vide)
-        fetch: (u, o) => { if (o && o.headers && !/^0-/.test(o.headers.Range)) return Promise.resolve({ ok: true, json: async () => [] }); s.lectures++; return new Promise((ok) => { s.enCours.push((rows) => ok({ ok: true, json: async () => rows })); }); } };
+        // v7.5.157 : page suivante (filtre id=gt.) d'une base FICTIVE dont tout tient sur une page → vide, aussitôt (tdbLire lit jusqu'à une page vide)
+        fetch: (u, o) => { if (/[?&]id=gt\./.test(u)) return Promise.resolve({ ok: true, json: async () => [] }); s.lectures++; return new Promise((ok) => { s.enCours.push((rows) => ok({ ok: true, json: async () => rows })); }); } };
       vm.createContext(s.b); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), s.b);
       s.aller = (v) => { s.periode.value = v; s.b.tdbRendre(); return s.enCours.splice(0); };
       return s;
@@ -514,6 +630,6 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
   }
   console.log('\n8. MISE EN LIGNE');
 
-test('CACHE_VERSION augmentée (v7-5-156 ou plus, au-dessus de la PR 26)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 156; })());
+test('CACHE_VERSION augmentée (v7-5-157 ou plus, au-dessus de la PR 26)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 157; })());
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -5095,9 +5095,10 @@ function calculerProgressionChargement(t) {
 
 // Colonnes chargées pour les commandes — EXCLUT gls_pdf_base64 (PDF étiquette 50-400 Ko/cmd,
 // stocké par gls-create-shipment, récupéré uniquement à la demande via l'action getLabel)
-var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_etiquette_imprimee_at,gls_creation_statut,gls_creation_at,gls_creation_erreur,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at,frais_port,stock_deduit,payment_source,payment_transactions,ticket_cb,encaisse_par,encaisse_at,encaisse_tournee,annulation_motif,annulation_commentaire,annulation_par,annulation_at';
+var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_etiquette_imprimee_at,gls_creation_statut,gls_creation_at,gls_creation_erreur,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at,frais_port,stock_deduit,payment_source,payment_transactions,ticket_cb,encaisse_par,encaisse_at,encaisse_tournee,annulation_motif,annulation_commentaire,annulation_par,annulation_at,updated_at'; // v7.5.157 : updated_at (rejeu du temps réel)
 
 async function sbLoadAll() {
+  var _cmdFile = null; // v7.5.157 : file des événements temps réel de CE chargement
   // Afficher cache immédiatement (UX rapide) pendant chargement Supabase
   try {
     var _cc = localStorage.getItem('mx_commandes_cache');
@@ -5135,6 +5136,7 @@ async function sbLoadAll() {
     // (Prefer: count=exact → Content-Range « 0-999/1001 ») : la liste reçue et le total décrivent le même instant
     cmdChargementComplet = false;
     var _cmdDebutLecture = Date.now(); // v7.5.154 : la preuve exige un temps réel connecté AVANT ce début, sans perte depuis
+    _cmdFile = cmdRtOuvrir(); // v7.5.157 : événements temps réel reçus à partir d'ici, rejoués sur l'instantané (cmdRejouerFile)
     var rCmds = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=created_at.desc', {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'count=exact' },
       signal: controller.signal
@@ -5177,8 +5179,13 @@ async function sbLoadAll() {
       });
     }
 
+    // v7.5.157 (revue Codex PR 27 sur 25550c3) : événements reçus pendant le chargement REJOUÉS sur l'instantané (par identifiant et
+    // date de mise à jour) ; un seul événement à l'ordre indécidable → preuve refusée. Sans instantané (liste vide ou en échec), les
+    // événements ont déjà été appliqués à la liste gardée : rien à rejouer.
+    var _rejeu = (cmdsRes.data && cmdsRes.data.length > 0) ? cmdRejouerFile(_cmdFile, cmdsRes.data) : { incertains: 0 };
+    cmdRtFermer(_cmdFile); _cmdFile = null;
     // v7.5.154 (revue Codex PR 27 sur aa07e1e) : liste complète ET synchronisation garantie depuis le début de la lecture
-    cmdChargementComplet = cmdsComplet && cmdSynchroGarantieDepuis(_cmdDebutLecture);
+    cmdChargementComplet = cmdsComplet && _rejeu.incertains === 0 && cmdSynchroGarantieDepuis(_cmdDebutLecture);
     if (tourRes.data && tourRes.data.length > 0) {
       tournees = tourRes.data.map(function(r) {
         return {
@@ -5236,6 +5243,7 @@ async function sbLoadAll() {
     }
   } catch(e) {
     console.warn('sbLoadAll erreur:', e.message);
+    if (_cmdFile) { cmdRtFermer(_cmdFile); _cmdFile = null; } // v7.5.157 : file fermée (événements déjà appliqués à la liste gardée)
     // Fallback cache localStorage — uniquement si AUCUNE donnée chargée depuis Supabase
     // NE PAS utiliser le cache si Supabase a répondu (même partiellement)
     if (commandes.length === 0) {
@@ -5360,6 +5368,99 @@ function cmdVisibilite(etat, maintenant) {
 }
 // Preuve accordée à une lecture complète commencée à « debut » : temps réel connecté avant ce début, aucune perte depuis.
 function cmdSynchroGarantieDepuis(debut) { return cmdTempsReelDepuis > 0 && cmdTempsReelDepuis <= debut && cmdSyncPerdueA < debut; }
+
+// v7.5.157 (revue Codex PR 27 sur 25550c3, point 1 + P2 natif) : ÉVÉNEMENTS TEMPS RÉEL REÇUS PENDANT sbLoadAll. Avant, une commande
+// insérée ou modifiée entre la lecture de la liste et la fin de l'attente des tournées était appliquée à l'ancienne liste, puis ÉCRASÉE
+// par l'instantané (« commandes = … ») — et la preuve de chargement complet était quand même accordée. Désormais chaque chargement
+// ouvre sa FILE avant la lecture ; le temps réel y range tout événement « commandes » (en plus de l'appliquer comme avant) ; après
+// l'instantané, la file est REJOUÉE dans l'ordre d'arrivée, commande par commande (identifiant), d'après la date de mise à jour
+// (updated_at, lue dans la même réponse) :
+//   * commande absente de l'instantané → ajoutée (insérée après la lecture) ; suppression → retirée ;
+//   * événement plus RÉCENT que l'instantané → appliqué ; plus ANCIEN → ignoré (l'instantané le contient déjà) ;
+//   * même date et mêmes valeurs → ignoré ; même date mais valeurs différentes, ou date illisible → ordre INDÉCIDABLE : l'instantané
+//     est gardé et la PREUVE est REFUSÉE (le tableau de bord lit la base par période ; la lecture complète suivante, 60 s, relit tout).
+var cmdRtFiles = []; // files ouvertes (une par chargement en cours : deux chargements simultanés ne se volent pas leurs événements)
+function cmdRtRecu(payload) { for (var i = 0; i < cmdRtFiles.length; i++) cmdRtFiles[i].push(payload); }
+function cmdRtOuvrir() { var f = []; cmdRtFiles.push(f); return f; }
+function cmdRtFermer(f) { var i = cmdRtFiles.indexOf(f); if (i >= 0) cmdRtFiles.splice(i, 1); }
+// Horodatage PostgreSQL (« 2026-11-26T10:00:00.123456+00:00 », « 2026-11-26 10:00:00.1+00 », « …Z ») → [millisecondes UTC,
+// microsecondes restantes] ; illisible → null. Les microsecondes comptent (Date les perd).
+function cmdHorodatage(s) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6})\d*)?\s*(Z|[+-]\d{2}(?::?\d{2})?)?$/.exec(String(s == null ? '' : s).trim());
+  if (!m) return null;
+  var frac = (m[7] || '').padEnd(6, '0'), dec = 0;
+  if (m[8] && m[8] !== 'Z') { var o = /^([+-])(\d{2}):?(\d{2})?$/.exec(m[8]); dec = (o[1] === '-' ? -1 : 1) * (parseInt(o[2], 10) * 60 + parseInt(o[3] || '0', 10)); }
+  var ms = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6], parseInt(frac.slice(0, 3), 10)) - dec * 60000;
+  return isFinite(ms) ? [ms, parseInt(frac.slice(3), 10)] : null;
+}
+function cmdComparerDates(a, b) { // -1, 0, 1 ; null si l'une est illisible
+  var x = cmdHorodatage(a), y = cmdHorodatage(b);
+  if (!x || !y) return null;
+  return x[0] !== y[0] ? (x[0] < y[0] ? -1 : 1) : (x[1] !== y[1] ? (x[1] < y[1] ? -1 : 1) : 0);
+}
+// Même version d'une commande (colonnes chargées) : dates comparées à la microseconde, nombres comme nombres, le reste en JSON.
+function cmdMemeVersion(r, s) {
+  var cols = String(CMD_SELECT_COLS).split(',');
+  for (var i = 0; i < cols.length; i++) {
+    var a = r[cols[i]], b = s[cols[i]];
+    if (a === undefined) a = null; if (b === undefined) b = null;
+    if (a === b) continue;
+    var d = (typeof a === 'string' && typeof b === 'string') ? cmdComparerDates(a, b) : null;
+    if (d === 0) continue;
+    if (a != null && b != null && typeof a !== 'object' && typeof b !== 'object' && String(a).trim() !== '' && isFinite(Number(a)) && isFinite(Number(b)) && Number(a) === Number(b)) continue;
+    if (JSON.stringify(a) === JSON.stringify(b)) continue;
+    return false;
+  }
+  return true;
+}
+// Décision pour UN événement de la file face à l'instantané (ligne brute de la base, ou absente) : 'appliquer', 'ignorer',
+// 'supprimer' ou 'incertain'. Pure.
+function cmdDecisionRejeu(payload, snap) {
+  var r = payload && payload.new;
+  if (payload && payload.eventType === 'DELETE') return (payload.old && payload.old.id) ? 'supprimer' : 'incertain';
+  if (!r || !r.id) return 'ignorer';
+  if (!snap) return 'appliquer';
+  var d = cmdComparerDates(r.updated_at, snap.updated_at);
+  if (d === 1) return 'appliquer';
+  if (d === -1) return 'ignorer';
+  return cmdMemeVersion(r, snap) ? 'ignorer' : 'incertain';
+}
+// Rejoue la file sur l'instantané (lignes brutes « rows ») : met à jour « commandes » ; rend le nombre d'événements appliqués et
+// d'événements à l'ordre indécidable (preuve refusée s'il y en a au moins un).
+function cmdRejouerFile(file, rows) {
+  var snap = {}, res = { appliques: 0, supprimes: 0, incertains: 0 };
+  (rows || []).forEach(function(s) { if (s && s.id != null) snap[s.id] = s; });
+  (file || []).forEach(function(p) {
+    var dec = cmdDecisionRejeu(p, snap[(p && p.new && p.new.id) || (p && p.old && p.old.id)]);
+    if (dec === 'appliquer') { cmdAppliquerTempsReel(p.new); snap[p.new.id] = p.new; res.appliques++; }
+    else if (dec === 'supprimer') { commandes = commandes.filter(function(c) { return c.id !== p.old.id; }); delete snap[p.old.id]; res.supprimes++; }
+    else if (dec === 'incertain') res.incertains++;
+  });
+  return res;
+}
+// Commande de l'appli depuis une ligne du temps réel (même conversion qu'avant, déplacée ici pour servir aussi au rejeu).
+function cmdDepuisTempsReel(r) {
+  return {
+    id:r.id, client:r.client, tel:r.tel, email:r.email,
+    adresse:r.adresse, etage:r.etage, asc:r.ascenseur, code:r.code,
+    produit:r.produit, lignes:r.lignes, qte:r.qte, prix:r.prix,
+    prixBrut:r.prix_brut, fraisPort:parseFloat(r.frais_port)||0, stockDeduit:!!r.stock_deduit, remiseGlobale:r.remise_globale,
+    remiseGlobaleVal:r.remise_globale_val, remiseGlobaleType:r.remise_globale_type,
+    remiseMotif:r.remise_motif, paie:r.paie, stpaie:r.stpaie,
+    montantEnc:r.montant_enc, livreur:r.livreur, statut:r.statut,
+    date:r.date_livraison, dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r.gls_etiquette_imprimee_at||'', glsCreationStatut:r.gls_creation_statut||'', glsCreationAt:r.gls_creation_at||'', glsCreationErreur:r.gls_creation_erreur||'',
+    litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'', annMotif:r.annulation_motif||'', annCom:r.annulation_commentaire||'', annPar:r.annulation_par||'', annAt:r.annulation_at||'',
+    glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
+    confirmationPresence:r.confirmation_presence||'', confirmationAt:r.confirmation_at||'',
+    refMarketplace:r.ref_marketplace, paySource:r.payment_source||'', payTransactions:r.payment_transactions||'', ticketCb:r.ticket_cb||'', encaissePar:r.encaisse_par||'', encaisseAt:r.encaisse_at||'', encaisseTournee:r.encaisse_tournee||'',
+  };
+}
+function cmdAppliquerTempsReel(r) {
+  var idx = commandes.findIndex(function(c){ return c.id === r.id; });
+  var mapped = cmdDepuisTempsReel(r);
+  if (idx > -1) commandes[idx] = mapped;
+  else commandes.unshift(mapped);
+}
 
 var _pollingInterval = null;
 function startPolling() {
@@ -5503,25 +5604,10 @@ function sbStartRealtime() {
   }
   sbRealtimeChannel = sb.channel('maxiconfort-changes')
     .on('postgres_changes', {event:'*', schema:'public', table:'commandes'}, function(payload) {
+      cmdRtRecu(payload); // v7.5.157 : rangé dans la file des chargements en cours (rejoué sur leur instantané), suppressions comprises
       var r = payload.new;
       if (!r || !r.id) return;
-      var idx = commandes.findIndex(function(c){ return c.id === r.id; });
-      var mapped = {
-        id:r.id, client:r.client, tel:r.tel, email:r.email,
-        adresse:r.adresse, etage:r.etage, asc:r.ascenseur, code:r.code,
-        produit:r.produit, lignes:r.lignes, qte:r.qte, prix:r.prix,
-        prixBrut:r.prix_brut, fraisPort:parseFloat(r.frais_port)||0, stockDeduit:!!r.stock_deduit, remiseGlobale:r.remise_globale,
-        remiseGlobaleVal:r.remise_globale_val, remiseGlobaleType:r.remise_globale_type,
-        remiseMotif:r.remise_motif, paie:r.paie, stpaie:r.stpaie,
-        montantEnc:r.montant_enc, livreur:r.livreur, statut:r.statut,
-        date:r.date_livraison, dateCmd:r.date_commande||'', createdAt:r.created_at||'', instr:r.instr, origine:r.origine, tracking_token:r.tracking_token||'', transporteur:r.transporteur||'RANOU', trackingTransporteur:r.tracking_transporteur||'', glsDateEtiquette:r.gls_date_etiquette||'', glsEtiquetteImprimeeAt:r.gls_etiquette_imprimee_at||'', glsCreationStatut:r.gls_creation_statut||'', glsCreationAt:r.gls_creation_at||'', glsCreationErreur:r.gls_creation_erreur||'',
-        litigeType:r.litige_type||'', litigeNumReclamation:r.litige_num_reclamation||'', litigeDateOuverture:r.litige_date_ouverture||'', litigeStatut:r.litige_statut||'', litigeDescription:r.litige_description||'', annMotif:r.annulation_motif||'', annCom:r.annulation_commentaire||'', annPar:r.annulation_par||'', annAt:r.annulation_at||'',
-        glsBloque:!!r.gls_bloque, glsDernierScan:r.gls_dernier_scan||'',
-        confirmationPresence:r.confirmation_presence||'', confirmationAt:r.confirmation_at||'',
-        refMarketplace:r.ref_marketplace, paySource:r.payment_source||'', payTransactions:r.payment_transactions||'', ticketCb:r.ticket_cb||'', encaissePar:r.encaisse_par||'', encaisseAt:r.encaisse_at||'', encaisseTournee:r.encaisse_tournee||'',
-      };
-      if (idx > -1) commandes[idx] = mapped;
-      else commandes.unshift(mapped);
+      cmdAppliquerTempsReel(r); // v7.5.157 : même conversion qu'avant (cmdDepuisTempsReel)
       if (typeof tdbSignaler === 'function') tdbSignaler('commandes'); // v7.5.138
       renderDash(); renderCmds(); renderTournees(); renderLivreur();
     })
@@ -7105,6 +7191,7 @@ function tdbReessayer() { TDB_ETAT.reessaiA = 0; tdbRendre(); }
 // v7.5.139 (revue Codex de 8705c41) : la lecture continue page après page jusqu'à la dernière ; garde-fou EXPLICITE (jamais un
 // arrêt silencieux) : au-delà de TDB_PAGES_MAX pages, erreur affichée (« chiffres non calculés »), jamais de chiffres tronqués.
 var TDB_PAGES_MAX = 500;
+var TDB_PAGE = 1000; // v7.5.157 : lignes demandées par page (la base peut en rendre moins : la page suivante part du dernier identifiant reçu)
 var _tdbSignal = null, _tdbExpire = null;
 function tdbVisible() { var p = document.getElementById('p-dashboard'); return !!(p && p.classList && p.classList.contains('on')); }
 /** Revue Codex (b425c03) : toute modification qui touche les chiffres le signale.
@@ -7132,17 +7219,29 @@ function tdbLocalComplet() {
 }
 // v7.5.154 (revue Codex PR 27 sur aa07e1e) : la lecture ne s'arrête plus sur une page de MOINS de 1 000 lignes — la base peut plafonner
 // chaque réponse plus bas (réglage max-rows) : la page suivante commence après les lignes REÇUES et la lecture s'arrête sur une page VIDE.
+// v7.5.157 (revue Codex PR 27 sur 25550c3, point 2) : pagination STABLE par clé (« keyset ») au lieu d'un décalage. Avec un décalage,
+// une commande insérée ou supprimée pendant la lecture faisait glisser les pages suivantes : une ligne présente du début à la fin pouvait
+// être sautée (suppression avant elle) ou lue deux fois (insertion avant elle). Désormais chaque page demande les commandes d'identifiant
+// STRICTEMENT SUPÉRIEUR au dernier reçu (ordre id croissant, &id=gt.<dernier>, comparaison faite par la base dans le même ordre que le
+// tri) : une ligne présente du début à la fin est lue exactement une fois. Une page qui renverrait un identifiant déjà lu (filtre ignoré)
+// arrête la lecture avec une erreur (jamais de doublon ni de boucle).
 async function tdbLire(filtre) {
-  var out = [];
+  var out = [], vus = {}, dernier = null;
   for (var page = 0; ; page++) {
     if (page >= TDB_PAGES_MAX) throw new Error('plus de ' + TDB_PAGES_MAX.toLocaleString('fr-FR') + ' pages (' + out.length.toLocaleString('fr-FR') + ' commandes lues) sur la période : lecture arrêtée, chiffres non calculés');
-    var deb = out.length;
-    var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + TDB_COLS + filtre + '&order=id.asc', {
-      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Range-Unit': 'items', 'Range': deb + '-' + (deb + 999) } });
+    var apres = dernier == null ? '' : '&id=gt.' + encodeURIComponent(dernier);
+    var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + TDB_COLS + filtre + apres + '&order=id.asc&limit=' + TDB_PAGE, {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     var rows = await r.json(); if (!Array.isArray(rows)) throw new Error('réponse inattendue');
     if (!rows.length) break;
+    for (var k = 0; k < rows.length; k++) {
+      var id = rows[k] && rows[k].id;
+      if (id == null || id === '' || vus[id]) throw new Error('page de lecture incohérente (identifiant ' + (id == null || id === '' ? 'absent' : 'déjà lu') + ') : lecture arrêtée, chiffres non calculés');
+      vus[id] = 1;
+    }
     out = out.concat(rows);
+    dernier = String(rows[rows.length - 1].id);
   }
   return out;
 }
