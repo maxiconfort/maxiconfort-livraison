@@ -3987,15 +3987,37 @@ function venEst(p, liste) {
 function venSelectionnables(liste) { return (liste || []).filter(function(p) { return venEst(p, liste); }); }
 // Lignes d'une commande à refuser : produit du catalogue non vendable, NOUVEAU dans la commande (une commande déjà prise qui le
 // contient reste modifiable, sa ligne est figée comme une ancienne offre). Même règle que la base (commandes_produit_vendable_garde).
+// v7.5.142 (revue Codex PR 26 sur 66def07) : une ligne sans produitId fiable (vide, « _custom_… », commande importée) mais au NOM
+// (ou à la référence) d'un produit non vendable est rapportée à ce produit (venProduitDeLigne), comme dans la base.
 function venLignesRefusees(lignes, liste, ancienne) {
-  var avant = ((ancienne && ancienne.lignes) || []).map(function(l) { return l && l.produitId; });
+  var avant = ((ancienne && ancienne.lignes) || []).map(function(l) { var p = venProduitDeLigne(l, liste); return p ? p.id : (l && l.produitId); });
   var refus = [];
   (lignes || []).forEach(function(l) {
-    if (!l || !l.produitId || avant.indexOf(l.produitId) > -1) return;
-    var p = (liste || []).find(function(x) { return x.id === l.produitId; });
-    if (p && !venEst(p, liste) && refus.indexOf(p.nom) < 0) refus.push(p.nom);
+    var p = venProduitDeLigne(l, liste);
+    if (!p || avant.indexOf(p.id) > -1) return;
+    if (!venEst(p, liste) && refus.indexOf(p.nom) < 0) refus.push(p.nom);
   });
   return refus;
+}
+// Nom ou référence NORMALISÉ : minuscules, sans accents, « × » lu « x », espaces regroupés, « 140 x 190 » = « 140x190 ».
+// Même règle que interne.l039_norm (migration 039) et nomNormalise (fonctions serveur).
+function venNorm(s) {
+  return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/×/g, 'x')
+    .replace(/\s+/g, ' ').trim().replace(/(\d) ?x ?(\d)/g, '$1x$2');
+}
+// Produit d'une ligne de commande : produitId d'un produit connu (fiable) ; sinon produit NON VENDABLE dont le nom normalisé est celui
+// de la ligne (« produit » ou « nom »), ou dont la référence interne est celle de la ligne (« reference », « sku », « _ugs » ou le nom) :
+// la ligne est ambiguë et rapportée à ce produit. Sinon null (hors catalogue). Même règle que interne.l039_lignes_identifiees.
+function venProduitDeLigne(l, liste) {
+  if (!l) return null;
+  if (l.produitId) { var parId = (liste || []).find(function(x) { return x.id === l.produitId; }); if (parId) return parId; }
+  var noms = [venNorm(l.produit), venNorm(l.nom)].filter(Boolean);
+  var refs = [venNorm(l.reference), venNorm(l.sku), venNorm(l._ugs), venNorm(l.produit)].filter(Boolean);
+  if (!noms.length && !refs.length) return null;
+  var cands = (liste || []).filter(function(x) {
+    return !venEst(x, liste) && (noms.indexOf(venNorm(x.nom)) > -1 || (!!x.refInterne && refs.indexOf(venNorm(x.refInterne)) > -1));
+  }).sort(function(a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; });
+  return cands[0] || null;
 }
 function venBadge() { return '<span style="display:inline-block;margin-top:3px;padding:2px 7px;border-radius:4px;background:var(--ol,#fff4e5);color:var(--od,#9a3412);border:1px solid var(--orange,#f59e0b);font-size:10px;font-weight:800;letter-spacing:.3px">' + VEN_LIBELLE + '</span>'; }
 
@@ -4042,6 +4064,27 @@ function arrCorpsValidation(arrivageId, lignes, saisies) {
     return { ligne_id: l.id, recue: arrEntier(s.recue), endommagee: arrEntier(s.endommagee), manquante: arrEntier(s.manquante) };
   }) };
 }
+// Revient HT d'un LOT tel que la BASE le calcule à la réception (revue Codex PR 26 sur 66def07, interne.l039_revient_lot) :
+// FOB × taux de change + frais d'import répartis sur les quantités attendues, arrondi à 4 décimales. null = incalculable
+// (taux ou FOB absent : la base refusera la réception). Affichage seulement : la base fait foi.
+function arrRevientCalcule(a, lignesArrivage, l) {
+  if (!a || !l || a.taux_change == null || l.fob_unitaire == null || isNaN(parseFloat(a.taux_change)) || isNaN(parseFloat(l.fob_unitaire))) return null;
+  var att = (lignesArrivage || []).reduce(function(s, x) { return s + (parseInt(x.quantite_attendue) || 0); }, 0);
+  if (att <= 0) return null;
+  var fraisU = (parseFloat(a.frais_import_ht) || 0) / att;
+  return Math.round((parseFloat(l.fob_unitaire) * parseFloat(a.taux_change) + fraisU) * 10000) / 10000;
+}
+// Lignes d'un arrivage EN ATTENTE avec le revient que la base retiendra (copies) ; revient_ecart = revient chargé qui contredit le
+// calcul de plus d'un centime (la base refusera la réception). Arrivage déjà reçu : lignes telles qu'enregistrées.
+function arrLignesValorisees(a, ls) {
+  if (!arrPeutValider(a)) return ls;
+  return (ls || []).map(function(l) {
+    var c = arrRevientCalcule(a, ls, l), o = Object.assign({}, l);
+    o.revient_ecart = c != null && l.revient_unitaire_ht != null && Math.abs(parseFloat(l.revient_unitaire_ht) - c) > 0.01;
+    o.revient_unitaire_ht = c;
+    return o;
+  });
+}
 // Saisie de départ : tout reçu en bon état (l'administrateur corrige ce qui manque ou est abîmé).
 function arrSaisiesInitiales(lignes) {
   var s = {}; (lignes || []).forEach(function(l) { s[l.id] = { recue: l.quantite_attendue, endommagee: 0, manquante: 0 }; }); return s;
@@ -4078,17 +4121,38 @@ async function stkChargerArrivage() {
   await Promise.all([arrChargerEntrant(), arrChargerRevients()]);
   if (typeof stkRender === 'function') { stkRender(); stkApplyRoleVisibility(); }
 }
+// Lecture COMPLÈTE d'une requête par pages (revue Codex PR 26 sur 66def07) : la base plafonne chaque réponse (1 000 lignes) ; on avance
+// du nombre de lignes RÉELLEMENT reçues jusqu'à une page vide, donc rien n'est perdu même si le plafond est plus bas. Ordre stable exigé
+// dans l'URL. { ok, rows } ou { ok: false, status } (jamais une liste partielle présentée comme complète).
+var ARR_PAGE = 1000;
+async function arrLireTout(url) {
+  var tout = [];
+  for (var n = 0; n < 1000; n++) {
+    var r = await fetch(url + '&limit=' + ARR_PAGE + '&offset=' + tout.length, { headers: arrEntetes() });
+    if (!r.ok) return { ok: false, status: r.status };
+    var page = await r.json();
+    if (!Array.isArray(page)) return { ok: false, status: r.status };
+    if (!page.length) return { ok: true, rows: tout };
+    tout = tout.concat(page);
+  }
+  return { ok: false, status: 'lecture trop longue' };
+}
+// Lignes d'UN arrivage, lues par arrivage_id (complètes, par pages) : la liste générale peut être longue, l'arrivage à recevoir doit
+// toujours être complet.
+function arrLireLignesArrivage(id) {
+  return arrLireTout(SUPABASE_URL + '/rest/v1/arrivage_lignes?select=*&arrivage_id=eq.' + encodeURIComponent(id) + '&order=id.asc');
+}
 async function arrCharger() {
   ARR_ETAT.erreur = '';
   try {
     var b = SUPABASE_URL + '/rest/v1/';
     var rs = await Promise.all([
-      fetch(b + 'arrivages?select=*&order=cree_at.desc', { headers: arrEntetes() }),
-      fetch(b + 'arrivage_lignes?select=*&order=id.asc', { headers: arrEntetes() })
+      arrLireTout(b + 'arrivages?select=*&order=cree_at.desc,id.desc'),
+      arrLireTout(b + 'arrivage_lignes?select=*&order=id.asc')
     ]);
-    if (!rs[0].ok || !rs[1].ok) { ARR_ETAT.erreur = 'Lecture impossible (HTTP ' + rs[0].status + ' / ' + rs[1].status + ') — la migration 039 est-elle appliquée ?'; return; }
-    ARR_ETAT.arrivages = await rs[0].json() || [];
-    ARR_ETAT.lignes = await rs[1].json() || [];
+    if (!rs[0].ok || !rs[1].ok) { ARR_ETAT.erreur = 'Lecture impossible (HTTP ' + (rs[0].status || 200) + ' / ' + (rs[1].status || 200) + ') — la migration 039 est-elle appliquée ?'; return; }
+    ARR_ETAT.arrivages = rs[0].rows;
+    ARR_ETAT.lignes = rs[1].rows;
     await arrChargerRevients();
   } catch(e) { ARR_ETAT.erreur = 'Pas de connexion'; }
 }
@@ -4135,7 +4199,7 @@ function arrRendre() {
       }).join('') : '<div class="card" style="padding:18px;color:var(--t3)">Aucun arrivage enregistré.</div>');
     return;
   }
-  var ls = arrLignesDe(a.id), attente = arrPeutValider(a);
+  var ls = arrLignesValorisees(a, arrLignesDe(a.id)), attente = arrPeutValider(a);
   var ap = arrApercu(ls, ARR_ETAT.saisies, produits, ARR_ETAT.revients, ARR_METHODE_VALORISATION);
   var champ = function(l, k) {
     var v = (ARR_ETAT.saisies[l.id] || {})[k];
@@ -4155,7 +4219,7 @@ function arrRendre() {
       var p = arrProduit(l.produit_id), x = ap[i];
       return '<tr><td><div class="td-m">' + arrEsc(p ? p.nom : l.produit_id) + '</div>' +
         (p && p.refInterne ? '<div class="td-s">Réf. ' + arrEsc(p.refInterne) + '</div>' : '') + (p && !venEst(p, produits) ? '<div>' + venBadge() + '</div>' : '') + '</td>' +
-        '<td style="text-align:center;font-weight:700">' + l.quantite_attendue + '</td><td>' + arrRevientTexte(l.revient_unitaire_ht) + '</td>' +
+        '<td style="text-align:center;font-weight:700">' + l.quantite_attendue + '</td><td>' + arrRevientTexte(l.revient_unitaire_ht) + (l.revient_ecart ? '<div class="td-s" style="color:var(--rd);font-weight:700">⚠ revient chargé incohérent (FOB × taux + frais) : la base refusera la réception</div>' : '') + '</td>' +
         champ(l, 'recue') + champ(l, 'endommagee') + champ(l, 'manquante') +
         '<td id="arr-stk-' + l.id + '">' + (attente ? x.stockAvant + ' → <strong>' + x.stockApres + '</strong>' : '+' + (l.quantite_recue || 0)) + '</td>' +
         '<td id="arr-rev-' + l.id + '">' + (attente ? arrRevientTexte(x.revientAvant) + ' → <strong>' + arrRevientTexte(x.revientApres) + '</strong>' : arrRevientTexte((ARR_ETAT.revients[l.produit_id] || {}).prix_revient_ht)) + '</td>' +
@@ -4173,7 +4237,7 @@ function arrSaisie(ligneId, champ, valeur) {
 }
 function arrMajControle() {
   var a = ARR_ETAT.arrivages.find(function(x) { return x.id === ARR_ETAT.ouvert; }); if (!a) return;
-  var ls = arrLignesDe(a.id), c = arrControleSaisies(ls, ARR_ETAT.saisies), attente = arrPeutValider(a);
+  var ls = arrLignesValorisees(a, arrLignesDe(a.id)), c = arrControleSaisies(ls, ARR_ETAT.saisies), attente = arrPeutValider(a);
   if (attente) {
     var ap = arrApercu(ls, ARR_ETAT.saisies, produits, ARR_ETAT.revients, ARR_METHODE_VALORISATION);
     ls.forEach(function(l, i) {
@@ -4201,6 +4265,18 @@ async function arrValider() {
   var t = c.total;
   if (!confirm('Valider la réception de ' + a.reference_interne + ' ?\n\n• ' + t.recue + ' article(s) en bon état AJOUTÉS au stock\n• ' + t.endommagee + ' endommagé(s) : NON ajoutés\n• ' + t.manquante + ' manquant(s)\n\nPrix de revient recalculé (' + (ARR_METHODES[ARR_METHODE_VALORISATION] || ARR_METHODE_VALORISATION) + ').\nCette validation est DÉFINITIVE (une seule fois).')) return;
   ARR_ETAT.envoi = true; arrMajControle();
+  // revue Codex PR 26 sur 66def07 : lignes de CET arrivage relues par arrivage_id (complètes, par pages) juste avant l'envoi ; si elles
+  // diffèrent de celles affichées (ligne ajoutée, retirée, quantité changée), rien n'est envoyé : l'écran est rafraîchi pour revérifier.
+  var relu = null;
+  try { relu = await arrLireLignesArrivage(a.id); } catch(e) { relu = { ok: false, status: 'pas de connexion' }; }
+  if (!relu || !relu.ok) { ARR_ETAT.envoi = false; toast('Réception NON validée : lignes de l\'arrivage illisibles (' + ((relu && relu.status) || '?') + ')', 'err'); arrMajControle(); return; }
+  var sig = function(t) { return (t || []).map(function(l) { return l.id + ':' + l.produit_id + ':' + l.quantite_attendue; }).sort().join('|'); };
+  if (sig(relu.rows) !== sig(ls)) {
+    ARR_ETAT.envoi = false;
+    ARR_ETAT.lignes = ARR_ETAT.lignes.filter(function(l) { return l.arrivage_id !== a.id; }).concat(relu.rows);
+    toast('Réception NON validée : les lignes de l\'arrivage ont changé — vérifiez la saisie puis validez de nouveau', 'err');
+    arrOuvrir(a.id); return;
+  }
   var j = null, http = 0;
   try {
     var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/valider_reception_arrivage', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()),

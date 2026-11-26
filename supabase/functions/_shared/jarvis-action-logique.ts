@@ -13,7 +13,7 @@
 // Cahier des charges : maxiconfort-brain/conception/JARVIS-LIVRAISON-AUTORISATION-TOTALE.md
 // ════════════════════════════════════════════════════════════════════
 
-import { idsNonVendables } from './produits-vendables.ts';
+import { idsNonVendables, lireCatalogueComplet, nomNormalise } from './produits-vendables.ts';
 
 export const VERSION = 'v2';
 // v2.18 (25/11/2026, arrivage de matelas) : produit NON VENDABLE (prix de vente à définir, migration 039 : colonnes vendable /
@@ -456,6 +456,17 @@ export function catalogueDepuisBase(rows: Record<string, any>[]): Catalogue {
   }
   return m;
 }
+/** v2.19 (26/11/2026, revue Codex PR 26 sur 66def07) — catalogue COMPLET de JARVIS : produits lus PAR PAGES (jamais une seule requête
+ *  plafonnée par la base), composants manquants lus par identifiants (lireCatalogueComplet, règle commune avec whatsapp-receive), puis
+ *  catalogueDepuisBase. Sans cela, un composant non vendable situé au-delà de la 1re page laissait son ensemble « vendable ». Toute erreur
+ *  de lecture LÈVE une exception (jamais un catalogue partiel). Lecteurs injectés : testable sans base. */
+export async function catalogueJarvis(
+  lirePage: (debut: number, fin: number) => Promise<Record<string, any>[]>,
+  lireParIds: (ids: string[]) => Promise<Record<string, any>[]>,
+  taillePage = 1000,
+): Promise<Catalogue> {
+  return catalogueDepuisBase(await lireCatalogueComplet(lirePage, lireParIds, taillePage));
+}
 /** Lignes de commande prêtes à enregistrer : prix du catalogue quand le produit est connu (par identifiant ou nom exact), 0 sinon (à régler par
  *  modifier_prix). Une ancienne offre est refusée (règle du 09/10). Renvoie { lignes, erreur }. */
 /** v2.8 (10/11/2026, « go produit catalogue ») — mots d'un nom de produit : sans accent ni casse ; dimensions « 140 x 190 », « 140×190 »,
@@ -506,6 +517,9 @@ export function lignesCommande(lignes: Ligne[], catalogue: Catalogue): { lignes:
     const nom = texte(l.produit, 120);
     let p = l.produitId ? catalogue.get(String(l.produitId)) : undefined;
     if (!p) for (const x of catalogue.values()) if (x.nom.toLowerCase() === nom.toLowerCase()) { p = x; break; }
+    // v2.19 (revue Codex PR 26 sur 66def07) : nom d'un produit NON VENDABLE à la casse, aux accents ou aux espaces près = ce produit
+    // (refusé ci-dessous), jamais une ligne « hors catalogue » à son nom (la base la refuserait aussi : interne.l039_lignes_identifiees)
+    if (!p && nomNormalise(nom)) for (const x of catalogue.values()) if (x.non_vendable && nomNormalise(x.nom) === nomNormalise(nom)) { p = x; break; }
     let rapproche = false;
     if (!p) { // v2.8 : nom pas exact → produit le plus proche, ou question si plusieurs le sont autant
       const r = produitProche(nom, catalogue);
