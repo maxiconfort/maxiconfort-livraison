@@ -443,7 +443,7 @@ export function prochainNumero(ids: string[]): string {
   return '#' + (max + 1);
 }
 
-export type CatalogueProduit = { id: string; nom: string; prix: number; actif?: boolean; ancienne_offre?: boolean; non_vendable?: boolean };
+export type CatalogueProduit = { id: string; nom: string; prix: number; actif?: boolean; ancienne_offre?: boolean; non_vendable?: boolean; ref?: string };
 export type Catalogue = Map<string, CatalogueProduit>;
 /** v2.18 — catalogue lu dans la table produits (select *). Avant la migration 039 les colonnes vendable / prix_vente_defini n'existent pas :
  *  tout reste vendable. Un ensemble dont un composant est non vendable l'est aussi (un niveau, comme l'appli). Pure. */
@@ -452,7 +452,7 @@ export function catalogueDepuisBase(rows: Record<string, any>[]): Catalogue {
   const m: Catalogue = new Map();
   for (const r of rows || []) {
     const nv = nonVendables.has(String(r.id));
-    m.set(String(r.id), { id: String(r.id), nom: String(r.nom || ''), prix: Number(r.prix) || 0, actif: r.actif !== false, ancienne_offre: !!r.ancienne_offre, ...(nv ? { non_vendable: true } : {}) });
+    m.set(String(r.id), { id: String(r.id), nom: String(r.nom || ''), prix: Number(r.prix) || 0, actif: r.actif !== false, ancienne_offre: !!r.ancienne_offre, ...(nv ? { non_vendable: true } : {}), ...(r.reference_interne ? { ref: String(r.reference_interne) } : {}) });
   }
   return m;
 }
@@ -516,15 +516,18 @@ export function lignesCommande(lignes: Ligne[], catalogue: Catalogue): { lignes:
   for (const l of lignes) {
     const nom = texte(l.produit, 120);
     let p = l.produitId ? catalogue.get(String(l.produitId)) : undefined;
-    // v2.20 (revue Codex PR 26 sur 4ec0313) : identifiant d'un produit + nom d'un AUTRE produit, NON VENDABLE → ligne contradictoire
-    // rapportée au produit non vendable (refusée ci-dessous), comme interne.l039_lignes_identifiees ; nom identique = produit gardé
-    if (p && nomNormalise(nom) && nomNormalise(nom) !== nomNormalise(p.nom)) {
-      for (const x of catalogue.values()) if (x.non_vendable && x.id !== p.id && nomNormalise(x.nom) === nomNormalise(nom)) { p = x; break; }
-    }
     if (!p) for (const x of catalogue.values()) if (x.nom.toLowerCase() === nom.toLowerCase()) { p = x; break; }
     // v2.19 (revue Codex PR 26 sur 66def07) : nom d'un produit NON VENDABLE à la casse, aux accents ou aux espaces près = ce produit
-    // (refusé ci-dessous), jamais une ligne « hors catalogue » à son nom (la base la refuserait aussi : interne.l039_lignes_identifiees)
-    if (!p && nomNormalise(nom)) for (const x of catalogue.values()) if (x.non_vendable && nomNormalise(x.nom) === nomNormalise(nom)) { p = x; break; }
+    // (refusé ci-dessous), jamais une ligne « hors catalogue » à son nom (la base la refuserait aussi : interne.l039_lignes_identifiees).
+    // v2.20 (revue Codex sur 4ec0313) : identifiant d'un produit + nom d'un AUTRE produit, NON VENDABLE → ligne contradictoire refusée.
+    // v2.21 (revue Codex PR 26 sur 17f631a) : une seule concordance ne suffit plus — même si l'identifiant et le nom désignent un produit
+    // VENDABLE, la ligne est rapportée au produit NON VENDABLE que son texte désigne par son NOM ou sa RÉFÉRENCE interne (le texte dicté
+    // est la seule donnée de la ligne ; même règle que interne.l039_ligne_identifiee et venProduitDeLigne) ; le produit de l'identifiant
+    // n'est gardé que s'il est lui-même non vendable et désigné (déjà refusé), ou si aucun produit non vendable n'est désigné.
+    const designe = (x: CatalogueProduit) => !!nomNormalise(nom) && (nomNormalise(x.nom) === nomNormalise(nom) || (!!x.ref && nomNormalise(x.ref) === nomNormalise(nom)));
+    if (!(p && p.non_vendable && designe(p))) {
+      for (const x of catalogue.values()) if (x.non_vendable && designe(x)) { p = x; break; }
+    }
     let rapproche = false;
     if (!p) { // v2.8 : nom pas exact → produit le plus proche, ou question si plusieurs le sont autant
       const r = produitProche(nom, catalogue);

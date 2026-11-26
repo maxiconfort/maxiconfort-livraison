@@ -900,6 +900,10 @@ test('v2.19 (revue Codex PR 26 sur 66def07) : catalogue JARVIS COMPLET au-delà 
   assert.match(lignesCommande([{ produitId: 'p0001', produit: 'Matelas Fictif Z 140 x 190', qte: 1 }], cat).erreur || '', /pas encore vendable/);
   assert.equal(lignesCommande([{ produitId: 'p0001', produit: 'produit fictif 1', qte: 1 }], cat).erreur, null);
   assert.equal(lignesCommande([{ produitId: 'p0001', qte: 1 }], cat).erreur, null);
+  // v2.21 (revue Codex sur 17f631a) : identifiant vendable + texte = RÉFÉRENCE interne d'un produit non vendable → refusé (tous les champs examinés)
+  const catR = catalogueDepuisBase([{ id: 'n', nom: 'Matelas Fictif N', prix: null, vendable: false, prix_vente_defini: false, reference_interne: 'MC-TEST-9' }, { id: 'a', nom: 'Matelas Fictif A', prix: 100 }]);
+  assert.match(lignesCommande([{ produitId: 'a', produit: 'mc-test-9', qte: 1 }], catR).erreur || '', /pas encore vendable/);
+  assert.equal(lignesCommande([{ produitId: 'a', produit: 'Matelas Fictif A', qte: 1 }], catR).erreur, null);
   // lecture impossible : exception (jamais un catalogue partiel)
   await assert.rejects(catalogueJarvis(async () => { throw new Error('panne'); }, lireParIds));
   const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');

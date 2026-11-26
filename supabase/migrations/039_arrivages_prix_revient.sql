@@ -188,20 +188,35 @@ revoke all on function interne.l039_designe(jsonb, text, text) from public, anon
 -- identifiant d'un produit vendable + nom d'un produit interdit) et rapportée à ce produit non vendable : refusée dans une commande
 -- nouvelle (insertion comme upsert) ou si elle est ajoutée ou modifiée ; sinon (ni nom ni référence, ou nom libre) → inchangée.
 -- Appliqué aux lignes proposées ET aux lignes actuelles : une commande déjà prise inchangée reste modifiable comme avant.
+-- Revue Codex PR 26 sur 17f631a : UNE concordance ne suffit plus. Une ligne dont l'identifiant et le nom désignent un produit
+-- VENDABLE mais dont un AUTRE champ (sku, référence, _ugs, ancien « nom ») désigne un produit NON VENDABLE est contradictoire :
+-- TOUS les champs sont examinés et, si l'un désigne un produit non vendable, la ligne est rapportée à ce produit (refusée si elle
+-- est nouvelle). L'identifiant n'est gardé tel quel que s'il désigne lui-même un produit non vendable désigné par la ligne (déjà
+-- refusé) ou si aucun champ ne désigne de produit non vendable. Décision PURE (l039_ligne_identifiee), testée par l'auto-contrôle.
+--   p_cands = produits candidats : [{"id", "designe" (la ligne le désigne-t-elle ?), "nv" (non vendable ?)}, …]
+create or replace function interne.l039_ligne_identifiee(e jsonb, p_cands jsonb) returns jsonb
+language sql immutable as $$
+  select case
+    when exists (select 1 from jsonb_array_elements(coalesce(p_cands, '[]'::jsonb)) c
+                  where coalesce(e ->> 'produitId', '') <> '' and c ->> 'id' = e ->> 'produitId'
+                    and coalesce((c ->> 'designe')::boolean, false) and coalesce((c ->> 'nv')::boolean, false)) then e
+    else coalesce((select e || jsonb_build_object('produitId', c ->> 'id')
+                     from jsonb_array_elements(coalesce(p_cands, '[]'::jsonb)) c
+                    where coalesce((c ->> 'designe')::boolean, false) and coalesce((c ->> 'nv')::boolean, false)
+                    order by c ->> 'id' limit 1), e)
+  end
+$$;
+revoke all on function interne.l039_ligne_identifiee(jsonb, jsonb) from public, anon, authenticated;
 create or replace function interne.l039_lignes_identifiees(p jsonb) returns jsonb
 language sql stable security definer set search_path = public, interne, pg_catalog as $$
   select case when p is null then null else (
     select coalesce(jsonb_agg(
-      case
-        when coalesce(e ->> 'produitId', '') <> '' and exists (select 1 from public.produits q where q.id = e ->> 'produitId'
-                                                                  and interne.l039_designe(e, q.nom, q.reference_interne)) then e
-        else coalesce((
-          select e || jsonb_build_object('produitId', q.id)
-            from public.produits q
-           where interne.l039_designe(e, q.nom, q.reference_interne)
-             and interne.produit_non_vendable(q.id)
-           order by q.id limit 1), e)
-      end order by t.ord), '[]'::jsonb)
+      interne.l039_ligne_identifiee(e, (
+        select coalesce(jsonb_agg(jsonb_build_object('id', q.id, 'designe', interne.l039_designe(e, q.nom, q.reference_interne),
+                                                     'nv', interne.produit_non_vendable(q.id))), '[]'::jsonb)
+          from public.produits q
+         where q.id = e ->> 'produitId' or interne.l039_designe(e, q.nom, q.reference_interne)))
+      order by t.ord), '[]'::jsonb)
       from jsonb_array_elements(case when jsonb_typeof(p) = 'array' then p else '[]'::jsonb end) with ordinality t(e, ord))
   end
 $$;
@@ -432,6 +447,43 @@ language sql immutable as $$ select round(p_fob * p_taux + coalesce(p_frais_u, 0
 create or replace function interne.l039_revient_coherent(p_charge numeric, p_calcule numeric) returns boolean
 language sql immutable as $$ select p_charge is null or (p_calcule is not null and abs(p_charge - p_calcule) <= 0.01) $$;
 
+-- EMPREINTE DE VALORISATION (revue Codex PR 26 sur 17f631a) : l'administrateur valide un APERÇU (stock et revient après réception).
+-- Si le FOB, le taux, les frais, les quantités attendues, le revient chargé, le revient actuel d'un produit ou la méthode changent
+-- entre cet aperçu et la validation, le revient appliqué ne serait plus celui qu'il a vu. L'application envoie donc le TEXTE des
+-- valeurs affichées (même construction que arrEmpreinte, maxiconfort-v7.html) ; valider_reception_arrivage le recalcule APRÈS les
+-- verrous et REFUSE (« valorisation_modifiee », rien n'est écrit) s'il diffère : nouvel aperçu et nouvelle confirmation obligatoires.
+-- Le stock courant n'y entre pas (il bouge à chaque vente ; la réception s'ajoute au stock réel du moment).
+-- Nombres à ÉCHELLE FIXE (celle des colonnes : taux 6, frais 2, FOB et revients 4 décimales), vide si absent. Pures.
+create or replace function interne.l039_fmt(p numeric, p_dec integer) returns text
+language sql immutable as $$ select coalesce(round(p, p_dec)::text, '') $$;
+-- p_lignes = [{"id", "produit_id", "quantite_attendue", "fob_unitaire", "revient_unitaire_ht", "revient_avant", "revient_avant_provisoire"}, …]
+create or replace function interne.l039_empreinte(p_methode text, p_taux numeric, p_frais numeric, p_prov boolean, p_lignes jsonb) returns text
+language sql immutable as $$
+  select 'v1|' || coalesce(p_methode, '') || '|' || interne.l039_fmt(p_taux, 6) || '|' || interne.l039_fmt(p_frais, 2) || '|'
+      || case when p_prov then 't' else 'f' end
+      || coalesce((select string_agg('|' || coalesce(e ->> 'id', '') || ':' || coalesce(e ->> 'produit_id', '') || ':'
+                                     || coalesce(e ->> 'quantite_attendue', '') || ':' || interne.l039_fmt((e ->> 'fob_unitaire')::numeric, 4) || ':'
+                                     || interne.l039_fmt((e ->> 'revient_unitaire_ht')::numeric, 4) || ':'
+                                     || interne.l039_fmt((e ->> 'revient_avant')::numeric, 4) || ':'
+                                     || case (e ->> 'revient_avant_provisoire')::boolean when true then 't' when false then 'f' else '' end,
+                                     '' order by (e ->> 'id')::bigint)
+                     from jsonb_array_elements(case when jsonb_typeof(p_lignes) = 'array' then p_lignes else '[]'::jsonb end) e), '')
+$$;
+-- Empreinte ACTUELLE d'un arrivage (lue dans les tables). NULL si l'arrivage n'existe pas.
+create or replace function interne.l039_empreinte_valorisation(p_arrivage_id bigint, p_methode text) returns text
+language sql stable security definer set search_path = public, interne, pg_catalog as $$
+  select interne.l039_empreinte(p_methode, a.taux_change, a.frais_import_ht, a.taux_provisoire,
+           (select jsonb_agg(jsonb_build_object('id', l.id, 'produit_id', l.produit_id, 'quantite_attendue', l.quantite_attendue,
+                     'fob_unitaire', l.fob_unitaire, 'revient_unitaire_ht', l.revient_unitaire_ht,
+                     'revient_avant', r.prix_revient_ht, 'revient_avant_provisoire', r.provisoire))
+              from public.arrivage_lignes l left join public.produits_revient r on r.produit_id = l.produit_id
+             where l.arrivage_id = a.id))
+    from public.arrivages a where a.id = p_arrivage_id
+$$;
+revoke all on function interne.l039_fmt(numeric, integer) from public, anon, authenticated;
+revoke all on function interne.l039_empreinte(text, numeric, numeric, boolean, jsonb) from public, anon, authenticated;
+revoke all on function interne.l039_empreinte_valorisation(bigint, text) from public, anon, authenticated;
+
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 -- 5. Validation de la réception (ADMINISTRATEUR, une seule fois, atomique)
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -451,9 +503,13 @@ end $$;
 
 -- p_lignes = [{"ligne_id": 12, "recue": 38, "endommagee": 1, "manquante": 1}, …] : UNE entrée par ligne de l'arrivage,
 -- avec recue + endommagee + manquante = quantité attendue. Tout ou rien : la moindre erreur annule toute l'opération.
+-- p_empreinte (revue Codex PR 26 sur 17f631a) = empreinte des valeurs de valorisation VUES dans l'aperçu (interne.l039_empreinte) :
+-- obligatoire, comparée APRÈS les verrous à l'empreinte actuelle ; différente → « valorisation_modifiee », rien n'est écrit.
+-- (Ancienne signature à 2 arguments supprimée : aucune validation possible sans empreinte.)
+drop function if exists public.valider_reception_arrivage(bigint, jsonb);
 -- Verrous, toujours dans le même ordre (comme recalculer_revient_arrivage) : arrivage → produits (par id) → produits_revient
 -- (par produit_id), AVANT toute lecture de l'ancienne valorisation.
-create or replace function public.valider_reception_arrivage(p_arrivage_id bigint, p_lignes jsonb) returns json
+create or replace function public.valider_reception_arrivage(p_arrivage_id bigint, p_lignes jsonb, p_empreinte text) returns json
 language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
 declare
   a public.arrivages%rowtype;
@@ -474,6 +530,10 @@ begin
     return json_build_object('ok', false, 'erreur', 'arrivage_deja_traite', 'statut', a.statut);
   end if;
   if jsonb_typeof(p_lignes) is distinct from 'array' then return json_build_object('ok', false, 'erreur', 'lignes_invalides'); end if;
+  if coalesce(p_empreinte, '') = '' then return json_build_object('ok', false, 'erreur', 'empreinte_requise'); end if;
+  -- lignes de l'arrivage verrouillées (ordre fixe : arrivage → lignes → produits → produits_revient) : FOB et revient chargé ne
+  -- peuvent plus changer entre la comparaison d'empreinte ci-dessous et la valorisation
+  perform 1 from public.arrivage_lignes where arrivage_id = a.id order by id for update;
   select count(*) into v_nb from public.arrivage_lignes where arrivage_id = a.id;
   if v_nb = 0 then return json_build_object('ok', false, 'erreur', 'arrivage_sans_ligne'); end if;
   if jsonb_array_length(p_lignes) <> v_nb
@@ -491,6 +551,11 @@ begin
   -- verrous dans un ordre fixe (pas d'interblocage avec une autre réception ni un recalcul) : produits, PUIS produits_revient
   perform 1 from public.produits where id in (select produit_id from public.arrivage_lignes where arrivage_id = a.id) order by id for update;
   perform 1 from public.produits_revient where produit_id in (select produit_id from public.arrivage_lignes where arrivage_id = a.id) order by produit_id for update;
+  -- valeurs de valorisation VUES dans l'aperçu (revue Codex PR 26 sur 17f631a) : comparées ici, tous verrous pris et AVANT toute
+  -- écriture ; FOB, taux, frais, quantités, revient chargé, revient actuel ou méthode changés → refus, nouvel aperçu à confirmer
+  if p_empreinte is distinct from interne.l039_empreinte_valorisation(a.id, v_methode) then
+    return json_build_object('ok', false, 'erreur', 'valorisation_modifiee');
+  end if;
   -- ordre de réception tiré APRÈS les verrous : il suit l'ordre réel de valorisation (rejoué par recalculer_revient_arrivage)
   v_ordre := nextval('public.arrivages_ordre_reception_seq');
   -- instant RÉEL de la réception, pris au même moment (après les verrous) : clock_timestamp() et non now() (début de
@@ -660,10 +725,10 @@ begin
      group by l.produit_id;
 end $$;
 
-revoke all on function public.valider_reception_arrivage(bigint, jsonb) from public, anon, authenticated;
+revoke all on function public.valider_reception_arrivage(bigint, jsonb, text) from public, anon, authenticated;
 revoke all on function public.recalculer_revient_arrivage(bigint, numeric) from public, anon, authenticated;
 revoke all on function public.stock_entrant() from public, anon, authenticated;
-grant execute on function public.valider_reception_arrivage(bigint, jsonb) to anon;
+grant execute on function public.valider_reception_arrivage(bigint, jsonb, text) to anon;
 grant execute on function public.recalculer_revient_arrivage(bigint, numeric) to anon;
 grant execute on function public.stock_entrant() to anon;
 
@@ -741,6 +806,27 @@ begin
   if not interne.l039_designe('{"produit":"Article TikTok","_ugs":"mc-test-1"}', 'Matelas Nouveau N (fictif)', 'MC-TEST-1') then f := 'référence désignant le produit'; end if;
   if interne.l039_designe('{"produitId":"pr-a"}', 'Matelas Fictif A 140×190', null) then f := 'ligne sans nom ni référence'; end if;
   if interne.l039_designe('{"produit":"  "}', '  ', '') then f := 'nom et référence vides'; end if;
+  -- identification avec TOUS les champs (revue Codex sur 17f631a) : identifiant et nom vendables + sku d'un produit non vendable
+  if interne.l039_ligne_identifiee('{"produitId":"pr-a","produit":"Matelas Fictif A 140×190","sku":"MC-TEST-1"}',
+       '[{"id":"pr-a","designe":true,"nv":false},{"id":"pr-n","designe":true,"nv":true}]') ->> 'produitId' is distinct from 'pr-n'
+    then f := 'identifiant et nom vendables, sku d''un produit non vendable'; end if;
+  if interne.l039_ligne_identifiee('{"produitId":"pr-a","produit":"Matelas Fictif A 140×190"}', '[{"id":"pr-a","designe":true,"nv":false}]')
+       ->> 'produitId' is distinct from 'pr-a' then f := 'identifiant et nom vendables, rien de non vendable'; end if;
+  if interne.l039_ligne_identifiee('{"produitId":"pr-n","produit":"Matelas Nouveau N (fictif)"}',
+       '[{"id":"pr-n","designe":true,"nv":true},{"id":"pr-0","designe":true,"nv":true}]') ->> 'produitId' is distinct from 'pr-n'
+    then f := 'identifiant non vendable désigné gardé'; end if;
+  if interne.l039_ligne_identifiee('{"produit":"Matelas Nouveau N (fictif)"}', '[{"id":"pr-n","designe":true,"nv":true}]')
+       ->> 'produitId' is distinct from 'pr-n' then f := 'nom seul d''un produit non vendable'; end if;
+  if interne.l039_ligne_identifiee('{"produit":"Libre"}', '[]') is distinct from '{"produit":"Libre"}'::jsonb then f := 'ligne libre inchangée'; end if;
+  -- empreinte de valorisation : MÊME texte attendu que arrEmpreinte (application, banc outils/test-arrivage.js)
+  if interne.l039_empreinte('CUMP', 1.1, 30, true,
+       '[{"id":72,"produit_id":"pr-n","quantite_attendue":40,"fob_unitaire":20,"revient_unitaire_ht":null,"revient_avant":null,"revient_avant_provisoire":null},
+         {"id":71,"produit_id":"pr-a","quantite_attendue":30,"fob_unitaire":10.5,"revient_unitaire_ht":12.25,"revient_avant":40,"revient_avant_provisoire":false}]')
+       is distinct from 'v1|CUMP|1.100000|30.00|t|71:pr-a:30:10.5000:12.2500:40.0000:f|72:pr-n:40:20.0000:::'
+    then f := 'empreinte de valorisation'; end if;
+  if interne.l039_empreinte('CUMP', 1.1, 30, true, '[]') = interne.l039_empreinte('CUMP', 1.2, 30, true, '[]') then f := 'empreinte : taux changé'; end if;
+  if interne.l039_empreinte('CUMP', 1.1, 30, true, '[]') = interne.l039_empreinte('CUMP', 1.1, 31, true, '[]') then f := 'empreinte : frais changés'; end if;
+  if interne.l039_fmt(null, 4) <> '' or interne.l039_fmt(21, 4) <> '21.0000' then f := 'nombre à échelle fixe'; end if;
   if f is not null then
     raise exception 'Auto-contrôle 039 (revient / identification) en échec : cas « % ». Migration annulée.', f;
   end if;
