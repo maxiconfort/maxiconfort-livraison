@@ -104,6 +104,19 @@ test('valeur au prix de vente (services et ensembles exclus)', sv.valeurVente ==
 const sr = bac.tdbStock(prods, { a: { prix_revient_ht: '110.5' } }, true);
 test('admin avec prix de revient : valeur au revient + nombre de références connues', sr.base === 'revient' && sr.valeurRevient === 442 && sr.connus === 1 && sr.enStock === 2, sr);
 test('collaboratrice : jamais la base « revient »', bac.tdbStock(prods, { a: { prix_revient_ht: 1 } }, false).base === 'vente');
+// revue Codex PR 27 sur c33c8b3 : services écartés AVANT les alertes (service à stock nul, service sous son seuil), et jamais valorisés
+const prodsS = prods.concat([
+  { id: 's0', nom: 'Livraison étage (fictif)', cat: 'Service', prix: 30, stock: 0, seuil: 1 },
+  { id: 's1', nom: 'Reprise ancien matelas (fictif)', cat: 'Service', prix: 25, stock: 1, seuil: 3 },
+]);
+const svS = bac.tdbStock(prodsS, {}, true);
+test('service à stock nul : pas compté en rupture', svS.ruptures === 1, svS);
+test('service sous son seuil : pas compté en stock bas', svS.bas === 1, svS);
+test('services : valeur du stock inchangée (prix de vente)', svS.valeurVente === 1600 && svS.base === 'vente', svS);
+const srS = bac.tdbStock(prodsS, { a: { prix_revient_ht: '110.5' }, s1: { prix_revient_ht: '10' }, s: { prix_revient_ht: '5' } }, true);
+test('services : jamais valorisés au revient ni comptés en stock', srS.valeurRevient === 442 && srS.connus === 1 && srS.enStock === 2, srS);
+test('seuls les services : aucune alerte, valeur nulle', (() => { const x = bac.tdbStock(prodsS.filter((q) => q.cat === 'Service'), {}, true); return x.ruptures === 0 && x.bas === 0 && x.valeurVente === 0 && x.enStock === 0; })());
+test('services écartés AVANT le comptage des alertes (dans le filtre initial)', /var phys = \(liste \|\| \[\]\)\.filter\(function \(p\) \{ return !!p && !\(Array\.isArray\(p\.composants\) && p\.composants\.length\) && p\.cat !== 'Service'; \}\);/.test(html));
 
 console.log('\n5. AFFICHAGE — ADMIN AVEC MONTANTS, COLLABORATRICE SANS AUCUN MONTANT');
 const P0 = bac.tdbPeriodes('jour', mer);
@@ -293,6 +306,6 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
   }
   console.log('\n8. MISE EN LIGNE');
 
-test('CACHE_VERSION augmentée (v7-5-141 ou plus)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 141; })());
+test('CACHE_VERSION augmentée (v7-5-146 ou plus)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 146; })());
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

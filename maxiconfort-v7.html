@@ -6783,12 +6783,13 @@ function tdbDonnees(lignes, P, admin, zoneDe) {
 /** Stock : mêmes règles que l'inventaire (stkRender). Un ensemble (composants) n'est ni alerté ni valorisé (ses composants le sont).
  *  Valeur au PRIX DE REVIENT seulement pour l'administrateur qui lit produits_revient (migration 039) ; sinon au PRIX DE VENTE. */
 function tdbStock(liste, revients, voitRevient) {
-  var phys = (liste || []).filter(function (p) { return !(p && Array.isArray(p.composants) && p.composants.length); });
+  // v7.5.145 (revue Codex PR 27 sur c33c8b3) : les SERVICES (catégorie « Service », sans stock physique) sont écartés AVANT le calcul
+  // des alertes : un service à stock nul n'est plus compté en rupture, ni un service sous son seuil en stock bas ; ni valorisés.
+  var phys = (liste || []).filter(function (p) { return !!p && !(Array.isArray(p.composants) && p.composants.length) && p.cat !== 'Service'; });
   var r = { ruptures: 0, bas: 0, valeurVente: 0, valeurRevient: 0, connus: 0, enStock: 0, base: 'vente' };
   phys.forEach(function (p) {
     var st = Number(p.stock) || 0, seuil = Number(p.seuil) || 0;
     if (st === 0) r.ruptures++; else if (st > 0 && st <= seuil) r.bas++;
-    if (p.cat === 'Service') return;
     r.valeurVente += st * (parseFloat(p.prix) || 0);
     if (st > 0) { r.enStock++; var rv = revients && revients[p.id]; if (rv && !isNaN(parseFloat(rv.prix_revient_ht))) { r.connus++; r.valeurRevient += st * parseFloat(rv.prix_revient_ht); } }
   });
