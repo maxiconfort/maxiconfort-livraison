@@ -4386,6 +4386,49 @@ function arrAVerifierDe(id) {
   if (id == null || !ARR_ETAT.aVerifier) return null;
   return Object.prototype.hasOwnProperty.call(ARR_ETAT.aVerifier, String(id)) ? ARR_ETAT.aVerifier[String(id)] : null;
 }
+// v7.5.198 (revue Codex PR 26 sur cf60684 et 992a943) : la TENTATIVE d'un envoi est gardée SUR L'APPAREIL (localStorage, par arrivage)
+// AVANT l'envoi, et retirée seulement après une réponse définitive (validée ou refusée) ou une relecture qui conclut (abandon confirmé
+// par la base, ou réception constatée). Avant : uniquement en mémoire (ARR_ETAT) -> une page rechargée ou fermée pendant un envoi
+// retardé perdait l'identifiant, et une nouvelle validation était proposée alors que l'ancienne requête pouvait encore arriver.
+// Au chargement, chaque tentative gardée remet l'arrivage « à vérifier » : aucun nouvel envoi avant « Vérifier dans la base ».
+var ARR_CLE_TENTATIVES = 'mx_arr_tentatives';
+var ARR_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function arrLireTentatives() {
+  var brut = null; try { brut = localStorage.getItem(ARR_CLE_TENTATIVES); } catch(e) { return {}; }
+  var m = null; try { m = JSON.parse(brut || '{}'); } catch(e) { m = null; }
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return {};
+  var r = {}; Object.keys(m).forEach(function(k) { var t = m[k]; if (t && typeof t === 'object' && t.id != null && String(t.id) === k && ARR_UUID.test(String(t.tentative || ''))) r[k] = t; });
+  return r;
+}
+// Écrit puis RELIT : true seulement si la tentative est bien gardée (sinon l'appelant n'envoie rien).
+function arrGarderTentative(a, tentative) {
+  if (!a || !ARR_UUID.test(String(tentative || ''))) return false;
+  try {
+    var m = arrLireTentatives(); m[String(a.id)] = { id: a.id, ref: a.reference_interne || '', tentative: String(tentative), depuis: new Date().toISOString() };
+    localStorage.setItem(ARR_CLE_TENTATIVES, JSON.stringify(m));
+    var v = arrLireTentatives()[String(a.id)]; return !!v && v.tentative === String(tentative);
+  } catch(e) { return false; }
+}
+// Retire la tentative gardée de CET arrivage, seulement si c'est bien celle-ci (une plus récente n'est jamais effacée).
+function arrOublierTentative(id, tentative) {
+  try {
+    var m = arrLireTentatives(), k = String(id);
+    if (m[k] && (!tentative || m[k].tentative === String(tentative))) { delete m[k]; localStorage.setItem(ARR_CLE_TENTATIVES, JSON.stringify(m)); }
+  } catch(e) {}
+}
+// Au chargement : chaque tentative gardée d'un arrivage EN ATTENTE redevient « à vérifier » (même identifiant pour la relecture).
+// Arrivage déjà reçu ou annulé : la base refuse toute requête retardée (« arrivage_deja_traite ») -> tentative oubliée.
+// Renvoie le nombre d'arrivages remis « à vérifier ».
+function arrRestaurerTentatives(arrivages) {
+  var m = arrLireTentatives(), n = 0;
+  Object.keys(m).forEach(function(k) {
+    var a = (arrivages || []).find(function(x) { return String(x.id) === k; });
+    if (a && !arrPeutValider(a)) { arrOublierTentative(k, m[k].tentative); return; }
+    var dejaV = arrAVerifierDe(k);
+    if (!dejaV || !dejaV.tentative) { ARR_ETAT.aVerifier[k] = { id: a ? a.id : m[k].id, ref: (a && a.reference_interne) || m[k].ref || '', tentative: m[k].tentative, restauree: true }; n++; }
+  });
+  return n;
+}
 function arrEntetes() { return { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }; }
 // v7.5.150 (revue Codex PR 26 sur fd751b8, P2) : revients lus EN ENTIER, par pages, ordre stable (produit_id) — avant, une seule
 // requête plafonnée par la base (1 000 lignes) pouvait en perdre. Échec de lecture : revients VIDÉS (jamais d'anciennes valeurs
@@ -4474,6 +4517,7 @@ async function arrCharger() {
     if (!rs[0].ok || !rs[1].ok) { ARR_ETAT.erreur = 'Lecture impossible (HTTP ' + (rs[0].status || 200) + ' / ' + (rs[1].status || 200) + ') — la migration 039 est-elle appliquée ?'; return; }
     ARR_ETAT.arrivages = rs[0].rows;
     ARR_ETAT.lignes = rs[1].rows;
+    ARR_ETAT.restaurees = arrRestaurerTentatives(ARR_ETAT.arrivages); // v7.5.198 : envois restés sans réponse avant un rechargement
     // v7.5.150 : revients complets (par pages) ; échec = erreur affichée, jamais un aperçu calculé sur des revients absents
     if (!(await arrChargerRevients())) { ARR_ETAT.erreur = 'Prix de revient illisibles pour l\'instant — réessayez (aucun aperçu affiché)'; return; }
     // stock et revient actuels des produits des arrivages EN ATTENTE, lus explicitement (aperçu et empreinte)
@@ -4491,6 +4535,7 @@ async function arrInit() {
   el.innerHTML = '<div style="padding:18px;color:var(--t3)">Chargement des arrivages…</div>';
   await arrCharger();
   arrRendre();
+  if (ARR_ETAT.restaurees) toast('Un envoi de réception est resté sans réponse avant le rechargement de la page : touchez « Vérifier dans la base » avant toute nouvelle validation', 'err');
 }
 function arrLignesDe(id) { return ARR_ETAT.lignes.filter(function(l) { return l.arrivage_id === id; }).sort(function(a, b) { return a.id - b.id; }); }
 function arrProduit(id) { return produits.find(function(p) { return p.id === id; }); }
@@ -4679,6 +4724,7 @@ async function arrVerifierReception(a, tentative) {
     arrRendre(); return 'indeterminee';
   }
   delete ARR_ETAT.aVerifier[String(a.id)]; // seul CET arrivage est conclu ; les autres restent à vérifier
+  arrOublierTentative(a.id, tentative); // v7.5.198 : conclusion de la base (abandon confirmé ou réception constatée)
   if (concl === 'deja_validee') {
     a.statut = 'recu'; if (rel.recu_le) a.recu_le = rel.recu_le; ARR_ETAT.envoi = false;
     toast('Réception déjà validée (vérifié dans la base : validée par un autre envoi ; celui-ci est annulé et n\'a rien ajouté)', 'ok');
@@ -4770,6 +4816,8 @@ async function arrValiderEnvoi(a, ls, saisies, vue) {
   }
   var j = null, http = 0, sansReponse = false;
   var tentative = arrNouvelleTentative(); // v7.5.191 : identifiant de CET envoi (jamais réutilisé)
+  // v7.5.198 : tentative gardée sur l'appareil AVANT l'envoi ; si elle ne peut pas l'être, rien n'est envoyé
+  if (!arrGarderTentative(a, tentative)) { ARR_ETAT.envoi = false; toast('Réception NON validée : cet appareil ne peut pas garder la trace de l\'envoi (stockage du navigateur indisponible) — rien n\'a été envoyé', 'err'); arrMajControle(); return; }
   try {
     var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/valider_reception_arrivage', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()),
       body: JSON.stringify(arrCorpsValidation(a.id, ls, saisies, vue.empreinte, tentative)) });
@@ -4780,6 +4828,7 @@ async function arrValiderEnvoi(a, ls, saisies, vue) {
   // INDÉTERMINÉ, statut et mouvements relus dans la base, et seulement ensuite « validée » ou « non validée ».
   var issue = arrIssueValidation(sansReponse, http, j);
   if (issue === 'indeterminee') { await arrVerifierReception(a, tentative); return; }
+  arrOublierTentative(a.id, tentative); // v7.5.198 : réponse DÉFINITIVE (validée ou refusée) : plus rien à vérifier pour cet envoi
   if (issue !== 'validee') {
     ARR_ETAT.envoi = false;
     var msg = (j && (j.erreur || j.message)) || ('HTTP ' + http);
