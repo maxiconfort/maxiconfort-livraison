@@ -159,7 +159,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:14
   left:10px;
   z-index:100;
   background:var(--blue);
-  color:#fff;
+  color:var(--sur-bleu);
   border:none;
   border-radius:10px;
   padding:8px 12px;
@@ -187,7 +187,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:14
 /* sidebar */
 .sb-logo{padding:18px;border-bottom:1px solid var(--brd)}
 .sb-logo-row{display:flex;align-items:center;gap:10px}
-.sb-icon{width:32px;height:32px;background:var(--blue);border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px}
+.sb-icon{width:32px;height:32px;background:var(--blue);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--sur-bleu);font-size:16px}
 .sb-name{font-size:15px;font-weight:800} .sb-sub{font-size:11px;color:var(--t3);margin-top:2px}
 .nav-sec{font-size:10px;font-weight:700;color:var(--t3);letter-spacing:.8px;text-transform:uppercase;padding:13px 16px 5px}
 .ni{display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;font-size:13px;color:var(--t2);border-left:3px solid transparent;transition:all .13s;user-select:none}
@@ -196,7 +196,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:14
 .ni.on.cv{background:var(--vl);color:var(--violet);border-left-color:var(--violet)}
 .ni.on.lv{background:var(--tl);color:var(--teal);border-left-color:var(--teal)}
 .ni-icon{font-size:15px;width:20px;text-align:center}
-.ni-badge{margin-left:auto;background:var(--blue);color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px}
+.ni-badge{margin-left:auto;background:var(--blue);color:var(--sur-bleu);font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px}
 .sb-user{padding:14px 16px;border-top:1px solid var(--brd);margin-top:auto}
 .sb-user-row{display:flex;align-items:center;gap:10px}
 .avatar{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;flex-shrink:0}
@@ -213,10 +213,10 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:14
 /* buttons */
 .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 13px;border-radius:var(--r);border:1px solid var(--brd2);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font);cursor:pointer;font-weight:500;transition:all .13s;white-space:nowrap}
 .btn:hover{background:var(--bg)} .btn:active{transform:scale(.97)}
-.btn-p{background:var(--blue);color:#fff;border-color:var(--blue)} .btn-p:hover{background:var(--bd)}
-.btn-g{background:var(--green);color:#fff;border-color:var(--green)}
-.btn-r{background:var(--red);color:#fff;border-color:var(--red)}
-.btn-v{background:var(--violet);color:#fff;border-color:var(--violet)}
+.btn-p{background:var(--blue);color:var(--sur-bleu);border-color:var(--blue)} .btn-p:hover{background:var(--bd)}
+.btn-g{background:var(--green);color:var(--sur-vert);border-color:var(--green)}
+.btn-r{background:var(--red);color:var(--sur-rouge);border-color:var(--red)}
+.btn-v{background:var(--violet);color:var(--sur-violet);border-color:var(--violet)}
 .btn-sm{padding:5px 10px;font-size:12px}
 .btn-ghost{background:transparent;border-color:transparent} .btn-ghost:hover{background:var(--bg)}
 .btn-full{width:100%;justify-content:center;padding:11px}
@@ -371,7 +371,7 @@ textarea{resize:vertical;min-height:65px}
 .sighint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--t3);pointer-events:none}
 .siginput{width:100%;padding:11px 13px;border:1.5px solid var(--brd2);border-radius:var(--r);font-size:14px;font-family:var(--font);margin-bottom:11px;color:var(--text);background:var(--card)}
 .siginput:focus{outline:none;border-color:var(--green)}
-.sigval{width:100%;padding:15px;background:var(--green);color:#fff;border:none;border-radius:var(--r);font-size:15px;font-weight:800;font-family:var(--font);cursor:pointer}
+.sigval{width:100%;padding:15px;background:var(--green);color:var(--sur-vert);border:none;border-radius:var(--r);font-size:15px;font-weight:800;font-family:var(--font);cursor:pointer}
 .sigval:active{opacity:.8}
 .sigclear{background:none;border:none;color:var(--t3);font-size:12px;font-family:var(--font);cursor:pointer;padding:4px 0 10px}
 
@@ -406,6 +406,7 @@ textarea{resize:vertical;min-height:65px}
   --font:-apple-system,BlinkMacSystemFont,Inter,'Segoe UI',system-ui,sans-serif;
   --r:12px;--rl2:18px;--sh:var(--ombre);--shm:0 2px 6px rgba(28,26,23,.06),0 18px 48px rgba(28,26,23,.14);
   --vert-plein:#2f9e6b;--sur-vert:#ffffff;--bouton-fonce:#1c1a17;--sur-fonce:#ffffff;
+  --sur-bleu:#ffffff;--sur-rouge:#ffffff;--sur-orange:#ffffff;--sur-violet:#ffffff; /* v7.5.172 : texte sur fond bleu / rouge / orange / violet */
   color-scheme:light;
 }
 @media (prefers-color-scheme: dark){
@@ -422,6 +423,7 @@ textarea{resize:vertical;min-height:65px}
     --gray:#6f817a;--grl:#1f2a26;--grd:#c9d6d1;
     --shm:0 0 0 1px #263430,0 18px 48px rgba(0,0,0,.5);
     --vert-plein:#3ccf94;--sur-vert:#0b1f17;--bouton-fonce:#eef3f1;--sur-fonce:#0f1513;
+    --sur-bleu:#0b1a2e;--sur-rouge:#2a0d0d;--sur-orange:#2a1c05;--sur-violet:#17132e; /* v7.5.172 : ces fonds s'éclaircissent la nuit */
     color-scheme:dark;
   }
 }
@@ -438,6 +440,7 @@ textarea{resize:vertical;min-height:65px}
   --gray:#6f817a;--grl:#1f2a26;--grd:#c9d6d1;
   --shm:0 0 0 1px #263430,0 18px 48px rgba(0,0,0,.5);
   --vert-plein:#3ccf94;--sur-vert:#0b1f17;--bouton-fonce:#eef3f1;--sur-fonce:#0f1513;
+    --sur-bleu:#0b1a2e;--sur-rouge:#2a0d0d;--sur-orange:#2a1c05;--sur-violet:#17132e; /* v7.5.172 : ces fonds s'éclaircissent la nuit */
   color-scheme:dark;
 }
 
@@ -619,7 +622,7 @@ html .sigval{background:var(--vert-plein);color:var(--sur-vert);border-radius:16
 html .sig-simple-btn{border:2px solid transparent;background:var(--doux);border-radius:16px;font-weight:600;font-size:15px;min-height:72px;color:var(--texte)}
 html .sig-simple-btn .icd{width:24px;height:24px;margin-bottom:4px}
 html .toast{background:var(--bouton-fonce);color:var(--sur-fonce);border-radius:14px;font-size:14px;font-weight:500;box-shadow:var(--shm);padding:12px 18px}
-html .toast.ok{background:var(--vert-plein);color:var(--sur-vert)} html .toast.info{background:var(--blue);color:#fff} html .toast.err{background:var(--red);color:#fff}
+html .toast.ok{background:var(--vert-plein);color:var(--sur-vert)} html .toast.info{background:var(--blue);color:var(--sur-bleu)} html .toast.err{background:var(--red);color:var(--sur-rouge)}
 @media (max-width:600px){ html .modal{border-radius:0} }
 
 /* ── Messages ── */
@@ -1048,7 +1051,7 @@ html .lv-dep-btn{border:0 !important;background:var(--bl) !important;color:var(-
       .trn-foot-stat b { color:var(--t1); font-weight:800; }
       .trn-foot-stat .sel { color:var(--blue); }
       .trn-foot-stat .eur { color:var(--green); }
-      .trn-foot-btn { padding:11px 22px; font-size:14px; font-weight:800; background:var(--blue); color:#fff; border:none; border-radius:10px; cursor:pointer; font-family:var(--font); transition:all .15s; }
+      .trn-foot-btn { padding:11px 22px; font-size:14px; font-weight:800; background:var(--blue); color:var(--sur-bleu); border:none; border-radius:10px; cursor:pointer; font-family:var(--font); transition:all .15s; }
       .trn-foot-btn:hover { background:var(--bd); transform:translateY(-1px); }
       .trn-foot-btn:disabled { background:var(--gray); cursor:not-allowed; transform:none; }
     </style>
@@ -1252,7 +1255,7 @@ html .lv-dep-btn{border:0 !important;background:var(--bl) !important;color:var(-
       .lv-autres-statuts summary { font-size:12px;font-weight:700;color:var(--t3);cursor:pointer;padding:4px 0; }
       .lv-cloture { background:var(--card);border:2px solid var(--brd2);border-radius:16px;padding:16px;margin:6px 0 18px; }
       .lv-cloture-ok { background:var(--gl);border-color:var(--green);color:var(--gd); }
-      .lv-cloture-btn { width:100%;padding:16px;border-radius:14px;border:none;background:var(--green);color:#fff;font-size:16px;font-weight:900;font-family:var(--font);cursor:pointer; }
+      .lv-cloture-btn { width:100%;padding:16px;border-radius:14px;border:none;background:var(--green);color:var(--sur-vert);font-size:16px;font-weight:900;font-family:var(--font);cursor:pointer; }
       .lv-cloture-btn:disabled { background:var(--t3);cursor:not-allowed;opacity:.8; }
       .sig-simple-btn { padding:14px 4px;border-radius:12px;border:2px solid var(--brd);background:var(--bg);font-size:14px;font-weight:900;cursor:pointer;font-family:var(--font);color:var(--text);line-height:1.3;min-height:64px; }
 
@@ -1286,7 +1289,7 @@ html .lv-dep-btn{border:0 !important;background:var(--bl) !important;color:var(-
     <!-- Bouton GPS livreur -->
     <div id="lv-gps-wrap" style="display:none;margin-bottom:12px">
       <button id="btn-gps-livreur" onclick="gpsDemarrerReel()"
-        style="width:100%;padding:16px;border-radius:var(--rl2);border:none;background:var(--blue);color:#fff;font-size:15px;font-weight:800;font-family:var(--font);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px">
+        style="width:100%;padding:16px;border-radius:var(--rl2);border:none;background:var(--blue);color:var(--sur-bleu);font-size:15px;font-weight:800;font-family:var(--font);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px">
         🚀 Démarrer ma journée
       </button>
       <div style="font-size:11px;color:var(--t3);text-align:center;margin-top:6px">
@@ -1434,7 +1437,7 @@ html .lv-dep-btn{border:0 !important;background:var(--bl) !important;color:var(-
     <div id="fin-section-enc">
     <!-- Boutons export -->
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px">
-      <button class="btn" onclick="exporterCommandes()" style="background:var(--green);color:#fff;font-size:12px;padding:7px 14px">📊 Export commandes CSV</button>
+      <button class="btn" onclick="exporterCommandes()" style="background:var(--green);color:var(--sur-vert);font-size:12px;padding:7px 14px">📊 Export commandes CSV</button>
       <button class="btn" onclick="exporterDepenses()" style="font-size:12px;padding:7px 14px">📊 Export dépenses CSV</button>
     </div>
 
@@ -1471,7 +1474,7 @@ html .lv-dep-btn{border:0 !important;background:var(--bl) !important;color:var(-
     <!-- v7.5.101 : sous-onglets — separe l'OPERATIONNEL (a traiter) de l'ANALYSE et du JOURNAL.
          Aucun calcul modifie : les memes blocs/IDs sont juste ranges dans 3 conteneurs. -->
     <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap" id="fin-sub-bar">
-      <button class="fin-sub-btn" data-sub="traiter" onclick="showFinSub('traiter')" style="padding:9px 18px;border-radius:20px;border:1.5px solid var(--blue);background:var(--blue);color:#fff;font-size:13px;font-weight:800;cursor:pointer;font-family:var(--font)">💵 À traiter</button>
+      <button class="fin-sub-btn" data-sub="traiter" onclick="showFinSub('traiter')" style="padding:9px 18px;border-radius:20px;border:1.5px solid var(--blue);background:var(--blue);color:var(--sur-bleu);font-size:13px;font-weight:800;cursor:pointer;font-family:var(--font)">💵 À traiter</button>
       <button class="fin-sub-btn" data-sub="analyse" onclick="showFinSub('analyse')" style="padding:9px 18px;border-radius:20px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);font-size:13px;font-weight:800;cursor:pointer;font-family:var(--font)">📊 Analyse</button>
       <button class="fin-sub-btn" data-sub="journal" onclick="showFinSub('journal')" style="padding:9px 18px;border-radius:20px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);font-size:13px;font-weight:800;cursor:pointer;font-family:var(--font)">📜 Journal</button>
       <button class="fin-sub-btn" data-sub="historique" onclick="showFinSub('historique')" style="padding:9px 18px;border-radius:20px;border:1.5px solid var(--brd2);background:var(--card);color:var(--t2);font-size:13px;font-weight:800;cursor:pointer;font-family:var(--font)">🧾 Historique financier</button>
@@ -1901,7 +1904,7 @@ html .lv-dep-btn{border:0 !important;background:var(--bl) !important;color:var(-
       <div style="background:linear-gradient(135deg,#EAF3DE,#D6F0E0);border:1.5px solid var(--green);border-radius:var(--rl2);padding:18px;margin-bottom:18px">
         <div style="font-size:15px;font-weight:800;color:var(--gd);margin-bottom:6px">🟢 Sécuriser la tournée de demain</div>
         <div style="font-size:13px;color:var(--gd);line-height:1.55;margin-bottom:14px">Envoie à chaque client <strong>RANOU de demain</strong> un SMS avec le <strong>lien de confirmation de présence</strong> (le client clique « présent / pas là », tu vois les pastilles 🟢/🔴). Les clients déjà notifiés ne reçoivent pas de doublon. 👉 À utiliser le soir, une fois ta tournée organisée.</div>
-        <button id="btn-veille-confirm" class="btn btn-full" style="background:var(--green);color:#fff;font-weight:800;justify-content:center;font-size:15px;padding:14px" onclick="envoyerVeilleConfirmation()">📲 Envoyer les SMS de confirmation (demain)</button>
+        <button id="btn-veille-confirm" class="btn btn-full" style="background:var(--green);color:var(--sur-vert);font-weight:800;justify-content:center;font-size:15px;padding:14px" onclick="envoyerVeilleConfirmation()">📲 Envoyer les SMS de confirmation (demain)</button>
       </div>
       <div class="alert a-info" style="margin-bottom:16px">
         📅 Réglage du message ci-dessous (avancé). Le bouton vert ci-dessus est le moyen recommandé au quotidien.
@@ -2181,7 +2184,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
 
     <!-- Action groupée -->
     <div id="camion-actions" style="margin-top:16px;display:none">
-      <button onclick="viderCamion()" style="width:100%;padding:16px;border-radius:12px;border:none;background:var(--orange);color:#fff;font-size:15px;font-weight:800;cursor:pointer;font-family:var(--font)">
+      <button onclick="viderCamion()" style="width:100%;padding:16px;border-radius:12px;border:none;background:var(--orange);color:var(--sur-orange);font-size:15px;font-weight:800;cursor:pointer;font-family:var(--font)">
         📥 Vider le camion (tout retourner au dépôt)
       </button>
     </div>
@@ -2402,7 +2405,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
         <div style="background:var(--bl);border:1.5px solid var(--blue);border-radius:var(--rl);padding:16px">
           <div style="font-size:11px;font-weight:800;color:var(--bd);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center">
             <span>🏦 Compte Banque</span>
-            <button onclick="ouvrirModalSoldeBanque()" style="font-size:10px;padding:3px 8px;border-radius:6px;border:none;background:var(--blue);color:#fff;font-weight:700;cursor:pointer">📝 Modifier</button>
+            <button onclick="ouvrirModalSoldeBanque()" style="font-size:10px;padding:3px 8px;border-radius:6px;border:none;background:var(--blue);color:var(--sur-bleu);font-weight:700;cursor:pointer">📝 Modifier</button>
           </div>
           <div style="font-size:28px;font-weight:900;color:var(--bd)" id="sante-banque">0 €</div>
           <div style="font-size:11px;color:var(--t2);margin-top:4px" id="sante-banque-info">Pas encore saisi</div>
@@ -2515,7 +2518,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
         <button class="btn" style="background:#25D366;color:#fff;justify-content:center;font-weight:700" onclick="factureWhatsApp()">💬 WhatsApp</button>
-        <button class="btn" style="background:var(--blue);color:#fff;justify-content:center;font-weight:700" onclick="factureSMS()">📱 SMS</button>
+        <button class="btn" style="background:var(--blue);color:var(--sur-bleu);justify-content:center;font-weight:700" onclick="factureSMS()">📱 SMS</button>
         <button class="btn btn-p" style="justify-content:center" onclick="factureImprimer()">🖨️ Imprimer / PDF</button>
         <button class="btn" style="justify-content:center" onclick="factureTelecharger()">📥 Télécharger</button>
       </div>
@@ -3100,7 +3103,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
 
       <div style="display:flex;gap:10px">
         <button onclick="document.getElementById('m-dep-livreur').style.display='none'" style="flex:1;padding:13px;border-radius:12px;border:1.5px solid var(--brd);background:var(--bg);font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">Annuler</button>
-        <button onclick="validerDepenseLivreur()" style="flex:2;padding:13px;border-radius:12px;border:none;background:var(--red);color:#fff;font-size:14px;font-weight:800;cursor:pointer;font-family:var(--font)">💸 Enregistrer la dépense</button>
+        <button onclick="validerDepenseLivreur()" style="flex:2;padding:13px;border-radius:12px;border:none;background:var(--red);color:var(--sur-rouge);font-size:14px;font-weight:800;cursor:pointer;font-family:var(--font)">💸 Enregistrer la dépense</button>
       </div>
     </div>
   </div>
@@ -3113,7 +3116,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
       <textarea id="note-textarea" rows="4" placeholder="Ajouter une note..." style="width:100%;border:1.5px solid var(--brd);border-radius:12px;padding:12px;font-size:15px;font-family:var(--font);resize:none;box-sizing:border-box;background:var(--bg);color:var(--text)"></textarea>
       <div style="display:flex;gap:10px;margin-top:14px">
         <button onclick="document.getElementById('m-note').style.display='none'" style="flex:1;padding:13px;border-radius:12px;border:1.5px solid var(--brd);background:var(--bg);font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">Annuler</button>
-        <button onclick="validerNote()" style="flex:1;padding:13px;border-radius:12px;border:none;background:var(--blue);color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">✅ Enregistrer</button>
+        <button onclick="validerNote()" style="flex:1;padding:13px;border-radius:12px;border:none;background:var(--blue);color:var(--sur-bleu);font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">✅ Enregistrer</button>
       </div>
     </div>
   </div>
@@ -3128,7 +3131,7 @@ Maxiconfort — {TEL_CONTACT}</textarea>
       <div style="font-size:11px;color:var(--t3);margin-top:6px">Le bureau replanifie la livraison ; la date est notée sur la commande.</div>
       <div style="display:flex;gap:10px;margin-top:14px">
         <button onclick="lvFermerReport()" style="flex:1;padding:13px;border-radius:12px;border:1.5px solid var(--brd);background:var(--bg);font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">Annuler</button>
-        <button id="report-valider" onclick="lvValiderReport()" style="flex:1;padding:13px;border-radius:12px;border:none;background:var(--violet);color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">📅 Valider le report</button>
+        <button id="report-valider" onclick="lvValiderReport()" style="flex:1;padding:13px;border-radius:12px;border:none;background:var(--violet);color:var(--sur-violet);font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">📅 Valider le report</button>
       </div>
     </div>
   </div>
@@ -3162,6 +3165,12 @@ Maxiconfort — {TEL_CONTACT}</textarea>
           <button id="sig-lv-esp" class="sig-simple-btn" onclick="sigChoixSimple('esp')"><i class="icd icd-especes"></i><br>Espèces</button>
           <button id="sig-lv-cb" class="sig-simple-btn" onclick="sigChoixSimple('cb')"><i class="icd icd-cb"></i><br>Carte bleue</button>
           <button id="sig-paie-deja" class="sig-simple-btn" onclick="sigChoixSimple('deja')"><i class="icd icd-ok"></i><br>Déjà payé</button>
+        </div>
+        <!-- v7.5.171 : « Déjà payé » sur une commande NON soldée : refusé au livreur ; l'administrateur peut forcer avec un motif (journalisé) -->
+        <div id="sig-deja-info" style="display:none;font-size:13px;font-weight:700;color:var(--rd);margin-bottom:8px"></div>
+        <div id="sig-deja-motif-wrap" style="display:none;margin-bottom:10px">
+          <label for="sig-deja-motif" style="font-size:12px;font-weight:700;color:var(--rd);display:block;margin-bottom:4px">Motif (obligatoire : la commande n'est pas enregistrée comme payée)</label>
+          <input id="sig-deja-motif" type="text" autocomplete="off" placeholder="Ex : virement reçu le 25/11, vérifié sur le compte" style="width:100%;padding:11px;border:1.5px solid var(--red);border-radius:10px;font-size:14px;font-family:var(--font);box-sizing:border-box">
         </div>
         <div id="sig-montant-wrap" style="display:none;margin-bottom:10px">
           <label for="sig-montant" style="font-size:12px;font-weight:700;color:var(--t2);display:block;margin-bottom:4px">Montant encaissé (€)</label>
@@ -5052,7 +5061,7 @@ function renderCamionContenu() {
       // v7.5.4 : si item auto (derive), pas de bouton Retour depot (rien a retirer en base)
       var actionHtml = item.auto
         ? '<div style="font-size:11px;color:var(--t3);background:var(--bg);border:1px dashed var(--brd);border-radius:8px;padding:6px 10px;white-space:nowrap">📍 En attente</div>'
-        : '<button onclick="retourDepotUnique(\''+item.id+'\')" style="background:var(--orange);color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);white-space:nowrap">📥 Retour dépôt</button>';
+        : '<button onclick="retourDepotUnique(\''+item.id+'\')" style="background:var(--orange);color:var(--sur-orange);border:none;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);white-space:nowrap">📥 Retour dépôt</button>';
       var dateLabel = item.auto
         ? 'Auto-déduit (cmd ' + (item.source_cmd_id||'?') + ')'
         : 'Chargé le ' + dateCh + (item.charge_par ? ' par ' + item.charge_par : '');
@@ -7697,7 +7706,7 @@ function cmdUpdateQuickBtns(active) {
   document.querySelectorAll('.cmd-quick').forEach(function(b){
     var isAct = b.dataset.preset === active;
     b.classList.toggle('on', isAct); // v7.5.132 : style D
-    b.style.cssText = 'padding:9px 14px;border-radius:10px;border:1.5px solid '+(isAct?'var(--blue)':'var(--brd)')+';background:'+(isAct?'var(--blue)':'var(--card)')+';color:'+(isAct?'#fff':'var(--text)')+';font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .15s';
+    b.style.cssText = 'padding:9px 14px;border-radius:10px;border:1.5px solid '+(isAct?'var(--blue)':'var(--brd)')+';background:'+(isAct?'var(--blue)':'var(--card)')+';color:'+(isAct?'var(--sur-bleu)':'var(--text)')+';font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .15s';
   });
 }
 
@@ -7807,7 +7816,7 @@ function suiviInit() {
 function suiviUpdateQuickBtns(active) {
   document.querySelectorAll('.suivi-quick').forEach(function(b) {
     var isActive = b.dataset.preset === active;
-    b.style.cssText = 'padding:9px 14px;border-radius:10px;border:1.5px solid '+(isActive?'var(--blue)':'var(--brd)')+';background:'+(isActive?'var(--blue)':'var(--card)')+';color:'+(isActive?'#fff':'var(--text)')+';font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .15s';
+    b.style.cssText = 'padding:9px 14px;border-radius:10px;border:1.5px solid '+(isActive?'var(--blue)':'var(--brd)')+';background:'+(isActive?'var(--blue)':'var(--card)')+';color:'+(isActive?'var(--sur-bleu)':'var(--text)')+';font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .15s';
   });
 }
 
@@ -7889,7 +7898,7 @@ function suiviTogglePill(btn) {
   } else {
     btn.dataset.actif = '1';
     btn.style.background = 'var(--blue)';
-    btn.style.color = '#fff';
+    btn.style.color = 'var(--sur-bleu)';
     btn.style.borderColor = 'var(--blue)';
   }
   if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres();
@@ -9566,10 +9575,10 @@ function ouvrirCmd(id) {
       (!isSAV ? '<button onclick="savOuvrir(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+';background:#FFE7C2;color:#7A4A00;border:1.5px solid #BA7517;font-weight:800">🔧 SAV</button>' : '') +
     '</div>' +
     '<div style="display:flex;gap:6px;flex-wrap:wrap;width:100%">' +
-      '<button onclick="genererBonLivraison(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+';background:var(--blue);color:#fff">🖨️ Bon</button>' +
+      '<button onclick="genererBonLivraison(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+';background:var(--blue);color:var(--sur-bleu)">🖨️ Bon</button>' +
       '<button onclick="genererRecuPaiement(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+'">🧾 Reçu</button>' +
       '<button onclick="ouvrirFacture(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+';background:#185FA5;color:#fff;font-weight:800" title="Générer la facture (BMS, TVA 20%) — envoi SMS/WhatsApp + téléchargement">📄 Facture</button>' +
-      (role === 'admin' ? '<button onclick="supprimerCommande(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+';background:var(--red);color:#fff" title="Supprimer la commande">🗑️ Supprimer</button>' : '') +
+      (role === 'admin' ? '<button onclick="supprimerCommande(\'' + c.id + '\')" class="btn" style="'+btnStyleSm+';background:var(--red);color:var(--sur-rouge)" title="Supprimer la commande">🗑️ Supprimer</button>' : '') +
       '<button onclick="closePanel()" class="btn" style="'+btnStyleSm+';margin-left:auto">Fermer</button>' +
     '</div>';
 
@@ -10621,6 +10630,33 @@ function rtResteDu(prix, montantEnc, stpaie) {
   if (stpaie === 'Payé') return 0;
   return Math.max(0, rtArrondi((parseFloat(prix) || 0) - (stpaie === 'Partiel' ? (parseFloat(montantEnc) || 0) : 0)));
 }
+// v7.5.171 (revue Codex sur 3c3aa05) : « Déjà payé » ne doit jamais effacer une dette. `resteDu` = ce qui reste dû
+// D'APRÈS LA BASE (commande soldée : paiement en ligne, acompte couvrant tout = 0). Soldée : accepté. Sinon :
+// refusé au livreur (et à tout autre rôle) ; seul l'administrateur peut forcer, avec un motif obligatoire
+// (journalisé dans la fiche et signalé au bureau). Renvoie { ok, force, reste, erreur }.
+function rtControleDejaPaye(resteDu, qui, motif) {
+  var reste = rtArrondi(resteDu);
+  if (reste <= 0) return { ok: true, force: false, reste: 0, erreur: '' };
+  if (qui !== 'admin') return { ok: false, force: false, reste: reste, erreur: 'La commande n\'est pas payée (reste dû ' + rtEurTexte(reste) + ') : encaissez ou signalez au bureau' };
+  var m = String(motif || '').trim();
+  if (m.length < RT_MOTIF_MIN) return { ok: false, force: false, reste: reste, erreur: '« Déjà payé » sur une commande non soldée (reste dû ' + rtEurTexte(reste) + ') : motif obligatoire (' + RT_MOTIF_MIN + ' caractères au moins)' };
+  return { ok: true, force: true, reste: reste, erreur: '' };
+}
+// v7.5.171 (revue Codex sur 3c3aa05, P2) : « livraisons terminées » (automatique : chaque arrêt livré ou annulé)
+// n'est PAS « tournée clôturée » (geste explicite du livreur, « Clôturer ma tournée », ou du bureau). Une tournée
+// dont les livraisons sont terminées reste « en cours » : le livreur peut encore saisir ses dépenses du retour
+// (carburant, péage) jusqu'à la clôture. Une tournée déjà clôturée le reste.
+function rtLivraisonsTerminees(t) {
+  var stops = (t && t.stops) || [];
+  return stops.length > 0 && stops.every(function(x) { return !!x && (x.statut === 'livré' || x.statut === 'annulé'); });
+}
+function rtStatutApresArret(t) {
+  if (!t) return '';
+  if (t.statut === 'terminée') return 'terminée';
+  if (rtLivraisonsTerminees(t)) return 'en cours';
+  if ((t.stops || []).some(function(x) { return !!x && (x.statut === 'en-route' || x.statut === 'arrivé'); })) return 'en cours';
+  return t.statut;
+}
 // Montant saisi par le livreur. Vide = le reste dû. Jamais plus que le reste dû ; moins = motif obligatoire.
 function rtControleMontant(resteDu, saisie, motif) {
   var reste = rtArrondi(resteDu);
@@ -10786,6 +10822,21 @@ function rtDepenseModifiable(t, qui, remiseValidee) {
   if (t && t.statut === 'terminée' && qui === 'livreur') return { ok: false, erreur: 'Tournée clôturée : la dépense doit être ajoutée ou corrigée par le bureau' };
   return { ok: true, erreur: '' };
 }
+// v7.5.171 (revue Codex sur 3c3aa05, P2) : verrou du point de caisse validé appliqué à TOUS les chemins qui
+// ajoutent, corrigent ou suppriment une dépense (liste Finance comprise). `etats` : la dépense AVANT et/ou APRÈS
+// la modification (une correction peut la faire entrer dans une tournée validée ou l'en faire sortir). Une dépense
+// appartient à une tournée selon rtDepenseDeTournee. `estValidee(t)` : point de caisse de la tournée validé.
+function rtDepenseVerrou(etats, listeTournees, estValidee) {
+  var bloquees = [];
+  (etats || []).forEach(function(d) {
+    if (!d) return;
+    (listeTournees || []).forEach(function(t) {
+      if (t && bloquees.indexOf(t.id) < 0 && estValidee(t) && rtDepenseDeTournee(d, t, listeTournees)) bloquees.push(t.id);
+    });
+  });
+  if (!bloquees.length) return { ok: true, erreur: '', tournees: [] };
+  return { ok: false, tournees: bloquees, erreur: 'Point de caisse déjà validé (tournée ' + bloquees.join(', ') + ') : annulez d\'abord la validation de la remise pour ajouter, corriger ou supprimer cette dépense' };
+}
 // v7.5.135 (revue Codex sur f09037c, point 5) : journal des corrections d'une dépense, gardé dans son commentaire
 // (colonne existante, aucune migration) après un séparateur. Chaque ligne : date, auteur, valeurs avant → après, motif.
 var RT_JOURNAL_SEP = '\n— Journal des corrections —\n';
@@ -10876,6 +10927,8 @@ function lvClotureHtml(t) {
   return '<div class="lv-cloture">' +
     '<div style="font-size:20px;font-weight:700;margin-bottom:6px">Fin de tournée</div>' +
     '<div style="font-size:13px;color:var(--t2);margin-bottom:10px">' + resume + '</div>' +
+    // v7.5.171 : livraisons terminées ≠ tournée clôturée — les dépenses du retour restent possibles jusqu'à la clôture
+    (rtLivraisonsTerminees(t) ? '<div class="lv-livraisons-finies" style="font-size:14px;font-weight:600;margin-bottom:10px">Livraisons terminées. Ajoutez vos dépenses du retour (carburant, péage…) puis clôturez votre tournée.</div>' : '') +
     (c.ok ? '' : '<div style="font-size:14px;color:var(--rd);font-weight:600;margin-bottom:8px">' + c.raison + '</div>' + (liste ? '<ul style="margin:0 0 10px 18px;padding:0;font-size:13px;color:var(--rd)">' + liste + '</ul>' : '')) +
     '<button class="lv-cloture-btn" ' + (c.ok ? '' : 'disabled ') + 'onclick="lvCloturerTournee(\'' + t.id + '\')">' + (c.ok ? '<i class="icd icd-drapeau"></i> Clôturer ma tournée' : 'Clôture impossible : un résultat par arrêt') + '</button></div>';
 }
@@ -11012,9 +11065,11 @@ function renderLivreurCaisse(t) {
         '</div>';
       }).join('') +
     '</div>' +
-    '<div style="background:' + (netARemettre > 0 ? 'var(--green)' : 'var(--rl)') + ';border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center">' +
-      '<div style="color:' + (netARemettre > 0 ? '#fff' : 'var(--rd)') + ';font-size:15px;font-weight:600">Espèces à remettre</div>' +
-      '<div style="color:' + (netARemettre > 0 ? '#fff' : 'var(--rd)') + ';font-size:22px;font-weight:900">' + paiEur(netARemettre) + '</div>' +
+    // v7.5.172 (revue Codex sur a12696a) : montant positif = fond vert plein et encre « sur-vert » (blanc le jour, foncée la nuit :
+    // le vert s'éclaircit en mode nuit, du blanc n'y était plus lisible)
+    '<div class="lv-caisse-remettre" style="background:' + (netARemettre > 0 ? 'var(--vert-plein)' : 'var(--rl)') + ';border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center">' +
+      '<div style="color:' + (netARemettre > 0 ? 'var(--sur-vert)' : 'var(--rd)') + ';font-size:15px;font-weight:600">Espèces à remettre</div>' +
+      '<div style="color:' + (netARemettre > 0 ? 'var(--sur-vert)' : 'var(--rd)') + ';font-size:22px;font-weight:900">' + paiEur(netARemettre) + '</div>' +
     '</div>' +
     // v7.5.130 : le calcul est écrit, et les dépenses se saisissent ici
     '<div style="font-size:12px;color:var(--t2);margin-top:8px;text-align:center">Espèces encaissées ' + paiEur(caisseEsp) + ' − dépenses payées en espèces ' + paiEur(totalDepEsp) + '</div>' +
@@ -11335,7 +11390,7 @@ function renderLivreur() {
           ((function(){ var _pc = findCmdForStop(s); return !!_pc && paiEstSite(_pc) && (paiEstEnLigne(_pc) || !done); })() ? '' : done
             ? '<span class="bdg b-green" style="font-size:13px">'+s.paie+(s.stpaie==='Payé'?' ✓':' ⚠️')+'</span>'+
               (s.stpaie !== 'Payé'
-                ? '<button class="lv-enc-btn btn btn-sm" style="background:var(--orange);color:#fff;border:none" data-tid="'+t.id+'" data-idx="'+i+'">💵 Encaisser</button>'
+                ? '<button class="lv-enc-btn btn btn-sm" style="background:var(--orange);color:var(--sur-orange);border:none" data-tid="'+t.id+'" data-idx="'+i+'">💵 Encaisser</button>'
                 : '<button class="lv-enc-btn btn btn-sm btn-ghost" data-tid="'+t.id+'" data-idx="'+i+'">✏️</button>')
             : '<span style="font-size:12px;font-weight:700;color:var(--t2);text-align:right">À encaisser<br><span style="font-weight:600;color:var(--t3)">mode choisi à la livraison</span></span>' // v7.5.129
           )+
@@ -11754,7 +11809,7 @@ function sasDeblocageAdmin() {
     '<div id="sas-deblocage-msg" style="min-height:20px;margin-top:10px;font-size:13px;font-weight:700;text-align:center;color:var(--red)"></div>' +
     '<div style="display:flex;gap:10px;margin-top:8px">' +
       '<button id="sas-deblocage-annuler" style="flex:1;padding:14px;border-radius:12px;border:2px solid var(--brd2);background:transparent;color:var(--text);font-weight:800;font-size:15px;font-family:var(--font);cursor:pointer">Annuler</button>' +
-      '<button id="sas-deblocage-ok" style="flex:1;padding:14px;border-radius:12px;border:none;background:var(--orange);color:#fff;font-weight:800;font-size:15px;font-family:var(--font);cursor:pointer">Débloquer</button>' +
+      '<button id="sas-deblocage-ok" style="flex:1;padding:14px;border-radius:12px;border:none;background:var(--orange);color:var(--sur-orange);font-weight:800;font-size:15px;font-family:var(--font);cursor:pointer">Débloquer</button>' +
     '</div>';
   fond.appendChild(boite);
   document.body.appendChild(fond);
@@ -11929,7 +11984,7 @@ function lvModifierPaie(tid, idx) {
     html += '<button class="lv-statut-btn" data-val="' + st + '" style="flex:1;padding:10px;border-radius:10px;border:2px solid ' + (sel ? 'var(--' + col + ')' : 'var(--brd)') + ';background:' + (sel ? 'var(--' + col + 'l)' : 'var(--card)') + ';font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);color:' + (sel ? 'var(--' + col + 'd)' : 'var(--text)') + '">' + st + '</button>';
   });
   html += '</div>';
-  html += '<button id="lv-paie-valider" style="width:100%;padding:14px;border-radius:12px;border:none;background:var(--blue);color:#fff;font-size:15px;font-weight:700;cursor:pointer;font-family:var(--font);margin-bottom:8px">Valider</button>';
+  html += '<button id="lv-paie-valider" style="width:100%;padding:14px;border-radius:12px;border:none;background:var(--blue);color:var(--sur-bleu);font-size:15px;font-weight:700;cursor:pointer;font-family:var(--font);margin-bottom:8px">Valider</button>';
   html += '<button id="lv-paie-annuler" style="width:100%;padding:12px;border-radius:12px;border:1px solid var(--brd);background:var(--card);font-size:14px;font-weight:600;cursor:pointer;font-family:var(--font)">Annuler</button>';
   sheet.innerHTML = html;
   document.body.appendChild(sheet);
@@ -12060,6 +12115,22 @@ async function lvPaieValider() {
   // v7.5.113 : commande payée en ligne -> aucun encaissement ni changement de mode par cet écran
   var _cmdPaiS = findCmdForStop(s);
   if (_cmdPaiS && paiEstEnLigne(_cmdPaiS)) { toast('Commande déjà payée en ligne : paiement non modifiable ici', 'err'); renderLivreur(); return; }
+  // v7.5.171 (revue Codex sur 3c3aa05) : même règle qu'à la signature pour « Déjà payé » : accepté si l'arrêt était déjà
+  // « Déjà payé » (contrôlé à la signature) ou si la commande est soldée dans la base SANS rien encaissé à cet arrêt ;
+  // sinon refusé au livreur, l'administrateur force avec un motif (journalisé).
+  var _djEd = null, _djEdMotif = '', _resteEd = 0;
+  if (newMode === 'Déjà payé' && newStatut !== 'Non payé') {
+    var _encT = s.encTournee ? rtArrondi((parseFloat(s.encTournee.esp) || 0) + (parseFloat(s.encTournee.cb) || 0)) : 0;
+    var _dejaAvant = s.paie === 'Déjà payé' && s.stpaie === 'Payé';
+    // rien encaissé à cet arrêt : relevé de la tournée (v7.5.135) ; arrêt plus ancien : trace ou mode d'encaissement
+    var _rienSurPlace = s.encTournee ? _encT <= 0 : !(s.enc || (['Espèces', 'CB', 'Mixte', 'Virement'].indexOf(s.paie) >= 0 && s.stpaie && s.stpaie !== 'Non payé'));
+    if (_dejaAvant) _resteEd = 0;
+    else if (_cmdPaiS && rtResteDu(_cmdPaiS.prix, _cmdPaiS.montantEnc, _cmdPaiS.stpaie) <= 0 && _rienSurPlace) _resteEd = 0;
+    else _resteEd = rtArrondi(Math.max(_cmdPaiS ? rtResteDu(_cmdPaiS.prix, _cmdPaiS.montantEnc, _cmdPaiS.stpaie) : 0, (parseFloat(_cmdPaiS ? _cmdPaiS.prix : s.prix) || 0) - (parseFloat(s.encAvant) || 0)));
+    if (_resteEd > 0 && role === 'admin') _djEdMotif = String(prompt('« Déjà payé » sur une commande non soldée (reste dû ' + paiEur(_resteEd) + ').\nMotif obligatoire :', '') || '').trim();
+    _djEd = rtControleDejaPaye(_resteEd, role === 'admin' ? 'admin' : 'livreur', _djEdMotif);
+    if (!_djEd.ok) { toast(_djEd.erreur, 'err'); renderLivreur(); return; }
+  }
 
   // v7.5.133 (revue Codex) : cumul et statut avec l'acompte payé avant la livraison (s.encAvant)
   var _cmdCum = findCmdForStop(s);
@@ -12101,6 +12172,13 @@ async function lvPaieValider() {
     } else if (newStatut === 'Non payé' || _acompteEd > 0) {
       cmd.montantEnc = _cum.montantEnc; // v7.5.133 : « Non payé » avec acompte -> reste « Partiel », cumul = acompte
       delete cmd.paie_especes; delete cmd.paie_cb;
+    }
+    // v7.5.171 : « Déjà payé » FORCÉ par l'administrateur sur une commande non soldée -> journal (fiche + arrêt) et alerte
+    if (_djEd && _djEd.force) {
+      var _djEdQuand = new Date();
+      cmd.instr = (String(cmd.instr || '') + ' ⚠️ « Déjà payé » FORCÉ sans paiement enregistré (reste dû ' + paiEur(_djEd.reste) + ') — motif : ' + _djEdMotif + ' (administrateur, ' + _djEdQuand.toLocaleString('fr-FR') + ').').trim();
+      s.dejaForce = { reste: _djEd.reste, motif: _djEdMotif, par: 'administrateur', at: _djEdQuand.toISOString() };
+      if (typeof notifAjout === 'function') { try { notifAjout('err', 'commande', '⚠️ « Déjà payé » forcé — ' + cmd.id, paiEur(_djEd.reste) + ' n\'étaient pas enregistrés comme payés. Motif : ' + _djEdMotif, 'Voir', 'commandes'); } catch(e) {} }
     }
     await sbSaveCommande(cmd);
   }
@@ -12345,9 +12423,9 @@ function setLvSt(tid, idx, st, _annOk) {
       } catch(e) { console.warn('[stock-camion] livraison fail:', e); }
     }
   }
-  // Si tous livrés → tournée terminée
-  if(t.stops.every(x=>['livré','annulé'].includes(x.statut))){t.statut='terminée';}
-  else if(t.stops.some(x=>['en-route','arrivé'].includes(x.statut))){t.statut='en cours';}
+  // v7.5.171 (revue Codex P2) : tous livrés/annulés = livraisons terminées, la tournée reste « en cours » jusqu'à
+  // « Clôturer ma tournée » (avant : clôturée d'office, ce qui bloquait les dépenses du retour)
+  t.statut = rtStatutApresArret(t);
   renderLivreur(); renderTournees();
   // Sync statut commande
   const cmd=commandes.find(c=>c.id===s.cmdId);
@@ -12445,10 +12523,23 @@ function sigChoixSimple(ch) {
   sigSurligner(ch);
   var nonB = document.getElementById('sig-paie-non'); if (nonB) { nonB.style.background = 'var(--bg)'; nonB.style.borderColor = 'var(--brd)'; nonB.style.color = 'var(--text)'; }
   sigMontantAfficher(ch !== 'deja');
+  sigDejaInfo(ch === 'deja');
+}
+// v7.5.171 : avertit dès le choix « Déjà payé » si la commande n'est pas soldée dans la base (le contrôle qui compte
+// reste celui de validerSig) ; l'administrateur voit le champ motif pour forcer.
+function sigDejaInfo(visible) {
+  var info = document.getElementById('sig-deja-info'), wrap = document.getElementById('sig-deja-motif-wrap'), mo = document.getElementById('sig-deja-motif');
+  var reste = (typeof sigResteDu === 'number') ? sigResteDu : 0;
+  var ctl = visible ? rtControleDejaPaye(reste, role === 'admin' ? 'admin' : 'livreur', 'motif-provisoire') : null;
+  var nonSoldee = !!ctl && ctl.reste > 0;
+  if (info) { info.style.display = nonSoldee ? 'block' : 'none'; info.textContent = nonSoldee ? (role === 'admin' ? '⚠️ Commande non soldée (reste dû ' + paiEur(ctl.reste) + ') : motif obligatoire pour forcer « Déjà payé »' : '⛔ ' + rtControleDejaPaye(reste, 'livreur', '').erreur) : ''; }
+  if (wrap) wrap.style.display = (nonSoldee && role === 'admin') ? 'block' : 'none';
+  if (mo && !visible) mo.value = '';
 }
 // « Autres cas » : Espèces + CB, virement, non payé
 function sigAutreCas(m) {
   sigChoixFait = true;
+  sigDejaInfo(false); // v7.5.171
   sigSurligner(null);
   if (m === 'non') { sigTogglePaie(false); sigMontantAfficher(false); return; }
   sigTogglePaie(true); sigSelectMode(m);
@@ -12462,6 +12553,7 @@ function sigChoixReinit(cmdSig, s) {
   var inp = document.getElementById('sig-montant'); if (inp) { inp.value = String(sigResteDu); inp.max = String(sigResteDu); }
   var mo = document.getElementById('sig-montant-motif'); if (mo) mo.value = '';
   var mxm = document.getElementById('sig-mixte-motif'); if (mxm) mxm.value = ''; // v7.5.135
+  sigDejaInfo(false); // v7.5.171
   var mxw = document.getElementById('sig-mixte-motif-wrap'); if (mxw) mxw.style.display = 'none';
   var mw = document.getElementById('sig-motif-wrap'); if (mw) mw.style.display = 'none';
   var tk = document.getElementById('sig-ticket'); if (tk) tk.value = '';
@@ -12590,6 +12682,16 @@ function validerSig(){
     _rtCtl = rtControleMixte(_rtReste, (document.getElementById('sig-paie-esp') || {}).value, (document.getElementById('sig-paie-cb') || {}).value, _rtMotif);
     if (!_rtCtl.ok) { toast(_rtCtl.erreur, 'err'); return; }
   }
+  // v7.5.171 (revue Codex sur 3c3aa05) : « Déjà payé » seulement si la commande est DÉJÀ soldée dans la base ; sinon
+  // refusé (« encaissez ou signalez au bureau ») ; l'administrateur peut forcer avec un motif, journalisé.
+  // Commande du site payée en ligne (reconnue par la base, pas par le livreur) : non concernée.
+  var _djCtl = null, _djMotif = '';
+  if (!sigCodActif && sigPrepaidMode && sigPrepaidMode !== PAI_MODE_SITE && typeof rtControleDejaPaye === 'function') {
+    var _djCmd = commandes.find(function(c){ return c.id === s.cmdId; }) || null;
+    _djMotif = String((document.getElementById('sig-deja-motif') || {}).value || '').trim();
+    _djCtl = rtControleDejaPaye(_djCmd ? rtResteDu(_djCmd.prix, _djCmd.montantEnc, _djCmd.stpaie) : rtArrondi(s.prix), role === 'admin' ? 'admin' : 'livreur', _djMotif);
+    if (!_djCtl.ok) { toast(_djCtl.erreur, 'err'); return; }
+  }
   const heure=new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
   s.statut='livré'; s.heure=heure; s.signataire=nom;
   // v7.5.132 (revue Codex P1) : ce qui était DÉJÀ encaissé avant cette livraison (acompte), pour séparer
@@ -12642,7 +12744,8 @@ function validerSig(){
   // Le point de caisse de la tournée l'utilise, au lieu du cumul ACTUEL de la commande (qui peut changer plus tard).
   var _montantSurPlace = sigCodActif ? sigCodMontant : (_rtCtl ? _rtCtl.montant : (parseFloat(s.prix) || 0));
   if (typeof rtPartEncaissee === 'function') s.encTournee = sigPrepaidMode ? { esp: 0, cb: 0 } : rtPartEncaissee(sigPaieEncaisse, sigPaieMode, _montantSurPlace, sigPaieEsp, sigPaieCb);
-  if(t.stops.every(x=>['livré','annulé'].includes(x.statut))) t.statut='terminée';
+  // v7.5.171 (revue Codex P2) : livraisons terminées ≠ tournée clôturée (clôture = geste explicite du livreur)
+  if (rtLivraisonsTerminees(t)) t.statut = rtStatutApresArret(t);
   const cmd=commandes.find(c=>c.id===s.cmdId);
   if(cmd){
     cmd.statut='livré';
@@ -12696,6 +12799,13 @@ function validerSig(){
       if (s.enc) s.enc.motif = _rtMotif;
       if (typeof notifAjout === 'function') { try { notifAjout('err', 'commande', '⚠️ Encaissement incomplet — ' + cmd.id, paiEur(_rtReste - _rtCtl.montant) + ' restent dus. Motif : ' + _rtMotif, 'Voir', 'commandes'); } catch(e) {} }
     }
+    // v7.5.171 : « Déjà payé » FORCÉ par l'administrateur sur une commande non soldée -> journal (fiche + arrêt) et alerte
+    if (_djCtl && _djCtl.force) {
+      var _djQui = 'administrateur', _djQuand = new Date();
+      cmd.instr = (String(cmd.instr || '') + ' ⚠️ « Déjà payé » FORCÉ sans paiement enregistré (reste dû ' + paiEur(_djCtl.reste) + ') — motif : ' + _djMotif + ' (' + _djQui + ', ' + _djQuand.toLocaleString('fr-FR') + ').').trim();
+      s.dejaForce = { reste: _djCtl.reste, motif: _djMotif, par: _djQui, at: _djQuand.toISOString() };
+      if (typeof notifAjout === 'function') { try { notifAjout('err', 'commande', '⚠️ « Déjà payé » forcé — ' + cmd.id, paiEur(_djCtl.reste) + ' n\'étaient pas enregistrés comme payés. Motif : ' + _djMotif, 'Voir', 'commandes'); } catch(e) {} }
+    }
     stkDeduireStock(cmd.id);
     sbSaveCommande(cmd); // ✅ Sync commande Supabase → Realtime admin
   }
@@ -12733,6 +12843,7 @@ function validerSig(){
   // v7.5.113 : reset paiement à la livraison
   sigCodActif = false; sigCodChoix = null; sigCodMontant = 0;
   var _mxm = document.getElementById('sig-mixte-motif'); if (_mxm) _mxm.value = ''; // v7.5.135
+  if (typeof sigDejaInfo === 'function') sigDejaInfo(false); // v7.5.171
   var _mxw = document.getElementById('sig-mixte-motif-wrap'); if (_mxw) _mxw.style.display = 'none';
   var _cw = document.getElementById('sig-cod-wrap'); if (_cw) _cw.style.display = 'none';
   var _tki = document.getElementById('sig-ticket'); if (_tki) _tki.value = '';
@@ -13254,7 +13365,7 @@ function finRender() {
 
       blocCaisseGen = '<div style="background:var(--card);border:1.5px solid var(--brd);border-radius:16px;padding:18px;margin-bottom:12px">' +
         '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">' +
-          '<div style="width:36px;height:36px;border-radius:50%;background:var(--violet);color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🏦</div>' +
+          '<div style="width:36px;height:36px;border-radius:50%;background:var(--violet);color:var(--sur-violet);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🏦</div>' +
           '<div style="flex:1">' +
             '<div style="font-size:16px;font-weight:800">Caisse générale</div>' +
             '<div style="font-size:12px;color:var(--t2)">Remises validées : ' + especesRemises.toLocaleString('fr-FR') + ' € sur ' + especesCollectees.toLocaleString('fr-FR') + ' € collectés (' + pctRemis + '%)</div>' +
@@ -13395,7 +13506,7 @@ function finRender() {
             '</div>' +
             (dejaEnc.length ? '<div style="font-size:11px;color:var(--t3);margin:6px 0 12px">ℹ️ Déjà encaissé, rien à rendre : ' + dejaEnc.join(' · ') + '</div>' : '<div style="margin-bottom:12px"></div>') +
             rtLignesPoint(r.point, eur) + // v7.5.129 : CB encaissé livreur, déjà payés, reportés, absents, reste à encaisser
-            '<button class="rt-valider" onclick="validerRemiseCaisse(\'' + r.caisseKey + '\')" style="width:100%;padding:13px;border-radius:12px;border:none;background:var(--green);color:#fff;font-size:14px;font-weight:800;cursor:pointer;font-family:var(--font)">✅ Valider le point de caisse (espèces remises)</button>' +
+            '<button class="rt-valider" onclick="validerRemiseCaisse(\'' + r.caisseKey + '\')" style="width:100%;padding:13px;border-radius:12px;border:none;background:var(--green);color:var(--sur-vert);font-size:14px;font-weight:800;cursor:pointer;font-family:var(--font)">✅ Valider le point de caisse (espèces remises)</button>' +
           '</div></div>';
       }).join('');
       // Tournées sans espèces à remettre (non validées) — lignes compactes discrètes
@@ -13652,7 +13763,7 @@ function showFinSub(key) {
   document.querySelectorAll('.fin-sub-btn').forEach(function(b){
     var act = (b.dataset.sub === key);
     b.style.background  = act ? 'var(--blue)' : 'var(--card)';
-    b.style.color       = act ? '#fff' : 'var(--t2)';
+    b.style.color       = act ? 'var(--sur-bleu)' : 'var(--t2)';
     b.style.borderColor = act ? 'var(--blue)' : 'var(--brd2)';
   });
 }
@@ -14002,7 +14113,7 @@ function sauvegarderDepense() {
   // livreur. Les depenses CB (compte societe) gardent "General" (pas d'impact caisse especes).
   var _depLivreur = (document.getElementById('dep-livreur').value||'').toUpperCase();
   if (!_depLivreur && depModePaie !== 'CB') _depLivreur = 'RANOU';
-  depenses.unshift({
+  var _nouvDep = {
     id: generateId('d'),
     date,
     cat:      document.getElementById('dep-cat').value,
@@ -14010,7 +14121,11 @@ function sauvegarderDepense() {
     livreur:  _depLivreur,
     comment:  document.getElementById('dep-comment').value,
     modePaie: depModePaie, // 'Espèces' = déduit de la caisse livreur | 'CB' = compte société
-  });
+  };
+  // v7.5.171 (revue Codex P2) : une dépense ajoutée ici ne peut pas entrer dans une tournée au point de caisse validé
+  var _vrAjout = depVerrouCaisse([_nouvDep]);
+  if (!_vrAjout.ok) { toast(_vrAjout.erreur, 'err'); return; }
+  depenses.unshift(_nouvDep);
   closeModal('m-depense');
   try { localStorage.removeItem('mx_depenses_cache'); } catch(e) {}
   showSync('⏳ Sauvegarde...', 'pending');
@@ -14025,6 +14140,8 @@ function sauvegarderDepense() {
 function modifierDepense(id) {
   var dep = depenses.find(function(d){ return d.id === id; });
   if (!dep) { toast('Dépense introuvable', 'err'); return; }
+  var _vrOuv = depVerrouCaisse([dep]); // v7.5.171 : point de caisse validé -> annuler la validation d'abord
+  if (!_vrOuv.ok) { toast(_vrOuv.erreur, 'err'); return; }
   // Pré-remplir comme un ajout puis basculer en mode édition
   ouvrirAjoutDepense();
   window._depEditMode = id;
@@ -14079,8 +14196,12 @@ async function sauvegarderDepenseEdit() {
     toast('Remplis tous les champs requis', 'err');
     return;
   }
+  // v7.5.171 (revue Codex P2) : ni l'état avant ni l'état après ne peuvent toucher une tournée au point de caisse validé
+  var _apresEdit = Object.assign({}, depenses[idx], { date: date, cat: cat, montant: montant, livreur: livreur, comment: comment, modePaie: modePaie });
+  var _vrEdit = depVerrouCaisse([depenses[idx], _apresEdit]);
+  if (!_vrEdit.ok) { toast(_vrEdit.erreur, 'err'); return; }
   // Update local en mémoire
-  depenses[idx] = Object.assign({}, depenses[idx], { date: date, cat: cat, montant: montant, livreur: livreur, comment: comment, modePaie: modePaie });
+  depenses[idx] = _apresEdit;
   // PATCH Supabase
   try {
     var resp = await fetch(SUPABASE_URL + '/rest/v1/depenses?id=eq.' + encodeURIComponent(id), {
@@ -14195,6 +14316,9 @@ function supprimerCommande(id) {
 }
 
 function supprimerDepense(id) {
+  // v7.5.171 (revue Codex P2) : point de caisse validé -> annuler la validation d'abord
+  var _vrSup = depVerrouCaisse([depenses.find(function(d){ return d.id === id; })]);
+  if (!_vrSup.ok) { toast(_vrSup.erreur, 'err'); return; }
   if (!confirm('Supprimer cette dépense ?')) return;
   sbDeleteDepense(id); // Sync Supabase
   depenses = depenses.filter(function(d){ return d.id !== id; });
@@ -17048,7 +17172,7 @@ function toggleModeManuel() {
   if (btn) {
     btn.innerHTML = modeManuel ? '✅ Terminer réorganisation' : '✋ Réorganiser manuellement';
     btn.style.background = modeManuel ? 'var(--green)' : '';
-    btn.style.color = modeManuel ? '#fff' : '';
+    btn.style.color = modeManuel ? 'var(--sur-vert)' : '';
   }
   optimRendrePage();
   if (modeManuel) {
@@ -20801,7 +20925,8 @@ function sauvegarderModif() {
   });
 
   // Mise à jour statut tournée
-  if (t.stops.every(s => ['livré','annulé'].includes(s.statut))) t.statut = 'terminée';
+  // v7.5.171 : une modification par le bureau ne clôture plus d'office (clôture = geste explicite) ; déjà clôturée = inchangée
+  if (rtLivraisonsTerminees(t)) t.statut = (t.statut === 'terminée') ? 'terminée' : 'en cours';
   else if (t.stops.some(s => ['en-route','arrivé'].includes(s.statut))) t.statut = 'en cours';
   else t.statut = 'préparée';
 
@@ -20833,6 +20958,9 @@ function depLvTourneeVisee(cible) {
   return rtTourneePourDepense(tournees, livNom, currentLvTourneeId, LV_APERCU_ACTIF, auj);
 }
 function depLvControle(t) { return rtDepenseModifiable(t, role === 'livreur' ? 'livreur' : 'bureau', rtRemiseValideeTournee(t)); }
+// v7.5.171 (revue Codex sur 3c3aa05, P2) : verrou du point de caisse validé pour les chemins de la liste Finance
+// (ajout, modification, suppression) et le changement de mode par le livreur. `etats` : dépense avant et/ou après.
+function depVerrouCaisse(etats) { return rtDepenseVerrou(etats, tournees, rtRemiseValideeTournee); }
 function depLvAuteur() { return role === 'livreur' ? ('livreur ' + (livNom || '')) : (role === 'admin' ? 'administrateur' : (role || '?')); }
 function depLvQuand() { var d = new Date(); return d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
 function ouvrirDepenseLivreur(cible) {
@@ -20845,7 +20973,7 @@ function ouvrirDepenseLivreur(cible) {
   setTimeout(function(){ depLvSelectMode(existante && existante.modePaie === 'CB' ? 'CB' : 'Espèces'); }, 50);
   document.querySelectorAll('.dep-lv-cat-btn').forEach(function(b){
     var actif = existante && b.dataset.cat === existante.cat;
-    b.style.background = actif ? 'var(--red)' : 'var(--bg)'; b.style.borderColor = actif ? 'var(--red)' : 'var(--brd)'; b.style.color = actif ? '#fff' : 'var(--text)';
+    b.style.background = actif ? 'var(--red)' : 'var(--bg)'; b.style.borderColor = actif ? 'var(--red)' : 'var(--brd)'; b.style.color = actif ? 'var(--sur-rouge)' : 'var(--text)';
   });
   var m = document.getElementById('dep-lv-montant'); if(m) m.value = existante ? String(existante.montant) : '';
   var c = document.getElementById('dep-lv-comment'); if(c) c.value = existante ? rtDepenseTexte(existante.comment) : ''; // v7.5.135 : sans le journal
@@ -20864,7 +20992,7 @@ function depLvSelectCat(btn) {
     var active = b === btn;
     b.style.background = active ? 'var(--red)' : 'var(--bg)';
     b.style.borderColor = active ? 'var(--red)' : 'var(--brd)';
-    b.style.color = active ? '#fff' : 'var(--text)';
+    b.style.color = active ? 'var(--sur-rouge)' : 'var(--text)';
   });
 }
 
@@ -20894,7 +21022,7 @@ function lvModifierDepense(depId) {
   // v7.5.135 (revue Codex sur f09037c, point 5) : motif obligatoire, gardé dans le journal de la dépense
   html += '<div style="font-size:12px;font-weight:700;color:var(--t3);margin-bottom:6px">MOTIF DE LA CORRECTION (obligatoire)</div>';
   html += '<input id="lv-dep-motif" type="text" autocomplete="off" placeholder="Ex : ticket mal lu, payé avec la carte" style="width:100%;padding:11px;border:1.5px solid var(--red);border-radius:10px;font-size:14px;font-family:var(--font);box-sizing:border-box;margin-bottom:16px">';
-  html += '<button id="lv-dep-valider" style="width:100%;padding:14px;border-radius:12px;border:none;background:var(--blue);color:#fff;font-size:15px;font-weight:700;cursor:pointer;font-family:var(--font);margin-bottom:8px">✅ Valider</button>';
+  html += '<button id="lv-dep-valider" style="width:100%;padding:14px;border-radius:12px;border:none;background:var(--blue);color:var(--sur-bleu);font-size:15px;font-weight:700;cursor:pointer;font-family:var(--font);margin-bottom:8px">✅ Valider</button>';
   html += '<button id="lv-dep-annuler" style="width:100%;padding:12px;border-radius:12px;border:1px solid var(--brd);background:var(--card);font-size:14px;font-weight:600;cursor:pointer;font-family:var(--font)">Annuler</button>';
 
   sheet.innerHTML = html;
@@ -20923,6 +21051,9 @@ function lvModifierDepense(depId) {
     var dId = s.dataset.depId;
     var d2 = depenses.find(function(x){ return x.id === dId; });
     if (!d2) { s.remove(); return; }
+    // v7.5.171 (revue Codex P2) : contrôle refait à l'enregistrement (la validation a pu arriver entre-temps)
+    var _vrLv = depVerrouCaisse([d2]);
+    if (!_vrLv.ok) { toast(_vrLv.erreur, 'err'); s.remove(); return; }
     // v7.5.135 (revue Codex sur f09037c, point 5) : journal de la correction (mode avant → après, auteur, motif)
     var _corrLv = rtDepenseCorrection(d2, { cat: d2.cat, montant: d2.montant, modePaie: newMode, comment: d2.comment }, depLvAuteur(), (document.getElementById('lv-dep-motif') || {}).value, depLvQuand());
     if (!_corrLv.ok) { toast(_corrLv.erreur, 'err'); return; }
