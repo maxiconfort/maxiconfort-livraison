@@ -902,6 +902,90 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     test('migration 038b : aucune nouvelle lecture ouverte sur caisse_remises (pas de politique ; seul grant : verrou_caisse_actif, qui ne renvoie que vrai/faux)', !/create policy/i.test(mig) && (mig.match(/\bgrant\b[^;]*;/gi) || []).every((g) => /^grant execute on function public\.verrou_caisse_actif\(\) to anon;$/i.test(g)) && !/grant[^;]*caisse_remises/i.test(mig));
   }
 
+  // ══════════ 11. Revue Codex PR 24 sur 639f2f5 (v7.5.184) : règle des 10 retours, relecture complète du verrou ══════════
+  console.log('\n11. REVUE CODEX SUR 639f2f5 : rattachement figé, tournées protégées, verrou consultatif, relecture complète');
+  { const mig = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'migrations', '038b_depenses_verrou_caisse_validee.sql'), 'utf8');
+    test('038b : FIGEMENT — une dépense écrite sans tournee_id reçoit la tournée calculée ; copie ancienne (même date et livreur) garde la tournée figée', /new\.tournee_id := interne\.l038b_tournee_attribuee\(null, new\.livreur::text, new\.date_depense::text\)/.test(mig) && /new\.tournee_id := v_prec\.tournee_id;/.test(mig));
+    test('038b : déclencheur sur les TOURNÉES (avant ajout, modification, suppression)', /create trigger tournees_verrou_caisse before insert or update or delete on public\.tournees/.test(mig));
+    test('038b : déclencheur sur caisse_remises (validation / annulation) qui prend le verrou', /create trigger caisse_remises_verrou_caisse before insert or update or delete on public\.caisse_remises/.test(mig));
+    test('038b : verrou consultatif de transaction, clé dérivée de la tournée, MÊME fonction pour les trois déclencheurs', /pg_advisory_xact_lock\(interne\.l038b_cle\(v\)\)/.test(mig) && (mig.match(/perform interne\.l038b_verrouiller\(/g) || []).length >= 3);
+    test('038b : retour arrière à jour (trois déclencheurs et toutes les fonctions)', ['tournees_verrou_caisse', 'caisse_remises_verrou_caisse', 'interne._tournee_verrou_caisse()', 'interne._caisse_remise_verrou()', 'interne.l038b_verrouiller(text[])', 'interne.l038b_cle(text)', 'interne.l038b_validee(text)', 'interne.l038b_premiere(text, text, text, text)', 'interne.l038b_sans_tournee(text, text)'].every((x) => mig.slice(0, mig.indexOf('ORDRE DE MISE EN SERVICE')).includes(x)));
+    test('038b : contrôle doux = les TROIS déclencheurs actifs', /\) = 3\s*\n\s*and \(select count\(\*\) from pg_proc/.test(mig));
+  }
+  { const { bac: p } = nouveauBac();
+    test('rtDepenseDeplacee : même date et même livreur (casse ignorée) -> non', p.rtDepenseDeplacee({ date: '2026-11-24', livreur: 'Ranou' }, { date: '2026-11-24', livreur: 'RANOU' }) === false);
+    test('rtDepenseDeplacee : date changée -> oui ; livreur changé -> oui', p.rtDepenseDeplacee({ date: '2026-11-24', livreur: 'RANOU' }, { date: '2026-11-23', livreur: 'RANOU' }) === true && p.rtDepenseDeplacee({ date: '2026-11-24', livreur: 'RANOU' }, { date: '2026-11-24', livreur: 'KARIM' }) === true);
+    test('message tournée validée : dit d\'annuler la validation', /Annulez d'abord la validation/.test(p.RT_MSG_TOURNEE_CAISSE_VALIDEE));
+  }
+  { // Finance : correction qui change la date -> tournee_id vidé (la base recalcule) ; sinon tournee_id non envoyé
+    const { bac, envois, champs } = bacFinance(); bac.caissesRemises = {};
+    bac.window._depEditMode = 'dg'; champs({ 'dep-montant': '4', 'dep-date': '2026-11-22', 'dep-cat': 'Parking', 'dep-livreur': 'RANOU', 'dep-comment': '' });
+    await bac.sauvegarderDepenseEdit();
+    test('Finance : date changée -> PATCH avec tournee_id = null (rattachement recalculé par la base), copie locale détachée', envois.length === 1 && envois[0].body.tournee_id === null && bac.depenses[2].tourneeId === null && bac.depenses[2].date === '2026-11-22', envois[0]);
+    bac.window._depEditMode = 'df'; champs({ 'dep-montant': '31', 'dep-date': '2026-11-24', 'dep-cat': 'Carburant', 'dep-livreur': 'RANOU', 'dep-comment': '' });
+    await bac.sauvegarderDepenseEdit();
+    test('Finance : montant seul changé -> tournee_id NON envoyé (rattachement figé gardé)', envois.length === 2 && !('tournee_id' in envois[1].body) && bac.depenses[0].tourneeId === 'T-F', envois[1]);
+  }
+  { const { bac, envois, champs } = bacFinance(); // T-F validée ; dg figée sur T-G (23/11) déplacée au 24/11
+    bac.window._depEditMode = 'dg'; champs({ 'dep-montant': '4', 'dep-date': '2026-11-24', 'dep-cat': 'Parking', 'dep-livreur': 'RANOU', 'dep-comment': '' });
+    await bac.sauvegarderDepenseEdit();
+    test('Finance : dépense figée sur T-G déplacée à la date de T-F VALIDÉE -> refusée localement (elle entrerait dans T-F)', envois.length === 0 && bac.depenses[2].tourneeId === 'T-G' && /T-F/.test(bac._toasts.pop()[0]));
+  }
+  { // tournées : suppression refusée tant que le point de caisse est validé ; refus de la base -> tournée relue
+    const { bac } = nouveauBac('admin');
+    for (const f of ['function supprimerTournee(tid)', 'async function sbRechargerTournee(id)', 'async function sbSaveTournee(t)']) vm.runInContext(extraireFonction(f), bac);
+    bac.verifierProtectionTournee = () => true; bac.navigator = { onLine: true }; bac.console = { log() {}, warn() {}, error() {} };
+    bac.tournees = [{ id: 'T-S', livreur: 'RANOU', date: '2026-11-24', statut: 'terminée', stops: [] }];
+    bac.caissesRemises = { 't_T-S': { validee: true } }; let appels = [];
+    bac.fetch = async (url, opt) => { appels.push([url, opt && opt.method]); return { ok: true, status: 200, text: async () => '', json: async () => [] }; };
+    bac.supprimerTournee('T-S');
+    test('supprimerTournee : point de caisse validé -> refus AVANT toute confirmation ni envoi, tournée gardée', appels.length === 0 && bac.tournees.length === 1 && /Annulez d'abord/.test(bac._toasts.pop()[0]));
+    bac.caissesRemises = {}; // l'écran ne sait pas encore (validation faite ailleurs) : la base refuse
+    const ligneBase = { id: 'T-S', livreur: 'RANOU', date_tournee: '2026-11-24', statut: 'terminée', stops: [] };
+    bac.fetch = async (url, opt) => { appels.push([url, opt && opt.method]);
+      if (opt && opt.method === 'DELETE') return { ok: false, status: 400, text: async () => '{"code":"P0001","message":"POINT_CAISSE_VALIDE : le point de caisse de la tournée T-S est déjà validé"}' };
+      return { ok: true, status: 200, json: async () => [ligneBase], text: async () => '' }; };
+    bac.supprimerTournee('T-S'); for (let i = 0; i < 5; i++) await attendre();
+    test('supprimerTournee : refus POINT_CAISSE_VALIDE de la base -> tournée RELUE et remise dans la liste, message clair', bac.tournees.length === 1 && bac.tournees[0].id === 'T-S' && appels.some((a) => /tournees\?id=eq\.T-S&select=\*/.test(a[0])) && /Annulez d'abord/.test((bac._toasts.pop() || [''])[0]), bac.tournees);
+    // sbSaveTournee : refus -> état de la base remis (livreur / date d'origine), pas de « succès »
+    bac.tournees = [{ id: 'T-S', livreur: 'KARIM', date: '2026-11-25', statut: 'terminée', stops: [] }];
+    bac.fetch = async (url, opt) => { if (opt && opt.method === 'POST') return { ok: false, status: 400, text: async () => 'POINT_CAISSE_VALIDE : …' }; return { ok: true, status: 200, json: async () => [ligneBase], text: async () => '' }; };
+    const rs = await bac.sbSaveTournee(bac.tournees[0]);
+    test('sbSaveTournee : refus POINT_CAISSE_VALIDE -> { refuse: true }, tournée locale remise à l\'état de la base (RANOU, 24/11)', rs && rs.refuse === true && bac.tournees[0].livreur === 'RANOU' && bac.tournees[0].date === '2026-11-24' && /Annulez d'abord/.test(bac._toasts.pop()[0]), bac.tournees[0]);
+    bac.fetch = async (url, opt) => { if (opt && opt.method === 'POST') return { ok: false, status: 400, text: async () => 'POINT_CAISSE_VALIDE' }; return { ok: true, status: 200, json: async () => [], text: async () => '' }; };
+    bac.tournees = [{ id: 'T-0N', livreur: 'RANOU', date: '2026-11-24', statut: 'en cours', stops: [] }];
+    await bac.sbSaveTournee(bac.tournees[0]);
+    test('sbSaveTournee : AJOUT d\'une tournée refusé (absente de la base) -> retirée de la liste locale', bac.tournees.length === 0);
+  }
+  { // validation / annulation de la remise : un échec de la base n'est plus caché par la copie locale
+    const { bac } = nouveauBac('admin');
+    vm.runInContext(extraireFonction('function paiCalculRemise(attendu, saisie)'), bac);
+    for (const f of ['async function validerRemiseCaisse(key)', 'async function annulerRemiseCaisse(key)']) vm.runInContext(extraireFonction(f), bac);
+    bac.tournees = [{ id: 'T-Q', livreur: 'RANOU', date: '2026-11-24', statut: 'terminée', stops: [] }];
+    bac.window = { _paiRemisesAttendu: { 't_T-Q': { especes: 100, cb: 0 } } }; bac.caissesRemises = {};
+    let rep = ['100']; bac.prompt = () => rep.shift();
+    bac.fetch = async () => ({ ok: false, status: 401, text: async () => 'session' });
+    await bac.validerRemiseCaisse('t_T-Q');
+    test('validation : la base ne l\'enregistre pas (HTTP 401) -> PAS validée sur l\'écran, message « NON validée »', !bac.caissesRemises['t_T-Q'] && /NON validée/.test(bac._toasts.pop()[0]));
+    rep = ['100']; bac.fetch = async () => { throw new Error('coupure'); };
+    await bac.validerRemiseCaisse('t_T-Q');
+    test('validation : coupure réseau -> PAS validée sur l\'écran (plus de validation locale seule)', !bac.caissesRemises['t_T-Q'] && /NON validée/.test(bac._toasts.pop()[0]));
+    let relu = 0; bac.sbLoadDepenses = async () => { relu++; }; bac.finRender = () => { bac.window._paiRemisesAttendu = { 't_T-Q': { especes: 80, cb: 0 } }; };
+    let vuAttendu = null; rep = ['80']; bac.prompt = (t) => { vuAttendu = vuAttendu || t; return rep.shift(); }; const envoisV = [];
+    bac.fetch = async (url, opt) => { envoisV.push(JSON.parse(opt.body)); return { ok: true, status: 201, text: async () => '' }; };
+    await bac.validerRemiseCaisse('t_T-Q');
+    test('validation : dépenses RELUES juste avant, montant attendu recalculé (80 € et non 100 €) puis enregistré', relu === 1 && /ATTENDUES : 80 €/.test(vuAttendu) && envoisV[0] && envoisV[0].especes_attendues === 80 && bac.caissesRemises['t_T-Q'].validee === true, [vuAttendu, envoisV[0]]);
+    bac.finRender = () => { bac.window._paiRemisesAttendu = {}; }; const nEnv = envoisV.length;
+    await bac.validerRemiseCaisse('t_T-Q');
+    test('validation : point de caisse introuvable après relecture -> rien validé, rien envoyé', envoisV.length === nEnv && /introuvable/.test(bac._toasts.pop()[0]));
+    bac.confirm = () => true; bac.fetch = async () => ({ ok: false, status: 500, text: async () => '' });
+    await bac.annulerRemiseCaisse('t_T-Q');
+    test('annulation NON enregistrée par la base -> la remise reste VALIDÉE à l\'écran, message clair', bac.caissesRemises['t_T-Q'] && bac.caissesRemises['t_T-Q'].validee === true && /reste validée/.test(bac._toasts.pop()[0]));
+    bac.fetch = async () => ({ ok: true, status: 204, text: async () => '' });
+    await bac.annulerRemiseCaisse('t_T-Q');
+    test('annulation enregistrée -> remise annulée', !bac.caissesRemises['t_T-Q']);
+  }
+
   // ══════════ 6. Garde-fous (lecture du code) ══════════
   console.log('\n6. GARDE-FOUS (lecture du code)');
   const blocRT = extraireBloc('// ── RT-DEBUT', '// RT-FIN');
@@ -914,7 +998,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
   test('Retour de tournée : bouton « Valider le point de caisse » branché sur validerRemiseCaisse (caisse_remises)', /validerRemiseCaisse\(\\'' \+ r\.caisseKey \+ '\\'\)"[^>]*>✅ Valider le point de caisse/.test(html));
   test('validerRemiseCaisse écrit toujours dans caisse_remises (mécanisme existant)', /rest\/v1\/caisse_remises', \{\s*method: 'POST'/.test(extraireFonction('async function validerRemiseCaisse(key)')));
   test('ancre JARVIS (bloc JVUE) présente', html.indexOf('// JVUE-DEBUT') > 0 && html.indexOf('// JVUE-FIN') > html.indexOf('// JVUE-DEBUT'));
-  test('CACHE_VERSION augmentée (v7-5-179 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(79|[89]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
+  test('CACHE_VERSION augmentée (v7-5-184 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(8[4-9]|9\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
