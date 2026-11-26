@@ -42,7 +42,7 @@ function nouveauBac(role) {
   vm.createContext(bac);
   vm.runInContext(extraireBloc('var PAI_MODE_SITE', '// PAI-FIN'), bac);
   vm.runInContext(extraireBloc('// ── RT-DEBUT', '// RT-FIN'), bac);
-  vm.runInContext(extraireFonction('async function sbSaveCommande(cmd)'), bac);
+  vm.runInContext(extraireFonction('function syncRefusDefinitif(status)') + ' ' + extraireFonction('function syncMessageRefus(status, texte)') + ' ' + extraireFonction('async function sbSaveCommande(cmd, opts)'), bac);
   vm.runInContext('var sigStopId=null, sigPaieEncaisse=false, sigPaieMode="Espèces", sigPrepaidMode=null, sigCmdMarketplace=null, sigCtx=null, scv=null, sigCodActif=false, sigCodChoix=null, sigCodMontant=0;', bac);
   vm.runInContext(extraireBloc('// v7.5.129 : choix simple Espèces / Carte bleue / Déjà payé.', 'var sigCodActif = false;'), bac);
   vm.runInContext('var MODES_PAIE = ' + JSON.stringify([{ id: 'LeBonCoin', cat: 'prepaye' }, { id: 'Déjà payé', cat: 'prepaye' }, { id: 'Espèces', cat: 'livreur' }]) + ';', bac);
@@ -51,7 +51,9 @@ function nouveauBac(role) {
     'function rtOutilsPage()', 'function rtDepensesEspecesTournee(t, liste)', 'function lvClotureHtml(t)', 'function lvCloturerTournee(tid)',
     'function lvReporter(tid, idx, statut)', 'function lvFermerReport()', 'function lvValiderReport()', 'function lvAbsent(tid, idx)',
     // v7.5.130 : dépenses du livreur
-    'function ouvrirDepenseLivreur(cible)', 'function depLvSelectMode(mode)', 'async function validerDepenseLivreur()', 'function rtLignesDepenses(r)', 'function rtEchapper(s)', 'function renderLivreurCaisse(t)'])
+    'function ouvrirDepenseLivreur(cible)', 'function depLvSelectMode(mode)', 'async function validerDepenseLivreur()', 'function rtLignesDepenses(r)', 'function rtEchapper(s)', 'function renderLivreurCaisse(t)',
+    // v7.5.135 : contrôles des dépenses (tournée clôturée, point de caisse validé, journal)
+    'function rtRemiseValideeTournee(t)', 'function depLvTourneeVisee(cible)', 'function depLvControle(t)', 'function depLvAuteur()', 'function depLvQuand()'])
     vm.runInContext(extraireFonction(f), bac);
   vm.runInContext('var lvReportCible = null, depLvCatSelected = "", depLvCible = null, currentLvTourneeId = null;', bac);
   let _n = 0; bac.generateId = (p) => p + '-test-' + (++_n);
@@ -416,7 +418,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     test('Retour de tournée : la dépense apparaît avec son bouton ✏️', new RegExp("depId: '" + id + "'").test(bac.rtLignesDepenses(r)) && /Visserie/.test(bac.rtLignesDepenses(r)));
     bac.ouvrirDepenseLivreur({ tid: 'T-Q', depId: id });
     test('correction : montant et commentaire pré-remplis, titre « Corriger »', els['dep-lv-montant'].value === '45' && els['dep-lv-comment'].value === 'Visserie' && /Corriger/.test(els['dep-lv-titre'].textContent));
-    els['dep-lv-montant'].value = '40';
+    els['dep-lv-montant'].value = '40'; els['dep-lv-motif'].value = 'Ticket relu : 40 €'; // v7.5.135 : motif obligatoire
     await bac.validerDepenseLivreur(); b = envois[1] && envois[1].body;
     test('correction : même identifiant (mise à jour, pas de doublon), nouveau montant', b && b.id === id && b.montant === 40 && bac.depenses.length === 1, b);
     const pt = bac.rtPointCaisse(bac.tournees[0], bac.getCmdsLivresParTournee(bac.tournees[0]), bac.rtDepensesEspecesTournee(bac.tournees[0], bac.depenses), bac.rtOutilsPage());
@@ -473,6 +475,183 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     test('en aperçu d\'une autre journée : pas de bloc de clôture', bac.lvClotureHtml(bac.tournees[0]) === '');
     bac.LV_APERCU_ACTIF = false; bac.role = 'admin';
     test('administrateur dans la vue livreur : pas de bloc de clôture', bac.lvClotureHtml(bac.tournees[0]) === '');
+  }
+
+  // ══════════ 7. Revue Codex sur f09037c (v7.5.135) ══════════
+  console.log('\n7. REVUE CODEX SUR f09037c : Mixte contrôlé, relevé de l\'encaissement, dépenses uniques / figées / journalisées, refus de la base');
+  // 7.1 Mixte : mêmes garde-fous que le montant unique
+  const mixte = (cmd, esp, cb, motif) => { const x = preparer(cmd); x.bac.sigAutreCas('Mixte'); x.els['sig-ticket'].value = 'TK-MX';
+    x.bac.document.getElementById('sig-paie-esp').value = String(esp); x.bac.document.getElementById('sig-paie-cb').value = String(cb);
+    x.bac.document.getElementById('sig-mixte-motif').value = motif || ''; return x; };
+  { const x = mixte(LBC(), 100, 50, ''); x.bac.validerSig(); await attendre();
+    test('Mixte 100 + 50 sur 180 € SANS motif : refusé (avant : accepté sans motif ni alerte)', x.stop.statut !== 'livré' && x.envois.length === 0 && /motif obligatoire/.test(x.bac._toasts.pop()[0]));
+    x.bac.document.getElementById('sig-mixte-motif').value = 'Le client paiera le reste par virement'; x.bac.validerSig(); await attendre(); const b = x.envois[0] && x.envois[0].body;
+    test('Mixte plus bas AVEC motif : « Partiel », 150 € encaissés, trace « au lieu de 180 € » + motif', b && b.stpaie === 'Partiel' && b.montant_enc === 150 && b.paie === 'Mixte' && /au lieu de 180/.test(b.instr) && /par virement/.test(b.instr), b);
+    test('Mixte plus bas : alerte « Encaissement incomplet » au bureau (30 € restent dus)', x.bac._notifs.some((n) => /Encaissement incomplet/.test(n[2]) && /30/.test(n[3])), x.bac._notifs);
+    test('Mixte plus bas : motif noté sur l\'arrêt', x.stop.enc && x.stop.enc.motif === 'Le client paiera le reste par virement', x.stop.enc);
+  }
+  { const x = mixte(LBC(), 150, 50, 'motif quelconque'); x.bac.validerSig(); await attendre();
+    test('Mixte 150 + 50 sur 180 € : refusé (jamais plus que le reste dû ; avant : accepté, « Partiel »)', x.stop.statut !== 'livré' && x.envois.length === 0 && /dépasser/.test(x.bac._toasts.pop()[0]));
+  }
+  { const x = mixte(LBC({ stpaie: 'Payé', montantEnc: 180 }), 100, 80, ''); x.bac.validerSig(); await attendre();
+    test('Mixte sur une commande DÉJÀ SOLDÉE : refusé (« Déjà payé »), rien enregistré', x.stop.statut !== 'livré' && x.envois.length === 0 && /Déjà payé/.test(x.bac._toasts.pop()[0]));
+  }
+  { const x = mixte(LBC({ stpaie: 'Partiel', montantEnc: 50 }), 100, 50, ''); x.bac.validerSig(); await attendre();
+    test('Mixte avec acompte 50 € : 100 + 50 dépasse le reste dû (130 €) -> refusé', x.stop.statut !== 'livré' && x.envois.length === 0);
+  }
+  { const { bac: p } = nouveauBac();
+    test('rtControleMixte : montant négatif refusé', p.rtControleMixte(180, -10, 200, 'motif long').ok === false);
+    test('rtControleMixte : total exact accepté sans motif', p.rtControleMixte(180, '100', '80', '').ok === true && p.rtControleMixte(180, '100', '80', '').baisse === false);
+    test('rtControleMixte : rien saisi refusé', p.rtControleMixte(180, 0, 0, '').ok === false);
+    const x = preparer(LBC()); vm.runInContext(extraireFonction('function sigMixteRecap()'), x.bac); x.bac.sigAutreCas('Mixte');
+    x.bac.document.getElementById('sig-paie-esp').value = '100'; x.bac.document.getElementById('sig-paie-cb').value = '50'; x.bac.sigMixteRecap();
+    const vu = x.els['sig-mixte-motif-wrap'].style.display; x.bac.document.getElementById('sig-paie-cb').value = '80'; x.bac.sigMixteRecap();
+    test('affichage : le champ motif Mixte apparaît quand le total est plus bas, disparaît au total exact', vu === 'block' && x.els['sig-mixte-motif-wrap'].style.display === 'none');
+  }
+  // 7.2 Relevé de ce qui est encaissé PENDANT la tournée : un paiement ultérieur ne change rien après coup
+  { const x = preparer(LBC()); x.bac.sigChoixSimple('esp'); x.els['sig-montant'].value = '100'; x.els['sig-montant-motif'].value = 'Le reste sera payé au bureau';
+    x.bac.validerSig(); await attendre();
+    test('signature 100 € espèces sur 180 € : relevé de l\'arrêt = 100 € espèces, 0 € CB', JSON.stringify(x.stop.encTournee) === JSON.stringify({ esp: 100, cb: 0 }), x.stop.encTournee);
+    const avant = pointDe(x.bac);
+    const c = x.bac.commandes[0]; c.paie = 'CB'; c.stpaie = 'Payé'; c.montantEnc = 180; // le bureau encaisse plus tard les 80 € restants par carte
+    const apres = pointDe(x.bac);
+    test('paiement ULTÉRIEUR (80 € CB au bureau) : la tournée garde 100 € espèces, 0 € CB (avant : 0 € espèces, 180 € CB)', apres.especes === 100 && apres.cb === 0 && avant.especes === 100, { avant, apres });
+    x.bac.depenses = []; x.bac.renderLivreurCaisse(x.bac.tournees[0]); const h = x.els['lv-caisse-summary'].innerHTML;
+    test('caisse du livreur : même relevé (+100 € espèces, aucune CB)', /\+100 €/.test(h) && !/CB \(TPE\)/.test(h), h.slice(0, 300));
+  }
+  { const x = mixte(LBC(), 80, 100, ''); x.bac.validerSig(); await attendre();
+    const c = x.bac.commandes[0]; c.paie = 'Espèces'; c.stpaie = 'Payé'; c.montantEnc = 180; delete c.paie_especes; delete c.paie_cb; // correction faite plus tard
+    const pt = pointDe(x.bac);
+    test('Mixte 80 / 100 puis correction de la commande : la tournée garde 80 € espèces et 100 € CB', JSON.stringify(x.stop.encTournee) === JSON.stringify({ esp: 80, cb: 100 }) && pt.especes === 80 && pt.cb === 100, pt);
+  }
+  { const x = preparer(LBC()); x.bac.sigChoixSimple('deja'); x.bac.validerSig(); await attendre();
+    test('« Déjà payé » : relevé 0 € / 0 €', JSON.stringify(x.stop.encTournee) === JSON.stringify({ esp: 0, cb: 0 }), x.stop.encTournee);
+  }
+  { const x = preparer(LBC()); x.bac.sigAutreCas('non'); x.bac.validerSig(); await attendre();
+    test('« Non payé » : relevé 0 € / 0 €', JSON.stringify(x.stop.encTournee) === JSON.stringify({ esp: 0, cb: 0 }), x.stop.encTournee);
+  }
+  { const r = await editeur({ stpaie: 'Partiel', montantEnc: 50, paie: 'CB' }, { encAvant: 50, encTournee: { esp: 0, cb: 0 } }, { mode: 'CB', statut: 'Payé' });
+    test('correction par le livreur PENDANT la tournée (« Encaisser ») : le relevé suit (130 € CB, acompte exclu)', JSON.stringify(r.stop.encTournee) === JSON.stringify({ esp: 0, cb: 130 }), r.stop.encTournee);
+  }
+  { const { bac: p } = nouveauBac();
+    test('relevé présent : il fait foi, quel que soit le cumul actuel de la commande', JSON.stringify(p.rtEncaisseTournee({ paie: 'CB', stpaie: 'Payé', montantEnc: 999 }, { encAvant: 0, encTournee: { esp: 60, cb: 0 } })) === JSON.stringify({ esp: 60, cb: 0 }));
+  }
+  // 7.3 Dépense sans identifiant de tournée : une seule tournée
+  { const { bac } = nouveauBac('admin');
+    bac.tournees = [{ id: 'T-B', livreur: 'RANOU', date: '2026-11-25', statut: 'terminée', stops: [] }, { id: 'T-A', livreur: 'RANOU', date: '2026-11-25', statut: 'terminée', stops: [] }, { id: 'T-K', livreur: 'KARIM', date: '2026-11-25', stops: [] }];
+    const deps = [{ id: 'sans', livreur: 'RANOU', date: '2026-11-25', modePaie: 'Espèces', montant: 30 }, { id: 'avecB', livreur: 'RANOU', tourneeId: 'T-B', date: '2026-11-25', modePaie: 'Espèces', montant: 12 }];
+    const dA = bac.rtDepensesEspecesTournee(bac.tournees[1], deps).map((d) => d.id), dB = bac.rtDepensesEspecesTournee(bac.tournees[0], deps).map((d) => d.id);
+    test('deux tournées le même jour : la dépense sans tournée n\'est comptée QU\'UNE fois (première tournée, T-A)', dA.join() === 'sans' && dB.join() === 'avecB', { dA, dB });
+    const pA = bac.rtPointCaisse(bac.tournees[1], [], bac.rtDepensesEspecesTournee(bac.tournees[1], deps), bac.rtOutilsPage()), pB = bac.rtPointCaisse(bac.tournees[0], [], bac.rtDepensesEspecesTournee(bac.tournees[0], deps), bac.rtOutilsPage());
+    test('total des dépenses déduites sur la journée = 42 € (30 + 12), et non 72 €', pA.depEspeces + pB.depEspeces === 42, { a: pA.depEspeces, b: pB.depEspeces });
+    test('une tournée d\'un autre livreur le même jour ne change pas le rattachement', bac.rtDepenseDeTournee(deps[0], bac.tournees[1], bac.tournees) === true && bac.rtDepenseDeTournee(deps[0], bac.tournees[2], bac.tournees) === false);
+    test('sans liste de tournées : règle d\'origine (par la date)', bac.rtDepenseDeTournee(deps[0], bac.tournees[0]) === true);
+    test('les autres calculs de caisse utilisent la même attribution (5 endroits, plus aucun rattachement « par la date » isolé)', (html.match(/rtDepenseDeTournee\(d, tP?, tournees\)/g) || []).length === 5 && !/d\.tourneeId \? d\.tourneeId === t/.test(html));
+  }
+  // 7.4 Tournée clôturée / point de caisse validé : plus d'ajout ni de correction hors circuit
+  const AUJ7 = (() => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })();
+  { const { bac, els, envois } = nouveauBac();
+    bac.tournees = [{ id: 'T-CL', livreur: 'RANOU', date: AUJ7, statut: 'terminée', stops: [] }]; vm.runInContext('currentLvTourneeId = "T-CL";', bac);
+    els['m-dep-livreur'] = fauxElement('m-dep-livreur'); els['m-dep-livreur'].style.display = 'none'; bac.ouvrirDepenseLivreur();
+    test('livreur, tournée CLÔTURÉE : l\'écran Dépense ne s\'ouvre pas, message clair', els['m-dep-livreur'].style.display === 'none' && /Tournée clôturée/.test(bac._toasts.pop()[0]));
+    vm.runInContext('depLvCatSelected = "Parking";', bac); els['dep-lv-montant'] = fauxElement('dep-lv-montant'); els['dep-lv-montant'].value = '9'; await bac.validerDepenseLivreur();
+    test('livreur, tournée clôturée : l\'enregistrement est refusé même si l\'écran était resté ouvert', envois.length === 0 && bac.depenses.length === 0);
+    bac.depenses = [{ id: 'dx', livreur: 'RANOU', tourneeId: 'T-CL', date: AUJ7, cat: 'Péage', modePaie: 'Espèces', montant: 5, comment: '' }];
+    vm.runInContext(extraireFonction('function lvModifierDepense(depId)'), bac);
+    let cree = 0; bac.document.createElement = () => { cree++; return fauxElement('x'); };
+    bac.lvModifierDepense('dx');
+    test('livreur, tournée clôturée : la correction (✏️) est refusée', cree === 0 && /Tournée clôturée/.test(bac._toasts.pop()[0]));
+  }
+  { const { bac, els, envois } = nouveauBac('admin'); bac.livNom = '';
+    bac.tournees = [{ id: 'T-V', livreur: 'RANOU', date: '2026-11-24', statut: 'terminée', stops: [] }];
+    bac.ouvrirDepenseLivreur({ tid: 'T-V' }); vm.runInContext('depLvCatSelected = "Carburant";', bac); els['dep-lv-montant'].value = '20';
+    await bac.validerDepenseLivreur();
+    test('bureau, tournée clôturée, point de caisse PAS encore validé : ajout possible', envois.length === 1 && envois[0].body.tournee_id === 'T-V');
+    bac.caissesRemises = { 't_T-V': { validee: true } };
+    bac.ouvrirDepenseLivreur({ tid: 'T-V' });
+    test('point de caisse VALIDÉ : ajout refusé (« annulez d\'abord la validation »)', /annulez d'abord la validation/.test(bac._toasts.pop()[0]));
+    vm.runInContext('depLvCible = { tid: "T-V", depId: "' + bac.depenses[0].id + '" }; depLvCatSelected = "Carburant";', bac); els['dep-lv-montant'].value = '99'; els['dep-lv-motif'].value = 'motif assez long';
+    await bac.validerDepenseLivreur();
+    test('point de caisse validé : correction refusée, montant inchangé', envois.length === 1 && bac.depenses[0].montant === 20);
+    const h = bac.rtLignesDepenses({ t: bac.tournees[0], point: { aRembourser: 0 } });
+    test('Retour de tournée validé : plus de bouton ✏️ ni « + Ajouter », mention « dépenses figées »', !/ouvrirDepenseLivreur/.test(h) && /dépenses figées/.test(h), h);
+  }
+  // 7.5 Journal des corrections
+  { const { bac, els, envois } = nouveauBac('admin'); bac.livNom = '';
+    bac.tournees = [{ id: 'T-J', livreur: 'RANOU', date: '2026-11-24', statut: 'terminée', stops: [] }];
+    bac.ouvrirDepenseLivreur({ tid: 'T-J' }); vm.runInContext('depLvCatSelected = "Achat fournisseur";', bac); els['dep-lv-montant'].value = '45'; els['dep-lv-comment'].value = 'Visserie';
+    await bac.validerDepenseLivreur(); const id = bac.depenses[0].id;
+    bac.ouvrirDepenseLivreur({ tid: 'T-J', depId: id });
+    test('correction : champ motif affiché et vide', els['dep-lv-motif-wrap'].style.display === 'block' && els['dep-lv-motif'].value === '');
+    els['dep-lv-montant'].value = '40'; await bac.validerDepenseLivreur();
+    test('correction SANS motif : refusée, rien envoyé, montant inchangé', envois.length === 1 && bac.depenses[0].montant === 45 && /motif obligatoire/.test(bac._toasts.pop()[0]));
+    els['dep-lv-motif'].value = 'Ticket relu : 40 €'; await bac.validerDepenseLivreur(); const b = envois[1] && envois[1].body;
+    test('correction AVEC motif : nouveau montant + ligne de journal (avant → après, auteur, motif) dans le commentaire', b && b.montant === 40 && /^Visserie\n— Journal des corrections —\n/.test(b.comment) && /administrateur : montant 45,00 € → 40,00 € · motif : Ticket relu : 40 €/.test(b.comment), b && b.comment);
+    bac.ouvrirDepenseLivreur({ tid: 'T-J', depId: id });
+    test('réouverture : le commentaire affiché est le texte seul (sans le journal)', els['dep-lv-comment'].value === 'Visserie');
+    els['dep-lv-montant'].value = '40'; els['dep-lv-mode-cb'].dataset.selected = '1'; els['dep-lv-motif'].value = 'Payé avec la carte société';
+    await bac.validerDepenseLivreur(); const b2 = envois[2] && envois[2].body;
+    test('deuxième correction : le journal garde les deux lignes, dans l\'ordre', b2 && bac.rtDepenseJournal(b2.comment).length === 2 && /montant 45,00/.test(bac.rtDepenseJournal(b2.comment)[0]) && /payée Espèces → CB société/.test(bac.rtDepenseJournal(b2.comment)[1]), b2 && b2.comment);
+    const h = bac.rtLignesDepenses({ t: bac.tournees[0], point: { aRembourser: 0 } });
+    test('Retour de tournée : le journal est visible sous la dépense', (h.match(/🕓 Corrigée le/g) || []).length === 2 && /Visserie/.test(h), h);
+  }
+  { const { bac, envois } = nouveauBac();
+    bac.tournees = [{ id: 'T-O', livreur: 'RANOU', date: AUJ7, statut: 'en cours', stops: [] }];
+    bac.depenses = [{ id: 'dm', livreur: 'RANOU', tourneeId: 'T-O', date: AUJ7, cat: 'Péage', modePaie: 'Espèces', montant: 5, comment: 'A86' }];
+    vm.runInContext(extraireFonction('function lvModifierDepense(depId)'), bac);
+    const enfants = {};
+    bac.document.createElement = () => fauxElement('cree');
+    bac.document.body = { appendChild(e) { enfants[e.id] = e; } };
+    const base = bac.document.getElementById; bac.document.getElementById = (id) => { if (enfants[id]) return enfants[id]; const e = base(id); if (!e.addEventListener) e.addEventListener = function(ev, fn) { this._clic = fn; }; return e; };
+    bac.lvModifierDepense('dm'); const feuille = enfants['lv-dep-sheet'];
+    test('livreur, tournée en cours : la correction du mode s\'ouvre avec un motif obligatoire', !!feuille && /MOTIF DE LA CORRECTION/.test(feuille.innerHTML));
+    feuille.dataset.mode = 'CB'; bac.document.getElementById('lv-dep-motif').value = '';
+    await bac.document.getElementById('lv-dep-valider')._clic();
+    test('changement de mode SANS motif : refusé, rien envoyé', envois.length === 0 && bac.depenses[0].modePaie === 'Espèces');
+    bac.document.getElementById('lv-dep-motif').value = 'Payé avec la carte société';
+    bac.fetch = async (url, opt) => { envois.push({ url, body: opt && opt.body ? JSON.parse(opt.body) : null }); return { ok: false, json: async () => [] }; };
+    await bac.document.getElementById('lv-dep-valider')._clic();
+    const p = envois.find((e) => e.body && 'mode_paie' in e.body);
+    test('changement de mode AVEC motif : mode CB et journal envoyés ensemble', p && p.body.mode_paie === 'CB' && /livreur RANOU : payée Espèces → CB société · motif : Payé avec la carte société/.test(p.body.comment) && bac.rtDepenseTexte(p.body.comment) === 'A86', p && p.body);
+  }
+  // 7.6 Refus de la base ≠ coupure réseau (sbSaveCommande, constat du 26/11)
+  {
+    const essai = async (reponse, opts) => { const { bac } = nouveauBac('admin'); const file = [];
+      bac.offlineQueueAdd = (t, d) => file.push([t, d && d.id]); bac._sync = []; bac.showSync = (m, t) => bac._sync.push([m, t]);
+      bac.fetch = async () => { if (reponse === 'reseau') throw new Error('Failed to fetch'); return { ok: reponse.status < 300, status: reponse.status, text: async () => reponse.texte || '' }; };
+      const cmd = LBC({ id: '#R' + (reponse.status || 0) }); let res, leve = null;
+      try { res = await bac.sbSaveCommande(cmd, opts); } catch (e) { leve = e; }
+      return { bac, file, res, leve, cmd }; };
+    let r = await essai({ status: 400, texte: '{"code":"P0001","message":"Produit non vendable : ancienne offre"}' });
+    test('refus 400 (produit non vendable) : PAS mis en file d\'attente, résultat « définitif »', r.file.length === 0 && r.res && r.res.definitif === true && r.res.ok === false, r.res);
+    test('refus 400 : message clair à l\'écran avec la raison donnée par la base, jamais « Sync en attente »', /NON enregistrée[\s\S]*Produit non vendable/.test((r.bac._toasts.pop() || [''])[0]) && r.bac._sync.some((s) => /refusée par la base/.test(s[0]) && s[1] === 'err') && !r.bac._sync.some((s) => /Sync en attente/.test(s[0])));
+    test('refus 400 : alerte gardée dans les notifications, commande marquée', r.bac._notifs.some((n) => /Refusée par la base/.test(n[2]) && /Produit non vendable/.test(n[3])) && r.cmd._syncRefus && r.cmd._syncRefus.status === 400);
+    r = await essai({ status: 403, texte: '{"message":"new row violates row-level security policy"}' });
+    test('refus 403 (droits) : définitif, pas de file d\'attente', r.file.length === 0 && r.res.definitif === true);
+    r = await essai({ status: 503, texte: 'Service Unavailable' });
+    test('erreur 503 (base indisponible) : mise en file d\'attente « Sync en attente » (passagère)', r.file.length === 1 && r.res.definitif === false && r.bac._sync.some((s) => /Sync en attente/.test(s[0])));
+    r = await essai('reseau');
+    test('coupure réseau : mise en file d\'attente (comme avant)', r.file.length === 1 && r.res.reseau === true);
+    r = await essai({ status: 503 }, { depuisFile: true });
+    test('rejeu de la file + erreur passagère : erreur levée, AUCUN nouvel ajout à la file', !!r.leve && r.file.length === 0);
+    r = await essai({ status: 422, texte: '{"message":"contrainte"}' }, { depuisFile: true });
+    test('rejeu de la file + refus définitif : pas d\'erreur levée, résultat « définitif »', !r.leve && r.res.definitif === true && r.file.length === 0);
+    r = await essai({ status: 201 });
+    test('enregistrement réussi : ok, marque de refus effacée', r.res.ok === true && !r.cmd._syncRefus);
+    const { bac: p } = nouveauBac();
+    test('classement : 400 / 401 / 403 / 404 / 409 / 422 = définitif ; 0 / 408 / 429 / 500 / 503 = passager', [400, 401, 403, 404, 409, 422].every((s) => p.syncRefusDefinitif(s)) && [0, 408, 429, 500, 503].every((s) => !p.syncRefusDefinitif(s)));
+    // vraie file d'attente : un refus définitif en sort, une erreur passagère y reste UNE fois, aucune boucle
+    const { bac: q } = nouveauBac('admin'); const appels = [];
+    delete q.offlineQueueAdd; vm.runInContext('var offlineQueue = [];', q);
+    vm.runInContext(extraireFonction('function offlineQueueAdd(type, data)') + ' ' + extraireFonction('async function offlineQueueFlush()'), q);
+    q.fetch = async (url, opt) => { const id = JSON.parse(opt.body).id; appels.push(id); if (appels.length > 20) throw new Error('boucle'); return id === '#DEF' ? { ok: false, status: 400, text: async () => '{"message":"refus"}' } : { ok: false, status: 503, text: async () => '' }; };
+    q.offlineQueueAdd('commande', LBC({ id: '#DEF' })); q.offlineQueueAdd('commande', LBC({ id: '#TMP' })); q.offlineQueueAdd('commande', LBC({ id: '#TMP', instr: 'version plus récente' }));
+    test('file : une seule entrée par commande (la plus récente)', q.offlineQueue.length === 2 && q.offlineQueue[1].data.instr === 'version plus récente');
+    await q.offlineQueueFlush();
+    test('rejeu : 2 envois seulement (plus de boucle), refus définitif retiré, erreur passagère gardée une fois', appels.length === 2 && q.offlineQueue.length === 1 && q.offlineQueue[0].data.id === '#TMP', { appels, file: q.offlineQueue.map((i) => i.data.id) });
+    test('rejeu : l\'utilisatrice est prévenue du refus', q._toasts.some((t) => /refusée\(s\) par la base/.test(t[0])));
+    q.fetch = async () => ({ ok: true, status: 201, text: async () => '' }); await q.offlineQueueFlush();
+    test('retour du réseau : la file se vide', q.offlineQueue.length === 0);
   }
 
   // ══════════ 6. Garde-fous (lecture du code) ══════════
