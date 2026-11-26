@@ -119,6 +119,27 @@ function nouveauBac(opts) {
   test('produit A : revient 40 → CUMP (10×40 + 27×50) / 37', ap[0].revientAvant === 40 && ap[0].revientApres === Math.round((400 + 1350) / 37 * 10000) / 10000, ap[0]);
   test('nouveau produit N : 0 + 38 = 38, revient = celui du lot', ap[1].stockApres === 38 && ap[1].revientAvant === null && ap[1].revientApres === 70, ap[1]);
   test('l\'aperçu ne modifie pas le stock en mémoire', bac.produits.find(p => p.id === 'pr-a').stock === 10);
+  // DÉCISION DE BORHEN du 26/11 (« B ») : stock existant SANS revient — coût du lot appliqué, EXPLICITE et TRACÉ
+  test('aperçu : produit A (revient connu) ⇒ pas d\'avertissement ; nouveau produit N (stock vide) ⇒ pas d\'avertissement', ap[0].approxime === false && ap[1].approxime === false, ap);
+  const apX = bac.arrApercu(L, { 71: { recue: 27, endommagee: 2, manquante: 1 }, 72: { recue: 38, endommagee: 2, manquante: 0 } }, bac.produits, {}, 'CUMP');
+  test('aperçu : 10 unités en stock SANS revient + 27 reçues ⇒ coût du lot appliqué à tout le stock (50) et approximation signalée',
+    apX[0].revientAvant === null && apX[0].revientApres === 50 && apX[0].approxime === true && apX[1].approxime === false, apX);
+  test('aperçu : avertissement clair « X unités déjà en stock sans prix de revient… (décision du 26/11) »',
+    bac.arrAvertissementApproxime(apX[0]).includes('10 unités déjà en stock sans prix de revient : le coût de ce lot leur est appliqué (décision du 26/11)') && bac.arrAvertissementApproxime(apX[1]) === '');
+  test('appli : arrRevientInitialApproxime = même règle que la base (CUMP, reçu > 0, stock > 0, revient inconnu)',
+    bac.arrRevientInitialApproxime('CUMP', 12, null, 30) === true && bac.arrRevientInitialApproxime('CUMP', 12, 40, 30) === false && bac.arrRevientInitialApproxime('CUMP', 0, null, 30) === false
+    && bac.arrRevientInitialApproxime('CUMP', -2, null, 30) === false && bac.arrRevientInitialApproxime('CUMP', 12, null, 0) === false && bac.arrRevientInitialApproxime('DERNIER_PRIX', 12, null, 30) === false);
+  const apxF = sql.slice(sql.indexOf('create or replace function interne.l039_revient_initial_approxime'), sql.indexOf('revoke all on function interne.l039_revient_initial_approxime'));
+  test('base : marque revient_initial_approxime (colonne, décision PURE, écrite à la réception ET à la correction de taux, renvoyée)',
+    sql.includes('revient_initial_approxime boolean not null default false,') && sql.includes('alter table public.prix_revient_historique add column if not exists revient_initial_approxime boolean not null default false;')
+    && apxF.includes("select p_methode = 'CUMP' and coalesce(p_qte, 0) > 0 and coalesce(p_stock_avant, 0) > 0 and p_revient_avant is null")
+    && sql.includes("v_prov_avant, v_prov_apres, interne.l039_revient_initial_approxime(v_methode, v_stock_avant, v_rev_avant, v_rec), 'admin');")
+    && sql.includes("v_h_prov_avant, v_h_prov_apres, interne.l039_revient_initial_approxime(h.methode, h.stock_avant, v_h_avant, h.quantite), h.id, 'admin')")
+    && sql.includes("'revient_initial_approxime', interne.l039_revient_initial_approxime(v_methode, v_stock_avant, v_rev_avant, v_rec));"));
+  const auto10B = sql.slice(sql.indexOf("-- 10. Auto-contrôle à l'application : revient d'un lot"));
+  test('base : auto-contrôle EXÉCUTÉ « stock existant sans revient » (approximation tracée, coût du lot appliqué, cas sans approximation)',
+    ['stock existant sans revient : approximation tracée', 'stock existant sans revient : coût du lot appliqué à tout le stock', "stock existant avec revient : pas d''approximation",
+     "stock vide : pas d''approximation", "stock négatif : pas d''approximation", "rien reçu : pas d''approximation", "dernier prix : pas d''approximation"].every(c => auto10B.includes("f := '" + c + "'")));
   test('base : le stock n\'augmente que des reçus bons (v_rec), jamais des endommagés', sql.includes('update public.produits set stock = coalesce(stock, 0) + v_rec') && !/stock = coalesce\(stock, 0\) \+ v_(end|man)/.test(sql));
   test('base : une ligne mouvements_stock « entree » par produit, source = référence de l\'arrivage', /insert into public\.mouvements_stock[\s\S]{0,200}values \('entree', p\.nom, v_rec, 'arrivage:' \|\| a\.reference_interne/.test(sql));
   test('base : historique du revient par lot écrit à la réception', /insert into public\.prix_revient_historique[\s\S]{0,500}'arrivage', a\.id, a\.taux_provisoire/.test(sql));
@@ -716,39 +737,61 @@ function nouveauBac(opts) {
       && garde.includes("if tg_op = 'INSERT' and v_existe and v_ex.prix_vente_defini = false then")
       && garde.includes('new.prix_vente_defini := false; new.vendable := v_ex.vendable; new.prix := v_ex.prix;')
       && garde.indexOf('new.prix := v_ex.prix;') < garde.indexOf('v_refus := interne.l039_etat_vente_refus('));
-    // --- 1 bis. CRÉATION (revue Codex PR 26 sur a0c1bf8) : prix nul ⇒ « à définir », homonyme d'une référence en attente refusé ---
+    // --- 1 bis. CRÉATION (revue Codex PR 26 sur a0c1bf8, puis DÉCISION DE BORHEN du 26/11 « A ») : seul l'administrateur rend vendable ---
     test('base : vraie création (aucun produit de cet identifiant) contrôlée par la décision PURE l039_creation_etat, tous rôles',
-      garde.includes("if tg_op = 'INSERT' and not v_existe then") && garde.includes("v_creation := interne.l039_creation_etat(r is null or r = 'admin', new.prix,")
+      garde.includes("if tg_op = 'INSERT' and not v_existe then") && garde.includes("v_creation := interne.l039_creation_etat(r is null or r = 'admin', new.prix);")
       && garde.includes("if v_creation = 'a_definir' then\n      new.prix := null; new.prix_vente_defini := false; new.vendable := false;")
-      && garde.includes("elsif v_creation = 'homonyme_refuse' then") && garde.includes('seul l\'\'administrateur le fixe (création refusée)')
-      && garde.includes('q.prix_vente_defini = false and interne.l039_norm(q.nom) is not null and interne.l039_norm(q.nom) = interne.l039_norm(new.nom)')
+      && !garde.includes('homonyme') && !garde.includes("v_creation = 'vendable'")
       && garde.indexOf("if tg_op = 'INSERT' and not v_existe then") < garde.indexOf('v_refus := interne.l039_etat_vente_refus(')
       && !/if tg_op = 'INSERT' and r is not null and r <> 'admin' then[\s\S]{0,200}\n    new\.vendable := true; new\.prix_vente_defini := true;/.test(garde)
-      && sqlS.includes('revoke all on function interne.l039_creation_etat(boolean, numeric, boolean) from public, anon, authenticated;'));
-    test('base : auto-contrôle EXÉCUTÉ de la création (prix 0, sans prix, négatif, administrateur, homonyme, ordinaire)',
-      ['création collaboratrice à prix 0 : à définir', 'création collaboratrice sans prix : à définir', 'création à prix négatif : à définir', 'création administrateur à prix 0 : à définir',
-       'homonyme sans prix : à définir (rien de vendable)', "création collaboratrice avec prix d''un homonyme en attente refusée", 'création collaboratrice ordinaire avec prix : vendable',
-       'création administrateur avec prix : état proposé'].every(c => auto10.includes("f := '" + c + "'")));
+      && sqlS.includes('revoke all on function interne.l039_creation_etat(boolean, numeric) from public, anon, authenticated;'));
+    const creF = sqlS.slice(sqlS.indexOf('create or replace function interne.l039_creation_etat'), sqlS.indexOf('revoke all on function interne.l039_creation_etat'));
+    test('base : décision du 26/11 — hors administrateur, création TOUJOURS « à définir » (prix saisi ou non)',
+      creF.includes("when p_admin is not true then 'a_definir'") && creF.indexOf("when p_admin is not true then 'a_definir'") < creF.indexOf("when coalesce(p_prix, 0) <= 0 then 'a_definir'")
+      && !creF.includes("'vendable'") && sqlS.includes("DÉCISION DE BORHEN du 26/11/2026 (réponse « A »"));
+    test('base : auto-contrôle EXÉCUTÉ de la création (collaboratrice avec prix > 0, prix 0, sans prix, négatif, rôle inconnu, administrateur)',
+      ['création collaboratrice avec prix > 0 : à définir', 'création collaboratrice à prix 0 : à définir', 'création collaboratrice sans prix : à définir', 'création à prix négatif : à définir',
+       'création sans rôle connu avec prix : à définir', 'création administrateur à prix 0 : à définir', 'création administrateur avec prix : état proposé'].every(c => auto10.includes("f := '" + c + "'"))
+      && auto10.includes("interne.l039_creation_etat(false, 199) is distinct from 'a_definir'") && auto10.includes('interne.l039_creation_etat(true, 199) is not null'));
+    // modification qui rendrait vendable un produit non vendable (composition d'un ensemble comprise) : refusée hors administrateur
+    test('base : modification hors administrateur qui rendrait vendable un produit non vendable REFUSÉE (décision PURE + auto-contrôle)',
+      garde.includes("if tg_op = 'UPDATE' and interne.l039_rend_vendable_refuse(r is null or r = 'admin', interne.produit_non_vendable(old.id),")
+      && garde.includes('interne.l039_composants_non_vendables(new.composants)') && garde.includes("seul l''administrateur le rend vendable (modification refusée)")
+      && sqlS.includes('select p_admin is not true and p_ancien_non_vendable is true and p_nouveau_non_vendable is false')
+      && ['collaboratrice rend vendable un produit non vendable : refusé', 'administrateur rend vendable : accepté', 'collaboratrice, produit qui reste non vendable : accepté',
+          'collaboratrice, produit déjà vendable : accepté', 'collaboratrice, produit qui devient non vendable : accepté'].every(c => auto10.includes("f := '" + c + "'")));
+    const cnvF = sqlS.slice(sqlS.indexOf('create or replace function interne.l039_composants_non_vendables'), sqlS.indexOf('revoke all on function interne.l039_composants_non_vendables'));
+    test('base : composition non vendable = même règle que produit_non_vendable (composant introuvable compris)',
+      cnvF.includes('left join public.produits q on q.id = c ->> \'id\'') && cnvF.includes('q.id is null or not q.vendable or not q.prix_vente_defini or q.prix is null'));
     const catC = [{ id: 'pr-n', nom: 'Matelas Nouveau N (fictif)', prixDefini: false, vendable: false }, { id: 'pr-a', nom: 'Matelas Fictif A 140×190', prix: 100 }];
-    test('appli : venCreationEtat = même décision que la base (prix 0 / vide / négatif, homonyme, ordinaire, administrateur)',
-      bac.venCreationEtat(false, 0, 'Nouveau', catC) === 'a_definir' && bac.venCreationEtat(false, '', 'Nouveau', catC) === 'a_definir' && bac.venCreationEtat(true, -1, 'X', catC) === 'a_definir'
-      && bac.venCreationEtat(false, 0, 'matelas nouveau n (FICTIF)', catC) === 'a_definir' && bac.venCreationEtat(false, 199, '  matelas  nouveau n (fictif) ', catC) === 'homonyme_refuse'
-      && bac.venCreationEtat(false, 199, 'Matelas Fictif A 140 x 190', catC) === 'vendable' && bac.venCreationEtat(true, 199, 'Matelas Nouveau N (fictif)', catC) === null);
-    // sauvegarderProduit (création) exécuté : prix vide ⇒ « à définir » envoyé en prix NULL ; homonyme refusé sans rien envoyer
+    test('appli : venCreationEtat = même décision que la base (collaboratrice avec / sans prix, négatif, administrateur)',
+      bac.venCreationEtat(false, 199) === 'a_definir' && bac.venCreationEtat(false, 0) === 'a_definir' && bac.venCreationEtat(false, '') === 'a_definir'
+      && bac.venCreationEtat(true, -1) === 'a_definir' && bac.venCreationEtat(true, 0) === 'a_definir' && bac.venCreationEtat(true, 199) === null);
+    // sauvegarderProduit (création) exécuté
     const bacC = (r, prix, nom) => { const B = nouveauBac({ role: r }); B.bac.produits = catC.map(x => Object.assign({}, x));
       Object.assign(B.bac, { editProduitId: null, closeModal() {}, VEN_LIBELLE: 'Prix à définir — non vendable', venDefinirPrix() {} });
       vm.runInContext(extraireFonction('async function sbSaveProduit(p)'), B.bac); vm.runInContext(extraireFonction('function sauvegarderProduit()'), B.bac);
       const d = B.bac.document.getElementById; d('p-nom').value = nom; d('p-prix').value = prix; d('p-cat').value = 'Matelas'; B.bac.sauvegarderProduit(); return B; };
-    let BC = bacC('collab', '', 'Matelas Nouveau Z (fictif)'); await new Promise(r => setTimeout(r, 0));
-    const envC = BC.appels.find(a => a.methode === 'POST' && a.url.includes('/rest/v1/produits'));
-    test('appli : création par la collaboratrice sans prix ⇒ produit « à définir », non vendable, prix NULL envoyé',
-      !!envC && envC.body.prix === null && BC.bac.produits.some(p => p.nom === 'Matelas Nouveau Z (fictif)' && p.prixDefini === false && p.vendable === false), envC && envC.body);
-    BC = bacC('collab', '199', 'Matelas Nouveau N (fictif)'); await new Promise(r => setTimeout(r, 0));
-    test('appli : création par la collaboratrice d\'un homonyme d\'une référence en attente ⇒ refusée, rien envoyé ni ajouté',
-      !BC.appels.some(a => a.methode === 'POST') && BC.bac.produits.length === 2 && BC.toasts.some(t => t.t === 'err'));
-    BC = bacC('collab', '199', 'Sommier Fictif S'); await new Promise(r => setTimeout(r, 0));
-    const envO = BC.appels.find(a => a.methode === 'POST' && a.url.includes('/rest/v1/produits'));
-    test('appli : création ordinaire par la collaboratrice avec un prix ⇒ inchangée (vendable, prix envoyé)', !!envO && envO.body.prix === 199, envO && envO.body);
+    const envoi = (B) => B.appels.find(a => a.methode === 'POST' && a.url.includes('/rest/v1/produits'));
+    const aDefinir = (B, nom) => B.bac.produits.some(p => p.nom === nom && p.prixDefini === false && p.vendable === false);
+    const msgCollab = (B) => B.toasts.some(t => t.t === 'ok' && t.m.includes('Produit créé, le prix sera fixé par l\'administrateur'));
+    let BC = bacC('collab', '199', 'Sommier Fictif S'); await new Promise(r => setTimeout(r, 0));
+    test('appli : collaboratrice AVEC un prix > 0 ⇒ produit créé « à définir », non vendable, prix NULL envoyé, message clair',
+      !!envoi(BC) && envoi(BC).body.prix === null && aDefinir(BC, 'Sommier Fictif S') && msgCollab(BC), envoi(BC) && envoi(BC).body);
+    BC = bacC('collab', '', 'Matelas Nouveau Z (fictif)'); await new Promise(r => setTimeout(r, 0));
+    test('appli : collaboratrice SANS prix ⇒ produit créé « à définir », non vendable, prix NULL envoyé, message clair',
+      !!envoi(BC) && envoi(BC).body.prix === null && aDefinir(BC, 'Matelas Nouveau Z (fictif)') && msgCollab(BC), envoi(BC) && envoi(BC).body);
+    BC = bacC('collab', '199', '  matelas  nouveau n (FICTIF) '); await new Promise(r => setTimeout(r, 0));
+    test('appli : collaboratrice, HOMONYME d\'une référence en attente avec un prix ⇒ créé « à définir » lui aussi (rien de vendable, aucun refus)',
+      !!envoi(BC) && envoi(BC).body.prix === null && BC.bac.produits.length === 3 && BC.bac.produits.every(p => p.id === 'pr-a' || (p.prixDefini === false && p.vendable === false))
+      && msgCollab(BC) && !BC.toasts.some(t => t.t === 'err'), BC.toasts);
+    BC = bacC('livreur', '199', 'Oreiller Fictif O'); await new Promise(r => setTimeout(r, 0));
+    test('appli : livreur avec un prix ⇒ « à définir » (seul l\'administrateur rend vendable)', !!envoi(BC) && envoi(BC).body.prix === null && aDefinir(BC, 'Oreiller Fictif O'));
+    BC = bacC('admin', '199', 'Sommier Fictif S'); await new Promise(r => setTimeout(r, 0));
+    test('appli : administrateur AVEC un prix ⇒ flux inchangé (vendable, prix envoyé)', !!envoi(BC) && envoi(BC).body.prix === 199
+      && BC.bac.produits.some(p => p.nom === 'Sommier Fictif S' && p.prixDefini !== false && p.vendable !== false) && BC.toasts.some(t => t.m === 'Produit ajouté au catalogue ✓'), envoi(BC) && envoi(BC).body);
+    BC = bacC('admin', '', 'Sommier Fictif T'); await new Promise(r => setTimeout(r, 0));
+    test('appli : administrateur sans prix ⇒ « à définir » (il fixera le prix ensuite)', !!envoi(BC) && envoi(BC).body.prix === null && aDefinir(BC, 'Sommier Fictif T'));
     const nvF = sqlS.slice(sqlS.indexOf('create or replace function interne.produit_non_vendable'), sqlS.indexOf('revoke all on function interne.produit_non_vendable'));
     test('base : produit_non_vendable — prix NULL et composant INTROUVABLE = non vendable', nvF.includes('or p.prix is null') && nvF.includes('left join public.produits q') && nvF.includes('q.id is null or not q.vendable'));
     test('appli : prix NULL = prix non défini (même « prix défini » en base)', bac.venDepuisBase({ prix: null, prix_vente_defini: true }).prixDefini === false && bac.venDepuisBase({ prix: 10 }).prixDefini === true);
@@ -981,7 +1024,7 @@ function nouveauBac(opts) {
 
   console.log('\n9. VERSION');
   const m = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(sw);
-  test('CACHE_VERSION augmentée (v7-5-163 ou plus)', !!m && Number(m[1]) >= 163, m && m[0]);
+  test('CACHE_VERSION augmentée (v7-5-165 ou plus)', !!m && Number(m[1]) >= 165, m && m[0]);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

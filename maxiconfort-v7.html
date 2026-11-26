@@ -4120,16 +4120,14 @@ function venNorm(s) {
   return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/×/g, 'x')
     .replace(/\s+/g, ' ').trim().replace(/(\d) ?x ?(\d)/g, '$1x$2');
 }
-// v7.5.163 (revue Codex PR 26 sur a0c1bf8) : état d'un produit CRÉÉ dans l'application. Même règle que interne.l039_creation_etat
-// (migration 039) : prix absent ou ≤ 0 → 'a_definir' (non vendable, quel que soit le rôle) ; hors administrateur, prix > 0 mais un produit
-// « prix à définir » du même nom (normalisé) existe → 'homonyme_refuse' ; hors administrateur sinon → 'vendable' (flux actuel gardé) ;
-// administrateur avec prix > 0 → null (état saisi).
-function venCreationEtat(estAdmin, prix, nom, liste) {
+// v7.5.163 (revue Codex PR 26 sur a0c1bf8) puis v7.5.165 (DÉCISION DE BORHEN du 26/11/2026, réponse « A ») : état d'un produit CRÉÉ
+// dans l'application. Même règle que interne.l039_creation_etat (migration 039) : SEUL l'administrateur rend vendable un nouveau
+// produit. Hors administrateur → 'a_definir' TOUJOURS (non vendable, prix NULL, même si un prix a été saisi) ; administrateur avec un
+// prix absent ou ≤ 0 → 'a_definir' ; administrateur avec prix > 0 → null (état saisi, flux inchangé).
+function venCreationEtat(estAdmin, prix) {
+  if (!estAdmin) return 'a_definir';
   if (!((parseFloat(prix) || 0) > 0)) return 'a_definir';
-  if (estAdmin) return null;
-  var n = venNorm(nom);
-  var homonyme = !!n && (liste || []).some(function(q){ return q && q.prixDefini === false && venNorm(q.nom) === n; });
-  return homonyme ? 'homonyme_refuse' : 'vendable';
+  return null;
 }
 // Produit d'une ligne de commande : produitId d'un produit connu (fiable) ; sinon produit NON VENDABLE dont le nom normalisé est celui
 // de la ligne (« produit » ou « nom »), ou dont la référence interne est celle de la ligne (« reference », « sku », « _ugs » ou le nom) :
@@ -4196,9 +4194,19 @@ function arrApercu(lignes, saisies, liste, revients, methode, stocks) {
     var sAv = arrStockAvant(l.produit_id, stocks, liste);
     var rv = (revients || {})[l.produit_id];
     var rAv = (rv && rv.prix_revient_ht != null) ? parseFloat(rv.prix_revient_ht) : null;
+    var m = methode || ARR_METHODE_VALORISATION;
     return { ligne: l.id, produit_id: l.produit_id, stockAvant: sAv, stockApres: sAv + r, revientAvant: rAv,
-      revientApres: arrNouveauRevient(methode || ARR_METHODE_VALORISATION, sAv, rAv, r, l.revient_unitaire_ht) };
+      revientApres: arrNouveauRevient(m, sAv, rAv, r, l.revient_unitaire_ht), approxime: arrRevientInitialApproxime(m, sAv, rAv, r) };
   });
+}
+// v7.5.165 (DÉCISION DE BORHEN du 26/11/2026, réponse « B ») : stock EXISTANT sans prix de revient enregistré — le coût du lot reçu
+// lui est appliqué (comportement gardé) mais c'est EXPLICITE (avertissement dans l'aperçu) et TRACÉ par la base
+// (prix_revient_historique.revient_initial_approxime). Même règle que interne.l039_revient_initial_approxime (migration 039).
+function arrRevientInitialApproxime(methode, stockAvant, revientAvant, qte) {
+  return methode === 'CUMP' && (parseInt(qte) || 0) > 0 && (parseInt(stockAvant) || 0) > 0 && (revientAvant == null || isNaN(parseFloat(revientAvant)));
+}
+function arrAvertissementApproxime(x) {
+  return (x && x.approxime) ? '<div class="td-s" style="color:var(--od,#9a3412);font-weight:700">⚠ ' + x.stockAvant + ' unités déjà en stock sans prix de revient : le coût de ce lot leur est appliqué (décision du 26/11)</div>' : '';
 }
 function arrCorpsValidation(arrivageId, lignes, saisies, empreinte) {
   return { p_arrivage_id: arrivageId, p_lignes: (lignes || []).map(function(l) {
@@ -4429,7 +4437,7 @@ function arrRendre() {
         '<td style="text-align:center;font-weight:700">' + l.quantite_attendue + '</td><td>' + arrRevientTexte(l.revient_unitaire_ht) + (l.revient_ecart ? '<div class="td-s" style="color:var(--rd);font-weight:700">⚠ revient chargé incohérent (FOB × taux + frais) : la base refusera la réception</div>' : '') + '</td>' +
         champ(l, 'recue') + champ(l, 'endommagee') + champ(l, 'manquante') +
         '<td id="arr-stk-' + l.id + '">' + (attente ? x.stockAvant + ' → <strong>' + x.stockApres + '</strong>' : '+' + (l.quantite_recue || 0)) + '</td>' +
-        '<td id="arr-rev-' + l.id + '">' + (attente ? arrRevientTexte(x.revientAvant) + ' → <strong>' + arrRevientTexte(x.revientApres) + '</strong>' : arrRevientTexte((ARR_ETAT.revients[l.produit_id] || {}).prix_revient_ht)) + '</td>' +
+        '<td id="arr-rev-' + l.id + '">' + (attente ? arrRevientTexte(x.revientAvant) + ' → <strong>' + arrRevientTexte(x.revientApres) + '</strong>' + arrAvertissementApproxime(x) : arrRevientTexte((ARR_ETAT.revients[l.produit_id] || {}).prix_revient_ht)) + '</td>' +
         '<td id="arr-ok-' + l.id + '"></td></tr>';
     }).join('') + '</tbody></table></div>' +
     '<div id="arr-controle" style="margin:12px 0"></div>' +
@@ -4453,7 +4461,7 @@ function arrMajControle() {
       var e = c.erreurs.find(function(x) { return x.ligne === l.id; });
       var ok = document.getElementById('arr-ok-' + l.id); if (ok) ok.innerHTML = e ? '<span style="color:var(--rd);font-weight:700" title="' + arrEsc(e.texte) + '">✕</span>' : '<span style="color:var(--green)">✓</span>';
       var st = document.getElementById('arr-stk-' + l.id); if (st) st.innerHTML = ap[i].stockAvant + ' → <strong>' + ap[i].stockApres + '</strong>';
-      var rv = document.getElementById('arr-rev-' + l.id); if (rv) rv.innerHTML = arrRevientTexte(ap[i].revientAvant) + ' → <strong>' + arrRevientTexte(ap[i].revientApres) + '</strong>';
+      var rv = document.getElementById('arr-rev-' + l.id); if (rv) rv.innerHTML = arrRevientTexte(ap[i].revientAvant) + ' → <strong>' + arrRevientTexte(ap[i].revientApres) + '</strong>' + arrAvertissementApproxime(ap[i]);
     });
   }
   var t = c.total, box = document.getElementById('arr-controle');
@@ -14674,10 +14682,9 @@ function sauvegarderProduit() {
       data.prix = _pAvant.prix;
     }
   }
-  // v7.5.163 (revue Codex PR 26 sur a0c1bf8) : CRÉATION — même décision que la base (interne.l039_creation_etat) : prix nul =
-  // « prix à définir », non vendable ; hors administrateur, un homonyme d'un produit « à définir » est refusé.
-  var _creation = editProduitId ? null : venCreationEtat(role === 'admin', data.prix, nom, produits);
-  if (_creation === 'homonyme_refuse') { toast('« ' + nom + ' » attend son prix de vente : seul l\'administrateur le fixe', 'err'); return; }
+  // v7.5.165 (décision de Borhen du 26/11) : CRÉATION — même décision que la base (interne.l039_creation_etat) : hors administrateur,
+  // le produit est TOUJOURS créé « prix à définir » (non vendable, prix NULL envoyé), même avec un prix saisi ; prix nul = idem.
+  var _creation = editProduitId ? null : venCreationEtat(role === 'admin', data.prix);
   if (_creation === 'a_definir') { data.prix = 0; data.prixDefini = false; data.vendable = false; }
   if (editProduitId) {
     const p = produits.find(x => x.id === editProduitId);
@@ -14686,7 +14693,8 @@ function sauvegarderProduit() {
   } else {
     data.id = 'pr' + Date.now();
     produits.push(data);
-    toast(_creation === 'a_definir' ? 'Produit ajouté — ' + VEN_LIBELLE + ' (l\'administrateur fixera le prix) ✓' : 'Produit ajouté au catalogue ✓', 'ok');
+    toast(_creation === 'a_definir' ? (role === 'admin' ? 'Produit ajouté — ' + VEN_LIBELLE + ' (fixez son prix pour le rendre vendable) ✓'
+      : 'Produit créé, le prix sera fixé par l\'administrateur — ' + VEN_LIBELLE + ' ✓') : 'Produit ajouté au catalogue ✓', 'ok');
   }
   closeModal('m-produit');
   // Sync Supabase

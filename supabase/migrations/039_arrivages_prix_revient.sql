@@ -12,6 +12,8 @@
 --   3. Produits NON VENDABLES : une nouvelle référence arrive sans prix de vente (prix NULL, prix_vente_defini = false,
 --      vendable = false). Elle peut être reçue et stockée mais ne peut être ni vendue (commande), ni reliée à une variante
 --      Shopify, ni comptée dans un ensemble vendable, tant que l'administrateur n'a pas fixé son prix.
+--      Décision de Borhen du 26/11/2026 (« A ») : SEUL l'administrateur rend vendable un nouveau produit ; un produit créé par une
+--      collaboratrice est toujours « prix à définir » (non vendable, prix NULL), même si elle a saisi un prix.
 --
 -- Pourquoi le prix de revient n'est PAS une colonne de « produits » (écart volontaire avec la demande initiale) :
 --   la table produits est LISIBLE en entier par les sessions collaboratrice et livreur (politiques sess_collab et
@@ -102,23 +104,41 @@ revoke all on function interne.l039_etat_vente_refus(text, boolean, boolean, boo
 
 -- CRÉATION d'un produit (revue Codex PR 26 sur a0c1bf8 : la garde protégeait les marqueurs en modification, pas à la création — une
 -- collaboratrice pouvait créer un produit VENDABLE à prix nul, y compris sous un autre identifiant que celui d'une référence en attente).
+-- DÉCISION DE BORHEN du 26/11/2026 (réponse « A », revue Codex PR 26 sur bd7bd73, point 2) : SEUL L'ADMINISTRATEUR rend vendable un
+-- nouveau produit. Une collaboratrice (ou un livreur) peut toujours CRÉER un produit, mais il est créé « prix à définir » (non vendable,
+-- prix NULL), MÊME si un prix a été saisi ; l'administrateur fixe ensuite le prix et le rend vendable. Le contournement par un nom
+-- différent de celui d'une référence en attente n'a donc plus d'objet (rien de ce qu'elle crée n'est vendable).
 -- Décision PURE sur une VRAIE création (aucun produit de cet identifiant ; l'« upsert » d'un produit existant garde sa règle) :
---   'a_definir'        : prix absent ou ≤ 0, QUEL QUE SOIT le rôle → créé « prix à définir », NON VENDABLE, prix NULL ;
---                        seul l'administrateur fixera ensuite le prix (passage « à définir » → « défini » : prix > 0, administrateur) ;
---   'homonyme_refuse'  : session non administrateur, prix > 0, mais un produit « prix à définir » porte déjà ce nom (normalisé) :
---                        refusé — on ne contourne pas une référence en attente en la recréant sous un autre identifiant ;
---   'vendable'         : session non administrateur, prix > 0, sans homonyme en attente → vendable avec son prix (flux ACTUEL de
---                        l'application : la collaboratrice ajoute des produits du catalogue depuis l'écran Stock, gardé volontairement) ;
---   NULL               : administrateur ou serveur (pas de session), prix > 0 → état proposé tel quel.
-create or replace function interne.l039_creation_etat(p_admin boolean, p_prix numeric, p_homonyme_a_definir boolean)
+--   'a_definir' : session non administrateur (quel que soit le prix), OU prix absent ou ≤ 0 (quel que soit le rôle) → créé
+--                 « prix à définir », NON VENDABLE, prix NULL ; seul l'administrateur fixera ensuite le prix (prix > 0) ;
+--   NULL        : administrateur ou serveur (pas de session), prix > 0 → état proposé tel quel (flux administrateur inchangé).
+create or replace function interne.l039_creation_etat(p_admin boolean, p_prix numeric)
 returns text language sql immutable as $$
   select case
+    when p_admin is not true then 'a_definir'
     when coalesce(p_prix, 0) <= 0 then 'a_definir'
-    when p_admin is not true and p_homonyme_a_definir is true then 'homonyme_refuse'
-    when p_admin is not true then 'vendable'
   end
 $$;
-revoke all on function interne.l039_creation_etat(boolean, numeric, boolean) from public, anon, authenticated;
+revoke all on function interne.l039_creation_etat(boolean, numeric) from public, anon, authenticated;
+
+-- MODIFICATION (même décision de Borhen du 26/11) : une session non administrateur ne rend JAMAIS vendable un produit qui ne l'est pas.
+-- Les marqueurs (vendable, prix_vente_defini) lui sont déjà fermés ; reste la COMPOSITION d'un ensemble : retirer ou remplacer le
+-- composant non vendable d'un ensemble le rendrait vendable. Décision PURE : true = modification refusée.
+create or replace function interne.l039_rend_vendable_refuse(p_admin boolean, p_ancien_non_vendable boolean, p_nouveau_non_vendable boolean)
+returns boolean language sql immutable as $$
+  select p_admin is not true and p_ancien_non_vendable is true and p_nouveau_non_vendable is false
+$$;
+revoke all on function interne.l039_rend_vendable_refuse(boolean, boolean, boolean) from public, anon, authenticated;
+-- Une composition (jsonb) contient-elle un composant non vendable ou introuvable ? Même règle que interne.produit_non_vendable.
+create or replace function interne.l039_composants_non_vendables(p_composants jsonb) returns boolean
+language sql stable security definer set search_path = public, pg_catalog as $$
+  select coalesce(jsonb_typeof(p_composants) = 'array', false) and exists (
+           select 1 from jsonb_array_elements(p_composants) c
+             left join public.produits q on q.id = c ->> 'id'
+            where coalesce(c ->> 'id', '') <> ''
+              and (q.id is null or not q.vendable or not q.prix_vente_defini or q.prix is null));
+$$;
+revoke all on function interne.l039_composants_non_vendables(jsonb) from public, anon, authenticated;
 
 create or replace function interne.produits_vente_garde() returns trigger
 language plpgsql security definer set search_path = public, interne, pg_catalog as $$
@@ -139,17 +159,12 @@ begin
     -- « upsert » d'un produit existant : marqueurs comme avant (en cas de conflit, la ligne proposée n'écrase pas les marqueurs)
     if v_existe then new.vendable := true; new.prix_vente_defini := true; end if;
   end if;
-  -- VRAIE création (revue Codex PR 26 sur a0c1bf8) : décision PURE interne.l039_creation_etat (auto-contrôle section 10)
+  -- VRAIE création (revue Codex PR 26 sur a0c1bf8 ; décision de Borhen du 26/11) : décision PURE interne.l039_creation_etat
+  -- (auto-contrôle section 10) — hors administrateur, toujours « prix à définir », non vendable, prix NULL
   if tg_op = 'INSERT' and not v_existe then
-    v_creation := interne.l039_creation_etat(r is null or r = 'admin', new.prix,
-      (r is not null and r <> 'admin') and exists (select 1 from public.produits q
-         where q.prix_vente_defini = false and interne.l039_norm(q.nom) is not null and interne.l039_norm(q.nom) = interne.l039_norm(new.nom)));
+    v_creation := interne.l039_creation_etat(r is null or r = 'admin', new.prix);
     if v_creation = 'a_definir' then
       new.prix := null; new.prix_vente_defini := false; new.vendable := false;
-    elsif v_creation = 'homonyme_refuse' then
-      raise exception 'PRIX DE VENTE : « % » attend son prix de vente ; seul l''administrateur le fixe (création refusée)', new.nom using errcode = 'P0001';
-    elsif v_creation = 'vendable' then
-      new.vendable := true; new.prix_vente_defini := true;
     end if;
   end if;
   -- Enregistrement « upsert » de l'application (INSERT … ON CONFLICT, sbSaveProduit) d'un produit DÉJÀ présent dont le prix n'est pas
@@ -178,6 +193,13 @@ begin
   end if;
   if v_refus = 'sans_prix_vendable' then
     raise exception 'PRODUIT NON VENDABLE : « % » n''a pas de prix de vente défini', new.nom using errcode = 'P0001';
+  end if;
+  -- décision de Borhen du 26/11 : hors administrateur, une modification (composition d'un ensemble comprise) ne rend jamais
+  -- vendable un produit non vendable (décision PURE interne.l039_rend_vendable_refuse, auto-contrôle section 10). Le déclencheur
+  -- BEFORE lit encore l'état ANCIEN dans la table (interne.produit_non_vendable(old.id)).
+  if tg_op = 'UPDATE' and interne.l039_rend_vendable_refuse(r is null or r = 'admin', interne.produit_non_vendable(old.id),
+       (not new.vendable or not new.prix_vente_defini or new.prix is null or interne.l039_composants_non_vendables(new.composants))) then
+    raise exception 'PRIX DE VENTE : « % » n''est pas vendable ; seul l''administrateur le rend vendable (modification refusée)', new.nom using errcode = 'P0001';
   end if;
   return new;
 end $$;
@@ -511,8 +533,13 @@ create table if not exists public.prix_revient_historique (
   moyen_apres_provisoire boolean not null default false,       -- revient du produit APRÈS provisoire (CUMP qui en intègre un)
   corrige_id bigint references public.prix_revient_historique(id),   -- ligne corrigée (recalcul de taux)
   remplace_par bigint references public.prix_revient_historique(id), -- ligne de correction qui la remplace
+  -- décision de Borhen du 26/11/2026 (réponse « B ») : true = ce lot a valorisé un stock EXISTANT qui n'avait aucun prix de revient
+  -- enregistré ; le coût du lot a été appliqué à ces unités (CUMP qui part d'une APPROXIMATION). Calculé par
+  -- interne.l039_revient_initial_approxime, jamais saisi.
+  revient_initial_approxime boolean not null default false,
   cree_par text
 );
+alter table public.prix_revient_historique add column if not exists revient_initial_approxime boolean not null default false;
 create index if not exists prix_revient_historique_produit_idx on public.prix_revient_historique (produit_id, date);
 
 create or replace function interne.prix_revient_historique_fige() returns trigger
@@ -551,9 +578,21 @@ end $$;
 -- 'CUMP'         : nouveau = (stock_avant × revient_avant + qté_reçue × revient_lot) / (stock_avant + qté_reçue) ;
 --                  revient_avant inconnu ou stock_avant ≤ 0 → revient du lot.
 -- 'DERNIER_PRIX' : nouveau = revient du dernier lot reçu.
+-- STOCK EXISTANT SANS REVIENT (décision de Borhen du 26/11/2026, réponse « B », revue Codex PR 26 sur bd7bd73, point 1) : on GARDE ce
+-- comportement — le coût du nouveau lot est appliqué à tout le stock déjà présent qui n'a pas de prix de revient enregistré — mais il
+-- est EXPLICITE (avertissement dans l'aperçu de réception de l'application) et TRACÉ : la ligne de prix_revient_historique porte
+-- revient_initial_approxime = true (décision PURE interne.l039_revient_initial_approxime, auto-contrôle section 10).
 -- Même constante dans l'application : ARR_METHODE_VALORISATION (bloc ARR-DEBUT … ARR-FIN de maxiconfort-v7.html).
 create or replace function interne.arrivage_methode_valorisation() returns text
 language sql immutable as $$ select 'CUMP'::text $$;
+
+-- Le lot valorise-t-il un stock existant SANS revient connu (approximation, décision du 26/11) ? CUMP, quantité reçue > 0,
+-- stock avant > 0 et revient avant inconnu. (Méthode « dernier prix » : le revient du lot remplace toujours l'ancien, pas d'approximation.)
+create or replace function interne.l039_revient_initial_approxime(p_methode text, p_stock_avant integer, p_revient_avant numeric, p_qte integer)
+returns boolean language sql immutable as $$
+  select p_methode = 'CUMP' and coalesce(p_qte, 0) > 0 and coalesce(p_stock_avant, 0) > 0 and p_revient_avant is null
+$$;
+revoke all on function interne.l039_revient_initial_approxime(text, integer, numeric, integer) from public, anon, authenticated;
 
 create or replace function interne.revient_apres(p_methode text, p_stock_avant integer, p_revient_avant numeric, p_qte integer, p_revient_lot numeric)
 returns numeric language sql immutable as $$
@@ -784,14 +823,15 @@ begin
         on conflict (produit_id) do update set prix_revient_ht = excluded.prix_revient_ht, methode = excluded.methode,
           provisoire = excluded.provisoire, maj_at = excluded.maj_at, maj_par = excluded.maj_par;
       insert into public.prix_revient_historique (produit_id, revient_ht, quantite, stock_avant, revient_moyen_avant, revient_moyen_apres,
-          methode, source, arrivage_id, provisoire, moyen_avant_provisoire, moyen_apres_provisoire, cree_par)
+          methode, source, arrivage_id, provisoire, moyen_avant_provisoire, moyen_apres_provisoire, revient_initial_approxime, cree_par)
         values (l.produit_id, v_rev_lot, v_rec, v_stock_avant, v_rev_avant, v_rev_apres, v_methode, 'arrivage', a.id, a.taux_provisoire,
-          v_prov_avant, v_prov_apres, 'admin');
+          v_prov_avant, v_prov_apres, interne.l039_revient_initial_approxime(v_methode, v_stock_avant, v_rev_avant, v_rec), 'admin');
       v_total_recu := v_total_recu + v_rec;
     end if;
     v_resultat := v_resultat || jsonb_build_object('produit_id', l.produit_id, 'recue', v_rec, 'endommagee', v_end, 'manquante', v_man,
       'stock_avant', v_stock_avant, 'stock_apres', v_stock_avant + v_rec, 'revient_avant', v_rev_avant, 'revient_apres', v_rev_apres,
-      'revient_provisoire', v_prov_apres);
+      'revient_provisoire', v_prov_apres,
+      'revient_initial_approxime', interne.l039_revient_initial_approxime(v_methode, v_stock_avant, v_rev_avant, v_rec));
   end loop;
 
   update public.arrivages set statut = 'recu', recu_le = v_instant, ordre_reception = v_ordre, recu_par = 'admin', maj_at = now() where id = a.id;
@@ -888,9 +928,9 @@ begin
           v_nb := v_nb + 1;
         end loop;
         insert into public.prix_revient_historique (produit_id, revient_ht, quantite, stock_avant, revient_moyen_avant, revient_moyen_apres,
-            methode, source, arrivage_id, provisoire, moyen_avant_provisoire, moyen_apres_provisoire, corrige_id, cree_par)
+            methode, source, arrivage_id, provisoire, moyen_avant_provisoire, moyen_apres_provisoire, revient_initial_approxime, corrige_id, cree_par)
           values (l.produit_id, v_rev, h.quantite, h.stock_avant, v_h_avant, v_h_apres, h.methode, 'recalcul_taux', a.id, false,
-            v_h_prov_avant, v_h_prov_apres, h.id, 'admin')
+            v_h_prov_avant, v_h_prov_apres, interne.l039_revient_initial_approxime(h.methode, h.stock_avant, v_h_avant, h.quantite), h.id, 'admin')
           returning id into v_id;
         update public.prix_revient_historique set remplace_par = v_id where id = h.id;
         update public.produits_revient set prix_revient_ht = v_cur, provisoire = v_prov, maj_at = now(), maj_par = 'admin'
@@ -1083,15 +1123,28 @@ begin
     then f := 'remise globale : montant modifié d''un centime'; end if;
   if interne.l039_remise_signature('10', 'pct', '15') = interne.l039_remise_signature(null, null, null)
     then f := 'remise globale effacée'; end if;
-  -- CRÉATION d'un produit (revue Codex PR 26 sur a0c1bf8) : prix nul ⇒ « à définir », homonyme d'une référence en attente refusé
-  if interne.l039_creation_etat(false, 0, false) is distinct from 'a_definir' then f := 'création collaboratrice à prix 0 : à définir'; end if;
-  if interne.l039_creation_etat(false, null, false) is distinct from 'a_definir' then f := 'création collaboratrice sans prix : à définir'; end if;
-  if interne.l039_creation_etat(false, -5, false) is distinct from 'a_definir' then f := 'création à prix négatif : à définir'; end if;
-  if interne.l039_creation_etat(true, 0, false) is distinct from 'a_definir' then f := 'création administrateur à prix 0 : à définir'; end if;
-  if interne.l039_creation_etat(false, 0, true) is distinct from 'a_definir' then f := 'homonyme sans prix : à définir (rien de vendable)'; end if;
-  if interne.l039_creation_etat(false, 199, true) is distinct from 'homonyme_refuse' then f := 'création collaboratrice avec prix d''un homonyme en attente refusée'; end if;
-  if interne.l039_creation_etat(false, 199, false) is distinct from 'vendable' then f := 'création collaboratrice ordinaire avec prix : vendable'; end if;
-  if interne.l039_creation_etat(true, 199, true) is not null then f := 'création administrateur avec prix : état proposé'; end if;
+  -- CRÉATION d'un produit (revue Codex PR 26 sur a0c1bf8 ; décision de Borhen du 26/11 : seul l'administrateur rend vendable)
+  if interne.l039_creation_etat(false, 199) is distinct from 'a_definir' then f := 'création collaboratrice avec prix > 0 : à définir'; end if;
+  if interne.l039_creation_etat(false, 0) is distinct from 'a_definir' then f := 'création collaboratrice à prix 0 : à définir'; end if;
+  if interne.l039_creation_etat(false, null) is distinct from 'a_definir' then f := 'création collaboratrice sans prix : à définir'; end if;
+  if interne.l039_creation_etat(false, -5) is distinct from 'a_definir' then f := 'création à prix négatif : à définir'; end if;
+  if interne.l039_creation_etat(null, 199) is distinct from 'a_definir' then f := 'création sans rôle connu avec prix : à définir'; end if;
+  if interne.l039_creation_etat(true, 0) is distinct from 'a_definir' then f := 'création administrateur à prix 0 : à définir'; end if;
+  if interne.l039_creation_etat(true, 199) is not null then f := 'création administrateur avec prix : état proposé'; end if;
+  -- MODIFICATION qui rendrait vendable un produit non vendable : refusée hors administrateur
+  if not interne.l039_rend_vendable_refuse(false, true, false) then f := 'collaboratrice rend vendable un produit non vendable : refusé'; end if;
+  if interne.l039_rend_vendable_refuse(true, true, false) then f := 'administrateur rend vendable : accepté'; end if;
+  if interne.l039_rend_vendable_refuse(false, true, true) then f := 'collaboratrice, produit qui reste non vendable : accepté'; end if;
+  if interne.l039_rend_vendable_refuse(false, false, false) then f := 'collaboratrice, produit déjà vendable : accepté'; end if;
+  if interne.l039_rend_vendable_refuse(false, false, true) then f := 'collaboratrice, produit qui devient non vendable : accepté'; end if;
+  -- STOCK EXISTANT SANS REVIENT (décision de Borhen du 26/11, « B ») : coût du lot appliqué ET tracé (revient_initial_approxime)
+  if not interne.l039_revient_initial_approxime('CUMP', 12, null, 30) then f := 'stock existant sans revient : approximation tracée'; end if;
+  if interne.revient_apres('CUMP', 12, null, 30, 50) is distinct from 50 then f := 'stock existant sans revient : coût du lot appliqué à tout le stock'; end if;
+  if interne.l039_revient_initial_approxime('CUMP', 12, 40, 30) then f := 'stock existant avec revient : pas d''approximation'; end if;
+  if interne.l039_revient_initial_approxime('CUMP', 0, null, 30) then f := 'stock vide : pas d''approximation'; end if;
+  if interne.l039_revient_initial_approxime('CUMP', -2, null, 30) then f := 'stock négatif : pas d''approximation'; end if;
+  if interne.l039_revient_initial_approxime('CUMP', 12, null, 0) then f := 'rien reçu : pas d''approximation'; end if;
+  if interne.l039_revient_initial_approxime('DERNIER_PRIX', 12, null, 30) then f := 'dernier prix : pas d''approximation'; end if;
   -- CONTINUITÉ de la valorisation (revue Codex PR 26 sur a0c1bf8)
   if interne.l039_continuite_rompue(21, 21.00004) then f := 'continuité : même revient à 4 décimales'; end if;
   if not interne.l039_continuite_rompue(25, 21) then f := 'continuité rompue : revient modifié hors historique'; end if;
