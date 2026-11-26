@@ -15,7 +15,7 @@
 //      et 6 compris), puis la 040 une 2e fois (rejouable) ;
 //   2. exécute pour de vrai : droits, idempotence, rejeu après réponse perdue, appels « simultanés », livreur d'une autre
 //      commande, commande non livrée, ensemble à composants, substitution automatique, stock insuffisant, journal, garde de
-//      stock_deduit, tout ou rien.
+//      stock_deduit (dont COMPATIBILITÉ : sauvegarde complète ancienne façon v7.5.196 et nouvelle v7.5.197), tout ou rien.
 // LIMITES : une seule connexion (pglite exécute les requêtes l'une après l'autre : deux appels lancés « en même temps » sont
 // sérialisés ; l'attente réelle entre deux transactions est garantie par le verrou FOR UPDATE de la commande, vérifié dans le
 // texte de la fonction et par deux appels dans une même transaction) ; pas de PostgREST (l'appel rpc est reproduit en SQL :
@@ -313,6 +313,53 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   test('programme serveur (sans session) : non concerné', e === null && (await deduit('#C4')) === false, e);
   e = await echec('livreur', "update public.commandes set stock_deduit = true where id = '#N-en-route'");
   test('passer stock_deduit à vrai reste permis (anciennes versions de l\'appli)', e === null && (await deduit('#N-en-route')) === true, e);
+
+  // COMPATIBILITÉ des sauvegardes (réserve Codex sur 96590c2) : corps COMPLET envoyé par sbSaveCommande (POST
+  // merge-duplicates = insert … on conflict do update de toutes les colonnes envoyées), ancienne façon (v7.5.196 et
+  // avant, téléphones déjà installés) et nouvelle (v7.5.197). Le déclencheur ne refuse JAMAIS une sauvegarde : il ne
+  // corrige que stock_deduit vrai → faux ; tout le reste de l'écriture est enregistré.
+  const upsertComplet = `insert into public.commandes (id, client, tel, produit, lignes, qte, prix, livreur, statut, stock_deduit, date_livraison, updated_at)
+    values ($1, 'Client fictif', '0600000000', 'Matelas Fictif A', $2::jsonb, 1, $3, 'Livreur-A', $4, $5, ${AUJ}, now())
+    on conflict (id) do update set client = excluded.client, tel = excluded.tel, produit = excluded.produit, lignes = excluded.lignes,
+      qte = excluded.qte, prix = excluded.prix, livreur = excluded.livreur, statut = excluded.statut, stock_deduit = excluded.stock_deduit,
+      date_livraison = excluded.date_livraison, updated_at = excluded.updated_at`;
+  const lignesA = JSON.stringify([{ produitId: 'pa', nom: 'Matelas Fictif A', qte: 1 }]);
+  const prix = async (id) => Number((await un('proprio', 'select prix from public.commandes where id = $1', [id])).prix);
+  // (a) ancienne appli, copie PÉRIMÉE (stock_deduit faux) d'une commande déjà déduite par la base : sauvegarde acceptée
+  await commande('#K1', { lignes: [{ produitId: 'pa', qte: 1 }] });
+  r = await deduire('livreur', '#K1');
+  const paK1 = await stock('pa');
+  for (const qui of ['livreur', 'admin', 'collab']) {
+    e = await echec(qui, upsertComplet, ['#K1', lignesA, qui === 'admin' ? 321 : 0, 'livré', false]);
+    test('ancienne façon (' + qui + ') : sauvegarde complète périmée ACCEPTÉE, stock_deduit gardé VRAI', e === null && (await deduit('#K1')) === true, e);
+    if (qui === 'admin') test('… le reste de l\'écriture de l\'administrateur est enregistré (prix 321)', (await prix('#K1')) === 321);
+  }
+  r = await deduire('livreur', '#K1');
+  test('… et la demande renvoyée ne déduit pas une 2e fois (deja, stock pa inchangé)', r.deja === true && (await stock('pa')) === paK1, r);
+  // (b) ancienne appli qui a déduit ELLE-MÊME puis posé stock_deduit = vrai : la base ne redéduit jamais
+  await commande('#K2', { statut: 'en-route', lignes: [{ produitId: 'pa', qte: 1 }] });
+  const paK2 = await stock('pa');
+  e = await echec('livreur', upsertComplet, ['#K2', lignesA, 0, 'livré', true]);
+  test('ancienne façon : « livré » + stock_deduit = vrai (déduction faite par le téléphone) accepté', e === null && (await deduit('#K2')) === true, e);
+  r = await deduire('livreur', '#K2');
+  test('… un appel de la fonction ensuite ne déduit rien (deja) : pas de double déduction', r.deja === true && (await stock('pa')) === paK2, r);
+  // (c) première sauvegarde « livré » (stock_deduit faux) d'une commande jamais déduite : déclencheur sans effet
+  await commande('#K3', { statut: 'en-route', lignes: [{ produitId: 'pa', qte: 1 }] });
+  e = await echec('livreur', upsertComplet, ['#K3', lignesA, 0, 'livré', false]);
+  test('« livré » enregistré, stock_deduit faux reste faux (le déclencheur ne déduit rien)', e === null && (await deduit('#K3')) === false && (await stock('pa')) === paK2, e);
+  // (d) nouvelle appli : « livré », fonction, puis REJEU de la file (copie d'avant la déduction, stock_deduit faux)
+  r = await deduire('livreur', '#K3');
+  test('nouvelle façon : la fonction déduit après le « livré » (pa −1)', r.deja === false && (await stock('pa')) === paK2 - 1, r);
+  e = await echec('livreur', upsertComplet, ['#K3', lignesA, 0, 'livré', false]);
+  test('nouvelle façon : « livré » rejoué depuis la file après la déduction → accepté, stock_deduit reste VRAI', e === null && (await deduit('#K3')) === true, e);
+  r = await deduire('livreur', '#K3');
+  test('… demande rejouée : deja, stock inchangé', r.deja === true && (await stock('pa')) === paK2 - 1, r);
+  // (e) écriture qui ne touche pas stock_deduit, et création de commande : aucun effet
+  e = await echec('admin', "update public.commandes set prix = 99 where id = '#K3'");
+  test('modification sans stock_deduit : acceptée, rien d\'autre changé', e === null && (await prix('#K3')) === 99 && (await deduit('#K3')) === true, e);
+  e = await echec('admin', upsertComplet, ['#K4', lignesA, 10, 'en-attente', false]);
+  test('création d\'une commande (insert) : non concernée (stock_deduit faux)', e === null && (await deduit('#K4')) === false, e);
+  await q('service_role', "update public.produits set stock = 8 where id = 'pa'"); // remis comme avant ce bloc (suite du banc)
   const cl = await un('proprio', "select client from public.commandes where id = '#C1'");
   test('déclencheur garde_livreur_commandes toujours actif (client non modifié par l\'appel du livreur)', cl.client === 'Client fictif');
 

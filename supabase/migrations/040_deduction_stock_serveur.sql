@@ -71,6 +71,16 @@
 -- remise en attente (statut qui n'est plus « livré »). Les programmes serveur (sans session de l'application) ne sont pas
 -- concernés. Passer stock_deduit à vrai reste permis (anciennes versions de l'application, qui l'envoient après leur
 -- propre déduction ; ce passage ne peut qu'empêcher une déduction, jamais en provoquer une).
+-- POURQUOI IL EST INDISPENSABLE : stock_deduit est le SEUL repère « déjà déduite » de la fonction. Or toute sauvegarde de
+-- commande de l'application (sbSaveCommande, toutes versions) renvoie le corps complet, stock_deduit compris, tel qu'il est
+-- dans la copie du téléphone. Une copie prise AVANT la déduction (le « livré » gardé en file et rejoué après, un ancien
+-- téléphone, un écran resté ouvert) renverrait stock_deduit = faux ; la demande de déduction renvoyée ensuite (réponse
+-- perdue, reprise au démarrage) déduirait alors une DEUXIÈME fois.
+-- COMPATIBILITÉ (vérifiée par le banc outils/test-040-pglite.js, ancienne et nouvelle façon de sauvegarder) : le déclencheur
+-- ne REFUSE JAMAIS une écriture (aucune erreur, aucun code HTTP nouveau pour les téléphones déjà installés) ; il ne corrige
+-- qu'UNE valeur, dans UN cas : stock_deduit vrai → faux par une session de l'application, hors recrédit de
+-- l'administrateur. Tout le reste de la sauvegarde (statut, paiement, prix…) est enregistré comme avant ; une création de
+-- commande, une écriture qui laisse stock_deduit inchangé ou qui le passe à vrai ne sont pas touchées.
 --
 -- LIMITES : la règle des ±2 jours du livreur s'applique aussi ici : un téléphone resté hors ligne plus de 2 jours après la
 -- date de livraison verra sa demande refusée (l'application le signale ; à faire par le bureau). Le recrédit à
