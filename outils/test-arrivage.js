@@ -224,7 +224,7 @@ function nouveauBac(opts) {
   B = nouveauBac({ repondre: () => ({ ok: true, status: 200, corps: [{ id: 'pr-z', nom: 'Nouveau Z', cat: 'Matelas', prix: null, stock: 0, actif: true, vendable: false, prix_vente_defini: false, reference_interne: 'MC-TEST-Z' }] }) });
   await B.bac.sbLoadProduits(); const z = B.bac.produits.find(p => p.id === 'pr-z');
   test('chargement : prix NULL → prix 0 affiché « à définir », non vendable, réf. interne', z && z.prix === 0 && z.prixDefini === false && z.vendable === false && z.refInterne === 'MC-TEST-Z', z);
-  test('base : déclencheur sur commandes (lignes nouvelles seulement, upsert compris)', sql.includes('create trigger commandes_produit_vendable_garde before insert or update of lignes, produit, qte, prix on public.commandes') && sql.includes('select interne.l039_lignes_effectives(to_jsonb(c.lignes), c.produit::text, to_jsonb(c.qte), to_jsonb(c.prix)) into v_old\n      from public.commandes c where c.id = new.id'));
+  test('base : déclencheur sur commandes (lignes nouvelles seulement, upsert compris)', sql.includes('create trigger commandes_produit_vendable_garde before insert or update of lignes, produit, qte, prix, remise_globale, remise_globale_val, remise_globale_type on public.commandes') && sql.includes('select interne.l039_lignes_effectives(to_jsonb(c.lignes), c.produit::text, to_jsonb(c.qte), to_jsonb(c.prix)),\n           interne.l039_remise_signature(to_jsonb(c.remise_globale_val), c.remise_globale_type::text, to_jsonb(c.remise_globale))\n      into v_old, v_old_remise\n      from public.commandes c where c.id = new.id'));
   {
     // revue Codex sur 82a9b09 (point 1) : lignes FIGÉES ligne à ligne
     const trig = sql.slice(sql.indexOf('create or replace function interne.commandes_produit_vendable_garde()'), sql.indexOf('create trigger commandes_produit_vendable_garde'));
@@ -233,7 +233,7 @@ function nouveauBac(opts) {
     test('base : lignes figées — comparaison en multiensemble trié de signatures (occurrences, quantité, prix, remises)',
       /jsonb_agg\(interne\.l039_signature_ligne\(e\) order by interne\.l039_signature_ligne\(e\)\)[\s\S]{0,200}is distinct from[\s\S]{0,200}jsonb_agg\(interne\.l039_signature_ligne\(o\) order by interne\.l039_signature_ligne\(o\)\)/.test(sql)
       && ['qte', 'prixUnit', 'prixBrut', 'remiseLigne', 'remiseVal', 'remiseType', 'sousTotal'].every(k => sql.includes("'" + k + "', ")));
-    test('base : lignes figées — upsert : lignes actuelles de la commande comme référence, commande nouvelle = refus', trig.includes('select interne.l039_lignes_effectives(to_jsonb(c.lignes), c.produit::text, to_jsonb(c.qte), to_jsonb(c.prix)) into v_old\n      from public.commandes c where c.id = new.id;') && trig.includes('Commande nouvelle : v_old reste NULL'));
+    test('base : lignes figées — upsert : lignes actuelles de la commande comme référence, commande nouvelle = refus', trig.includes('select interne.l039_lignes_effectives(to_jsonb(c.lignes), c.produit::text, to_jsonb(c.qte), to_jsonb(c.prix)),\n           interne.l039_remise_signature(to_jsonb(c.remise_globale_val), c.remise_globale_type::text, to_jsonb(c.remise_globale))\n      into v_old, v_old_remise\n      from public.commandes c where c.id = new.id;') && trig.includes('Commande nouvelle : v_old reste NULL'));
     const auto = sql.slice(sql.indexOf('9. Auto-contrôle à l\'application : lignes figées'));
     test('base : auto-contrôle EXÉCUTÉ à l\'application de la migration (quantité, prix, doublon, occurrence retirée, commande nouvelle, ordre libre)',
       ['identique', 'ordre / produit vendable modifié', 'retrait total', 'quantité', 'prix', 'ligne en double ajoutée', 'une occurrence retirée', 'commande nouvelle'].every(c => auto.includes("f := '" + c + "'")) && auto.includes('Migration annulée'));
@@ -539,8 +539,8 @@ function nouveauBac(opts) {
     test('base : l039_designe pure (immutable), jamais NULL, accès retiré', sql.includes('create or replace function interne.l039_designe(e jsonb, p_nom text, p_ref text) returns boolean\nlanguage sql immutable as $')
       && sql.includes('revoke all on function interne.l039_designe(jsonb, text, text) from public, anon, authenticated;'));
     test('base : insertion ET upsert passent par la même identification (déclencheur before insert or update, lignes actuelles relues)',
-      sql.includes('create trigger commandes_produit_vendable_garde before insert or update of lignes, produit, qte, prix on public.commandes')
-      && trigQ.includes('select interne.l039_lignes_effectives(to_jsonb(c.lignes), c.produit::text, to_jsonb(c.qte), to_jsonb(c.prix)) into v_old\n      from public.commandes c where c.id = new.id;') && trigQ.includes('v_new := interne.l039_lignes_identifiees(v_new);') && trigQ.includes('v_old := interne.l039_lignes_identifiees(v_old);'));
+      sql.includes('create trigger commandes_produit_vendable_garde before insert or update of lignes, produit, qte, prix, remise_globale, remise_globale_val, remise_globale_type on public.commandes')
+      && trigQ.includes('select interne.l039_lignes_effectives(to_jsonb(c.lignes), c.produit::text, to_jsonb(c.qte), to_jsonb(c.prix)),\n           interne.l039_remise_signature(to_jsonb(c.remise_globale_val), c.remise_globale_type::text, to_jsonb(c.remise_globale))\n      into v_old, v_old_remise\n      from public.commandes c where c.id = new.id;') && trigQ.includes('v_new := interne.l039_lignes_identifiees(v_new);') && trigQ.includes('v_old := interne.l039_lignes_identifiees(v_old);'));
     const auto10q = sql.slice(sql.indexOf('-- 10. Auto-contrôle à l\'application : revient d\'un lot'));
     test('base : auto-contrôle EXÉCUTÉ (désignation par nom, autre produit, référence, ligne sans nom, valeurs vides)',
       ["nom désignant le produit de l''identifiant", 'nom désignant un autre produit', 'référence désignant le produit', 'ligne sans nom ni référence', 'nom et référence vides'].every(c => auto10q.includes("f := '" + c + "'")));
@@ -856,9 +856,69 @@ function nouveauBac(opts) {
       && sv.indexOf('venGarderPrincipal(cmdData') > sv.indexOf('if (isSavCmd) {'));
   }
 
+  console.log('\n8 quater. REMISE GLOBALE FIGÉE (v7.5.161, revue Codex PR 26 sur 40f0bd6)');
+  {
+    const NV = 'Matelas Nouveau N (fictif)';
+    const lnv = { produitId: 'pr-n', produit: NV, qte: 1, prixUnit: 100, prixBrut: 100, remiseLigne: 0, remiseVal: 0, remiseType: 'pct', sousTotal: 100 };
+    const lA = { produitId: 'pr-a', produit: 'Matelas Fictif A 140×190', qte: 1, prixUnit: 200, prixBrut: 200, remiseLigne: 0, remiseVal: 0, remiseType: 'pct', sousTotal: 200 };
+    const anc = { lignes: [lnv, lA], remiseGlobale: 30, remiseGlobaleVal: 10, remiseGlobaleType: 'pct' };
+    const RR = (lignes, remise, a) => bac.venRemiseRefusee(lignes, bac.produits, a === undefined ? anc : a, null, remise);
+    test('signature : écart d\'arrondi accepté, absents = 0, type vide = pct', bac.venRemiseSignature(10, 'pct', 15) === bac.venRemiseSignature('10.004', 'pct', 14.999)
+      && bac.venRemiseSignature(null, null, null) === bac.venRemiseSignature(0, '  ', '0'));
+    test('ligne figée, remise inchangée (adresse modifiée) → acceptée', RR([lnv, lA], { val: 10, type: 'pct', montant: 30 }).length === 0);
+    test('ligne figée, VALEUR de remise modifiée → refusée', JSON.stringify(RR([lnv, lA], { val: 20, type: 'pct', montant: 60 })) === JSON.stringify([NV]));
+    test('ligne figée, TYPE de remise modifié → refusé', RR([lnv, lA], { val: 10, type: 'eur', montant: 10 }).length === 1);
+    test('ligne figée, MONTANT de remise modifié (même valeur) → refusé', RR([lnv, lA], { val: 10, type: 'pct', montant: 29.99 }).length === 1);
+    test('ligne figée, remise effacée → refusée', RR([lnv, lA], { val: 0, type: 'pct', montant: 0 }).length === 1);
+    test('ligne figée reconnue par son NOM seul (sans produitId) → remise figée aussi', RR([{ produit: NV, qte: 1, prixUnit: 100, sousTotal: 100 }, lA], { val: 0, type: 'pct', montant: 0 },
+      { lignes: [{ produit: NV, qte: 1, prixUnit: 100, sousTotal: 100 }, lA], remiseGlobale: 30, remiseGlobaleVal: 10, remiseGlobaleType: 'pct' }).length === 1);
+    test('commande sans ligne non vendable : remise libre', RR([lA], { val: 50, type: 'eur', montant: 50 }, { lignes: [lA], remiseGlobale: 0, remiseGlobaleVal: 0, remiseGlobaleType: 'pct' }).length === 0);
+    test('toutes les lignes du produit non vendable retirées : remise libre', RR([lA], { val: 0, type: 'pct', montant: 0 }).length === 0);
+    test('commande nouvelle : rien ici (lignes déjà refusées par venLignesRefusees)', RR([lnv], { val: 5, type: 'pct', montant: 5 }, null).length === 0);
+    test('commande sans lignes : produit principal non vendable → remise figée', bac.venRemiseRefusee(null, bac.produits, { lignes: null, produit: NV, qte: 1, prix: 100, remiseGlobale: 0, remiseGlobaleVal: 0, remiseGlobaleType: 'pct' },
+      { produit: NV, qte: 1, prix: 100 }, { val: 10, type: 'eur', montant: 10 }).length === 1);
+    test('montant actuel repris si lignes et remise (valeur, type) identiques', bac.venRemiseAGarder([lA, lnv], anc, 10, 'pct') === true
+      && bac.venRemiseAGarder([lnv], anc, 10, 'pct') === false && bac.venRemiseAGarder([lnv, lA], anc, 12, 'pct') === false);
+    const sv = extraireFonction('function saveCmd()');
+    test('saveCmd : remise contrôlée AVANT tout enregistrement, message clair, montant actuel repris',
+      sv.includes('venRemiseRefusee(lignes, produits, existingCmd, null, { val: remGV, type: remGT, montant: remGM })')
+      && sv.includes('if (venRemiseAGarder(lignes, existingCmd, remGV, remGT)) remGM = parseFloat(existingCmd.remiseGlobale) || 0;')
+      && sv.includes('la remise globale de cette commande (valeur, type, montant) ne peut pas être modifiée')
+      && sv.indexOf('venRemiseRefusee(') < sv.indexOf('const cmdData') && sv.indexOf('venRemiseRefusee(') < sv.indexOf('paiAvancePreparer'));
+    const trigR = sql.slice(sql.indexOf('create or replace function interne.commandes_produit_vendable_garde()'), sql.indexOf('create trigger commandes_produit_vendable_garde'));
+    const sigR = sql.slice(sql.indexOf('create or replace function interne.l039_remise_signature'), sql.indexOf('revoke all on function interne.l039_remise_signature'));
+    test('base : signature de remise PURE (valeur, type, montant au centime), accès retiré', sigR.includes('language sql immutable as $$\n') && /\n\$\$;\n?$/.test(sigR)
+      && sigR.includes("coalesce(interne.l039_centimes(p_val), 0)") && sigR.includes("coalesce(nullif(btrim(p_type), ''), 'pct')") && sigR.includes("coalesce(interne.l039_centimes(p_montant), 0)")
+      && sql.includes('revoke all on function interne.l039_remise_signature(jsonb, text, jsonb) from public, anon, authenticated;'));
+    test('base : déclencheur — remise proposée comparée à l\'actuelle (UPDATE et upsert), refus explicite',
+      trigR.includes('interne.l039_remise_signature(to_jsonb(new.remise_globale_val), new.remise_globale_type::text, to_jsonb(new.remise_globale))')
+      && trigR.includes('v_old_remise := interne.l039_remise_signature(to_jsonb(old.remise_globale_val), old.remise_globale_type::text, to_jsonb(old.remise_globale));')
+      && trigR.includes('into v_old, v_old_remise') && trigR.includes('if v_new_remise is distinct from v_old_remise then')
+      && trigR.includes('remise globale de la commande modifiée (valeur, type ou montant) : refusé')
+      && trigR.indexOf('if v_nv is null then return new; end if;') < trigR.indexOf('if v_new_remise is distinct from v_old_remise then'));
+    test('base : déclencheur aussi sur les colonnes de remise globale', sql.includes('create trigger commandes_produit_vendable_garde before insert or update of lignes, produit, qte, prix, remise_globale, remise_globale_val, remise_globale_type on public.commandes'));
+    const auto10r = sql.slice(sql.indexOf("-- 10. Auto-contrôle à l'application : revient d'un lot"));
+    test('base : auto-contrôle EXÉCUTÉ (remise : arrondi, absente, valeur, type, montant, effacée)',
+      ["remise globale : écart d''arrondi accepté", 'remise globale absente = remise nulle en pourcentage', 'remise globale : valeur modifiée', 'remise globale : type modifié',
+       "remise globale : montant modifié d''un centime", 'remise globale effacée'].every(c => auto10r.includes("f := '" + c + "'")));
+    const jlR = await import('file:///' + path.join(racine, 'supabase', 'functions', '_shared', 'jarvis-action-logique.ts').replace(/\\/g, '/'));
+    const catR = jlR.catalogueDepuisBase([{ id: 'n', nom: NV, prix: null, vendable: false, prix_vente_defini: false, reference_interne: 'MC-TEST-1' }, { id: 'a', nom: 'Matelas Fictif A 140×190', prix: 100 }]);
+    const idDe = (x) => x ? x.id : null;
+    test('JARVIS : produit non vendable d\'une commande (identifiant, nom, référence, produit principal)', idDe(jlR.produitNonVendableDeCommande([{ produitId: 'n' }], '', catR)) === 'n'
+      && idDe(jlR.produitNonVendableDeCommande([{ produit: 'matelas nouveau n (fictif)' }], '', catR)) === 'n' && idDe(jlR.produitNonVendableDeCommande([{ produit: 'X', sku: 'mc-test-1' }], '', catR)) === 'n'
+      && idDe(jlR.produitNonVendableDeCommande(null, NV, catR)) === 'n' && jlR.produitNonVendableDeCommande([{ produitId: 'a', produit: 'Matelas Fictif A 140×190' }], '', catR) === null);
+    const cR = { remise_globale: 30, remise_globale_val: 10, remise_globale_type: 'pct' };
+    test('JARVIS : modifier_prix efface une remise existante = remise modifiée ; remise nulle = inchangée', jlR.remiseGlobaleModifiee(cR, jlR.champsPrix({ prix: 100, motif: 'x' }, cR)) === true
+      && jlR.remiseGlobaleModifiee({ remise_globale: 0, remise_globale_val: null, remise_globale_type: null }, jlR.champsPrix({ prix: 100, motif: 'x' }, {})) === false);
+    const idxR = fs.readFileSync(path.join(racine, 'supabase', 'functions', 'jarvis-action', 'index.ts'), 'utf8');
+    const mp = idxR.slice(idxR.indexOf("if (d.action === 'modifier_prix')"), idxR.indexOf("if (d.action === 'annuler_commande')"));
+    test('JARVIS : modifier_prix refusé (422) AVANT l\'aperçu si la commande contient un produit non vendable et une remise', mp.includes('if (remiseGlobaleModifiee(c!, p))')
+      && mp.includes('produitNonVendableDeCommande(c!.lignes, c!.produit, catP)') && mp.includes('rep(422') && mp.indexOf('rep(422') < mp.indexOf('if (!confirme)'));
+  }
+
   console.log('\n9. VERSION');
   const m = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(sw);
-  test('CACHE_VERSION augmentée (v7-5-158 ou plus)', !!m && Number(m[1]) >= 158, m && m[0]);
+  test('CACHE_VERSION augmentée (v7-5-161 ou plus)', !!m && Number(m[1]) >= 161, m && m[0]);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

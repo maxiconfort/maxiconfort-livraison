@@ -556,6 +556,36 @@ export function produitPrincipalNonVendable(lignes: unknown, produit: unknown, c
   return null;
 }
 
+/** v2.23 (revue Codex PR 26 sur 40f0bd6) — produit NON VENDABLE contenu dans une commande : ligne dont le produitId désigne un produit
+ *  non vendable, ou dont le nom (« produit », « nom ») ou la référence (« reference », « sku », « _ugs », ou le nom) désigne un produit
+ *  non vendable (normalisés, même règle que interne.l039_lignes_identifiees et venProduitDeLigne) ; commande sans lignes : son produit
+ *  principal (produitPrincipalNonVendable). Le premier trouvé, sinon null. Pure. */
+export function produitNonVendableDeCommande(lignes: unknown, produit: unknown, catalogue: Catalogue): CatalogueProduit | null {
+  if (!(Array.isArray(lignes) && lignes.length)) return produitPrincipalNonVendable(lignes, produit, catalogue);
+  for (const l of lignes as Record<string, unknown>[]) {
+    if (!l || typeof l !== 'object') continue;
+    const parId = catalogue.get(String(l.produitId ?? ''));
+    if (parId && parId.non_vendable) return parId;
+    const noms = [l.produit, l.nom].map(nomNormalise).filter(Boolean);
+    const refs = [l.reference, l.sku, l._ugs, l.produit].map(nomNormalise).filter(Boolean);
+    for (const x of catalogue.values()) {
+      if (!x.non_vendable) continue;
+      const n = nomNormalise(x.nom), r = x.ref ? nomNormalise(x.ref) : '';
+      if ((n && noms.includes(n)) || (r && refs.includes(r))) return x;
+    }
+  }
+  return null;
+}
+/** v2.23 (revue Codex PR 26 sur 40f0bd6) — la remise GLOBALE change-t-elle ? Mêmes règles que interne.l039_remise_signature : valeur et
+ *  montant au centime (absents = 0), type absent ou vide = 'pct'. Un champ absent de la modification garde sa valeur actuelle. Pure. */
+export function remiseGlobaleModifiee(c: Record<string, unknown>, apres: Record<string, unknown>): boolean {
+  const cent = (v: unknown) => { const n = Number(v); return v === null || v === undefined || v === '' || !isFinite(n) ? 0 : Math.round(Math.abs(n) * 100 + 1e-7) / 100 * Math.sign(n); };
+  const type = (v: unknown) => String(v ?? '').trim() || 'pct';
+  const de = (o: Record<string, unknown>, k: string) => (k in apres ? apres[k] : o[k]);
+  return cent(de(c, 'remise_globale_val')) !== cent(c.remise_globale_val) || type(de(c, 'remise_globale_type')) !== type(c.remise_globale_type)
+    || cent(de(c, 'remise_globale')) !== cent(c.remise_globale);
+}
+
 /** Nouvelle commande (mêmes colonnes que sbSaveCommande de l'appli). Paiement à la livraison par défaut : Espèces / Non payé. */
 export function construireCommande(d: Demande, id: string, lignes: Record<string, unknown>[], maintenant = Date.now()): Record<string, unknown> {
   const total = lignes.reduce((s, l) => s + (Number(l.sousTotal) || 0), 0);

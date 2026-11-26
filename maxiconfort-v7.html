@@ -4080,6 +4080,40 @@ function venGarderPrincipal(cmd, ancienne) {
   cmd.remiseGlobale = ancienne.remiseGlobale || 0;
   return cmd;
 }
+// v7.5.161 (revue Codex PR 26 sur 40f0bd6) : REMISE GLOBALE FIGÉE. La signature des lignes compare les remises DE LIGNE, pas la
+// remise GLOBALE de la commande : la changer modifiait le montant payé pour un produit non vendable sans toucher sa ligne. Tant que la
+// commande contient une ligne figée d'un produit non vendable, sa remise globale est figée : même valeur, même type, même montant (au
+// centime). Le motif reste libre. Commande sans ligne non vendable : libre ; retirer toutes ses lignes libère la remise.
+// Même règle que la base (interne.l039_remise_signature dans commandes_produit_vendable_garde).
+// Signature : valeur et montant au centime (absents = 0), type absent ou vide = 'pct'.
+function venRemiseSignature(val, type, montant) {
+  var t = String(type == null ? '' : type).trim();
+  return JSON.stringify([venCentimes(val) || 0, t || 'pct', venCentimes(montant) || 0]);
+}
+// Produits non vendables (noms) des lignes proposées d'une commande EXISTANTE dont la remise globale proposée (remise = { val, type,
+// montant }) diffère de l'actuelle. Commande nouvelle : [] (ses lignes non vendables sont déjà refusées par venLignesRefusees).
+// principal (facultatif) : { produit, qte, prix }, utilisé seulement si la commande n'a pas de lignes (comme venLignesRefusees).
+function venRemiseRefusee(lignes, liste, ancienne, principal, remise) {
+  if (!ancienne) return [];
+  lignes = venLignesEffectives(lignes, principal && principal.produit, principal && principal.qte, principal && principal.prix);
+  var noms = [];
+  (lignes || []).forEach(function(l) {
+    var p = venProduitDeLigne(l, liste);
+    if (p && !venEst(p, liste) && noms.indexOf(p.nom) < 0) noms.push(p.nom);
+  });
+  if (!noms.length) return [];
+  var r = remise || {};
+  if (venRemiseSignature(r.val, r.type, r.montant) === venRemiseSignature(ancienne.remiseGlobaleVal, ancienne.remiseGlobaleType, ancienne.remiseGlobale)) return [];
+  return noms;
+}
+// Lignes proposées IDENTIQUES aux lignes actuelles (toutes, au centime, ordre libre) et même valeur et type de remise : le montant
+// actuel de la remise est repris tel quel (pas de recalcul qui pourrait différer d'un import arrondi autrement).
+function venRemiseAGarder(lignes, ancienne, val, type) {
+  if (!ancienne || !Array.isArray(lignes) || !Array.isArray(ancienne.lignes) || !ancienne.lignes.length) return false;
+  var sig = function(ls) { return JSON.stringify(ls.map(venSignature).sort()); };
+  if (sig(lignes) !== sig(ancienne.lignes)) return false;
+  return venRemiseSignature(val, type, 0) === venRemiseSignature(ancienne.remiseGlobaleVal, ancienne.remiseGlobaleType, 0);
+}
 // Nom ou référence NORMALISÉ : minuscules, sans accents, « × » lu « x », espaces regroupés, « 140 x 190 » = « 140x190 ».
 // Même règle que interne.l039_norm (migration 039) et nomNormalise (fonctions serveur).
 function venNorm(s) {
@@ -9123,7 +9157,13 @@ function saveCmd() {
   const soustotal = lignes.reduce((s,l)=>s+l.sousTotal,0);
   const remGV = parseFloat(document.getElementById('f-remise-val').value)||0;
   const remGT = document.getElementById('f-remise-type').value;
-  const remGM = remGT==='pct' ? soustotal*remGV/100 : Math.min(remGV,soustotal);
+  let remGM = remGT==='pct' ? soustotal*remGV/100 : Math.min(remGV,soustotal);
+  // v7.5.161 (revue Codex PR 26 sur 40f0bd6) : remise globale FIGÉE tant que la commande contient une ligne figée d'un produit non vendable
+  if (isEdit && existingCmd && !isSavCmd && !_principalGarde) {
+    if (venRemiseAGarder(lignes, existingCmd, remGV, remGT)) remGM = parseFloat(existingCmd.remiseGlobale) || 0;
+    var _remRefus = venRemiseRefusee(lignes, produits, existingCmd, null, { val: remGV, type: remGT, montant: remGM });
+    if (_remRefus.length) { toast('Produit non vendable (prix de vente à définir) : ' + _remRefus.join(', ') + ' — la remise globale de cette commande (valeur, type, montant) ne peut pas être modifiée', 'err'); return; }
+  }
   const totalProduits = Math.max(0, soustotal - remGM);
   // v7.5.71 : frais de port (commandes site Shopify) préservés à l'édition. Le formulaire
   // n'a pas de champ port -> on reprend celui de la commande existante (0 pour une saisie
