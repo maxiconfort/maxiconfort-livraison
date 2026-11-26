@@ -3989,13 +3989,33 @@ function venSelectionnables(liste) { return (liste || []).filter(function(p) { r
 // contient reste modifiable, sa ligne est figée comme une ancienne offre). Même règle que la base (commandes_produit_vendable_garde).
 // v7.5.142 (revue Codex PR 26 sur 66def07) : une ligne sans produitId fiable (vide, « _custom_… », commande importée) mais au NOM
 // (ou à la référence) d'un produit non vendable est rapportée à ce produit (venProduitDeLigne), comme dans la base.
+// v7.5.150 (revue Codex PR 26 sur fd751b8) : MÊME comparaison que la base (interne.lignes_non_vendables_modifiees). Avant, toute ligne
+// d'un produit déjà présent dans la commande était exemptée, y compris une NOUVELLE occurrence ou une quantité modifiée. Désormais,
+// pour chaque produit non vendable présent dans les lignes proposées, ses lignes doivent être EXACTEMENT ses lignes actuelles : même
+// nombre d'occurrences, mêmes quantités, prix et remises (ordre libre). Retirer toutes ses lignes reste permis ; commande nouvelle
+// (pas de lignes actuelles) = refusée.
+// Nombre d'un champ de ligne lu comme la base (interne.l039_nombre) : texte numérique → nombre, sinon null.
+function venNombre(v) {
+  if (v == null || typeof v === 'boolean' || typeof v === 'object') return null;
+  var s = String(v).trim();
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) return null;
+  var n = parseFloat(s); return isFinite(n) ? n : null;
+}
+// Signature d'une ligne (interne.l039_signature_ligne) : quantité (absente ou 0 = 1), prix unitaire, prix brut, remises, sous-total.
+function venSignature(l) {
+  var e = l || {}, q = venNombre(e.qte);
+  return JSON.stringify([(q == null || q === 0) ? 1 : q, venNombre(e.prixUnit), venNombre(e.prixBrut), venNombre(e.remiseLigne),
+    venNombre(e.remiseVal), e.remiseType === undefined ? null : e.remiseType, venNombre(e.sousTotal)]);
+}
 function venLignesRefusees(lignes, liste, ancienne) {
-  var avant = ((ancienne && ancienne.lignes) || []).map(function(l) { var p = venProduitDeLigne(l, liste); return p ? p.id : (l && l.produitId); });
-  var refus = [];
+  var pidDe = function(l) { var p = venProduitDeLigne(l, liste); return p ? p.id : (l && l.produitId); };
+  var sigs = function(ls, pid) { return JSON.stringify((ls || []).filter(function(l) { return pidDe(l) === pid; }).map(venSignature).sort()); };
+  var refus = [], vus = {};
   (lignes || []).forEach(function(l) {
     var p = venProduitDeLigne(l, liste);
-    if (!p || avant.indexOf(p.id) > -1) return;
-    if (!venEst(p, liste) && refus.indexOf(p.nom) < 0) refus.push(p.nom);
+    if (!p || vus[p.id] || venEst(p, liste)) return;
+    vus[p.id] = true;
+    if (sigs(lignes, p.id) !== sigs(ancienne ? ancienne.lignes : null, p.id) && refus.indexOf(p.nom) < 0) refus.push(p.nom);
   });
   return refus;
 }
@@ -4057,11 +4077,17 @@ function arrControleSaisies(lignes, saisies) {
   return { ok: erreurs.length === 0, erreurs: erreurs, total: tot };
 }
 // Aperçu (avant validation) : stock et revient de chaque produit après la réception. Les endommagés et manquants n'entrent pas.
-function arrApercu(lignes, saisies, liste, revients, methode) {
+// v7.5.150 (revue Codex PR 26 sur fd751b8) : stock ACTUEL d'un produit de l'arrivage — celui lu explicitement dans la base
+// (ARR_ETAT.stocks, produits inactifs compris), sinon celui du catalogue chargé. Même valeur pour l'aperçu et l'empreinte.
+function arrStockAvant(pid, stocks, liste) {
+  if (stocks && stocks[pid] != null) return parseInt(stocks[pid]) || 0;
+  var p = (liste || []).find(function(x) { return x.id === pid; });
+  return p ? (parseInt(p.stock) || 0) : 0;
+}
+function arrApercu(lignes, saisies, liste, revients, methode, stocks) {
   return (lignes || []).map(function(l) {
-    var p = (liste || []).find(function(x) { return x.id === l.produit_id; });
     var r = arrEntier(((saisies || {})[l.id] || {}).recue); if (isNaN(r)) r = 0;
-    var sAv = p ? (parseInt(p.stock) || 0) : 0;
+    var sAv = arrStockAvant(l.produit_id, stocks, liste);
     var rv = (revients || {})[l.produit_id];
     var rAv = (rv && rv.prix_revient_ht != null) ? parseFloat(rv.prix_revient_ht) : null;
     return { ligne: l.id, produit_id: l.produit_id, stockAvant: sAv, stockApres: sAv + r, revientAvant: rAv,
@@ -4078,16 +4104,23 @@ function arrCorpsValidation(arrivageId, lignes, saisies, empreinte) {
 // provisoire, et par ligne (triées par id) identifiant, produit, quantité attendue, FOB, revient chargé, revient actuel du produit et
 // son caractère provisoire. Nombres à échelle FIXE (taux 6, frais 2, FOB et revients 4 décimales), vide si absent. MÊME texte que
 // interne.l039_empreinte (migration 039) : la base la recalcule après ses verrous et refuse la réception si elle diffère
-// (« valorisation_modifiee ») → nouvel aperçu et nouvelle confirmation. Le stock courant n'y entre pas (il bouge à chaque vente).
+// (« valorisation_modifiee ») → nouvel aperçu et nouvelle confirmation.
+// v7.5.150 (revue Codex PR 26 sur fd751b8) : empreinte « v2 » — le STOCK ACTUEL de chaque produit y entre (le CUMP et l'aperçu en
+// dépendent) : une vente entre l'aperçu et la validation impose un nouvel aperçu et une nouvelle confirmation.
 function arrFmt(v, d) { return (v == null || v === '' || isNaN(parseFloat(v))) ? '' : parseFloat(v).toFixed(d); }
-function arrEmpreinte(a, lignes, revients, methode) {
+function arrEmpreinte(a, lignes, revients, methode, stocks, liste) {
   if (!a) return '';
   var ls = (lignes || []).slice().sort(function(x, y) { return x.id - y.id; });
-  return ['v1', methode || '', arrFmt(a.taux_change, 6), arrFmt(a.frais_import_ht, 2), a.taux_provisoire ? 't' : 'f'].concat(ls.map(function(l) {
+  return ['v2', methode || '', arrFmt(a.taux_change, 6), arrFmt(a.frais_import_ht, 2), a.taux_provisoire ? 't' : 'f'].concat(ls.map(function(l) {
     var rv = (revients || {})[l.produit_id];
     return [l.id, l.produit_id == null ? '' : l.produit_id, l.quantite_attendue == null ? '' : l.quantite_attendue, arrFmt(l.fob_unitaire, 4), arrFmt(l.revient_unitaire_ht, 4),
-      rv ? arrFmt(rv.prix_revient_ht, 4) : '', rv && rv.provisoire != null ? (rv.provisoire ? 't' : 'f') : ''].join(':');
+      rv ? arrFmt(rv.prix_revient_ht, 4) : '', rv && rv.provisoire != null ? (rv.provisoire ? 't' : 'f') : '', String(arrStockAvant(l.produit_id, stocks, liste))].join(':');
   })).join('|');
+}
+// v7.5.150 (revue Codex PR 26 sur fd751b8, P2) : copie FIGÉE des quantités saisies (bonnes, abîmées, manquantes) des lignes, prise
+// AVANT toute attente : le contrôle, la confirmation et l'envoi portent sur exactement les mêmes valeurs.
+function arrFigerSaisies(lignes, saisies) {
+  var f = {}; (lignes || []).forEach(function(l) { var s = (saisies || {})[l.id] || {}; f[l.id] = { recue: s.recue, endommagee: s.endommagee, manquante: s.manquante }; }); return f;
 }
 // Revient HT d'un LOT tel que la BASE le calcule à la réception (revue Codex PR 26 sur 66def07, interne.l039_revient_lot) :
 // FOB × taux de change + frais d'import répartis sur les quantités attendues, arrondi à 4 décimales. null = incalculable
@@ -4123,23 +4156,26 @@ function arrEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, funct
 function arrRevientTexte(v) { return (v == null || isNaN(parseFloat(v))) ? '—' : paiEur(v); }
 
 // ── Données et écran (administrateur) ──
-var ARR_ETAT = { arrivages: [], lignes: [], revients: {}, entrant: {}, ouvert: null, saisies: {}, envoi: false, erreur: '', vue: null };
+var ARR_ETAT = { arrivages: [], lignes: [], revients: {}, stocks: {}, entrant: {}, ouvert: null, saisies: {}, envoi: false, erreur: '', vue: null };
 function arrEntetes() { return { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }; }
+// v7.5.150 (revue Codex PR 26 sur fd751b8, P2) : revients lus EN ENTIER, par pages, ordre stable (produit_id) — avant, une seule
+// requête plafonnée par la base (1 000 lignes) pouvait en perdre. Échec de lecture : revients VIDÉS (jamais d'anciennes valeurs
+// présentées comme actuelles) et false renvoyé (l'écran Arrivages affiche alors une erreur au lieu d'un aperçu faux).
 async function arrChargerRevients() {
-  if (role !== 'admin') { ARR_ETAT.revients = {}; return; }
+  if (role !== 'admin') { ARR_ETAT.revients = {}; return true; }
   try {
-    var r = await fetch(SUPABASE_URL + '/rest/v1/produits_revient?select=produit_id,prix_revient_ht,provisoire,methode', { headers: arrEntetes() });
-    if (!r.ok) return;
-    var m = {}; (await r.json() || []).forEach(function(x) { m[x.produit_id] = x; }); ARR_ETAT.revients = m;
-  } catch(e) {}
+    var r = await arrLireTout(SUPABASE_URL + '/rest/v1/produits_revient?select=produit_id,prix_revient_ht,provisoire,methode&order=produit_id.asc');
+    if (!r.ok) { ARR_ETAT.revients = {}; return false; }
+    var m = {}; r.rows.forEach(function(x) { m[x.produit_id] = x; }); ARR_ETAT.revients = m; return true;
+  } catch(e) { ARR_ETAT.revients = {}; return false; }
 }
+// Stock entrant (réponse de stock_entrant) lu par pages lui aussi (relecture complète PR 26) ; échec : rien d'affiché.
 async function arrChargerEntrant() {
   if (role !== 'admin' && role !== 'collab') { ARR_ETAT.entrant = {}; return; }
   try {
-    var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/stock_entrant', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()), body: '{}' });
-    if (!r.ok) return;
-    ARR_ETAT.entrant = arrStockEntrant(await r.json());
-  } catch(e) {}
+    var r = await arrLireTout(SUPABASE_URL + '/rest/v1/rpc/stock_entrant?order=produit_id.asc', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()), body: '{}' });
+    ARR_ETAT.entrant = r.ok ? arrStockEntrant(r.rows) : {};
+  } catch(e) { ARR_ETAT.entrant = {}; }
 }
 // Inventaire : stock entrant (admin + collaboratrice) et revient (admin), puis nouvel affichage.
 async function stkChargerArrivage() {
@@ -4150,10 +4186,10 @@ async function stkChargerArrivage() {
 // du nombre de lignes RÉELLEMENT reçues jusqu'à une page vide, donc rien n'est perdu même si le plafond est plus bas. Ordre stable exigé
 // dans l'URL. { ok, rows } ou { ok: false, status } (jamais une liste partielle présentée comme complète).
 var ARR_PAGE = 1000;
-async function arrLireTout(url) {
+async function arrLireTout(url, init) {
   var tout = [];
   for (var n = 0; n < 1000; n++) {
-    var r = await fetch(url + '&limit=' + ARR_PAGE + '&offset=' + tout.length, { headers: arrEntetes() });
+    var r = await fetch(url + '&limit=' + ARR_PAGE + '&offset=' + tout.length, init || { headers: arrEntetes() });
     if (!r.ok) return { ok: false, status: r.status };
     var page = await r.json();
     if (!Array.isArray(page)) return { ok: false, status: r.status };
@@ -4167,6 +4203,37 @@ async function arrLireTout(url) {
 function arrLireLignesArrivage(id) {
   return arrLireTout(SUPABASE_URL + '/rest/v1/arrivage_lignes?select=*&arrivage_id=eq.' + encodeURIComponent(id) + '&order=id.asc');
 }
+// Filtre PostgREST « in.(…) » avec chaque identifiant entre guillemets (virgules, parenthèses et guillemets sans effet).
+function arrInIds(ids) {
+  return 'in.(' + (ids || []).map(function(i) { return '"' + String(i).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; }).join(',') + ')';
+}
+// v7.5.150 (revue Codex PR 26 sur fd751b8) : stock et revient ACTUELS des produits d'un arrivage, lus EXPLICITEMENT par identifiants
+// (produits inactifs compris, par paquets de 100, par pages, ordre stable). { ok, stocks, revients } ; un produit introuvable ou une
+// lecture impossible = { ok: false } (jamais un stock par défaut).
+async function arrLireValorisation(ids) {
+  var u = Array.from(new Set((ids || []).map(String))).sort(), stocks = {}, revients = {};
+  for (var i = 0; i < u.length; i += 100) {
+    var filtre = encodeURIComponent(arrInIds(u.slice(i, i + 100)));
+    var rs = await Promise.all([
+      arrLireTout(SUPABASE_URL + '/rest/v1/produits?select=id,stock&id=' + filtre + '&order=id.asc'),
+      arrLireTout(SUPABASE_URL + '/rest/v1/produits_revient?select=produit_id,prix_revient_ht,provisoire,methode&produit_id=' + filtre + '&order=produit_id.asc')
+    ]);
+    if (!rs[0].ok || !rs[1].ok) return { ok: false, status: rs[0].ok ? rs[1].status : rs[0].status };
+    rs[0].rows.forEach(function(r) { stocks[r.id] = parseInt(r.stock) || 0; });
+    rs[1].rows.forEach(function(r) { revients[r.produit_id] = r; });
+  }
+  var absents = u.filter(function(id) { return stocks[id] == null; });
+  if (absents.length) return { ok: false, status: 'produit introuvable : ' + absents.join(', ') };
+  return { ok: true, stocks: stocks, revients: revients, ids: u };
+}
+// Valeurs relues appliquées à l'état de l'écran (stocks remplacés pour ces produits ; revient retiré s'il n'existe plus).
+function arrAppliquerValorisation(v) {
+  if (!v || !v.ok) return;
+  (v.ids || []).forEach(function(id) {
+    ARR_ETAT.stocks[id] = v.stocks[id];
+    if (v.revients[id]) ARR_ETAT.revients[id] = v.revients[id]; else delete ARR_ETAT.revients[id];
+  });
+}
 async function arrCharger() {
   ARR_ETAT.erreur = '';
   try {
@@ -4178,7 +4245,13 @@ async function arrCharger() {
     if (!rs[0].ok || !rs[1].ok) { ARR_ETAT.erreur = 'Lecture impossible (HTTP ' + (rs[0].status || 200) + ' / ' + (rs[1].status || 200) + ') — la migration 039 est-elle appliquée ?'; return; }
     ARR_ETAT.arrivages = rs[0].rows;
     ARR_ETAT.lignes = rs[1].rows;
-    await arrChargerRevients();
+    // v7.5.150 : revients complets (par pages) ; échec = erreur affichée, jamais un aperçu calculé sur des revients absents
+    if (!(await arrChargerRevients())) { ARR_ETAT.erreur = 'Prix de revient illisibles pour l\'instant — réessayez (aucun aperçu affiché)'; return; }
+    // stock et revient actuels des produits des arrivages EN ATTENTE, lus explicitement (aperçu et empreinte)
+    var enAttente = {}; ARR_ETAT.arrivages.forEach(function(x) { if (arrPeutValider(x)) enAttente[x.id] = true; });
+    var v = await arrLireValorisation(ARR_ETAT.lignes.filter(function(l) { return enAttente[l.arrivage_id]; }).map(function(l) { return l.produit_id; }));
+    if (!v.ok) { ARR_ETAT.erreur = 'Stock des produits de l\'arrivage illisible (' + v.status + ') — réessayez (aucun aperçu affiché)'; return; }
+    ARR_ETAT.stocks = {}; arrAppliquerValorisation(v);
   } catch(e) { ARR_ETAT.erreur = 'Pas de connexion'; }
 }
 async function arrInit() {
@@ -4226,13 +4299,13 @@ function arrRendre() {
     return;
   }
   var ls = arrLignesValorisees(a, arrLignesDe(a.id)), attente = arrPeutValider(a);
-  var ap = arrApercu(ls, ARR_ETAT.saisies, produits, ARR_ETAT.revients, ARR_METHODE_VALORISATION);
-  // v7.5.147 : empreinte des valeurs de valorisation de CET aperçu (envoyée à la validation, contrôlée par la base)
-  if (attente) ARR_ETAT.vue = { id: a.id, empreinte: arrEmpreinte(a, arrLignesDe(a.id), ARR_ETAT.revients, ARR_METHODE_VALORISATION) };
+  var ap = arrApercu(ls, ARR_ETAT.saisies, produits, ARR_ETAT.revients, ARR_METHODE_VALORISATION, ARR_ETAT.stocks);
+  // v7.5.147 : empreinte des valeurs de valorisation de CET aperçu (envoyée à la validation, contrôlée par la base) ; v7.5.150 : stock compris
+  if (attente) ARR_ETAT.vue = { id: a.id, empreinte: arrEmpreinte(a, arrLignesDe(a.id), ARR_ETAT.revients, ARR_METHODE_VALORISATION, ARR_ETAT.stocks, produits) };
   var champ = function(l, k) {
     var v = (ARR_ETAT.saisies[l.id] || {})[k];
     if (!attente) return '<td style="text-align:center;font-weight:700">' + (v == null ? '—' : arrEsc(v)) + '</td>';
-    return '<td style="text-align:center"><input type="number" min="0" step="1" value="' + arrEsc(v) + '" oninput="arrSaisie(' + l.id + ',\'' + k + '\',this.value)" style="width:64px;padding:6px;border:1px solid var(--brd2);border-radius:6px;text-align:center;font-weight:700;background:var(--card);color:var(--text);font-family:var(--font)"></td>';
+    return '<td style="text-align:center"><input id="arr-in-' + l.id + '-' + k + '" type="number" min="0" step="1" value="' + arrEsc(v) + '"' + (ARR_ETAT.envoi ? ' disabled' : '') + ' oninput="arrSaisie(' + l.id + ',\'' + k + '\',this.value)" style="width:64px;padding:6px;border:1px solid var(--brd2);border-radius:6px;text-align:center;font-weight:700;background:var(--card);color:var(--text);font-family:var(--font)"></td>';
   };
   el.innerHTML =
     '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">' +
@@ -4259,6 +4332,7 @@ function arrRendre() {
   arrMajControle();
 }
 function arrSaisie(ligneId, champ, valeur) {
+  if (ARR_ETAT.envoi) return; // v7.5.150 : aucune saisie pendant l'envoi (quantités figées à la confirmation)
   if (!ARR_ETAT.saisies[ligneId]) ARR_ETAT.saisies[ligneId] = {};
   ARR_ETAT.saisies[ligneId][champ] = valeur;
   arrMajControle();
@@ -4267,8 +4341,9 @@ function arrMajControle() {
   var a = ARR_ETAT.arrivages.find(function(x) { return x.id === ARR_ETAT.ouvert; }); if (!a) return;
   var ls = arrLignesValorisees(a, arrLignesDe(a.id)), c = arrControleSaisies(ls, ARR_ETAT.saisies), attente = arrPeutValider(a);
   if (attente) {
-    var ap = arrApercu(ls, ARR_ETAT.saisies, produits, ARR_ETAT.revients, ARR_METHODE_VALORISATION);
+    var ap = arrApercu(ls, ARR_ETAT.saisies, produits, ARR_ETAT.revients, ARR_METHODE_VALORISATION, ARR_ETAT.stocks);
     ls.forEach(function(l, i) {
+      ['recue', 'endommagee', 'manquante'].forEach(function(k) { var inp = document.getElementById('arr-in-' + l.id + '-' + k); if (inp) inp.disabled = !!ARR_ETAT.envoi; });
       var e = c.erreurs.find(function(x) { return x.ligne === l.id; });
       var ok = document.getElementById('arr-ok-' + l.id); if (ok) ok.innerHTML = e ? '<span style="color:var(--rd);font-weight:700" title="' + arrEsc(e.texte) + '">✕</span>' : '<span style="color:var(--green)">✓</span>';
       var st = document.getElementById('arr-stk-' + l.id); if (st) st.innerHTML = ap[i].stockAvant + ' → <strong>' + ap[i].stockApres + '</strong>';
@@ -4288,11 +4363,14 @@ async function arrValider() {
   if (role !== 'admin') { toast('Réservé à l\'administrateur', 'err'); return; }
   var a = ARR_ETAT.arrivages.find(function(x) { return x.id === ARR_ETAT.ouvert; });
   if (!arrPeutValider(a)) { toast('Cet arrivage a déjà été traité', 'err'); return; }
-  var ls = arrLignesDe(a.id), c = arrControleSaisies(ls, ARR_ETAT.saisies);
+  var ls = arrLignesDe(a.id);
+  // v7.5.150 (revue Codex PR 26 sur fd751b8, P2) : quantités FIGÉES ici, avant toute attente — le contrôle, la confirmation et
+  // l'envoi portent sur ces valeurs, même si une saisie changeait pendant les relectures (saisies d'ailleurs désactivées)
+  var saisies = arrFigerSaisies(ls, ARR_ETAT.saisies), c = arrControleSaisies(ls, saisies);
   if (!c.ok) { toast('Contrôle à corriger avant de valider', 'err'); arrMajControle(); return; }
   // v7.5.147 : on ne valide que l'aperçu AFFICHÉ (empreinte posée par arrRendre pour cet arrivage) ; sinon, nouvel affichage
   var vue = ARR_ETAT.vue;
-  if (!vue || vue.id !== a.id || vue.empreinte !== arrEmpreinte(a, ls, ARR_ETAT.revients, ARR_METHODE_VALORISATION)) {
+  if (!vue || vue.id !== a.id || vue.empreinte !== arrEmpreinte(a, ls, ARR_ETAT.revients, ARR_METHODE_VALORISATION, ARR_ETAT.stocks, produits)) {
     toast('Aperçu actualisé : vérifiez-le puis validez de nouveau', 'err'); arrRendre(); return;
   }
   var t = c.total;
@@ -4310,19 +4388,24 @@ async function arrValider() {
     toast('Réception NON validée : les lignes de l\'arrivage ont changé — vérifiez la saisie puis validez de nouveau', 'err');
     arrOuvrir(a.id); return;
   }
+  // v7.5.150 (revue Codex PR 26 sur fd751b8) : stock et revient ACTUELS des produits relus explicitement juste avant l'envoi
+  var val = null;
+  try { val = await arrLireValorisation(relu.rows.map(function(l) { return l.produit_id; })); } catch(e) { val = { ok: false, status: 'pas de connexion' }; }
+  if (!val || !val.ok) { ARR_ETAT.envoi = false; toast('Réception NON validée : stock ou revient des produits illisible (' + ((val && val.status) || '?') + ')', 'err'); arrMajControle(); return; }
+  arrAppliquerValorisation(val);
   // v7.5.147 (revue Codex PR 26 sur 17f631a) : FOB ou revient chargé modifié entre l'aperçu et la validation → rien n'est envoyé ;
-  // les saisies sont gardées, l'aperçu est recalculé et une NOUVELLE confirmation est exigée. Taux, frais et revient actuel des
-  // produits sont contrôlés par la base (empreinte comparée après ses verrous).
-  if (arrEmpreinte(a, relu.rows, ARR_ETAT.revients, ARR_METHODE_VALORISATION) !== vue.empreinte) {
+  // les saisies sont gardées, l'aperçu est recalculé et une NOUVELLE confirmation est exigée. v7.5.150 : de même si le STOCK ou le
+  // revient actuel d'un produit a changé (vente entre-temps). Taux et frais sont contrôlés par la base (empreinte après ses verrous).
+  if (arrEmpreinte(a, relu.rows, ARR_ETAT.revients, ARR_METHODE_VALORISATION, ARR_ETAT.stocks, produits) !== vue.empreinte) {
     ARR_ETAT.envoi = false;
     ARR_ETAT.lignes = ARR_ETAT.lignes.filter(function(l) { return l.arrivage_id !== a.id; }).concat(relu.rows);
-    toast('Réception NON validée : FOB ou revient de l\'arrivage modifié — vérifiez le nouvel aperçu puis validez de nouveau', 'err');
+    toast('Réception NON validée : FOB ou revient de l\'arrivage modifié, ou stock d\'un produit changé — vérifiez le nouvel aperçu puis validez de nouveau', 'err');
     arrRendre(); return;
   }
   var j = null, http = 0;
   try {
     var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/valider_reception_arrivage', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()),
-      body: JSON.stringify(arrCorpsValidation(a.id, ls, ARR_ETAT.saisies, vue.empreinte)) });
+      body: JSON.stringify(arrCorpsValidation(a.id, ls, saisies, vue.empreinte)) });
     http = r.status; try { j = await r.json(); } catch(e) {}
   } catch(e) { j = { ok: false, erreur: 'pas de connexion' }; }
   if (!j || j.ok !== true) {
@@ -4331,7 +4414,7 @@ async function arrValider() {
     // v7.5.147 : valeurs de valorisation changées dans la base (taux, frais, FOB, revient actuel…) : rien n'a été écrit ; données
     // relues, saisies gardées, NOUVEL aperçu à vérifier et à confirmer
     if (j && j.erreur === 'valorisation_modifiee') {
-      toast('Réception NON validée : taux, frais, FOB ou revient modifiés depuis l\'aperçu — vérifiez le nouvel aperçu puis validez de nouveau', 'err');
+      toast('Réception NON validée : taux, frais, FOB, revient ou stock modifiés depuis l\'aperçu — vérifiez le nouvel aperçu puis validez de nouveau', 'err');
       await arrCharger(); arrRendre(); return;
     }
     toast('Réception NON validée : ' + msg, 'err');
@@ -4350,10 +4433,15 @@ async function venDefinirPrix(p, prix) {
   if (!p || role !== 'admin' || !(prix > 0)) return false;
   try {
     var r = await fetch(SUPABASE_URL + '/rest/v1/produits?id=eq.' + encodeURIComponent(p.id), { method: 'PATCH',
-      headers: Object.assign({ 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }, arrEntetes()),
+      headers: Object.assign({ 'Content-Type': 'application/json', 'Prefer': 'return=representation' }, arrEntetes()),
       body: JSON.stringify({ prix: prix, prix_vente_defini: true, vendable: true, updated_at: new Date().toISOString() }) });
     if (!r.ok) { toast('Prix NON enregistré (HTTP ' + r.status + ')', 'err'); return false; }
-    p.prix = prix; p.prixDefini = true; p.vendable = true;
+    // v7.5.150 (relecture complète PR 26) : un HTTP 200 sans ligne modifiée (droits, produit introuvable) n'est plus un succès ; seule
+    // la ligne RENVOYÉE par la base (prix > 0, prix défini, vendable) fait foi
+    var rows = null; try { rows = await r.json(); } catch(e) {}
+    var x = (Array.isArray(rows) && rows.length === 1) ? rows[0] : null;
+    if (!x || x.prix_vente_defini !== true || x.vendable !== true || !(parseFloat(x.prix) > 0)) { toast('Prix NON enregistré : la base ne l\'a pas appliqué', 'err'); return false; }
+    p.prix = parseFloat(x.prix); p.prixDefini = true; p.vendable = true;
     toast('Prix de vente fixé : ' + prix + ' € — produit vendable', 'ok');
     if (typeof stkRender === 'function') stkRender(); buildProduitOptions();
     return true;

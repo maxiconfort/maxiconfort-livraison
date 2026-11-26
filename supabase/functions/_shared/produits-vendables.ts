@@ -5,7 +5,9 @@
 
 type LigneProduit = Record<string, any>;
 
-const marque = (r: LigneProduit | undefined) => !!r && (r.vendable === false || r.prix_vente_defini === false);
+// Revue Codex PR 26 sur fd751b8 : prix NULL = non vendable (même règle que l'application et interne.produit_non_vendable ; la base
+// interdit désormais « prix défini » sans prix). Un prix non lu (colonne absente de la lecture) n'est pas NULL : inchangé.
+const marque = (r: LigneProduit | undefined) => !!r && (r.vendable === false || r.prix_vente_defini === false || r.prix === null);
 
 /** Nom (ou référence) NORMALISÉ pour reconnaître un produit sans identifiant (revue Codex PR 26 sur 66def07) : minuscules, sans
  *  accents, « × » lu « x », espaces regroupés, « 140 x 190 » = « 140x190 ». MÊME règle que interne.l039_norm (migration 039) et
@@ -21,7 +23,10 @@ export function idsNonVendables(rows: LigneProduit[]): Set<string> {
   const out = new Set<string>();
   for (const r of rows || []) {
     const compos = Array.isArray(r.composants) ? r.composants : [];
-    if (marque(r) || compos.some((c: any) => marque(parId.get(String(c && c.id))))) out.add(String(r.id));
+    // revue Codex PR 26 sur fd751b8 : composant INTROUVABLE (identifiant renseigné absent des lignes lues) = ensemble NON vendable,
+    // jamais vendable par défaut (même règle que interne.produit_non_vendable)
+    const idDe = (c: any) => (c && c.id != null ? String(c.id) : '');
+    if (marque(r) || compos.some((c: any) => idDe(c) !== '' && (!parId.has(idDe(c)) || marque(parId.get(idDe(c)))))) out.add(String(r.id));
   }
   return out;
 }
@@ -66,5 +71,18 @@ export async function lireCatalogueComplet(
     if (!Array.isArray(lus)) throw new Error('lecture des composants impossible');
     for (const r of lus) if (!connus.has(String(r.id))) { connus.add(String(r.id)); rows.push(r); }
   }
+  // Revue Codex PR 26 sur fd751b8 : un composant DEMANDÉ mais absent de la réponse (identifiant inconnu, lecture tronquée) n'est plus
+  // tenu pour vendable par défaut : l'absence est SIGNALÉE et le catalogue REFUSÉ (exception : l'appelant ne présente jamais un
+  // catalogue incomplet ; JARVIS répond « catalogue illisible », WhatsApp passe tout en « hors catalogue » à vérifier).
+  const introuvables = liste.filter((id) => !connus.has(id));
+  if (introuvables.length) throw new Error('composants introuvables : ' + introuvables.join(', '));
   return rows;
+}
+
+/** Catalogue proposé au rapprochement WhatsApp (revue Codex PR 26 sur fd751b8) : TOUS les produits actifs et vendables, SANS
+ *  plafond (avant : 200 premiers seulement, un produit au-delà n'était jamais reconnu). Le rapprochement (chercherProduit) parcourt
+ *  toute la liste et n'envoie à l'IA que les meilleurs candidats. Pure. */
+export function catalogueWhatsapp(rows: LigneProduit[]): { id: any; nom: any; cat: any; dim: any; prix: any }[] {
+  return produitsVendables(rows).filter((p: any) => p.actif === true)
+    .map((p: any) => ({ id: p.id, nom: p.nom, cat: p.cat, dim: p.dim, prix: p.prix }));
 }

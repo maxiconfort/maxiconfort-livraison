@@ -31,6 +31,8 @@
 --   drop trigger if exists stock_correspondance_vendable_garde on public.stock_correspondance;
 --   drop trigger if exists produits_correspondance_garde on public.produits;
 --   drop trigger if exists produits_vente_garde on public.produits;
+--   alter table public.produits drop constraint if exists produits_prix_defini_non_null;
+--   alter table public.produits drop constraint if exists produits_vendable_prix_defini;
 --   (les tables et colonnes ajoutées peuvent rester : elles sont inoffensives) ; revenir à l'application v7.5.135.
 --   Après une réception validée : le stock ajouté est tracé dans mouvements_stock (type 'entree', source 'arrivage:<réf>') et dans
 --   stock_entrees (motif 'arrivage:<réf>', lu par stock-sync-shopify et JARVIS). La contrainte élargie de stock_entrees.motif peut rester.
@@ -53,18 +55,30 @@ comment on column public.produits.vendable is 'false = jamais proposé à la ven
 comment on column public.produits.reference_interne is 'Référence interne (ex. MC-…), unique si renseignée.';
 comment on column public.produits.caracteristiques is 'Caractéristiques techniques (jsonb), affichage seulement.';
 
--- Un produit est NON VENDABLE s'il est marqué non vendable, sans prix de vente défini, ou si c'est un ensemble dont un
--- composant est non vendable (un niveau, comme getStockDispo dans l'application).
+-- ÉTAT DE VENTE TOUJOURS COHÉRENT (revue Codex PR 26 sur fd751b8) : « prix défini » sans prix (NULL) est interdit — sinon la base
+-- et les fonctions serveur le tenaient pour vendable alors que l'application (prix NULL = « à définir ») ne le proposait pas.
+-- Contraintes (insertion ET modification, toutes origines) + message clair dans le déclencheur produits_vente_garde.
+-- Avant cette migration, prix était NOT NULL : aucune ligne existante ne les viole.
+alter table public.produits drop constraint if exists produits_prix_defini_non_null;
+alter table public.produits add constraint produits_prix_defini_non_null check (not prix_vente_defini or prix is not null);
+alter table public.produits drop constraint if exists produits_vendable_prix_defini;
+alter table public.produits add constraint produits_vendable_prix_defini check (not vendable or prix_vente_defini);
+
+-- Un produit est NON VENDABLE s'il est marqué non vendable, sans prix de vente défini (ou sans prix), ou si c'est un ensemble dont
+-- un composant est non vendable (un niveau, comme getStockDispo dans l'application). Revue Codex PR 26 sur fd751b8 : un composant
+-- INTROUVABLE (identifiant qui ne désigne aucun produit) rend l'ensemble NON VENDABLE — même règle que les fonctions serveur, qui
+-- refusent un catalogue où un composant manque (lireCatalogueComplet) ; avant, il était ignoré, donc vendable par défaut.
 create or replace function interne.produit_non_vendable(p_id text) returns boolean
 language sql stable security definer set search_path = public, pg_catalog as $$
   select exists (
     select 1 from public.produits p
      where p.id = p_id
-       and (not p.vendable or not p.prix_vente_defini
+       and (not p.vendable or not p.prix_vente_defini or p.prix is null
             or (jsonb_typeof(p.composants) = 'array' and exists (
                   select 1 from jsonb_array_elements(p.composants) c
-                    join public.produits q on q.id = c ->> 'id'
-                   where not q.vendable or not q.prix_vente_defini))));
+                    left join public.produits q on q.id = c ->> 'id'
+                   where coalesce(c ->> 'id', '') <> ''
+                     and (q.id is null or not q.vendable or not q.prix_vente_defini or q.prix is null)))));
 $$;
 revoke all on function interne.produit_non_vendable(text) from public, anon, authenticated;
 
@@ -72,9 +86,23 @@ revoke all on function interne.produit_non_vendable(text) from public, anon, aut
 --  * une session collaboratrice ou livreur ne change jamais vendable, prix_vente_defini, reference_interne, caracteristiques ;
 --  * tant que le prix n'est pas défini, une écriture ordinaire ne lui donne pas de prix (l'application envoie 0 par défaut) ;
 --  * passer à « prix défini » exige un prix > 0 ; un produit sans prix défini ne peut pas être vendable.
+-- Décision PURE sur l'état de vente proposé (revue Codex PR 26 sur fd751b8) : NULL = accepté, sinon le motif du refus.
+--   'prix_obligatoire'   : passage de « à définir » à « défini » sans prix > 0 (modification) ;
+--   'prix_null'          : « prix défini » sans prix (insertion OU modification) ;
+--   'sans_prix_vendable' : vendable sans prix de vente défini.
+create or replace function interne.l039_etat_vente_refus(p_op text, p_ancien_defini boolean, p_defini boolean, p_vendable boolean, p_prix numeric)
+returns text language sql immutable as $$
+  select case
+    when p_op = 'UPDATE' and p_ancien_defini is false and p_defini is true and coalesce(p_prix, 0) <= 0 then 'prix_obligatoire'
+    when p_defini is not false and p_prix is null then 'prix_null'
+    when p_vendable is not false and p_defini is false then 'sans_prix_vendable'
+  end
+$$;
+revoke all on function interne.l039_etat_vente_refus(text, boolean, boolean, boolean, numeric) from public, anon, authenticated;
+
 create or replace function interne.produits_vente_garde() returns trigger
 language plpgsql security definer set search_path = public, interne, pg_catalog as $$
-declare r text := (select public.session_role());
+declare r text := (select public.session_role()); v_refus text; v_ex record;
 begin
   if tg_op = 'UPDATE' and r is not null and r <> 'admin' then
     new.vendable := old.vendable;
@@ -87,16 +115,34 @@ begin
     -- création ordinaire depuis l'application : produit vendable avec son prix, comme avant
     new.vendable := true; new.prix_vente_defini := true;
   end if;
+  -- Enregistrement « upsert » de l'application (INSERT … ON CONFLICT, sbSaveProduit) d'un produit DÉJÀ présent dont le prix n'est pas
+  -- encore défini (relecture complète PR 26 sur fd751b8) : la ligne proposée (prix NULL, prix_vente_defini par défaut à true) passe
+  -- par ce déclencheur et par les contraintes AVANT la détection du conflit. Elle reprend donc l'état de vente ACTUEL du produit
+  -- (« à définir », non vendable, prix NULL) : la modification ordinaire (stock, emplacement…) reste possible et ne fixe pas de prix ;
+  -- le déclencheur UPDATE garde ensuite les mêmes règles qu'avant.
+  if tg_op = 'INSERT' then
+    select p.prix_vente_defini, p.vendable, p.prix into v_ex from public.produits p where p.id = new.id;
+    if found and v_ex.prix_vente_defini = false then
+      new.prix_vente_defini := false; new.vendable := v_ex.vendable; new.prix := v_ex.prix;
+    end if;
+  end if;
   if not new.prix_vente_defini then
     if tg_op = 'UPDATE' and old.prix_vente_defini = false then new.prix := old.prix;  -- reste « à définir »
     elsif tg_op = 'INSERT' then new.prix := null;
     end if;
   end if;
+  -- décision PURE (interne.l039_etat_vente_refus, testée par l'auto-contrôle section 10), insertion comme modification
+  v_refus := interne.l039_etat_vente_refus(tg_op, case when tg_op = 'UPDATE' then old.prix_vente_defini end,
+                                           new.prix_vente_defini, new.vendable, new.prix);
   -- passage de « à définir » à « défini » : prix > 0 obligatoire (une création ordinaire, elle, garde son fonctionnement)
-  if tg_op = 'UPDATE' and old.prix_vente_defini = false and new.prix_vente_defini and coalesce(new.prix, 0) <= 0 then
+  if v_refus = 'prix_obligatoire' then
     raise exception 'PRIX DE VENTE : un prix supérieur à 0 est obligatoire pour définir le prix de « % »', new.nom using errcode = 'P0001';
   end if;
-  if new.vendable and not new.prix_vente_defini then
+  -- revue Codex PR 26 sur fd751b8 : « prix défini » sans prix (NULL) refusé (la base l'aurait tenu pour vendable)
+  if v_refus = 'prix_null' then
+    raise exception 'PRIX DE VENTE : « % » est marqué « prix défini » sans prix (NULL) : refusé', new.nom using errcode = 'P0001';
+  end if;
+  if v_refus = 'sans_prix_vendable' then
     raise exception 'PRODUIT NON VENDABLE : « % » n''a pas de prix de vente défini', new.nom using errcode = 'P0001';
   end if;
   return new;
@@ -452,20 +498,24 @@ language sql immutable as $$ select p_charge is null or (p_calcule is not null a
 -- entre cet aperçu et la validation, le revient appliqué ne serait plus celui qu'il a vu. L'application envoie donc le TEXTE des
 -- valeurs affichées (même construction que arrEmpreinte, maxiconfort-v7.html) ; valider_reception_arrivage le recalcule APRÈS les
 -- verrous et REFUSE (« valorisation_modifiee », rien n'est écrit) s'il diffère : nouvel aperçu et nouvelle confirmation obligatoires.
--- Le stock courant n'y entre pas (il bouge à chaque vente ; la réception s'ajoute au stock réel du moment).
+-- v2 (revue Codex PR 26 sur fd751b8) : le STOCK ACTUEL de chaque produit de l'arrivage y entre aussi — le CUMP et l'aperçu en
+-- dépendent (stock_avant) : une vente entre l'aperçu et la validation changerait le revient appliqué. Stock changé → refus,
+-- nouvel aperçu et nouvelle confirmation (le stock est lu ici après le verrou des produits : il ne peut plus bouger ensuite).
 -- Nombres à ÉCHELLE FIXE (celle des colonnes : taux 6, frais 2, FOB et revients 4 décimales), vide si absent. Pures.
 create or replace function interne.l039_fmt(p numeric, p_dec integer) returns text
 language sql immutable as $$ select coalesce(round(p, p_dec)::text, '') $$;
--- p_lignes = [{"id", "produit_id", "quantite_attendue", "fob_unitaire", "revient_unitaire_ht", "revient_avant", "revient_avant_provisoire"}, …]
+-- p_lignes = [{"id", "produit_id", "quantite_attendue", "fob_unitaire", "revient_unitaire_ht", "revient_avant", "revient_avant_provisoire",
+--             "stock_avant"}, …]
 create or replace function interne.l039_empreinte(p_methode text, p_taux numeric, p_frais numeric, p_prov boolean, p_lignes jsonb) returns text
 language sql immutable as $$
-  select 'v1|' || coalesce(p_methode, '') || '|' || interne.l039_fmt(p_taux, 6) || '|' || interne.l039_fmt(p_frais, 2) || '|'
+  select 'v2|' || coalesce(p_methode, '') || '|' || interne.l039_fmt(p_taux, 6) || '|' || interne.l039_fmt(p_frais, 2) || '|'
       || case when p_prov then 't' else 'f' end
       || coalesce((select string_agg('|' || coalesce(e ->> 'id', '') || ':' || coalesce(e ->> 'produit_id', '') || ':'
                                      || coalesce(e ->> 'quantite_attendue', '') || ':' || interne.l039_fmt((e ->> 'fob_unitaire')::numeric, 4) || ':'
                                      || interne.l039_fmt((e ->> 'revient_unitaire_ht')::numeric, 4) || ':'
                                      || interne.l039_fmt((e ->> 'revient_avant')::numeric, 4) || ':'
-                                     || case (e ->> 'revient_avant_provisoire')::boolean when true then 't' when false then 'f' else '' end,
+                                     || case (e ->> 'revient_avant_provisoire')::boolean when true then 't' when false then 'f' else '' end || ':'
+                                     || coalesce(e ->> 'stock_avant', ''),
                                      '' order by (e ->> 'id')::bigint)
                      from jsonb_array_elements(case when jsonb_typeof(p_lignes) = 'array' then p_lignes else '[]'::jsonb end) e), '')
 $$;
@@ -475,8 +525,10 @@ language sql stable security definer set search_path = public, interne, pg_catal
   select interne.l039_empreinte(p_methode, a.taux_change, a.frais_import_ht, a.taux_provisoire,
            (select jsonb_agg(jsonb_build_object('id', l.id, 'produit_id', l.produit_id, 'quantite_attendue', l.quantite_attendue,
                      'fob_unitaire', l.fob_unitaire, 'revient_unitaire_ht', l.revient_unitaire_ht,
-                     'revient_avant', r.prix_revient_ht, 'revient_avant_provisoire', r.provisoire))
+                     'revient_avant', r.prix_revient_ht, 'revient_avant_provisoire', r.provisoire,
+                     'stock_avant', coalesce(p.stock, 0)::integer))
               from public.arrivage_lignes l left join public.produits_revient r on r.produit_id = l.produit_id
+                   left join public.produits p on p.id = l.produit_id
              where l.arrivage_id = a.id))
     from public.arrivages a where a.id = p_arrivage_id
 $$;
@@ -552,7 +604,8 @@ begin
   perform 1 from public.produits where id in (select produit_id from public.arrivage_lignes where arrivage_id = a.id) order by id for update;
   perform 1 from public.produits_revient where produit_id in (select produit_id from public.arrivage_lignes where arrivage_id = a.id) order by produit_id for update;
   -- valeurs de valorisation VUES dans l'aperçu (revue Codex PR 26 sur 17f631a) : comparées ici, tous verrous pris et AVANT toute
-  -- écriture ; FOB, taux, frais, quantités, revient chargé, revient actuel ou méthode changés → refus, nouvel aperçu à confirmer
+  -- écriture ; FOB, taux, frais, quantités, revient chargé, revient actuel, STOCK actuel (v2, revue sur fd751b8) ou méthode changés
+  -- → refus, nouvel aperçu à confirmer
   if p_empreinte is distinct from interne.l039_empreinte_valorisation(a.id, v_methode) then
     return json_build_object('ok', false, 'erreur', 'valorisation_modifiee');
   end if;
@@ -567,11 +620,12 @@ begin
     select e into s from jsonb_array_elements(p_lignes) e where e ->> 'ligne_id' = l.id::text;
     if s is null then raise exception 'SAISIE MANQUANTE pour la ligne %', l.id using errcode = 'P0001'; end if;
     begin
-      v_rec := (s ->> 'recue')::integer; v_end := coalesce((s ->> 'endommagee')::integer, 0); v_man := coalesce((s ->> 'manquante')::integer, 0);
+      -- relecture complète PR 26 : les TROIS quantités sont obligatoires (avant : endommagé ou manquant absent = 0 par défaut)
+      v_rec := (s ->> 'recue')::integer; v_end := (s ->> 'endommagee')::integer; v_man := (s ->> 'manquante')::integer;
     exception when others then raise exception 'SAISIE INVALIDE pour la ligne % (nombres entiers attendus)', l.id using errcode = 'P0001';
     end;
-    if v_rec is null or v_rec < 0 or v_end < 0 or v_man < 0 then
-      raise exception 'SAISIE INVALIDE pour la ligne % (quantités positives ou nulles)', l.id using errcode = 'P0001';
+    if v_rec is null or v_end is null or v_man is null or v_rec < 0 or v_end < 0 or v_man < 0 then
+      raise exception 'SAISIE INVALIDE pour la ligne % (trois quantités entières, positives ou nulles, obligatoires)', l.id using errcode = 'P0001';
     end if;
     if v_rec + v_end + v_man <> l.quantite_attendue then
       raise exception 'CONTRÔLE : ligne % — reçu % + endommagé % + manquant % ≠ attendu %', l.id, v_rec, v_end, v_man, l.quantite_attendue using errcode = 'P0001';
@@ -820,10 +874,25 @@ begin
   if interne.l039_ligne_identifiee('{"produit":"Libre"}', '[]') is distinct from '{"produit":"Libre"}'::jsonb then f := 'ligne libre inchangée'; end if;
   -- empreinte de valorisation : MÊME texte attendu que arrEmpreinte (application, banc outils/test-arrivage.js)
   if interne.l039_empreinte('CUMP', 1.1, 30, true,
-       '[{"id":72,"produit_id":"pr-n","quantite_attendue":40,"fob_unitaire":20,"revient_unitaire_ht":null,"revient_avant":null,"revient_avant_provisoire":null},
-         {"id":71,"produit_id":"pr-a","quantite_attendue":30,"fob_unitaire":10.5,"revient_unitaire_ht":12.25,"revient_avant":40,"revient_avant_provisoire":false}]')
-       is distinct from 'v1|CUMP|1.100000|30.00|t|71:pr-a:30:10.5000:12.2500:40.0000:f|72:pr-n:40:20.0000:::'
+       '[{"id":72,"produit_id":"pr-n","quantite_attendue":40,"fob_unitaire":20,"revient_unitaire_ht":null,"revient_avant":null,"revient_avant_provisoire":null,"stock_avant":0},
+         {"id":71,"produit_id":"pr-a","quantite_attendue":30,"fob_unitaire":10.5,"revient_unitaire_ht":12.25,"revient_avant":40,"revient_avant_provisoire":false,"stock_avant":10}]')
+       is distinct from 'v2|CUMP|1.100000|30.00|t|71:pr-a:30:10.5000:12.2500:40.0000:f:10|72:pr-n:40:20.0000::::0'
     then f := 'empreinte de valorisation'; end if;
+  -- v2 (revue Codex sur fd751b8) : stock actuel d'un produit changé (vente entre l'aperçu et la validation) → empreinte différente
+  if interne.l039_empreinte('CUMP', 1.1, 30, true, '[{"id":71,"produit_id":"pr-a","quantite_attendue":30,"fob_unitaire":10.5,"stock_avant":10}]')
+     = interne.l039_empreinte('CUMP', 1.1, 30, true, '[{"id":71,"produit_id":"pr-a","quantite_attendue":30,"fob_unitaire":10.5,"stock_avant":9}]')
+    then f := 'empreinte : stock changé'; end if;
+  -- état de vente (revue Codex sur fd751b8) : insertion et modification
+  if interne.l039_etat_vente_refus('INSERT', null, true, true, null) is distinct from 'prix_null' then f := 'insertion prix défini sans prix'; end if;
+  if interne.l039_etat_vente_refus('UPDATE', true, true, true, null) is distinct from 'prix_null' then f := 'modification prix retiré, prix défini'; end if;
+  if interne.l039_etat_vente_refus('UPDATE', true, true, false, null) is distinct from 'prix_null' then f := 'modification non vendable, prix défini sans prix'; end if;
+  if interne.l039_etat_vente_refus('UPDATE', false, true, true, null) is distinct from 'prix_obligatoire' then f := 'modification prix défini sans prix'; end if;
+  if interne.l039_etat_vente_refus('UPDATE', false, true, true, 0) is distinct from 'prix_obligatoire' then f := 'modification prix défini à 0'; end if;
+  if interne.l039_etat_vente_refus('INSERT', null, false, true, null) is distinct from 'sans_prix_vendable' then f := 'insertion vendable sans prix défini'; end if;
+  if interne.l039_etat_vente_refus('INSERT', null, false, false, null) is not null then f := 'insertion à définir non vendable acceptée'; end if;
+  if interne.l039_etat_vente_refus('INSERT', null, true, true, 0) is not null then f := 'création ordinaire (prix 0) acceptée'; end if;
+  if interne.l039_etat_vente_refus('UPDATE', false, true, true, 120) is not null then f := 'prix fixé (> 0) accepté'; end if;
+  if interne.l039_etat_vente_refus('UPDATE', true, true, false, 90) is not null then f := 'retrait de la vente accepté'; end if;
   if interne.l039_empreinte('CUMP', 1.1, 30, true, '[]') = interne.l039_empreinte('CUMP', 1.2, 30, true, '[]') then f := 'empreinte : taux changé'; end if;
   if interne.l039_empreinte('CUMP', 1.1, 30, true, '[]') = interne.l039_empreinte('CUMP', 1.1, 31, true, '[]') then f := 'empreinte : frais changés'; end if;
   if interne.l039_fmt(null, 4) <> '' or interne.l039_fmt(21, 4) <> '21.0000' then f := 'nombre à échelle fixe'; end if;

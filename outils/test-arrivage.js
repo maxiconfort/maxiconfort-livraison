@@ -42,6 +42,25 @@ function paginer(url, rows, plafond) {
   const off = Number(u.searchParams.get('offset') || 0), lim = Math.min(Number(u.searchParams.get('limit') || 1e9), plafond || 1000);
   return r.slice(off, off + lim);
 }
+// v7.5.150 : stock des produits lus par identifiants (produits?select=id,stock&id=in.(…)) — réponse de la base FICTIVE = stock des
+// produits du bac (produits inactifs ou modifiés : option stocksBase), par pages. Revients et stock entrant des réponses de test
+// tiennent sur une page : la page suivante (offset > 0) est vide, comme la base.
+function idsDuFiltre(url, champ) {
+  const v = new URL(url).searchParams.get(champ); if (!v) return null;
+  return v.slice(v.indexOf('(') + 1, v.lastIndexOf(')')).split(',').map(x => JSON.parse(x));
+}
+function stocksParDefaut(url, bac, o) {
+  if (!url.includes('/rest/v1/produits?select=id,stock')) return null;
+  if (o.lectureStocks) return o.lectureStocks(url);
+  const ids = idsDuFiltre(url, 'id') || [];
+  const base = o.stocksBase ? o.stocksBase() : bac.produits.map(p => ({ id: p.id, stock: p.stock }));
+  return { ok: true, status: 200, corps: paginer(url, base.filter(p => ids.includes(p.id)).sort((x, y) => (x.id < y.id ? -1 : 1))) };
+}
+function pagesSuivantes(url) {
+  const u = new URL(url);
+  if ((url.includes('/produits_revient?') || url.includes('/rpc/stock_entrant?')) && Number(u.searchParams.get('offset') || 0) > 0) return { ok: true, status: 200, corps: [] };
+  return null;
+}
 function nouveauBac(opts) {
   const o = opts || {}, appels = [], toasts = [], elts = {};
   const el = (id) => elts[id] || (elts[id] = { id, innerHTML: '', textContent: '', disabled: false, style: {}, value: '' });
@@ -52,7 +71,7 @@ function nouveauBac(opts) {
     confirm: () => o.confirmer !== false, toast: (m, t) => toasts.push({ m, t }), paiEur: (n) => (Math.round(n * 100) / 100) + ' €',
     stkRender() {}, stkApplyRoleVisibility() {}, sbLoadProduits: async () => {}, sbSaveEchec() {},
     fetch: async (url, init) => { appels.push({ url, methode: (init && init.method) || 'GET', body: init && init.body ? JSON.parse(init.body) : null });
-      const rep = o.repondre ? o.repondre(url, init) : { ok: true, status: 200, corps: [] };
+      const rep = stocksParDefaut(url, bac, o) || (o.pagination ? null : pagesSuivantes(url)) || (o.repondre ? o.repondre(url, init) : { ok: true, status: 200, corps: [] });
       return { ok: rep.ok, status: rep.status, json: async () => rep.corps, text: async () => JSON.stringify(rep.corps) }; } };
   vm.createContext(bac);
   vm.runInContext(extraireBloc('// AO-DEBUT', '// AO-FIN'), bac);
@@ -200,9 +219,9 @@ function nouveauBac(opts) {
   test('règle commune : composant INACTIF non vendable pris en compte (catalogue complet lu avant le filtre « actif »)', !vend.includes('e-inactif'), vend);
   test('règle commune : colonnes absentes (avant migration) = tout vendable', pv.produitsVendables([{ id: 'z' }, { id: 'y', composants: [{ id: 'z' }] }]).length === 2);
   test('rapprochement WhatsApp : lecture COMPLÈTE (pages + composants par identifiants), règle commune, puis produits actifs',
-    wa.includes("import { lireCatalogueComplet, produitsVendables } from '../_shared/produits-vendables.ts';")
+    wa.includes("import { catalogueWhatsapp, lireCatalogueComplet } from '../_shared/produits-vendables.ts';")
     && /\.eq\('actif', true\)\.order\('id'\)\.range\(debut, fin\)/.test(wa) && /\.select\('\*'\)\.in\('id', ids\)/.test(wa)
-    && /produitsVendables\(rows\)\.filter\(\(p: any\) => p\.actif === true\)/.test(wa) && !/\.limit\(1000\)/.test(wa));
+    && /return catalogueWhatsapp\(rows\);/.test(wa) && !/\.limit\(1000\)/.test(wa) && !/slice\(0, 200\)/.test(wa));
   test('rapprochement WhatsApp : erreur de lecture → catalogue VIDE (jamais partiel)', /catch \(e\) \{\s*console\.error\('chargerCatalogue : lecture impossible', e\);\s*return \[\];/.test(wa));
   {
     // revue Codex sur 82a9b09 : 1 500 produits actifs (au-delà de l'ancien plafond de 1 000), ensemble en DERNIÈRE page dont le
@@ -529,11 +548,13 @@ function nouveauBac(opts) {
     const arrV = () => Object.assign(arrivage('en_attente'), { taux_change: 1.1, frais_import_ht: 30, taux_provisoire: true });
     const lignesV = () => [{ id: 72, arrivage_id: 7, produit_id: 'pr-n', quantite_attendue: 40, fob_unitaire: 20, revient_unitaire_ht: null },
       { id: 71, arrivage_id: 7, produit_id: 'pr-a', quantite_attendue: 30, fob_unitaire: 10.5, revient_unitaire_ht: 12.25 }];
+    // v7.5.150 : empreinte v2, stock des produits du catalogue fictif (pr-a : 10, pr-n : 0)
+    const emp = (a, l, r, m, st) => bac.arrEmpreinte(a, l, r, m, st || null, bac.produits);
     const revV = { 'pr-a': { produit_id: 'pr-a', prix_revient_ht: 40, provisoire: false } };
-    test('empreinte : MÊME texte que l\'auto-contrôle SQL (interne.l039_empreinte)', bac.arrEmpreinte(arrV(), lignesV(), revV, 'CUMP') === 'v1|CUMP|1.100000|30.00|t|71:pr-a:30:10.5000:12.2500:40.0000:f|72:pr-n:40:20.0000:::'
-      && auto10.includes("is distinct from 'v1|CUMP|1.100000|30.00|t|71:pr-a:30:10.5000:12.2500:40.0000:f|72:pr-n:40:20.0000:::'"), bac.arrEmpreinte(arrV(), lignesV(), revV, 'CUMP'));
-    test('empreinte : nombres reçus en texte ou en nombre → même empreinte (échelle fixe)', bac.arrEmpreinte(Object.assign(arrV(), { taux_change: '1.100000', frais_import_ht: '30.00' }), lignesV(), revV, 'CUMP') === bac.arrEmpreinte(arrV(), lignesV(), revV, 'CUMP'));
-    const base0 = bac.arrEmpreinte(arrV(), lignesV(), revV, 'CUMP');
+    test('empreinte : MÊME texte que l\'auto-contrôle SQL (interne.l039_empreinte)', emp(arrV(), lignesV(), revV, 'CUMP') === 'v2|CUMP|1.100000|30.00|t|71:pr-a:30:10.5000:12.2500:40.0000:f:10|72:pr-n:40:20.0000::::0'
+      && auto10.includes("is distinct from 'v2|CUMP|1.100000|30.00|t|71:pr-a:30:10.5000:12.2500:40.0000:f:10|72:pr-n:40:20.0000::::0'"), emp(arrV(), lignesV(), revV, 'CUMP'));
+    test('empreinte : nombres reçus en texte ou en nombre → même empreinte (échelle fixe)', emp(Object.assign(arrV(), { taux_change: '1.100000', frais_import_ht: '30.00' }), lignesV(), revV, 'CUMP') === emp(arrV(), lignesV(), revV, 'CUMP'));
+    const base0 = emp(arrV(), lignesV(), revV, 'CUMP');
     const varie = [['FOB', arrV(), lignesV().map(l => l.id === 71 ? Object.assign(l, { fob_unitaire: 10.6 }) : l), revV, 'CUMP'],
       ['taux', Object.assign(arrV(), { taux_change: 1.12 }), lignesV(), revV, 'CUMP'], ['frais', Object.assign(arrV(), { frais_import_ht: 31 }), lignesV(), revV, 'CUMP'],
       ['taux provisoire', Object.assign(arrV(), { taux_provisoire: false }), lignesV(), revV, 'CUMP'],
@@ -543,11 +564,12 @@ function nouveauBac(opts) {
       ['revient actuel devenu provisoire', arrV(), lignesV(), { 'pr-a': { prix_revient_ht: 40, provisoire: true } }, 'CUMP'],
       ['méthode', arrV(), lignesV(), revV, 'DERNIER_PRIX']];
     test('empreinte : FOB, taux, frais, taux provisoire, quantités, revient chargé, revient actuel, méthode → empreinte différente',
-      varie.every(v => bac.arrEmpreinte(v[1], v[2], v[3], v[4]) !== base0), varie.filter(v => bac.arrEmpreinte(v[1], v[2], v[3], v[4]) === base0).map(v => v[0]));
-    test('empreinte : ordre des lignes sans effet', bac.arrEmpreinte(arrV(), lignesV().reverse(), revV, 'CUMP') === base0);
+      varie.every(v => emp(v[1], v[2], v[3], v[4]) !== base0), varie.filter(v => emp(v[1], v[2], v[3], v[4]) === base0).map(v => v[0]));
+    test('empreinte : ordre des lignes sans effet', emp(arrV(), lignesV().reverse(), revV, 'CUMP') === base0);
     // écran : l'empreinte de l'aperçu affiché est envoyée à la base
     const repV = (opts) => (url) => url.includes('/rpc/valider_reception_arrivage') ? { ok: true, status: 200, corps: (opts && opts.rpc) || { ok: true, total_recu: 70 } }
-      : url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: paginer(url, (opts && opts.lignes) || lignesV()) } : { ok: true, status: 200, corps: [] };
+      : url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: paginer(url, (opts && opts.lignes) || lignesV()) }
+      : url.includes('/produits_revient?') ? { ok: true, status: 200, corps: paginer(url, (opts && opts.revients) || Object.values(revV)) } : { ok: true, status: 200, corps: [] };
     const ouvrirV = (B) => { B.bac.ARR_ETAT.arrivages = [arrV()]; B.bac.ARR_ETAT.lignes = lignesV(); B.bac.ARR_ETAT.revients = JSON.parse(JSON.stringify(revV)); B.bac.arrOuvrir(7); };
     B = nouveauBac({ repondre: repV() }); ouvrirV(B); await B.bac.arrValider();
     let rpc = B.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage'));
@@ -571,7 +593,7 @@ function nouveauBac(opts) {
       : url.includes('/produits_revient?') ? { ok: true, status: 200, corps: [revV['pr-a']] } : { ok: true, status: 200, corps: [] } });
     ouvrirV(B); B.bac.arrSaisie(71, 'recue', '29'); B.bac.arrSaisie(71, 'manquante', '1'); await B.bac.arrValider();
     test('base : « valorisation_modifiee » → message clair, données relues (taux 1,2), nouvel aperçu, saisies gardées',
-      B.toasts.some(t => /taux, frais, FOB ou revient modifiés depuis l'aperçu/.test(t.m)) && B.bac.ARR_ETAT.arrivages[0].taux_change === 1.2
+      B.toasts.some(t => /taux, frais, FOB, revient ou stock modifiés depuis l'aperçu/.test(t.m)) && B.bac.ARR_ETAT.arrivages[0].taux_change === 1.2
       && B.bac.ARR_ETAT.vue && B.bac.ARR_ETAT.vue.empreinte !== base0 && String(B.bac.ARR_ETAT.saisies[71].recue) === '29' && B.bac.ARR_ETAT.envoi === false, B.toasts);
     // valeurs changées en mémoire sans nouvel affichage (ex. revients rechargés par l'inventaire) : aucun envoi, aperçu refait
     B = nouveauBac({ repondre: repV() }); ouvrirV(B); B.bac.ARR_ETAT.revients['pr-a'].prix_revient_ht = 45; await B.bac.arrValider();
@@ -591,9 +613,174 @@ function nouveauBac(opts) {
     test('base : auto-contrôle EXÉCUTÉ de l\'empreinte (texte attendu, taux et frais changés, échelle fixe)', ['empreinte de valorisation', 'empreinte : taux changé', 'empreinte : frais changés', 'nombre à échelle fixe'].every(c => auto10.includes("f := '" + c + "'")));
   }
 
+  console.log('\n8 sexies. REVUE CODEX SUR fd751b8 (état de vente, stock dans l\'empreinte, lignes figées, catalogue complet, saisies figées, revients paginés)');
+  {
+    const sqlS = sql;
+    const auto10 = sqlS.slice(sqlS.indexOf('-- 10. Auto-contrôle à l\'application : revient d\'un lot'));
+    const pvS = await import('file:///' + path.join(racine, 'supabase', 'functions', '_shared', 'produits-vendables.ts').replace(/\\/g, '/'));
+    let { bac } = nouveauBac();
+    // --- 1. prix NULL + « prix défini » interdit (insertion ET modification), prix NULL = non vendable partout ---
+    test('base : contraintes « prix défini ⇒ prix renseigné » et « vendable ⇒ prix défini » (insertion et modification)',
+      sqlS.includes('add constraint produits_prix_defini_non_null check (not prix_vente_defini or prix is not null);')
+      && sqlS.includes('add constraint produits_vendable_prix_defini check (not vendable or prix_vente_defini);'));
+    const garde = sqlS.slice(sqlS.indexOf('create or replace function interne.produits_vente_garde()'), sqlS.indexOf('create trigger produits_vente_garde'));
+    test('base : déclencheur produits_vente_garde — décision PURE l039_etat_vente_refus (insertion et modification), message « prix NULL »',
+      garde.includes('v_refus := interne.l039_etat_vente_refus(tg_op,') && garde.includes("if v_refus = 'prix_null' then") && garde.includes('sans prix (NULL) : refusé')
+      && sqlS.includes('revoke all on function interne.l039_etat_vente_refus(text, boolean, boolean, boolean, numeric) from public, anon, authenticated;'));
+    test('base : auto-contrôle EXÉCUTÉ de l\'état de vente (insertion et modification, prix NULL, 0, prix fixé, retrait)',
+      ['insertion prix défini sans prix', 'modification prix retiré, prix défini', 'modification non vendable, prix défini sans prix', 'modification prix défini sans prix',
+       'modification prix défini à 0', 'insertion vendable sans prix défini', 'création ordinaire (prix 0) acceptée', 'prix fixé (> 0) accepté', 'retrait de la vente accepté'].every(c => auto10.includes("f := '" + c + "'")));
+    test('base : upsert de l\'application (sbSaveProduit) d\'un produit « à définir » existant : état de vente actuel repris AVANT les contraintes',
+      garde.indexOf("select p.prix_vente_defini, p.vendable, p.prix into v_ex from public.produits p where p.id = new.id;") > garde.indexOf("if tg_op = 'INSERT' and r is not null and r <> 'admin' then")
+      && garde.includes('new.prix_vente_defini := false; new.vendable := v_ex.vendable; new.prix := v_ex.prix;')
+      && garde.indexOf('new.prix := v_ex.prix;') < garde.indexOf('v_refus := interne.l039_etat_vente_refus('));
+    const nvF = sqlS.slice(sqlS.indexOf('create or replace function interne.produit_non_vendable'), sqlS.indexOf('revoke all on function interne.produit_non_vendable'));
+    test('base : produit_non_vendable — prix NULL et composant INTROUVABLE = non vendable', nvF.includes('or p.prix is null') && nvF.includes('left join public.produits q') && nvF.includes('q.id is null or not q.vendable'));
+    test('appli : prix NULL = prix non défini (même « prix défini » en base)', bac.venDepuisBase({ prix: null, prix_vente_defini: true }).prixDefini === false && bac.venDepuisBase({ prix: 10 }).prixDefini === true);
+    test('serveur : prix NULL = non vendable ; prix non lu (colonne absente) inchangé', pvS.produitsVendables([{ id: 'p', prix: null, prix_vente_defini: true }]).length === 0
+      && pvS.produitsVendables([{ id: 'q' }]).length === 1);
+
+    // --- 2. stock dans l'empreinte ---
+    const arrS = () => Object.assign(arrivage('en_attente'), { taux_change: 1.1, frais_import_ht: 30, taux_provisoire: true });
+    const lignesS = () => [{ id: 71, arrivage_id: 7, produit_id: 'pr-a', quantite_attendue: 30, fob_unitaire: 10.5, revient_unitaire_ht: null }];
+    const revS = { 'pr-a': { produit_id: 'pr-a', prix_revient_ht: 40, provisoire: false } };
+    const e10 = bac.arrEmpreinte(arrS(), lignesS(), revS, 'CUMP', null, bac.produits);
+    test('empreinte v2 : stock actuel du produit inclus (10 en stock)', e10.startsWith('v2|') && e10.endsWith(':f:10'), e10);
+    test('empreinte v2 : stock changé (vente) → empreinte différente ; stock lu en base prioritaire sur le catalogue',
+      bac.arrEmpreinte(arrS(), lignesS(), revS, 'CUMP', { 'pr-a': 9 }, bac.produits) !== e10 && bac.arrEmpreinte(arrS(), lignesS(), revS, 'CUMP', { 'pr-a': 9 }, bac.produits).endsWith(':f:9'));
+    const empV = sqlS.slice(sqlS.indexOf('create or replace function interne.l039_empreinte_valorisation'), sqlS.indexOf('revoke all on function interne.l039_fmt'));
+    test('base : empreinte v2 lue avec le stock du produit (après le verrou produits) ; auto-contrôle « stock changé »',
+      empV.includes("'stock_avant', coalesce(p.stock, 0)::integer") && empV.includes('left join public.produits p on p.id = l.produit_id')
+      && sqlS.includes("select 'v2|' || coalesce(p_methode, '')") && auto10.includes("f := 'empreinte : stock changé'"));
+    const repS = (opts) => (url) => url.includes('/rpc/valider_reception_arrivage') ? { ok: true, status: 200, corps: { ok: true, total_recu: 30 } }
+      : url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: paginer(url, (opts && opts.lignes) || lignesS()) }
+      : url.includes('/produits_revient?') ? { ok: true, status: 200, corps: paginer(url, Object.values(revS)) }
+      : url.includes('/arrivages?') ? { ok: true, status: 200, corps: paginer(url, [arrS()]) } : { ok: true, status: 200, corps: [] };
+    const ouvrirS = (B) => { B.bac.ARR_ETAT.arrivages = [arrS()]; B.bac.ARR_ETAT.lignes = lignesS(); B.bac.ARR_ETAT.revients = JSON.parse(JSON.stringify(revS)); B.bac.arrOuvrir(7); };
+    let stockBase = 10, nbConf = 0;
+    let B = nouveauBac({ repondre: repS(), stocksBase: () => [{ id: 'pr-a', stock: stockBase }, { id: 'pr-n', stock: 0 }] });
+    B.bac.confirm = () => { nbConf++; return true; };
+    ouvrirS(B); const vueAvant = B.bac.ARR_ETAT.vue.empreinte; stockBase = 9; await B.bac.arrValider();
+    test('vente entre l\'aperçu et la validation (stock 10 → 9) : rien n\'est envoyé, stock relu, nouvel aperçu',
+      !B.appels.some(a => a.url.includes('/rpc/')) && B.toasts.some(t => /stock d'un produit changé/.test(t.m)) && B.bac.ARR_ETAT.stocks['pr-a'] === 9
+      && B.bac.ARR_ETAT.vue.empreinte !== vueAvant && B.bac.ARR_ETAT.vue.empreinte.endsWith(':f:9') && B.bac.ARR_ETAT.envoi === false, B.toasts);
+    test('… aperçu recalculé sur le nouveau stock (9 → 39 ; CUMP (9 × 40 + 30 × revient du lot) / 39)',
+      B.bac.arrApercu(B.bac.arrLignesValorisees(arrS(), lignesS()), B.bac.ARR_ETAT.saisies, B.bac.produits, B.bac.ARR_ETAT.revients, 'CUMP', B.bac.ARR_ETAT.stocks)[0].stockApres === 39);
+    await B.bac.arrValider();
+    let rpcS = B.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage'));
+    test('… puis nouvelle validation : NOUVELLE confirmation, empreinte avec le stock 9 envoyée', nbConf === 2 && rpcS.length === 1 && rpcS[0].body.p_empreinte.endsWith(':f:9'), { nbConf, n: rpcS.length });
+    B = nouveauBac({ repondre: repS(), lectureStocks: () => ({ ok: false, status: 503, corps: null }) }); ouvrirS(B); await B.bac.arrValider();
+    test('stock des produits illisible juste avant l\'envoi : rien n\'est envoyé, message clair', !B.appels.some(a => a.url.includes('/rpc/')) && B.toasts.some(t => /stock ou revient des produits illisible/.test(t.m)) && B.bac.ARR_ETAT.envoi === false, B.toasts);
+    B = nouveauBac({ repondre: repS(), stocksBase: () => [] }); ouvrirS(B); await B.bac.arrValider();
+    test('produit de l\'arrivage introuvable dans la base : rien n\'est envoyé (jamais un stock 0 par défaut)', !B.appels.some(a => a.url.includes('/rpc/')) && B.toasts.some(t => /produit introuvable : pr-a/.test(t.m)), B.toasts);
+    // produit INACTIF (absent du catalogue chargé par l'appli) : son stock est lu explicitement par identifiant
+    const lignesX = () => [{ id: 91, arrivage_id: 7, produit_id: 'pr-inactif', quantite_attendue: 5, fob_unitaire: 10, revient_unitaire_ht: null }];
+    B = nouveauBac({ repondre: repS({ lignes: lignesX() }), stocksBase: () => [{ id: 'pr-inactif', stock: 4 }] });
+    await B.bac.arrCharger();
+    const apX = B.bac.arrApercu(lignesX(), B.bac.arrSaisiesInitiales(lignesX()), B.bac.produits, {}, 'CUMP', B.bac.ARR_ETAT.stocks);
+    test('chargement : stock des produits de l\'arrivage lu par identifiants (produit inactif : 4 → 9), filtre in.(…) entre guillemets',
+      !B.bac.ARR_ETAT.erreur && B.bac.ARR_ETAT.stocks['pr-inactif'] === 4 && apX[0].stockAvant === 4 && apX[0].stockApres === 9
+      && B.appels.some(a => a.url.includes('/rest/v1/produits?select=id,stock&id=' + encodeURIComponent('in.("pr-inactif")') + '&order=id.asc')), { e: B.bac.ARR_ETAT.erreur, s: B.bac.ARR_ETAT.stocks });
+    test('filtre in.(…) : guillemets et barres obliques inverses échappés', bac.arrInIds(['a,b', 'x"y', 'c\\d']) === 'in.("a,b","x\\"y","c\\\\d")', bac.arrInIds(['a,b', 'x"y', 'c\\d']));
+
+    // --- 3. lignes figées dans l'appli : même comparaison que la base ---
+    const nvL = (o) => Object.assign({ produitId: 'pr-n', produit: 'Matelas Nouveau N (fictif)', qte: 1, prixUnit: 0, prixBrut: 0, remiseLigne: 0, sousTotal: 0 }, o || {});
+    const okL = (o) => Object.assign({ produitId: 'pr-a', produit: 'Matelas Fictif A 140×190', qte: 1, prixUnit: 100, prixBrut: 100, remiseLigne: 0, sousTotal: 100 }, o || {});
+    const anc = { lignes: [nvL(), okL()] }, cat = bac.produits, NV = ['Matelas Nouveau N (fictif)'];
+    const cas = [
+      ['commande inchangée → acceptée', [nvL(), okL()], anc, []],
+      ['ordre changé et produit vendable modifié → accepté', [okL({ qte: 3, prixBrut: 300, sousTotal: 300 }), nvL()], anc, []],
+      ['toutes les lignes du produit non vendable retirées → accepté', [okL()], anc, []],
+      ['quantité en texte « 1 » ou 0 (= 1 comme l\'appli) → acceptée', [nvL({ qte: '1' }), okL()], { lignes: [nvL({ qte: 0 }), okL()] }, []],
+      ['quantité modifiée (1 → 2) → refusée', [nvL({ qte: 2 }), okL()], anc, NV],
+      ['NOUVELLE occurrence du même produit → refusée', [nvL(), nvL(), okL()], anc, NV],
+      ['prix modifié → refusé', [nvL({ prixUnit: 5, prixBrut: 5, sousTotal: 5 }), okL()], anc, NV],
+      ['remise modifiée → refusée', [nvL({ remiseLigne: 10 }), okL()], anc, NV],
+      ['une occurrence retirée sur deux → refusée', [nvL(), okL()], { lignes: [nvL(), nvL(), okL()] }, NV],
+      ['commande nouvelle → refusée', [nvL()], null, NV],
+      ['ligne au seul NOM du produit non vendable, quantité modifiée → refusée', [{ produit: 'matelas nouveau n (fictif)', qte: 2, prixUnit: 0 }], { lignes: [{ produit: 'Matelas Nouveau N (fictif)', qte: 1, prixUnit: 0 }] }, NV],
+    ];
+    for (const [nom, lignes, ancienne, attendu] of cas) {
+      const r = bac.venLignesRefusees(lignes, cat, ancienne);
+      test('appli lignes figées : ' + nom, JSON.stringify(r) === JSON.stringify(attendu), r);
+    }
+    test('appli lignes figées : signature identique à la base (qte absente ou 0 = 1, prix, remises, type de remise, sous-total)',
+      bac.venSignature({ qte: 0, prixUnit: '10', remiseType: 'pct' }) === bac.venSignature({ prixUnit: 10, remiseType: 'pct' })
+      && bac.venSignature({ prixUnit: 'abc' }) === bac.venSignature({ prixUnit: null }) && bac.venSignature({ qte: 2 }) !== bac.venSignature({ qte: 1 })
+      && sqlS.includes("'qte', coalesce(nullif(interne.l039_nombre(e -> 'qte'), 0), 1)"));
+
+    // --- 4. catalogue WhatsApp sans plafond ---
+    const rows250 = [];
+    for (let n = 0; n < 250; n++) rows250.push({ id: 'w' + String(n).padStart(3, '0'), nom: 'Produit fictif ' + n, cat: 'Matelas', dim: '140x190', prix: 10 + n, actif: true });
+    rows250[230] = Object.assign(rows250[230], { vendable: false, prix_vente_defini: false, prix: null });
+    rows250.push({ id: 'w-inactif', nom: 'Inactif', prix: 5, actif: false });
+    const catW = pvS.catalogueWhatsapp(rows250);
+    test('WhatsApp : TOUT le catalogue actif vendable (250 produits, au-delà de l\'ancien plafond de 200), non vendable et inactif écartés',
+      catW.length === 249 && catW.some(p => p.id === 'w240') && catW.some(p => p.id === 'w249') && !catW.some(p => p.id === 'w230' || p.id === 'w-inactif')
+      && Object.keys(catW[0]).sort().join(',') === 'cat,dim,id,nom,prix', catW.length);
+
+    // --- 5. composant introuvable : signalé, catalogue refusé ---
+    let erreurC = '';
+    try { await pvS.lireCatalogueComplet(async (d) => (d === 0 ? [{ id: 'ens', composants: [{ id: 'fantome' }, { id: 'a' }] }, { id: 'a' }] : []), async () => []); } catch (e) { erreurC = String(e.message); }
+    test('serveur : composant demandé absent de la recherche par identifiants → catalogue REFUSÉ, absence signalée', /composants introuvables : fantome/.test(erreurC), erreurC);
+    test('serveur : composant absent des lignes lues = ensemble NON vendable (jamais vendable par défaut)', !pvS.produitsVendables([{ id: 'ens', composants: [{ id: 'fantome' }] }]).some(r => r.id === 'ens'));
+
+    // --- 6. quantités figées avant l'attente, saisies désactivées pendant l'envoi ---
+    const lignes6 = () => [{ id: 81, arrivage_id: 7, produit_id: 'pr-a', quantite_attendue: 10, fob_unitaire: 10, revient_unitaire_ht: null }];
+    let pendant = null;
+    B = nouveauBac({ repondre: (url, init) => {
+      if (url.includes('/arrivage_lignes?')) {
+        // pendant la relecture : l'utilisateur tente « 0 bonne + 10 manquantes », et une écriture directe modifie l'état
+        if (pendant) return { ok: true, status: 200, corps: paginer(url, lignes6()) };
+        B.bac.arrSaisie(81, 'recue', '0'); B.bac.arrSaisie(81, 'manquante', '10');
+        pendant = { saisie: JSON.stringify(B.bac.ARR_ETAT.saisies[81]), desactive: B.elts['arr-in-81-recue'] && B.elts['arr-in-81-recue'].disabled === true };
+        B.bac.ARR_ETAT.saisies[81] = { recue: '0', endommagee: '0', manquante: '10' };
+        return { ok: true, status: 200, corps: paginer(url, lignes6()) };
+      }
+      return repS({ lignes: lignes6() })(url, init);
+    } });
+    B.bac.ARR_ETAT.arrivages = [arrS()]; B.bac.ARR_ETAT.lignes = lignes6(); B.bac.ARR_ETAT.revients = JSON.parse(JSON.stringify(revS)); B.bac.arrOuvrir(7);
+    await B.bac.arrValider();
+    rpcS = B.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage'));
+    test('10 bonnes confirmées → 10 bonnes ENVOYÉES, même si la saisie devient « 0 bonne + 10 manquantes » pendant l\'attente',
+      rpcS.length === 1 && JSON.stringify(rpcS[0].body.p_lignes) === JSON.stringify([{ ligne_id: 81, recue: 10, endommagee: 0, manquante: 0 }]), rpcS[0] && rpcS[0].body.p_lignes);
+    test('… saisie ignorée et champs désactivés pendant l\'envoi', !!pendant && pendant.saisie === JSON.stringify({ recue: 10, endommagee: 0, manquante: 0 }) && pendant.desactive === true, pendant);
+
+    // --- 7. revients lus par pages ---
+    const rev1500 = []; for (let n = 0; n < 1500; n++) rev1500.push({ produit_id: 'r' + String(n).padStart(4, '0'), prix_revient_ht: 1 + n, provisoire: false, methode: 'CUMP' });
+    B = nouveauBac({ pagination: true, repondre: (url) => url.includes('/produits_revient?') ? { ok: true, status: 200, corps: paginer(url, rev1500, 1000) } : { ok: true, status: 200, corps: [] } });
+    const okR = await B.bac.arrChargerRevients();
+    const appR = B.appels.filter(a => a.url.includes('/produits_revient?'));
+    test('revients : 1 500 lignes lues EN ENTIER par pages (ordre stable produit_id), au-delà du plafond de 1 000',
+      okR === true && Object.keys(B.bac.ARR_ETAT.revients).length === 1500 && B.bac.ARR_ETAT.revients['r1499'].prix_revient_ht === 1500
+      && appR.length === 3 && appR.every(a => a.url.includes('&order=produit_id.asc&limit=1000&offset=')), { n: Object.keys(B.bac.ARR_ETAT.revients).length, req: appR.length });
+    B = nouveauBac({ repondre: (url) => url.includes('/produits_revient?') ? { ok: false, status: 500, corps: null }
+      : url.includes('/arrivages?') ? { ok: true, status: 200, corps: paginer(url, [arrS()]) } : url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: paginer(url, lignesS()) } : { ok: true, status: 200, corps: [] } });
+    B.bac.ARR_ETAT.revients = { 'pr-a': { prix_revient_ht: 99 } }; await B.bac.arrCharger();
+    test('revients illisibles : anciennes valeurs effacées, erreur affichée (aucun aperçu calculé sans revient)', Object.keys(B.bac.ARR_ETAT.revients).length === 0 && /Prix de revient illisibles/.test(B.bac.ARR_ETAT.erreur), B.bac.ARR_ETAT.erreur);
+    B = nouveauBac({ pagination: true, repondre: (url) => url.includes('stock_entrant') ? { ok: true, status: 200, corps: paginer(url, [{ produit_id: 'pr-n', quantite: 40, arrivages: 1 }]) } : { ok: true, status: 200, corps: [] } });
+    await B.bac.arrChargerEntrant();
+    test('stock entrant : lu par pages (ordre stable) et compté une seule fois', B.bac.ARR_ETAT.entrant['pr-n'] === 40 && B.appels.filter(a => a.url.includes('stock_entrant')).length === 2
+      && B.appels.every(a => !a.url.includes('stock_entrant') || (a.methode === 'POST' && a.url.includes('order=produit_id.asc'))));
+
+    // --- relecture complète : prix de vente réellement appliqué par la base, trois quantités obligatoires ---
+    const pN = () => B.bac.produits.find(p => p.id === 'pr-n');
+    B = nouveauBac({ repondre: (url, init) => (init && init.method === 'PATCH') ? { ok: true, status: 200, corps: [] } : { ok: true, status: 200, corps: [] } });
+    let okP = await B.bac.venDefinirPrix(pN(), 120);
+    test('prix de vente : HTTP 200 sans ligne modifiée (droits, produit introuvable) = échec, produit toujours « à définir »', okP === false && pN().prixDefini === false && B.toasts.some(t => /la base ne l'a pas appliqué/.test(t.m)), B.toasts);
+    B = nouveauBac({ repondre: (url, init) => (init && init.method === 'PATCH') ? { ok: true, status: 200, corps: [{ id: 'pr-n', prix: 120, prix_vente_defini: true, vendable: true }] } : { ok: true, status: 200, corps: [] } });
+    okP = await B.bac.venDefinirPrix(pN(), 120);
+    const patch = B.appels.find(a => a.methode === 'PATCH');
+    test('prix de vente : ligne renvoyée par la base (prix > 0, prix défini, vendable) → produit vendable', okP === true && pN().prixDefini === true && pN().vendable === true && pN().prix === 120
+      && extraireFonction('async function venDefinirPrix(p, prix)').includes("'Prefer': 'return=representation'") && !!patch);
+    const valS = sqlS.slice(sqlS.indexOf('create or replace function public.valider_reception_arrivage'), sqlS.indexOf('create or replace function public.recalculer_revient_arrivage'));
+    test('base : réception — trois quantités obligatoires (endommagé ou manquant absent n\'est plus 0 par défaut)',
+      valS.includes("v_end := (s ->> 'endommagee')::integer; v_man := (s ->> 'manquante')::integer;") && valS.includes('if v_rec is null or v_end is null or v_man is null') && !valS.includes("coalesce((s ->> 'endommagee')::integer, 0)"));
+  }
+
   console.log('\n9. VERSION');
   const m = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(sw);
-  test('CACHE_VERSION augmentée (v7-5-147 ou plus)', !!m && Number(m[1]) >= 147, m && m[0]);
+  test('CACHE_VERSION augmentée (v7-5-150 ou plus)', !!m && Number(m[1]) >= 150, m && m[0]);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

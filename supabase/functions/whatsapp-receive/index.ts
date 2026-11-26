@@ -25,7 +25,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.117.2';
-import { lireCatalogueComplet, produitsVendables } from '../_shared/produits-vendables.ts';
+import { catalogueWhatsapp, lireCatalogueComplet } from '../_shared/produits-vendables.ts';
 
 const ANTHROPIC_KEY = Deno.env.get('ANTHROPIC_API_KEY') || '';
 const SB_URL    = Deno.env.get('SUPABASE_URL') || '';
@@ -116,8 +116,9 @@ async function chargerCatalogue(): Promise<any[]> {
     console.error('chargerCatalogue : lecture impossible', e);
     return [];
   }
-  return produitsVendables(rows).filter((p: any) => p.actif === true).slice(0, 200)
-    .map((p: any) => ({ id: p.id, nom: p.nom, cat: p.cat, dim: p.dim, prix: p.prix }));
+  // revue Codex PR 26 sur fd751b8 : plus de plafond à 200 produits (catalogueWhatsapp : tous les produits actifs vendables) ;
+  // composant d'ensemble introuvable = catalogue refusé (exception ci-dessus → catalogue vide, rien n'est rapproché à tort)
+  return catalogueWhatsapp(rows);
 }
 
 // ════════════════════════════════════════════════════════════
