@@ -226,11 +226,46 @@ function nouveauBac(opts) {
     test('venEst : composant INACTIF (absent du catalogue chargé, ou actif = false) → ensemble non vendable', bac.venEst(ens([{ id: 'pr-a', qte: 1 }, { id: 'pr-inactif', qte: 1 }]), cat) === false);
     test('venEst : composant sans identifiant ignoré (comme la base) ; composants tous présents et vendables → vendable', bac.venEst(ens([{ id: 'pr-a', qte: 1 }, { qte: 1 }, { id: '', qte: 1 }]), cat) === true && bac.venEst(ens([{ id: 'pr-a' }, { id: 'pr-s' }]), cat) === true);
     test('venEst : catalogue vide (pas encore chargé) → un ensemble n\'est pas proposé', bac.venEst(ens([{ id: 'pr-a', qte: 1 }]), []) === false);
+    // v7.5.182 (revue Codex PR 26 sur ce01159, point 2) : composition contrôlée EN ENTIER (récursif, cycles, profondeur plafonnée)
+    {
+      const P = (id, compos, extra) => Object.assign({ id, nom: 'Fictif ' + id, cat: compos ? 'Ensemble' : 'Matelas', prix: 100, stock: 0, seuil: 0 }, compos ? { composants: compos.map(x => ({ id: x, qte: 1 })) } : {}, extra || {});
+      const catI = [P('a'), P('s'), P('x', null, { vendable: false, prixDefini: false }), P('B', ['x', 's']), P('A', ['a', 'B']), P('B2', ['a', 's']), P('A2', ['s', 'B2']),
+        P('C1', ['a', 'C2']), P('C2', ['s', 'C1']), P('S', ['a', 'S']), P('Y', ['C1']), P('I', ['a', 'inconnu']), P('J', ['I']), P('K', ['a', 'Binactif']), P('Binactif', ['a'], { actif: false })];
+      for (let n = 0; n <= 9; n++) catI.push(P('D' + n, [n === 9 ? 'a' : 'D' + (n + 1)]));
+      const V = (id) => bac.venEst(catI.find(p => p.id === id), catI);
+      test('venEst : A contient B qui contient un produit NON vendable → A non vendable (avant : proposé)', V('B') === false && V('A') === false);
+      test('venEst : A contient B entièrement vendable → A vendable', V('B2') === true && V('A2') === true);
+      test('venEst : composant introuvable au 2e niveau → non vendable ; sous-ensemble INACTIF → non vendable', V('J') === false && V('K') === false);
+      test('venEst : CYCLE A ↔ B, ensemble qui se contient, ensemble au-dessus d\'un cycle → non vendables (sans boucle infinie)', V('C1') === false && V('C2') === false && V('S') === false && V('Y') === false);
+      test('venEst : 7 niveaux → vendable ; 10 niveaux (au-delà du plafond VEN_PROFONDEUR_MAX = 8) → non vendable', V('D3') === true && V('D0') === false && bac.VEN_PROFONDEUR_MAX === 8);
+      test('venSelectionnables : les ensembles bloqués à un niveau profond ne sont pas proposés', (() => { const ids = bac.venSelectionnables(catI).map(p => p.id); return ids.includes('A2') && !ids.includes('A') && !ids.includes('C1') && !ids.includes('D0'); })());
+      const pvI = await import('file:///' + path.join(racine, 'supabase', 'functions', '_shared', 'produits-vendables.ts').replace(/\\/g, '/'));
+      const R = (id, compos, extra) => Object.assign({ id, nom: 'Fictif ' + id, actif: true }, compos ? { composants: compos.map(x => ({ id: x, qte: 1 })) } : {}, extra || {});
+      const rowsI = [R('a'), R('s'), R('x', null, { vendable: false, prix_vente_defini: false }), R('B', ['x', 's']), R('A', ['a', 'B']), R('B2', ['a', 's']), R('A2', ['s', 'B2']),
+        R('C1', ['a', 'C2']), R('C2', ['s', 'C1']), R('S', ['a', 'S']), R('I', ['a', 'inconnu']), R('J', ['I'])];
+      for (let n = 0; n <= 9; n++) rowsI.push(R('D' + n, [n === 9 ? 'a' : 'D' + (n + 1)]));
+      const nvI = pvI.idsNonVendables(rowsI);
+      test('serveur (produits-vendables.ts) : A non vendable par B (2e niveau) ; A2 vendable', nvI.has('A') && nvI.has('B') && !nvI.has('A2') && !nvI.has('B2'));
+      test('serveur : cycles et ensemble qui se contient → non vendables ; introuvable au 2e niveau → non vendable', nvI.has('C1') && nvI.has('C2') && nvI.has('S') && nvI.has('J'));
+      test('serveur : 7 niveaux vendable, 10 niveaux non vendable (PROFONDEUR_MAX = 8, même plafond que l\'appli et la base)', !nvI.has('D3') && nvI.has('D0') && pvI.PROFONDEUR_MAX === 8);
+      // lecture complète : sous-ensemble lu par identifiant qui contient lui-même un composant non lu -> lu au tour suivant
+      const baseI = [R('top', ['m1']), R('m1', ['m2'], { actif: false }), R('m2', ['xx'], { actif: false }), R('xx', null, { actif: false, vendable: false, prix_vente_defini: false })];
+      const demandes = [];
+      const rowsL = await pvI.lireCatalogueComplet(async (d) => d === 0 ? [baseI[0]] : [], async (ids) => { demandes.push(ids.slice()); return baseI.filter(r => ids.includes(r.id)); });
+      test('serveur : composants IMBRIQUÉS non lus chargés niveau par niveau (m1, puis m2, puis xx), puis ensemble écarté',
+        JSON.stringify(demandes) === '[["m1"],["m2"],["xx"]]' && rowsL.length === 4 && pvI.idsNonVendables(rowsL).has('top'), demandes);
+      let leveI = false;
+      try { await pvI.lireCatalogueComplet(async (d) => d === 0 ? [R('top', ['m1'])] : [], async (ids) => ids.includes('m1') ? [R('m1', ['perdu'])] : []); } catch (e) { leveI = /perdu/.test(e.message); }
+      test('serveur : composant imbriqué introuvable → exception (jamais un catalogue partiel)', leveI);
+      const cyc = await pvI.lireCatalogueComplet(async (d) => d === 0 ? [R('c1', ['c2'])] : [], async (ids) => ids.includes('c2') ? [R('c2', ['c1'])] : []);
+      test('serveur : cycle pendant la lecture complète → lecture terminée, ensemble non vendable', cyc.length === 2 && pvI.idsNonVendables(cyc).has('c1'));
+    }
     const avant = bac.produits; bac.produits = cat.concat([ens([{ id: 'pr-a', qte: 1 }, { id: 'pr-disparu', qte: 1 }])]);
     test('nouvelle commande : l\'ensemble au composant introuvable n\'est plus proposé', !bac.buildProduitOptions().includes('value="pr-ex"'));
     bac.produits = avant;
     test('base : composant introuvable = non vendable (q.id is null), composant sans identifiant ignoré',
-      /interne\.produit_non_vendable[\s\S]{0,900}left join public\.produits q on q\.id = c ->> 'id'[\s\S]{0,200}coalesce\(c ->> 'id', ''\) <> ''[\s\S]{0,120}q\.id is null/.test(sql));
+      /interne\.l039_composants_non_vendables\(p_composants jsonb, p_racine text default null\)[\s\S]{0,700}coalesce\(c ->> 'id', ''\) <> ''[\s\S]{0,1200}left join public\.produits q on q\.id = a\.id[\s\S]{0,80}q\.id is null/.test(sql)
+      && /interne\.produit_non_vendable\(p_id text\)[\s\S]{0,400}interne\.l039_composants_non_vendables\(p\.composants, p\.id\)/.test(sql));
   }
   test('enregistrement d\'une commande : ligne nouvelle avec produit non vendable refusée', JSON.stringify(bac.venLignesRefusees([{ produitId: 'pr-a' }, { produitId: 'pr-n' }], bac.produits, null)) === JSON.stringify(['Matelas Nouveau N (fictif)']));
   test('commande déjà prise qui le contenait : reste modifiable (ligne figée)', bac.venLignesRefusees([{ produitId: 'pr-retire' }], bac.produits, { lignes: [{ produitId: 'pr-retire' }] }).length === 0);
@@ -293,11 +328,11 @@ function nouveauBac(opts) {
     // point 2 : correspondance certaine d'un produit qui DEVIENT non vendable
     test('base : produit (ou composant d\'ensemble) qui devient non vendable avec une variante Shopify « certaine » → refusé',
       sql.includes('create trigger produits_correspondance_garde after update of vendable, prix_vente_defini, composants on public.produits')
-      && /produits_correspondance_garde\(\)[\s\S]{0,900}sc\.fiabilite = 'certaine'[\s\S]{0,500}c ->> 'id' = new\.id[\s\S]{0,200}interne\.produit_non_vendable\(sc\.app_produit_id\)/.test(sql)
+      && /produits_correspondance_garde\(\)[\s\S]{0,900}sc\.fiabilite = 'certaine'[\s\S]{0,600}new\.id = any\(interne\.l039_composition_ids\(q\.id\)\)[\s\S]{0,200}interne\.produit_non_vendable\(sc\.app_produit_id\)/.test(sql)
       && sql.includes('drop trigger if exists produits_correspondance_garde on public.produits;'));
   }
   test('base : déclencheur sur la correspondance Shopify (variante « certaine »)', sql.includes('create trigger stock_correspondance_vendable_garde') && sql.includes("new.fiabilite = 'certaine' and interne.produit_non_vendable(new.app_produit_id)"));
-  test('base : un ensemble dont un composant est non vendable est non vendable', /produit_non_vendable[\s\S]{0,700}jsonb_array_elements\(p\.composants\)/.test(sql));
+  test('base : un ensemble dont un composant est non vendable est non vendable', /produit_non_vendable\(p_id text\)[\s\S]{0,400}interne\.l039_composants_non_vendables\(p\.composants, p\.id\)/.test(sql));
   test('base : collaboratrice / livreur ne peuvent pas rendre un produit vendable', sql.includes('new.vendable := old.vendable;') && sql.includes('new.prix_vente_defini := old.prix_vente_defini;'));
   test('base : un produit vendable sans prix défini est impossible', sql.includes("PRODUIT NON VENDABLE : « % » n''a pas de prix de vente défini"));
   const wa = fs.readFileSync(path.join(racine, 'supabase', 'functions', 'whatsapp-receive', 'index.ts'), 'utf8');
@@ -788,13 +823,13 @@ function nouveauBac(opts) {
     // modification qui rendrait vendable un produit non vendable (composition d'un ensemble comprise) : refusée hors administrateur
     test('base : modification hors administrateur qui rendrait vendable un produit non vendable REFUSÉE (décision PURE + auto-contrôle)',
       garde.includes("if tg_op = 'UPDATE' and interne.l039_rend_vendable_refuse(r is null or r = 'admin', interne.produit_non_vendable(old.id),")
-      && garde.includes('interne.l039_composants_non_vendables(new.composants)') && garde.includes("seul l''administrateur le rend vendable (modification refusée)")
+      && garde.includes('interne.l039_composants_non_vendables(new.composants, new.id)') && garde.includes("seul l''administrateur le rend vendable (modification refusée)")
       && sqlS.includes('select p_admin is not true and p_ancien_non_vendable is true and p_nouveau_non_vendable is false')
       && ['collaboratrice rend vendable un produit non vendable : refusé', 'administrateur rend vendable : accepté', 'collaboratrice, produit qui reste non vendable : accepté',
           'collaboratrice, produit déjà vendable : accepté', 'collaboratrice, produit qui devient non vendable : accepté'].every(c => auto10.includes("f := '" + c + "'")));
     const cnvF = sqlS.slice(sqlS.indexOf('create or replace function interne.l039_composants_non_vendables'), sqlS.indexOf('revoke all on function interne.l039_composants_non_vendables'));
     test('base : composition non vendable = même règle que produit_non_vendable (composant introuvable compris)',
-      cnvF.includes('left join public.produits q on q.id = c ->> \'id\'') && cnvF.includes('q.id is null or not q.vendable or not q.prix_vente_defini or q.prix is null'));
+      cnvF.includes('left join public.produits q on q.id = a.id') && cnvF.includes('q.id is null or not q.vendable or not q.prix_vente_defini or q.prix is null') && cnvF.includes('with recursive arbre'));
     const catC = [{ id: 'pr-n', nom: 'Matelas Nouveau N (fictif)', prixDefini: false, vendable: false }, { id: 'pr-a', nom: 'Matelas Fictif A 140×190', prix: 100 }];
     test('appli : venCreationEtat = même décision que la base (collaboratrice avec / sans prix, négatif, administrateur)',
       bac.venCreationEtat(false, 199) === 'a_definir' && bac.venCreationEtat(false, 0) === 'a_definir' && bac.venCreationEtat(false, '') === 'a_definir'
@@ -825,7 +860,7 @@ function nouveauBac(opts) {
     BC = bacC('admin', '', 'Sommier Fictif T'); await new Promise(r => setTimeout(r, 0));
     test('appli : administrateur sans prix ⇒ « à définir » (il fixera le prix ensuite)', !!envoi(BC) && envoi(BC).body.prix === null && aDefinir(BC, 'Sommier Fictif T'));
     const nvF = sqlS.slice(sqlS.indexOf('create or replace function interne.produit_non_vendable'), sqlS.indexOf('revoke all on function interne.produit_non_vendable'));
-    test('base : produit_non_vendable — prix NULL et composant INTROUVABLE = non vendable', nvF.includes('or p.prix is null') && nvF.includes('left join public.produits q') && nvF.includes('q.id is null or not q.vendable'));
+    test('base : produit_non_vendable — prix NULL et composant INTROUVABLE = non vendable', nvF.includes('or p.prix is null') && nvF.includes('interne.l039_composants_non_vendables(p.composants, p.id)') && cnvF.includes('q.id is null or not q.vendable'));
     test('appli : prix NULL = prix non défini (même « prix défini » en base)', bac.venDepuisBase({ prix: null, prix_vente_defini: true }).prixDefini === false && bac.venDepuisBase({ prix: 10 }).prixDefini === true);
     test('serveur : prix NULL = non vendable ; prix non lu (colonne absente) inchangé', pvS.produitsVendables([{ id: 'p', prix: null, prix_vente_defini: true }]).length === 0
       && pvS.produitsVendables([{ id: 'q' }]).length === 1);
@@ -1106,7 +1141,7 @@ function nouveauBac(opts) {
     test('… puis « Réception validée » (vérifié dans la base, 70 articles), JAMAIS « NON validée », une seule validation envoyée',
       X.toasts.some(t => t.t === 'ok' && /Réception validée \(vérifié dans la base : 70 article/.test(t.m)) && !X.toasts.some(t => /NON validée/.test(t.m)) && X.nbRpc() === 1, X.toasts);
     test('… arrivage « recu », plus de bouton Valider, verrou levé, plus rien « à vérifier »', X.bac.ARR_ETAT.arrivages[0].statut === 'recu' && !X.elts['arr-contenu'].innerHTML.includes('arr-btn-valider')
-      && X.bac.ARR_ETAT.envoi === false && X.bac.ARR_ETAT.aVerifier === null);
+      && X.bac.ARR_ETAT.envoi === false && Object.keys(X.bac.ARR_ETAT.aVerifier).length === 0);
     // A bis. réponse 502 sans corps lisible (passerelle) après validation : même traitement
     X = bacPerdu(() => ({ ok: false, status: 502, corps: undefined }), { statut: 'recu', historique: HIST, mouvements: MVT });
     X.bac.fetch = ((f) => async (url, init) => { const r = await f(url, init); if (url.includes('/rpc/valider_reception_arrivage')) r.json = async () => { throw new Error('corps illisible'); }; return r; })(X.bac.fetch);
@@ -1116,16 +1151,16 @@ function nouveauBac(opts) {
     X = bacPerdu(() => ({ ok: true, status: 200, corps: { ok: false, erreur: 'une_saisie_par_ligne_requise' } }), { statut: 'en_attente' });
     await X.bac.arrValider();
     test('erreur réelle (refus de la fonction) : « NON validée : une_saisie_par_ligne_requise » aussitôt, aucune relecture, bouton réactivé',
-      X.toasts.some(t => t.t === 'err' && /NON validée : une_saisie_par_ligne_requise/.test(t.m)) && X.nbRelectures() === 0 && X.bac.ARR_ETAT.aVerifier === null && X.bac.ARR_ETAT.envoi === false && X.elts['arr-btn-valider'].disabled === false, X.toasts);
+      X.toasts.some(t => t.t === 'err' && /NON validée : une_saisie_par_ligne_requise/.test(t.m)) && X.nbRelectures() === 0 && Object.keys(X.bac.ARR_ETAT.aVerifier).length === 0 && X.bac.ARR_ETAT.envoi === false && X.elts['arr-btn-valider'].disabled === false, X.toasts);
     X = bacPerdu(() => ({ ok: false, status: 400, corps: { code: 'P0001', message: 'contrainte' } }), { statut: 'en_attente' });
     await X.bac.arrValider();
-    test('erreur réelle de la base (HTTP 400, opération annulée) : « NON validée » sans relecture', X.toasts.some(t => /NON validée : contrainte/.test(t.m)) && X.nbRelectures() === 0 && X.bac.ARR_ETAT.aVerifier === null);
+    test('erreur réelle de la base (HTTP 400, opération annulée) : « NON validée » sans relecture', X.toasts.some(t => /NON validée : contrainte/.test(t.m)) && X.nbRelectures() === 0 && Object.keys(X.bac.ARR_ETAT.aVerifier).length === 0);
     // C. réponse perdue AVANT l'écriture (la base n'a rien validé) : relecture « en attente », aucun mouvement -> « NON validée », réessai permis
     X = bacPerdu((o) => { o.n = (o.n || 0) + 1; if (o.n === 1) throw new Error('Failed to fetch'); return { ok: true, status: 200, corps: { ok: true, total_recu: 70 } }; },
       (o) => ({ statut: o.n >= 2 ? 'recu' : 'en_attente' }));
     await X.bac.arrValider();
     test('réponse perdue, base NON validée : après relecture « NON validée (vérifié dans la base… aucun mouvement) — vous pouvez valider de nouveau »',
-      X.toasts.some(t => t.t === 'err' && /NON validée \(vérifié dans la base : arrivage « En attente de réception », aucun mouvement\) — vous pouvez valider de nouveau/.test(t.m)) && X.bac.ARR_ETAT.aVerifier === null && X.elts['arr-btn-valider'].disabled === false, X.toasts);
+      X.toasts.some(t => t.t === 'err' && /NON validée \(vérifié dans la base : arrivage « En attente de réception », aucun mouvement\) — vous pouvez valider de nouveau/.test(t.m)) && Object.keys(X.bac.ARR_ETAT.aVerifier).length === 0 && X.elts['arr-btn-valider'].disabled === false, X.toasts);
     await X.bac.arrValider();
     test('… nouvelle tentative autorisée APRÈS la relecture : deuxième envoi, « Réception validée »', X.nbRpc() === 2 && X.toasts.some(t => t.t === 'ok' && /Réception validée : 70/.test(t.m)));
     // D. réponse perdue ET relecture impossible : reste INDÉTERMINÉ, aucun nouvel envoi tant que la base n'a pas été relue
@@ -1133,7 +1168,7 @@ function nouveauBac(opts) {
     X = bacPerdu(() => { throw new Error('Failed to fetch'); }, () => lectureOk ? { statut: 'recu', historique: HIST, mouvements: MVT } : { arrivages: { ok: false, status: 503, corps: [] } });
     await X.bac.arrValider();
     test('relecture impossible : « Résultat INDÉTERMINÉ : vérification impossible (503) », jamais « validée » ni « NON validée »',
-      X.toasts.some(t => /Résultat INDÉTERMINÉ : vérification impossible \(503\)/.test(t.m)) && !X.toasts.some(t => /NON validée|Réception validée/.test(t.m)) && X.bac.ARR_ETAT.aVerifier && X.bac.ARR_ETAT.aVerifier.id === 7, X.toasts);
+      X.toasts.some(t => /Résultat INDÉTERMINÉ : vérification impossible \(503\)/.test(t.m)) && !X.toasts.some(t => /NON validée|Réception validée/.test(t.m)) && X.bac.arrAVerifierDe(7) && X.bac.arrAVerifierDe(7).id === 7, X.toasts);
     test('… bouton Valider BLOQUÉ (« vérifiez dans la base »), bouton « Vérifier dans la base » proposé, verrou levé (navigation possible)',
       X.elts['arr-btn-valider'].disabled === true && /Résultat indéterminé : vérifiez dans la base/.test(X.elts['arr-btn-valider'].textContent)
       && X.elts['arr-contenu'].innerHTML.includes('arr-btn-verifier') && X.elts['arr-btn-verifier'].style.display === '' && X.bac.ARR_ETAT.envoi === false);
@@ -1141,24 +1176,67 @@ function nouveauBac(opts) {
     test('… nouvelle validation refusée SANS appel à la base tant que le résultat est indéterminé', X.nbRpc() === 1 && X.toasts.some(t => /validation précédente INDÉTERMINÉ : vérifiez d'abord dans la base/.test(t.m)));
     lectureOk = true; await X.bac.arrVerifierClic();
     test('« Vérifier dans la base » une fois la base joignable : « Réception validée (vérifié…) », plus rien à vérifier, une seule validation envoyée',
-      X.toasts.some(t => /Réception validée \(vérifié dans la base/.test(t.m)) && X.bac.ARR_ETAT.aVerifier === null && X.nbRpc() === 1 && X.bac.ARR_ETAT.envoi === false);
+      X.toasts.some(t => /Réception validée \(vérifié dans la base/.test(t.m)) && Object.keys(X.bac.ARR_ETAT.aVerifier).length === 0 && X.nbRpc() === 1 && X.bac.ARR_ETAT.envoi === false);
     // E. état incohérent (en attente mais mouvements présents) : reste indéterminé, aucun renvoi
     X = bacPerdu(() => { throw new Error('Failed to fetch'); }, { statut: 'en_attente', historique: [HIST[0]], mouvements: [] });
     await X.bac.arrValider(); await X.bac.arrValider();
     test('relecture incohérente (en attente AVEC un mouvement) : reste INDÉTERMINÉ, message « ne revalidez pas », aucun second envoi',
-      X.toasts.some(t => /Ne revalidez pas/.test(t.m)) && X.bac.ARR_ETAT.aVerifier && X.nbRpc() === 1, X.toasts);
+      X.toasts.some(t => /Ne revalidez pas/.test(t.m)) && X.bac.arrAVerifierDe(7) && X.nbRpc() === 1, X.toasts);
     // F. (revue Codex PR 26 sur ce01159, P2) réception encore EN COURS dans la base : la fonction serveur n'obtient pas le verrou à temps
     //    -> « verification_occupee » : le résultat reste INDÉTERMINÉ, aucun nouvel envoi, puis relecture une fois la réception finie
     let enCours = true;
     X = bacPerdu(() => { throw new Error('Failed to fetch'); }, () => enCours ? { arrivages: { ok: true, status: 200, corps: { ok: false, erreur: 'verification_occupee' } } } : { statut: 'recu', historique: HIST, mouvements: MVT });
     await X.bac.arrValider();
     test('réception encore en cours (verrou non obtenu) : « INDÉTERMINÉ : vérification impossible (réception encore en cours dans la base) », ni « validée » ni « NON validée »',
-      X.toasts.some(t => /Résultat INDÉTERMINÉ : vérification impossible \(réception encore en cours dans la base\)/.test(t.m)) && !X.toasts.some(t => /NON validée|Réception validée/.test(t.m)) && X.bac.ARR_ETAT.aVerifier && X.bac.ARR_ETAT.aVerifier.id === 7, X.toasts);
+      X.toasts.some(t => /Résultat INDÉTERMINÉ : vérification impossible \(réception encore en cours dans la base\)/.test(t.m)) && !X.toasts.some(t => /NON validée|Réception validée/.test(t.m)) && X.bac.arrAVerifierDe(7) && X.bac.arrAVerifierDe(7).id === 7, X.toasts);
     await X.bac.arrValider();
     test('… nouvelle validation refusée SANS appel à la base tant que la vérification n\'a pas répondu', X.nbRpc() === 1);
     enCours = false; await X.bac.arrVerifierClic();
     test('… réception terminée : « Vérifier dans la base » conclut « Réception validée (vérifié…) », une seule validation envoyée',
-      X.toasts.some(t => /Réception validée \(vérifié dans la base : 70 article/.test(t.m)) && X.bac.ARR_ETAT.aVerifier === null && X.nbRpc() === 1);
+      X.toasts.some(t => /Réception validée \(vérifié dans la base : 70 article/.test(t.m)) && Object.keys(X.bac.ARR_ETAT.aVerifier).length === 0 && X.nbRpc() === 1);
+    // G. (revue Codex PR 26 sur 33a314f) DEUX réponses indéterminées successives : A (7) puis B (8). Avant, B remplaçait A dans
+    //    aVerifier et le bouton Valider de A redevenait disponible sans vérification.
+    {
+      const arrB = { id: 8, reference_interne: 'ARR-TEST-2', navire: 'Navire fictif 2', statut: 'en_attente', taux_provisoire: true };
+      const lignesAB = () => lignesArr().concat([{ id: 81, arrivage_id: 8, produit_id: 'pr-a', quantite_attendue: 5, revient_unitaire_ht: 50 }]);
+      const base = { joignable: false, statut: { 7: 'recu', 8: 'en_attente' } };
+      const Y = nouveauBac({ repondre: (url, init) => {
+        if (url.includes('/rpc/valider_reception_arrivage')) throw new Error('Failed to fetch');
+        if (url.includes('/rpc/statut_reception_arrivage')) {
+          if (!base.joignable) return { ok: false, status: 503, corps: [] };
+          const id = JSON.parse(init.body).p_arrivage_id, st = base.statut[id];
+          return { ok: true, status: 200, corps: { ok: true, id, statut: st, recu_le: st === 'recu' ? '2026-11-26T10:00:00Z' : null,
+            historique: st === 'recu' ? 2 : 0, mouvements: st === 'recu' ? 2 : 0, quantite: st === 'recu' ? 70 : 0 } };
+        }
+        if (url.includes('/arrivages?')) return { ok: true, status: 200, corps: paginer(url, [Object.assign(arrivage(base.statut[7]), {}), Object.assign({}, arrB, { statut: base.statut[8] })]) };
+        if (url.includes('/arrivage_lignes?')) return { ok: true, status: 200, corps: paginer(url, lignesAB()) };
+        return { ok: true, status: 200, corps: [] };
+      } });
+      const nbRpcY = () => Y.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage')).length;
+      Y.bac.ARR_ETAT.arrivages = [arrivage('en_attente'), Object.assign({}, arrB)]; Y.bac.ARR_ETAT.lignes = lignesAB();
+      Y.bac.arrOuvrir(7); await Y.bac.arrValider();
+      test('deux indéterminés : A (7) envoyé, réponse perdue, relecture impossible -> A à vérifier', nbRpcY() === 1 && !!Y.bac.arrAVerifierDe(7) && Y.bac.ARR_ETAT.envoi === false);
+      Y.bac.arrOuvrir(8);
+      test('… navigation vers B permise ; B n\'est PAS à vérifier, son bouton Valider est actif', Y.bac.ARR_ETAT.ouvert === 8 && !Y.bac.arrAVerifierDe(8) && Y.elts['arr-btn-valider'].disabled === false);
+      await Y.bac.arrValider();
+      test('… B (8) envoyé, réponse perdue aussi -> A ET B à vérifier (B ne remplace plus A)', nbRpcY() === 2 && !!Y.bac.arrAVerifierDe(7) && !!Y.bac.arrAVerifierDe(8)
+        && JSON.stringify(Object.keys(Y.bac.ARR_ETAT.aVerifier).sort()) === '["7","8"]');
+      Y.bac.arrOuvrir(7);
+      test('… retour sur A : bouton Valider BLOQUÉ (« vérifiez dans la base »), bouton « Vérifier » proposé', Y.elts['arr-btn-valider'].disabled === true
+        && /Résultat indéterminé : vérifiez dans la base/.test(Y.elts['arr-btn-valider'].textContent) && Y.elts['arr-btn-verifier'].style.display === '');
+      await Y.bac.arrValider();
+      test('… nouvelle validation de A refusée SANS appel à la base', nbRpcY() === 2 && Y.toasts.some(t => /validation précédente INDÉTERMINÉ : vérifiez d'abord dans la base/.test(t.m)));
+      base.joignable = true; await Y.bac.arrVerifierClic();
+      const rel = Y.appels.filter(a => a.url.includes('/rpc/statut_reception_arrivage')).pop();
+      test('… « Vérifier dans la base » sur A relit A (p_arrivage_id = 7) et conclut « validée » ; B reste à vérifier', rel.body.p_arrivage_id === 7
+        && !Y.bac.arrAVerifierDe(7) && !!Y.bac.arrAVerifierDe(8) && Y.toasts.some(t => /Réception validée \(vérifié dans la base/.test(t.m)));
+      Y.bac.arrOuvrir(8);
+      test('… B : toujours bloqué tant qu\'il n\'est pas relu', Y.elts['arr-btn-valider'].disabled === true && /vérifiez dans la base/.test(Y.elts['arr-btn-valider'].textContent));
+      await Y.bac.arrVerifierClic();
+      test('… B relu (p_arrivage_id = 8) : « NON validée … vous pouvez valider de nouveau », plus rien à vérifier, aucun envoi supplémentaire',
+        Y.appels.filter(a => a.url.includes('/rpc/statut_reception_arrivage')).pop().body.p_arrivage_id === 8 && Object.keys(Y.bac.ARR_ETAT.aVerifier).length === 0
+        && nbRpcY() === 2 && Y.toasts.some(t => /NON validée \(vérifié dans la base/.test(t.m)));
+    }
     // réponses douteuses de la fonction : jamais de conclusion
     const L = bac.arrLectureStatut;
     test('lecture du statut : réponse correcte acceptée', L(200, { ok: true, id: 7, statut: 'en_attente', recu_le: null, historique: 0, mouvements: 0, quantite: 0 }, 7).ok === true);
