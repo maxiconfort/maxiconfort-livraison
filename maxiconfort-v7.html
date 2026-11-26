@@ -4098,6 +4098,22 @@ async function sbSaveTournee(t) {
 }
 
 var caissesRemises = {};
+// v7.5.179 : état du verrou de la base (null = inconnu, true = en place, false = absent) ; vérifié pour l'administrateur
+var rtVerrouBase = null;
+async function rtVerifierVerrouBase() {
+  try {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/verrou_caisse_actif', {
+      method: 'POST',
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    var txt = ''; try { txt = await r.text(); } catch (e) {}
+    var etat = rtVerrouBaseEtat(r.status, txt);
+    if (etat === false && rtVerrouBase !== false) toast(RT_MSG_VERROU_ABSENT, 'err');
+    if (etat !== null) rtVerrouBase = etat;
+  } catch (e) { /* coupure : état inconnu, aucune alerte */ }
+  return rtVerrouBase;
+}
 // ── v7.1 : CHECKLIST CHARGEMENT CAMION ──
 // Structure : chargements[cmdId][ligneIdx] = {charge: bool, charge_par: 'RANOU', charge_at: ISO}
 var chargements = {};
@@ -5884,6 +5900,8 @@ function buildUI(r) {
       sbLoadDepenses().then(function() {
         finRender(); renderDash();
       });
+      // v7.5.179 : contrôle doux du verrou de la base (038b) pour l'administrateur ; absent -> alerte + bandeau Encaissements
+      if (role === 'admin') rtVerifierVerrouBase().then(function(v) { if (v === false) finRender(); });
       // v7.1.7 : Charger stock camion au démarrage
       sbLoadStockCamion().then(function() {
         if (typeof renderLivreur === 'function') renderLivreur();
@@ -10122,6 +10140,17 @@ function rtDepenseVerrou(etats, listeTournees, estValidee) {
 // v7.5.175 (revue Codex PR 24 sur 437ec1e, P2) : le verrou est aussi tenu PAR LA BASE (migration 038b, déclencheur
 // depenses_verrou_caisse), car le téléphone du livreur ne peut pas lire caisse_remises. Refus = erreur « POINT_CAISSE_VALIDE ».
 var RT_MSG_CAISSE_VALIDEE = '⛔ Point de caisse déjà validé par le bureau : cette dépense ne peut plus être ajoutée, corrigée ni supprimée. Demandez au bureau d\'annuler la validation s\'il faut la changer.';
+// v7.5.179 (revue Codex PR 24 sur 26dcf5b, point 2) : contrôle DOUX du verrou de la base. L'appli demande à la base
+// (public.verrou_caisse_actif, migration 038b) si le déclencheur est en place. 404 = fonction absente (038b non appliquée)
+// ou réponse « false » = verrou absent -> l'administrateur est prévenu (au lieu de prétendre protéger). 200 « true » = en
+// place. Autre réponse (coupure, panne, session) : inconnu (null), aucune alerte.
+var RT_MSG_VERROU_ABSENT = '⚠️ Verrou de la base absent (migration 038b non appliquée) : après la validation d\'un point de caisse, le téléphone du livreur peut encore ajouter ou modifier ses dépenses. Faites appliquer la 038b.';
+function rtVerrouBaseEtat(status, corps) {
+  var st = Number(status);
+  if (st === 404) return false;
+  if (st >= 200 && st < 300) { var t = String(corps == null ? '' : corps).trim(); if (t === 'true') return true; if (t === 'false') return false; }
+  return null;
+}
 function rtRefusCaisseValidee(status, texte) { return Number(status) >= 400 && Number(status) < 500 && /POINT_CAISSE_VALIDE/.test(String(texte || '')); }
 // v7.5.135 (revue Codex sur f09037c, point 5) : journal des corrections d'une dépense, gardé dans son commentaire
 // (colonne existante, aucune migration) après un séparateur. Chaque ligne : date, auteur, valeurs avant → après, motif.
@@ -12760,6 +12789,8 @@ function finRender() {
       var eur = function(n){ return paiEur(n); }; // v7.5.131 : centimes affichés (avant : arrondi à l'euro, « 232 € » pour 231,60 €)
 
       var html = '';
+      // v7.5.179 : verrou de la base absent (038b non appliquée) -> dit clairement, au lieu de prétendre protéger
+      if (rtVerrouBase === false) html += '<div id="rt-verrou-absent" style="background:var(--bg);border:1.5px solid var(--red);border-radius:12px;padding:12px;margin-bottom:12px;font-size:13px;font-weight:700;color:var(--red)">' + RT_MSG_VERROU_ABSENT + '</div>';
       // En-tête récap (seulement s'il y a des retours à traiter)
       if (aTraiter.length > 0) {
         html += '<div class="rt-tete-d">' +
@@ -20406,9 +20437,11 @@ async function validerDepenseLivreur() {
     tourneeId: _activeTournee ? _activeTournee.id : null,
     source: _cible ? 'admin' : 'livreur'
   };
+  // v7.5.179 (revue Codex PR 24 sur 26dcf5b, P2) : copie de la dépense existante prise AVANT toute modification
+  // (dep et _existante sont le même objet ; avant, la copie était faite après -> un refus de la base gardait la valeur modifiée)
+  var _avantDep = _existante ? Object.assign({}, _existante) : null;
   dep.cat = depLvCatSelected; dep.montant = montantVal; dep.comment = _commentFinal; dep.modePaie = modePaieLv;
 
-  var _avantDep = _existante ? Object.assign({}, _existante) : null;
   if (!_existante) depenses.unshift(dep);
   depLvCible = null;
 
