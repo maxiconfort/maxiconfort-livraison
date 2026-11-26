@@ -577,6 +577,24 @@ html #dash-kpis{grid-template-columns:repeat(auto-fit,minmax(170px,1fr)) !import
 @media (max-width:600px){ .dash-periode-d .seg-d{flex:1 1 100%} .seg-d button{padding:0 6px;min-height:36px} }
 html .cmd-quick{min-height:38px;padding:0 16px;border-radius:999px !important;border:0 !important;background:var(--carte) !important;color:var(--texte) !important;font:500 14px var(--font) !important;box-shadow:var(--ombre);cursor:pointer}
 html .cmd-quick.active,html .cmd-quick.on,html .cmd-quick[style*="var(--blue)"]{background:var(--texte) !important;color:var(--fond) !important}
+/* v7.5.190 (Commandes allégée, demande de Borhen du 26/11) : boutons « Période » et « Filtres », panneaux repliés, total, tri */
+.cmdf-barre{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.cmdf-barre .srch{flex:1 1 240px;min-width:0;margin:0}
+.cmdf-barre select{width:auto;flex:0 0 auto}
+.cmdf-btn{min-height:42px;padding:0 14px;border:0;border-radius:12px;background:var(--carte);color:var(--texte);font:500 14px var(--font);box-shadow:var(--ombre);cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.cmdf-btn.on{background:var(--texte);color:var(--fond)}
+.cmdf-nb{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:var(--texte);color:var(--fond);font-size:12px;font-weight:600}
+.cmdf-btn.on .cmdf-nb{background:var(--fond);color:var(--texte)}
+.cmdf-panneau{background:var(--carte);border-radius:16px;box-shadow:var(--ombre);padding:12px;margin-bottom:10px}
+.cmdf-periode{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;max-width:620px}
+.cmdf-periode label{display:flex;flex-direction:column;gap:4px;flex:1 1 140px}
+.cmdf-periode .seg-d{flex:0 0 auto}
+.cmdf-filtres{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px}
+.cmdf-total{font-size:13px;color:var(--gris);margin:0 2px 8px}
+th.cmdf-tri{cursor:pointer;user-select:none;white-space:nowrap}
+th.cmdf-tri:hover{color:var(--texte)}
+.cmdf-fl{display:inline-block;min-width:12px;margin-left:4px;color:var(--texte)}
+@media (max-width:600px){ .cmdf-barre .srch{flex:1 1 100%} .cmdf-btn{flex:1 1 auto;justify-content:center} .cmdf-periode .seg-d{flex:1 1 100%} }
 
 /* ── Pastilles ── */
 html .bdg{border-radius:999px;padding:4px 10px;font-size:12px;font-weight:600}
@@ -956,9 +974,9 @@ html .nav-plus .ni{font-size:14.5px}
   <!-- ─── PAGE COMMANDES ─── -->
   <div class="page" id="p-commandes">
     <!-- v7.4.3 : Barre de filtres enrichie -->
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
-      <div style="display:flex;gap:8px;align-items:center;flex:1;min-width:280px">
-        <div class="srch" style="flex:1;min-width:340px"><span style="color:var(--t3);display:inline-flex"><i class="icd icd-recherche"></i></span><input type="text" placeholder="Rechercher client, ID, ville, tel..." oninput="cmdAppliquerFiltres()" id="cmd-search"></div>
+    <!-- v7.5.190 : une seule barre (recherche, statut, Période, Filtres) ; le bouton « Nouvelle commande » est celui du haut de l'écran -->
+    <div class="cmdf-barre">
+        <div class="srch"><span style="color:var(--t3);display:inline-flex"><i class="icd icd-recherche"></i></span><input type="text" placeholder="Rechercher client, ID, ville, tel..." oninput="cmdAppliquerFiltres()" id="cmd-search"></div>
         <select id="cmd-filter-statut" style="width:auto;flex:0 0 auto;padding:7px 10px;border:1px solid var(--brd);border-radius:var(--r);background:var(--bg);font-size:13px;font-family:var(--font);color:var(--t2)" onchange="cmdAppliquerFiltres()">
           <option value="">📊 Tous statuts</option>
           <option value="en-attente">⏳ En attente</option>
@@ -968,25 +986,24 @@ html .nav-plus .ni{font-size:14.5px}
           <option value="reporté">⏸ Reporté</option>
           <option value="annulé">❌ Annulé</option>
         </select>
+        <button type="button" class="cmdf-btn" id="cmdf-btn-periode" onclick="cmdfBasculer('periode')" aria-expanded="false" aria-controls="cmdf-panneau-periode">Période</button>
+        <button type="button" class="cmdf-btn" id="cmdf-btn-filtres" onclick="cmdfBasculer('filtres')" aria-expanded="false" aria-controls="cmd-filtres-panneau">Filtres</button>
+    </div>
+
+    <!-- v7.5.190 : panneau « Période » (Du … au …, sur la date de prise ou de livraison), replié par défaut -->
+    <div class="cmdf-panneau" id="cmdf-panneau-periode" style="display:none">
+      <div class="cmdf-periode">
+        <label>Du<input type="date" id="cmdf-du" onchange="cmdfPeriodeChange()"></label>
+        <label>Au<input type="date" id="cmdf-au" onchange="cmdfPeriodeChange()"></label>
+        <div class="seg-d" id="cmdf-champ" role="group" aria-label="Date utilisée">
+          <button type="button" data-v="prise" onclick="cmdfChamp('prise')">Date de prise</button>
+          <button type="button" data-v="livraison" class="on" onclick="cmdfChamp('livraison')">Date de livraison</button>
+        </div>
       </div>
-      <button class="btn btn-p" onclick="openNewCmd()">+ Nouvelle commande</button>
     </div>
 
-    <!-- Filtres rapides date (one-click) -->
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-      <button class="cmd-quick" data-preset="today"    onclick="cmdFiltreRapide('today')">Aujourd'hui</button>
-      <button class="cmd-quick" data-preset="tomorrow" onclick="cmdFiltreRapide('tomorrow')">Demain</button>
-      <button class="cmd-quick" data-preset="week"     onclick="cmdFiltreRapide('week')">Cette semaine</button>
-      <button class="cmd-quick" data-preset="late"     onclick="cmdFiltreRapide('late')">En retard</button>
-      <button class="cmd-quick" data-preset="all"      onclick="cmdFiltreRapide('all')">Tout</button>
-      <button onclick="cmdResetFiltres()" style="padding:9px 14px;border-radius:10px;border:1px solid var(--brd);background:var(--card);color:var(--t2);font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font);margin-left:auto">🗑 Effacer</button>
-    </div>
-
-    <!-- v7.5.10 : Indicateur commandes prises aujourd'hui -->
-    <div id="cmd-stats-jour" style="margin-bottom:12px"></div>
-
-    <!-- Filtres precis (selects) -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin-bottom:14px;background:var(--bg2);padding:10px;border-radius:var(--rl)">
+    <!-- Filtres precis (selects) — v7.5.190 : derrière le bouton « Filtres » (compteur des filtres actifs), repliés par défaut -->
+    <div class="cmdf-panneau cmdf-filtres" id="cmd-filtres-panneau" style="display:none">
       <select id="cmd-filter-transporteur" onchange="cmdAppliquerFiltres()" style="padding:8px 10px;border:1px solid var(--brd2);border-radius:var(--r);background:var(--card);color:var(--text);font-size:13px;font-family:var(--font)">
         <option value="">🚚 Tous transporteurs</option>
         <option value="RANOU">🟢 RANOU (interne)</option>
@@ -1011,9 +1028,24 @@ html .nav-plus .ni{font-size:14.5px}
         <option value="anomalie">🔴 Impayés / anomalies</option>
       </select>
     </div>
+
+    <!-- Filtres rapides date (one-click) -->
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <button class="cmd-quick" data-preset="today"    onclick="cmdFiltreRapide('today')">Aujourd'hui</button>
+      <button class="cmd-quick" data-preset="tomorrow" onclick="cmdFiltreRapide('tomorrow')">Demain</button>
+      <button class="cmd-quick" data-preset="week"     onclick="cmdFiltreRapide('week')">Cette semaine</button>
+      <button class="cmd-quick" data-preset="late"     onclick="cmdFiltreRapide('late')">En retard</button>
+      <button class="cmd-quick" data-preset="all"      onclick="cmdFiltreRapide('all')">Tout</button>
+      <button onclick="cmdResetFiltres()" style="padding:9px 14px;border-radius:10px;border:1px solid var(--brd);background:var(--card);color:var(--t2);font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font);margin-left:auto">🗑 Effacer</button>
+    </div>
+
+    <!-- v7.5.10 : Indicateur commandes prises aujourd'hui -->
+    <div id="cmd-stats-jour" style="margin-bottom:12px"></div>
+
+    <div class="cmdf-total" id="cmdf-total"></div>
     <div class="tw" id="cmd-table-wrap" style="overflow:visible">
       <table>
-        <thead><tr><th>#</th><th>Client</th><th>Adresse</th><th>Produit</th><th>Montant</th><th>Paiement</th><th>Origine</th><th>📅 Date prise</th><th>🚚 À livrer le</th><th>Livreur</th><th>Statut</th><th></th></tr></thead>
+        <thead><tr><th>#</th><th>Client</th><th>Adresse</th><th>Produit</th><th>Montant</th><th>Paiement</th><th>Origine</th><th class="cmdf-tri" data-tri="prise" onclick="cmdfTrierPar('prise')" title="Trier par date de prise">📅 Date prise<span class="cmdf-fl"></span></th><th class="cmdf-tri" data-tri="livraison" onclick="cmdfTrierPar('livraison')" title="Trier par date de livraison">🚚 À livrer le<span class="cmdf-fl"></span></th><th>Livreur</th><th>Statut</th><th></th></tr></thead>
         <tbody id="cmd-tbody"></tbody>
       </table>
     </div>
@@ -6706,7 +6738,7 @@ function jvueAppliquer() {
       else if (v.vue === 'commandes') {
         goTo('commandes', document.querySelector('.ni[onclick*="\'commandes\'"]'));
         // v7.5.126 : la vue montre EXACTEMENT ce qui est demandé : recherche et autres filtres vidés, livreur et statut posés.
-        setTimeout(function () { ['cmd-search', 'cmd-filter-origine', 'cmd-filter-ville', 'cmd-filter-produit', 'cmd-filter-paiement'].forEach(function (id) { var e = document.getElementById(id); if (e) e.value = ''; }); var o = document.getElementById('cmd-filter-origine'); if (o && v.origine) { if (o.querySelector && !o.querySelector('option[value="' + v.origine + '"]') && o.appendChild && typeof document.createElement === 'function') { var op = document.createElement('option'); op.value = v.origine; op.textContent = v.origine; o.appendChild(op); } o.value = v.origine; } var t = document.getElementById('cmd-filter-transporteur'); if (t) t.value = v.livreur; var st = document.getElementById('cmd-filter-statut'); if (st) st.value = v.statut || ''; cmdFiltreRapide(v.preset); }, 50);
+        setTimeout(function () { ['cmd-search', 'cmd-filter-origine', 'cmd-filter-ville', 'cmd-filter-produit', 'cmd-filter-paiement'].forEach(function (id) { var e = document.getElementById(id); if (e) e.value = ''; }); if (typeof cmdfViderPeriode === 'function') cmdfViderPeriode(); /* v7.5.190 : période mémorisée ignorée par la vue JARVIS */ var o = document.getElementById('cmd-filter-origine'); if (o && v.origine) { if (o.querySelector && !o.querySelector('option[value="' + v.origine + '"]') && o.appendChild && typeof document.createElement === 'function') { var op = document.createElement('option'); op.value = v.origine; op.textContent = v.origine; o.appendChild(op); } o.value = v.origine; } var t = document.getElementById('cmd-filter-transporteur'); if (t) t.value = v.livreur; var st = document.getElementById('cmd-filter-statut'); if (st) st.value = v.statut || ''; cmdFiltreRapide(v.preset); }, 50);
       }
       else if (v.vue === 'tournees') {
         goTo('tournees', document.querySelector('[data-p="tournees"]'));
@@ -8111,6 +8143,132 @@ function cmdUpdateQuickBtns(active) {
   });
 }
 
+// CMDF-DEBUT — v7.5.190 (demande de Borhen du 26/11) : page Commandes allégée. Filtre « Période » (Du … au …, sur la date
+// de prise ou de livraison), tri par « Date prise » / « À livrer le », ligne du total (montant pour l'administrateur
+// SEULEMENT : la collaboratrice voit le nombre de commandes, jamais de montant cumulé), filtres précis repliés derrière
+// « Filtres » avec un compteur. Réglages mémorisés sur l'appareil (localStorage, sans donnée client). Fonctions pures testées :
+// node outils/test-commandes-filtres.js
+var CMDF_CLE = 'mx_cmd_filtres_v1';
+var CMDF_DEFAUT = { du: '', au: '', champ: 'livraison', tri: '', sens: 'desc', ouvert: false };
+var CMDF_FILTRES = ['cmd-filter-transporteur', 'cmd-filter-origine', 'cmd-filter-ville', 'cmd-filter-produit', 'cmd-filter-paiement'];
+var cmdfEtat = null;
+function cmdfDateOk(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s); }
+// Réglages relus (ou reçus) → toujours un état valide ; toute valeur inattendue retombe sur le défaut.
+function cmdfNormaliser(o) {
+  o = (o && typeof o === 'object') ? o : {};
+  var e = {
+    du: cmdfDateOk(o.du) ? o.du : '',
+    au: cmdfDateOk(o.au) ? o.au : '',
+    champ: o.champ === 'prise' ? 'prise' : 'livraison',
+    tri: (o.tri === 'prise' || o.tri === 'livraison') ? o.tri : '',
+    sens: o.sens === 'asc' ? 'asc' : 'desc',
+    ouvert: o.ouvert === true
+  };
+  if (e.du && e.au && e.du > e.au) { var x = e.du; e.du = e.au; e.au = x; } // « du 26 au 03 » = du 03 au 26
+  return e;
+}
+function cmdfLire() { try { var s = localStorage.getItem(CMDF_CLE); return cmdfNormaliser(s ? JSON.parse(s) : null); } catch (e) { return cmdfNormaliser(null); } }
+function cmdfEcrire(e) { try { localStorage.setItem(CMDF_CLE, JSON.stringify(cmdfNormaliser(e))); } catch (x) {} }
+function cmdfJour(v) { return v ? String(v).split('T')[0] : ''; }
+// Date de la commande utilisée par la période et le tri : prise = dateCmd, livraison = date.
+function cmdfDateDe(c, champ) { return cmdfJour(champ === 'prise' ? c.dateCmd : c.date); }
+// La commande est-elle dans la période ? Bornes comprises ; sans date, elle sort dès qu'une borne est posée.
+function cmdfDansPeriode(c, e) {
+  if (!e.du && !e.au) return true;
+  var d = cmdfDateDe(c, e.champ);
+  if (!d) return false;
+  if (e.du && d < e.du) return false;
+  if (e.au && d > e.au) return false;
+  return true;
+}
+// Tri par date (récent → ancien, ou l'inverse) ; les commandes sans date restent en bas ; ordre d'origine si aucun tri.
+function cmdfTrier(list, e) {
+  if (!e.tri) return list;
+  var champ = e.tri, k = e.sens === 'asc' ? 1 : -1;
+  return list.map(function (c, i) { return { c: c, i: i, d: cmdfDateDe(c, champ) }; }).sort(function (a, b) {
+    if (!a.d && !b.d) return a.i - b.i;
+    if (!a.d) return 1;
+    if (!b.d) return -1;
+    if (a.d !== b.d) return a.d < b.d ? -k : k;
+    return a.i - b.i;
+  }).map(function (x) { return x.c; });
+}
+// 1er clic : récent → ancien ; 2e clic sur la même colonne : inverse ; autre colonne : récent → ancien.
+function cmdfClicTri(e, col) {
+  var n = cmdfNormaliser(e);
+  if (n.tri === col) n.sens = n.sens === 'desc' ? 'asc' : 'desc'; else { n.tri = col; n.sens = 'desc'; }
+  return n;
+}
+function cmdfCourt(iso, anneeCourante) {
+  var p = iso.split('-');
+  return p[2] + '/' + p[1] + (Number(p[0]) !== anneeCourante ? '/' + p[0].slice(2) : '');
+}
+// Libellé compact du bouton : « 03/11 → 26/11 », « depuis 03/11 », « jusqu'au 26/11 », sinon « Période ».
+function cmdfLibellePeriode(e, anneeCourante) {
+  if (!e.du && !e.au) return 'Période';
+  if (e.du && e.au) return cmdfCourt(e.du, anneeCourante) + ' → ' + cmdfCourt(e.au, anneeCourante);
+  return e.du ? 'depuis ' + cmdfCourt(e.du, anneeCourante) : 'jusqu\'au ' + cmdfCourt(e.au, anneeCourante);
+}
+function cmdfNbActifs(valeurs) { return valeurs.filter(function (v) { return v !== '' && v !== null && v !== undefined; }).length; }
+// Montant d'une ligne, comme la colonne « Montant » (remboursement = négatif) ; une commande annulée ne compte pas.
+function cmdfMontant(c) {
+  if (c.statut === 'annulé') return 0;
+  var remb = c.origine && c.origine.indexOf('Remboursement') >= 0;
+  return remb ? -Math.abs(Number(c.montantEnc) || 0) : (Number(c.prix) || 0);
+}
+// Ligne du total : « N commandes · X € » pour l'administrateur ; pour tout autre rôle, le nombre seul (jamais de montant).
+function cmdfTotal(list, roleCourant) {
+  var n = list.length, txt = n + (n > 1 ? ' commandes' : ' commande');
+  if (roleCourant !== 'admin') return txt;
+  var s = Math.round(list.reduce(function (a, c) { return a + cmdfMontant(c); }, 0) * 100) / 100;
+  var annulees = list.some(function (c) { return c.statut === 'annulé'; });
+  return txt + ' · ' + s.toLocaleString('fr-FR', { maximumFractionDigits: 2 }) + ' €' + (annulees ? ' (hors annulées)' : '');
+}
+// ── Liaison avec la page (DOM) ──
+function cmdfEtatCourant() { if (!cmdfEtat) cmdfEtat = cmdfLire(); return cmdfEtat; }
+function cmdfMajPage() {
+  var e = cmdfEtatCourant();
+  var du = document.getElementById('cmdf-du'), au = document.getElementById('cmdf-au');
+  if (du && du.value !== e.du) du.value = e.du;
+  if (au && au.value !== e.au) au.value = e.au;
+  var seg = document.getElementById('cmdf-champ');
+  if (seg && seg.querySelectorAll) seg.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-v') === e.champ); });
+  var bp = document.getElementById('cmdf-btn-periode');
+  if (bp) { bp.textContent = cmdfLibellePeriode(e, new Date().getFullYear()); bp.classList.toggle('on', !!(e.du || e.au)); }
+  var nb = cmdfNbActifs(CMDF_FILTRES.map(function (id) { var x = document.getElementById(id); return x ? x.value : ''; }));
+  var bf = document.getElementById('cmdf-btn-filtres');
+  if (bf) { bf.innerHTML = 'Filtres' + (nb ? ' <span class="cmdf-nb">' + nb + '</span>' : ''); bf.setAttribute('aria-expanded', e.ouvert ? 'true' : 'false'); }
+  var pf = document.getElementById('cmd-filtres-panneau');
+  if (pf) pf.style.display = e.ouvert ? '' : 'none';
+  document.querySelectorAll('th.cmdf-tri').forEach(function (th) {
+    var col = th.getAttribute('data-tri'), actif = e.tri === col, fl = th.querySelector('.cmdf-fl');
+    if (fl) fl.textContent = actif ? (e.sens === 'desc' ? '↓' : '↑') : '';
+    th.setAttribute('aria-sort', actif ? (e.sens === 'desc' ? 'descending' : 'ascending') : 'none');
+  });
+}
+function cmdfBasculer(quoi) {
+  var e = cmdfEtatCourant();
+  if (quoi === 'filtres') { e.ouvert = !e.ouvert; cmdfEcrire(e); cmdfMajPage(); return; }
+  var p = document.getElementById('cmdf-panneau-periode'), bp = document.getElementById('cmdf-btn-periode');
+  if (!p) return;
+  var ouvrir = p.style.display === 'none';
+  p.style.display = ouvrir ? '' : 'none';
+  if (bp) bp.setAttribute('aria-expanded', ouvrir ? 'true' : 'false');
+}
+function cmdfPeriodeChange() {
+  var e = cmdfEtatCourant();
+  e.du = (document.getElementById('cmdf-du') || {}).value || '';
+  e.au = (document.getElementById('cmdf-au') || {}).value || '';
+  cmdfEtat = cmdfNormaliser(e); cmdfEcrire(cmdfEtat); cmdAppliquerFiltres();
+}
+function cmdfChamp(v) { var e = cmdfEtatCourant(); e.champ = v; cmdfEtat = cmdfNormaliser(e); cmdfEcrire(cmdfEtat); cmdAppliquerFiltres(); }
+function cmdfTrierPar(col) { cmdfEtat = cmdfClicTri(cmdfEtatCourant(), col); cmdfEcrire(cmdfEtat); cmdAppliquerFiltres(); }
+// Bouton « Effacer » : la période est remise à zéro (et mémorisée vide) ; le tri et l'état du panneau sont des préférences, gardés.
+function cmdfEffacerPeriode() { var e = cmdfEtatCourant(); e.du = ''; e.au = ''; e.champ = CMDF_DEFAUT.champ; cmdfEtat = cmdfNormaliser(e); cmdfEcrire(cmdfEtat); }
+// Vue JARVIS (#jarvis=commandes…) : montre EXACTEMENT ce qui est demandé → période ignorée pour cette vue, sans toucher au choix mémorisé.
+function cmdfViderPeriode() { var e = cmdfEtatCourant(); e.du = ''; e.au = ''; }
+// CMDF-FIN
+
 function cmdFiltreRapide(preset) {
   cmdPresetActif = preset;
   cmdUpdateQuickBtns(preset);
@@ -8123,6 +8281,7 @@ function cmdResetFiltres() {
   ['cmd-search','cmd-filter-statut','cmd-filter-transporteur','cmd-filter-origine','cmd-filter-ville','cmd-filter-produit','cmd-filter-paiement'].forEach(function(id){
     var el = document.getElementById(id); if (el) el.value = '';
   });
+  cmdfEffacerPeriode(); // v7.5.190 : la période aussi
   cmdAppliquerFiltres();
 }
 
@@ -8136,6 +8295,7 @@ function cmdAppliquerFiltres() {
   var ville = document.getElementById('cmd-filter-ville')?.value || '';
   var produit = document.getElementById('cmd-filter-produit')?.value || '';
   var paiement = document.getElementById('cmd-filter-paiement')?.value || ''; // v7.5.113
+  var cmdfE = cmdfEtatCourant(); // v7.5.190 : période et tri mémorisés sur l'appareil
 
   // Preset date (rapide)
   var todayStr = new Date().toISOString().split('T')[0];
@@ -8186,8 +8346,13 @@ function cmdAppliquerFiltres() {
     if (dateDeb && (!dStr || dStr < dateDeb)) return false;
     if (dateFin && (!dStr || dStr > dateFin)) return false;
     if (excludeLivreAnnule && (c.statut === 'livré' || c.statut === 'annulé')) return false;
+    if (!cmdfDansPeriode(c, cmdfE)) return false; // v7.5.190 : « Période » (prise ou livraison), en plus de tous les autres filtres
     return true;
   });
+  list = cmdfTrier(list, cmdfE); // v7.5.190
+  var tot = document.getElementById('cmdf-total');
+  if (tot) tot.textContent = cmdfTotal(list, typeof role === 'undefined' ? null : role); // montant : administrateur seulement
+  cmdfMajPage();
   renderCmds(list);
 }
 
