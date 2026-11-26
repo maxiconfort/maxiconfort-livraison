@@ -127,7 +127,19 @@ test('admin : comparaison affichée (+106 % vs mercredi dernier)', /\+106 % <spa
 test('admin : carte Marge sans calcul inventé', hA.includes('Marge') && hA.includes('disponible dès les prix de revient saisis') && /Marge<\/div><div class="tdb-carte-v">—/.test(hA));
 test('admin : livraisons livrées / prévues', hA.includes('5 / 6'));
 test('admin : valeur « au prix de vente » explicite sans revient', hA.includes('Valeur au prix de vente') && !hA.includes('prix de revient HT'));
-test('admin : valeur au prix de revient quand produits_revient est lisible', hR.includes('Valeur au prix de revient HT') && hR.includes('revient connu pour 1 / 2'));
+test('admin : valeur au prix de revient quand produits_revient est lisible (1 référence sur 2 : PARTIELLE, dit explicitement)', hR.includes('Valeur au prix de revient HT, partielle (1 référence sur 2)') && hR.includes('revient inconnu pour 1 référence en stock, non comptée'));
+{ // v7.5.154 (revue Codex PR 27 sur aa07e1e) : valeur au revient partielle affichée comme telle ; complète = libellé normal
+  const sP = bac.tdbStock([{ id: 'a', cat: 'Matelas', prix: 10, stock: 2, seuil: 1 }, { id: 'b', cat: 'Matelas', prix: 10, stock: 3, seuil: 1 }, { id: 'c', cat: 'Sommier', prix: 10, stock: 1, seuil: 0 }], { a: { prix_revient_ht: '4' } }, true);
+  test('tdbStock : revient connu pour 1 référence sur 3 en stock → partielle', sP.base === 'revient' && sP.partielle === true && sP.connus === 1 && sP.enStock === 3 && sP.valeurRevient === 8, sP);
+  const hP = bac.tdbHtml(entree(true, sP));
+  test('affichage : « Valeur au prix de revient HT, partielle (1 référence sur 3) », 2 références non comptées', hP.includes('Valeur au prix de revient HT, partielle (1 référence sur 3)') && hP.includes('revient inconnu pour 2 références en stock, non comptées'), hP.match(/Valeur au prix de revient[^<]*/));
+  const sC = bac.tdbStock([{ id: 'a', cat: 'Matelas', prix: 10, stock: 2, seuil: 1 }, { id: 'z', cat: 'Matelas', prix: 10, stock: 0, seuil: 1 }], { a: { prix_revient_ht: '4' } }, true);
+  const hC2 = bac.tdbHtml(entree(true, sC));
+  test('revient connu pour toutes les références en stock → valeur complète, sans mention « partielle »', sC.partielle === false && hC2.includes('Valeur au prix de revient HT<small>revient connu pour 1 / 1 référence en stock') && !hC2.includes('partielle'));
+  const hCol = bac.tdbHtml(entree(false, sP));
+  test('collaboratrice : jamais la valeur au revient, partielle ou non (aucun montant, aucune mention)', !/revient|partielle|Valeur|€/.test(hCol));
+  test('collaboratrice : tdbStock ne passe jamais en base « revient »', bac.tdbStock([{ id: 'a', cat: 'Matelas', prix: 10, stock: 2 }], { a: { prix_revient_ht: '4' } }, false).base === 'vente');
+}
 test('admin : Top zones du mois avec lien vers la page Zones', hA.includes('Top zones du mois') && hA.includes("tdbAller('zones')") && hA.includes('Seine-Saint-Denis (93)'));
 test('collab : AUCUN signe €', !hC.includes('€'), hC.match(/.{40}€.{10}/));
 test('collab : aucun montant (ni CA, ni encaissé, ni valeur, ni marge)', !/1.030|750,5|1.600|Marge|Valeur|Encaissé|Chiffre d/.test(hC));
@@ -270,7 +282,8 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
       role: 'admin', commandes: [{ id: '#1' }], cmdTotalCount: 5000, produits: [], SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
       setTimeout: () => 0, clearTimeout: () => {}, renderDash: () => {}, getZoneFromAdresse: () => null, arrChargerRevients: () => new Promise(() => {}),
       document: { getElementById: (id) => (id === 'tdb-contenu' ? el : id === 'p-dashboard' ? { classList: { contains: () => true } } : id === 'dash-periode' ? periode : null) },
-      fetch: () => { lectures++; return new Promise((ok) => { enCours.push((rows) => ok({ ok: true, json: async () => rows })); }); } };
+      // v7.5.154 : page suivante d'une base FICTIVE dont tout tient sur une page → vide, aussitôt (tdbLire lit jusqu'à une page vide)
+      fetch: (u, o) => { if (o && o.headers && !/^0-/.test(o.headers.Range)) return Promise.resolve({ ok: true, json: async () => [] }); lectures++; return new Promise((ok) => { enCours.push((rows) => ok({ ok: true, json: async () => rows })); }); } };
     vm.createContext(b5); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b5);
     const attendre = async () => { for (let k = 0; k < 6; k++) await new Promise((r) => setImmediate(r)); };
     const ligne = (id) => ({ id, prix: 1, statut: 'livré', stpaie: '', montant_enc: 0, date_commande: '2026-11-01', date_livraison: '2026-11-01', origine: '', adresse: '', livreur: '' });
@@ -294,10 +307,22 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
   { // 4. pagination complète, garde-fou explicite
     let pages = 0;
     const b6 = { console, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, Promise, SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
-      fetch: (url, o) => { pages++; const deb = Number(o.headers.Range.split('-')[0]); const n = deb >= 31000 ? 5 : 1000; return Promise.resolve({ ok: true, json: async () => Array.from({ length: n }, (_, k) => ({ id: '#' + (deb + k) })) }); } };
+      // base FICTIVE de 31 005 lignes ; Range « début-fin » demandé, au plus « plafond » lignes rendues par réponse (max-rows)
+      plafond: 1000,
+      fetch: (url, o) => { pages++; const [deb, fin] = o.headers.Range.split('-').map(Number); const n = Math.max(0, Math.min(fin - deb + 1, b6.plafond, 31005 - deb)); return Promise.resolve({ ok: true, json: async () => Array.from({ length: n }, (_, k) => ({ id: '#' + (deb + k) })) }); } };
     vm.createContext(b6); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b6);
     const tout = await b6.tdbLire('');
-    test('au-delà de 30 pages : la lecture continue jusqu’à la dernière (31 005 lignes, 32 pages)', tout.length === 31005 && pages === 32 && new Set(tout.map((r) => r.id)).size === 31005, [tout.length, pages]);
+    test('au-delà de 30 pages : la lecture continue jusqu’à la dernière (31 005 lignes, 32 pages + page vide de fin)', tout.length === 31005 && pages === 33 && new Set(tout.map((r) => r.id)).size === 31005, [tout.length, pages]);
+    // v7.5.154 (revue Codex PR 27 sur aa07e1e) : base qui plafonne chaque réponse SOUS 1 000 lignes (réglage max-rows)
+    b6.plafond = 300; pages = 0;
+    const tout300 = await b6.tdbLire('');
+    test('plafond de la base à 300 lignes par réponse : TOUT est lu (31 005 lignes, sans trou ni doublon), page suivante après les lignes reçues',
+      tout300.length === 31005 && new Set(tout300.map((r) => r.id)).size === 31005 && tout300[300].id === '#300' && pages === Math.ceil(31005 / 300) + 1, [tout300.length, pages]);
+    b6.plafond = 1000; pages = 0;
+    const deb0 = []; const f0 = b6.fetch; b6.fetch = (u, o) => { deb0.push(o.headers.Range); return Promise.resolve({ ok: true, json: async () => (deb0.length === 1 ? [{ id: '#a' }, { id: '#b' }] : []) }); };
+    const court = await b6.tdbLire('');
+    test('page de 2 lignes puis page vide : 2 lignes, la 2e requête part de la ligne 2 (Range 2-1001)', court.length === 2 && deb0.length === 2 && deb0[0] === '0-999' && deb0[1] === '2-1001', deb0);
+    b6.fetch = f0;
     b6.TDB_PAGES_MAX = 3; let err = '';
     try { await b6.tdbLire(''); } catch (e) { err = e.message; }
     test('garde-fou atteint : erreur explicite (jamais de chiffres tronqués en silence)', /chiffres non calculés/.test(err), err);
@@ -362,6 +387,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
       vm.runInContext(html.slice(html.indexOf('var cmdChargementComplet = false;'), html.indexOf('var _pollingInterval = null;')), b8);
       vm.runInContext(fonction('async function sbLoadAll() {'), b8);
       vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b8);
+      if (!o.sansTempsReel) b8.cmdTempsReelStatut('SUBSCRIBED', 1); // v7.5.154 : temps réel connecté bien avant la lecture
       if (o.avant) o.avant(b8);
       await b8.sbLoadAll();
       return b8;
@@ -382,6 +408,37 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
     test('lecture en échec : preuve retirée (incertain)', b.cmdChargementComplet === false && b.tdbLocalComplet() === false);
     test('cmdTotalDepuisEntete : « 0-999/1001 » → 1001, « */0 » → 0, « 0-9/* » ou absent → inconnu', b.cmdTotalDepuisEntete('0-999/1001') === 1001 && b.cmdTotalDepuisEntete('*/0') === 0 && b.cmdTotalDepuisEntete('0-9/*') === null && b.cmdTotalDepuisEntete(null) === null);
     test('tableau : plus aucune comparaison commandes.length ≥ cmdTotalCount', !/commandes\.length >= cmdTotalCount/.test(tranche('// TDB-DEBUT', '// TDB-FIN')));
+    // v7.5.154 (revue Codex PR 27 sur aa07e1e) : preuve retirée dès que la synchronisation n'est plus garantie ; reconnexion
+    b = await charger(1001, 1001);
+    test('synchro : complet au départ (temps réel connecté avant la lecture)', b.tdbLocalComplet() === true);
+    let signaux = 0; b.tdbSignaler = () => { signaux++; };
+    b.cmdTempsReelStatut('CHANNEL_ERROR');
+    test('temps réel en ERREUR : preuve retirée → le tableau lit la base par période, tableau prévenu', b.cmdChargementComplet === false && b.tdbLocalComplet() === false && signaux === 1);
+    b.cmdTempsReelStatut('SUBSCRIBED');
+    test('reconnexion : la preuve n’est PAS rendue (changements manqués pendant la coupure)', b.tdbLocalComplet() === false);
+    await new Promise((r) => setTimeout(r, 5)); await b.sbLoadAll();
+    test('reconnexion puis nouvelle lecture complète (commencée après la reconnexion) : preuve rendue', b.cmdChargementComplet === true && b.tdbLocalComplet() === true);
+    for (const st of ['TIMED_OUT', 'CLOSED']) {
+      b = await charger(1001, 1001); b.cmdTempsReelStatut(st);
+      test('temps réel ' + st + ' : preuve retirée', b.tdbLocalComplet() === false);
+    }
+    b = await charger(1001, 1001, { sansTempsReel: true });
+    test('temps réel jamais connecté : lecture complète SANS preuve', b.cmdChargementComplet === false && b.tdbLocalComplet() === false);
+    b = await charger(1001, 1001, { avant: (x) => { x.cmdTempsReelStatut('SUBSCRIBED', Date.now() + 60000); } });
+    test('temps réel connecté APRÈS le début de la lecture : pas de preuve (changements entre-temps non garantis)', b.tdbLocalComplet() === false);
+    b = await charger(1001, 1001, { avant: (x) => { const f0 = x.fetch; x.fetch = async (u, i) => { if (u.includes('/commandes?select=id,client')) x.cmdSynchroPerdue('relève', Date.now() + 1); return f0(u, i); }; } });
+    test('perte de synchronisation PENDANT la lecture complète : pas de preuve', b.tdbLocalComplet() === false);
+    b = await charger(1001, 1001); b.cmdSynchroPerdue('relève HTTP 503');
+    test('relève (polling) en échec : preuve retirée', b.tdbLocalComplet() === false);
+    b = await charger(1001, 1001); b.cmdVisibilite('hidden', 1000); b.cmdVisibilite('visible', 1000 + 30000);
+    test('onglet masqué 30 s : preuve gardée', b.tdbLocalComplet() === true);
+    b.cmdVisibilite('hidden', 2000); b.cmdVisibilite('visible', 2000 + b.CMD_VEILLE_MAX + 1);
+    test('onglet masqué plus de 60 s : preuve retirée', b.tdbLocalComplet() === false);
+    test('branchements : statut du canal actuel (subscribe), relève en échec (HTTP et exception), retour au premier plan, ancien canal remplacé',
+      html.includes('if (_sbCanalNo === sbRealtimeCanalNo) cmdTempsReelStatut(status);') && html.includes("} else cmdSynchroPerdue('relève HTTP ' + rC.status);")
+      && html.includes("console.warn('Polling erreur:', e.message); cmdSynchroPerdue('relève');") && html.includes('cmdVisibilite(document.visibilityState);')
+      && /if \(sbRealtimeChannel\) \{\s*\/\/[^\n]*\n\s*cmdTempsReelStatut\('CLOSED'\);/.test(html)
+      && html.includes('cmdChargementComplet = cmdsComplet && cmdSynchroGarantieDepuis(_cmdDebutLecture);'));
   }
   console.log('\n7 quinquies. REVUE CODEX PR 27 SUR a46f8aa (lectures suivies par période, champs échappés)');
   { // a) Mois → Semaine → Mois : la réponse de la période AFFICHÉE est toujours prise, aucune lecture redondante, quel que soit l'ordre
@@ -391,7 +448,8 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
         role: 'admin', commandes: [{ id: '#1' }], cmdTotalCount: 5000, produits: [], SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
         setTimeout: () => 0, clearTimeout: () => {}, renderDash: () => {}, getZoneFromAdresse: () => null, arrChargerRevients: () => new Promise(() => {}),
         document: { getElementById: (id) => (id === 'tdb-contenu' ? s.el : id === 'p-dashboard' ? { classList: { contains: () => true } } : id === 'dash-periode' ? s.periode : null) },
-        fetch: () => { s.lectures++; return new Promise((ok) => { s.enCours.push((rows) => ok({ ok: true, json: async () => rows })); }); } };
+        // v7.5.154 : page suivante d'une base FICTIVE dont tout tient sur une page → vide, aussitôt (tdbLire lit jusqu'à une page vide)
+        fetch: (u, o) => { if (o && o.headers && !/^0-/.test(o.headers.Range)) return Promise.resolve({ ok: true, json: async () => [] }); s.lectures++; return new Promise((ok) => { s.enCours.push((rows) => ok({ ok: true, json: async () => rows })); }); } };
       vm.createContext(s.b); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), s.b);
       s.aller = (v) => { s.periode.value = v; s.b.tdbRendre(); return s.enCours.splice(0); };
       return s;
@@ -456,6 +514,6 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
   }
   console.log('\n8. MISE EN LIGNE');
 
-test('CACHE_VERSION augmentée (v7-5-151 ou plus, au-dessus de la PR 26)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 151; })());
+test('CACHE_VERSION augmentée (v7-5-154 ou plus, au-dessus de la PR 26)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 154; })());
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

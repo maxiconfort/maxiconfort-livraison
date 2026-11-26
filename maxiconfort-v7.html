@@ -5122,6 +5122,7 @@ async function sbLoadAll() {
     // v7.5.149 (revue Codex PR 27, P2) : chargement en cours = complétude incertaine ; le total est demandé dans la MÊME réponse
     // (Prefer: count=exact → Content-Range « 0-999/1001 ») : la liste reçue et le total décrivent le même instant
     cmdChargementComplet = false;
+    var _cmdDebutLecture = Date.now(); // v7.5.154 : la preuve exige un temps réel connecté AVANT ce début, sans perte depuis
     var rCmds = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=created_at.desc', {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'count=exact' },
       signal: controller.signal
@@ -5164,7 +5165,8 @@ async function sbLoadAll() {
       });
     }
 
-    cmdChargementComplet = cmdsComplet;
+    // v7.5.154 (revue Codex PR 27 sur aa07e1e) : liste complète ET synchronisation garantie depuis le début de la lecture
+    cmdChargementComplet = cmdsComplet && cmdSynchroGarantieDepuis(_cmdDebutLecture);
     if (tourRes.data && tourRes.data.length > 0) {
       tournees = tourRes.data.map(function(r) {
         return {
@@ -5318,6 +5320,34 @@ var cmdAllLoaded = false;     // true quand tout est chargé
 var cmdChargementComplet = false;
 // Total d'une réponse PostgREST « Content-Range: 0-999/1001 » → 1001 ; « */0 » → 0 ; absent ou « /* » → null (inconnu).
 function cmdTotalDepuisEntete(h) { var m = /\/(\d+)\s*$/.exec(String(h || '')); return m ? parseInt(m[1], 10) : null; }
+// v7.5.154 (revue Codex PR 27 sur aa07e1e) : la preuve ne vaut que si la SYNCHRONISATION est garantie depuis le DÉBUT de la lecture
+// complète. Elle est retirée dès que ce n'est plus le cas — temps réel déconnecté ou en erreur, relève (polling) en échec, onglet resté
+// longtemps en veille — et n'est rendue que par une NOUVELLE lecture complète (sbLoadAll, toutes les 60 s) lancée alors que le temps réel
+// est connecté et sans perte depuis : les changements manqués pendant la coupure sont ainsi relus. Entre-temps, le tableau de bord lit
+// la base par période (tdbLocalComplet faux).
+var cmdTempsReelDepuis = 0;   // moment où le temps réel « commandes » s'est (re)connecté ; 0 = pas connecté
+var cmdSyncPerdueA = 0;       // dernière perte de synchronisation
+var CMD_VEILLE_MAX = 60000;   // au-delà de 60 s en arrière-plan, la synchronisation n'est plus tenue pour garantie
+var _cmdMasqueA = 0;
+function cmdSynchroPerdue(motif, maintenant) {
+  var etaitComplet = cmdChargementComplet === true;
+  cmdChargementComplet = false; cmdSyncPerdueA = maintenant || Date.now();
+  if (etaitComplet && typeof tdbSignaler === 'function') tdbSignaler('commandes');
+  return motif;
+}
+// Statut du canal temps réel (callback de subscribe) : connecté → horodaté ; erreur, délai dépassé ou fermeture → preuve retirée.
+function cmdTempsReelStatut(status, maintenant) {
+  if (status === 'SUBSCRIBED') { cmdTempsReelDepuis = maintenant || Date.now(); return; }
+  if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') { cmdTempsReelDepuis = 0; cmdSynchroPerdue('temps réel ' + status, maintenant); }
+}
+// Onglet masqué puis visible : au-delà de CMD_VEILLE_MAX en veille (minuteurs suspendus, connexion possiblement coupée), preuve retirée.
+function cmdVisibilite(etat, maintenant) {
+  var t = maintenant || Date.now();
+  if (etat === 'hidden') { _cmdMasqueA = t; return; }
+  if (etat === 'visible' && _cmdMasqueA) { var d = t - _cmdMasqueA; _cmdMasqueA = 0; if (d > CMD_VEILLE_MAX) cmdSynchroPerdue('veille', t); }
+}
+// Preuve accordée à une lecture complète commencée à « debut » : temps réel connecté avant ce début, aucune perte depuis.
+function cmdSynchroGarantieDepuis(debut) { return cmdTempsReelDepuis > 0 && cmdTempsReelDepuis <= debut && cmdSyncPerdueA < debut; }
 
 var _pollingInterval = null;
 function startPolling() {
@@ -5386,7 +5416,7 @@ function startPolling() {
             renderTournees();
           }
         }
-      }
+      } else cmdSynchroPerdue('relève HTTP ' + rC.status); // v7.5.154 : relève des commandes en échec → preuve retirée
 
       // Recharger tournées
       var rT = await fetch(SUPABASE_URL + '/rest/v1/tournees?select=*', {
@@ -5439,7 +5469,7 @@ function startPolling() {
     });
     if (_syncNeeded) renderLivreur();
 
-    } catch(e) { console.warn('Polling erreur:', e.message); }
+    } catch(e) { console.warn('Polling erreur:', e.message); cmdSynchroPerdue('relève'); } // v7.5.154 : preuve retirée
   }, 10000); // toutes les 10 secondes
 }
 
@@ -5448,10 +5478,14 @@ var sbRealtimeChannel = null;
 var sbRealtimeReconnectAttempts = 0;
 var sbRealtimeReconnectTimer = null;
 var sbRealtimeIsConnected = false;
+var sbRealtimeCanalNo = 0; // v7.5.154 : numéro du canal actuel (les statuts d'un ancien canal ne touchent plus la preuve)
 
 function sbStartRealtime() {
+  var _sbCanalNo = ++sbRealtimeCanalNo;
   // v7.1 : nettoyer l'ancienne connexion si existe
   if (sbRealtimeChannel) {
+    // v7.5.154 : ancien canal remplacé = synchronisation interrompue jusqu'au nouvel abonnement
+    cmdTempsReelStatut('CLOSED');
     try { sb.removeChannel(sbRealtimeChannel); } catch(e) {}
     sbRealtimeChannel = null;
   }
@@ -5513,6 +5547,8 @@ function sbStartRealtime() {
       renderLivreur();
     })
     .subscribe(function(status, err) {
+      // v7.5.154 : preuve de chargement complet suivie au statut du canal ACTUEL (un ancien canal fermé après coup est ignoré)
+      if (_sbCanalNo === sbRealtimeCanalNo) cmdTempsReelStatut(status);
       // v7.1 : Détection statut connexion + reconnexion auto
       if (status === 'SUBSCRIBED') {
         sbRealtimeIsConnected = true;
@@ -5554,6 +5590,7 @@ function afficherBannerRealtimeDeconnecte() {
 
 // v7.1 : Forcer reconnexion si onglet redevient actif
 document.addEventListener('visibilitychange', function() {
+  cmdVisibilite(document.visibilityState); // v7.5.154 : longue veille → preuve de chargement complet retirée
   if (document.visibilityState === 'visible' && !sbRealtimeIsConnected) {
     console.log('[Realtime] Onglet actif → reconnexion');
     sbStartRealtime();
@@ -6975,6 +7012,9 @@ function tdbStock(liste, revients, voitRevient) {
     if (st > 0) { r.enStock++; var rv = revients && revients[p.id]; if (rv && !isNaN(parseFloat(rv.prix_revient_ht))) { r.connus++; r.valeurRevient += st * parseFloat(rv.prix_revient_ht); } }
   });
   if (voitRevient && revients && Object.keys(revients).length) r.base = 'revient';
+  // v7.5.154 (revue Codex PR 27 sur aa07e1e) : valeur au revient PARTIELLE quand des références en stock n'ont pas de revient connu
+  // (elles ne sont pas comptées) : l'écran le dit explicitement (« partielle (X références sur Y) »), jamais un total présenté comme complet.
+  r.partielle = r.base === 'revient' && r.connus < r.enStock;
   r.valeurVente = Math.round(r.valeurVente * 100) / 100; r.valeurRevient = Math.round(r.valeurRevient * 100) / 100;
   return r;
 }
@@ -7017,7 +7057,8 @@ function tdbHtml(e) {
     '<div class="tdb-ligne rouge"><span>Ruptures</span><b>' + (s.ruptures || 0) + '</b></div>' +
     '<div class="tdb-ligne orange"><span>Stock bas</span><b>' + (s.bas || 0) + '</b></div>';
   if (A) {
-    if (s.base === 'revient') h += '<div class="tdb-ligne"><span>Valeur au prix de revient HT<small>revient connu pour ' + s.connus + ' / ' + s.enStock + ' référence' + (s.enStock > 1 ? 's' : '') + ' en stock</small></span><b>' + tdbEur(s.valeurRevient) + '</b></div>';
+    if (s.base === 'revient' && s.partielle) h += '<div class="tdb-ligne orange"><span>Valeur au prix de revient HT, partielle (' + pl(s.connus, 'référence') + ' sur ' + s.enStock + ')<small>revient inconnu pour ' + pl(s.enStock - s.connus, 'référence') + ' en stock, non comptée' + (s.enStock - s.connus > 1 ? 's' : '') + '</small></span><b>' + tdbEur(s.valeurRevient) + '</b></div>';
+    else if (s.base === 'revient') h += '<div class="tdb-ligne"><span>Valeur au prix de revient HT<small>revient connu pour ' + s.connus + ' / ' + s.enStock + ' référence' + (s.enStock > 1 ? 's' : '') + ' en stock</small></span><b>' + tdbEur(s.valeurRevient) + '</b></div>';
     else h += '<div class="tdb-ligne"><span>Valeur au prix de vente<small>prix de revient pas encore disponibles</small></span><b>' + tdbEur(s.valeurVente) + '</b></div>';
   }
   h += '</section>';
@@ -7077,15 +7118,19 @@ function tdbProgrammerExpiration(ms) {
 function tdbLocalComplet() {
   return Array.isArray(commandes) && commandes.length > 0 && typeof cmdChargementComplet !== 'undefined' && cmdChargementComplet === true;
 }
+// v7.5.154 (revue Codex PR 27 sur aa07e1e) : la lecture ne s'arrête plus sur une page de MOINS de 1 000 lignes — la base peut plafonner
+// chaque réponse plus bas (réglage max-rows) : la page suivante commence après les lignes REÇUES et la lecture s'arrête sur une page VIDE.
 async function tdbLire(filtre) {
   var out = [];
   for (var page = 0; ; page++) {
-    if (page >= TDB_PAGES_MAX) throw new Error('plus de ' + (TDB_PAGES_MAX * 1000).toLocaleString('fr-FR') + ' commandes sur la période : lecture arrêtée, chiffres non calculés');
+    if (page >= TDB_PAGES_MAX) throw new Error('plus de ' + TDB_PAGES_MAX.toLocaleString('fr-FR') + ' pages (' + out.length.toLocaleString('fr-FR') + ' commandes lues) sur la période : lecture arrêtée, chiffres non calculés');
+    var deb = out.length;
     var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + TDB_COLS + filtre + '&order=id.asc', {
-      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Range-Unit': 'items', 'Range': (page * 1000) + '-' + (page * 1000 + 999) } });
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Range-Unit': 'items', 'Range': deb + '-' + (deb + 999) } });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     var rows = await r.json(); if (!Array.isArray(rows)) throw new Error('réponse inattendue');
-    out = out.concat(rows); if (rows.length < 1000) break;
+    if (!rows.length) break;
+    out = out.concat(rows);
   }
   return out;
 }
