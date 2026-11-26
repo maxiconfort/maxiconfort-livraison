@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.136 - Habillage style D : tests du selecteur de periode et du mode nuit (revue Codex sur d9c4e2a) (26/11/2026)
 // v7.5.135 - Caisse (revue Codex) : Mixte controle, releve encaisse par arret, depenses uniques/figees/journalisees, refus base != coupure (26/11/2026)
 // v7.5.127 - JARVIS : vue Commandes filtree par origine (#jarvis=commandes:all:::TikTok%20Shop) (09/11/2026)
 // v7.5.126 - JARVIS : vue Commandes filtree par statut (#jarvis=commandes:all:GLS:en-attente) (09/11/2026)
