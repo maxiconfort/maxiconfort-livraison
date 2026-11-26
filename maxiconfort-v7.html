@@ -4388,21 +4388,29 @@ async function arrCharger() {
 async function arrInit() {
   var el = document.getElementById('arr-contenu'); if (!el) return;
   if (role !== 'admin') { el.innerHTML = '<div class="card" style="padding:18px">Réservé à l\'administrateur.</div>'; return; }
+  // revue Codex PR 26 sur 636f873 : pendant la validation d'une réception, pas de rechargement (les données de l'envoi restent en place)
+  if (ARR_ETAT.envoi) { arrRendre(); toast('Validation de la réception en cours : attendez la fin', 'err'); return; }
   el.innerHTML = '<div style="padding:18px;color:var(--t3)">Chargement des arrivages…</div>';
   await arrCharger();
   arrRendre();
 }
 function arrLignesDe(id) { return ARR_ETAT.lignes.filter(function(l) { return l.arrivage_id === id; }).sort(function(a, b) { return a.id - b.id; }); }
 function arrProduit(id) { return produits.find(function(p) { return p.id === id; }); }
+// revue Codex PR 26 sur 636f873 : le verrou de validation (ARR_ETAT.envoi) est gardé pendant TOUTE l'opération. Avant, ouvrir un
+// arrivage pendant les relectures le remettait à false : une seconde validation pouvait partir en parallèle. Seule arrValider le lève.
 function arrOuvrir(id) {
-  ARR_ETAT.ouvert = id; ARR_ETAT.envoi = false;
+  if (ARR_ETAT.envoi) { toast('Validation de la réception en cours : attendez la fin avant de changer d\'arrivage', 'err'); return; }
+  ARR_ETAT.ouvert = id;
   var a = ARR_ETAT.arrivages.find(function(x) { return x.id === id; });
   var ls = arrLignesDe(id);
   ARR_ETAT.saisies = (a && a.statut === 'en_attente') ? arrSaisiesInitiales(ls)
     : ls.reduce(function(m, l) { m[l.id] = { recue: l.quantite_recue, endommagee: l.quantite_endommagee, manquante: l.quantite_manquante }; return m; }, {});
   arrRendre();
 }
-function arrFermer() { ARR_ETAT.ouvert = null; arrRendre(); }
+function arrFermer() {
+  if (ARR_ETAT.envoi) { toast('Validation de la réception en cours : attendez la fin avant de quitter cet arrivage', 'err'); return; }
+  ARR_ETAT.ouvert = null; arrRendre();
+}
 function arrBadgeStatut(st) {
   var c = st === 'recu' ? 'b-green' : st === 'annule' ? 'b-gray' : 'b-orange';
   return '<span class="bdg ' + c + '">' + arrStatutLibelle(st) + '</span>';
@@ -4507,6 +4515,17 @@ async function arrValider() {
   var t = c.total;
   if (!confirm('Valider la réception de ' + a.reference_interne + ' ?\n\n• ' + t.recue + ' article(s) en bon état AJOUTÉS au stock\n• ' + t.endommagee + ' endommagé(s) : NON ajoutés\n• ' + t.manquante + ' manquant(s)\n\nPrix de revient recalculé (' + (ARR_METHODES[ARR_METHODE_VALORISATION] || ARR_METHODE_VALORISATION) + ').\nCette validation est DÉFINITIVE (une seule fois).')) return;
   ARR_ETAT.envoi = true; arrMajControle();
+  try { // revue Codex PR 26 sur 636f873 : verrou levé à coup sûr, même sur une erreur inattendue (finally)
+    await arrValiderEnvoi(a, ls, saisies, vue);
+  } catch(e) {
+    toast('Réception NON validée : erreur inattendue (' + ((e && e.message) || e) + ')', 'err');
+  } finally {
+    if (ARR_ETAT.envoi) { ARR_ETAT.envoi = false; arrMajControle(); }
+  }
+}
+// Suite de arrValider, verrou posé (ARR_ETAT.envoi = true) : relectures, contrôles, envoi. Chaque sortie lève le verrou AVANT de
+// redessiner (pour que le bouton revienne) ; arrValider le lève de toute façon à la fin.
+async function arrValiderEnvoi(a, ls, saisies, vue) {
   // revue Codex PR 26 sur 66def07 : lignes de CET arrivage relues par arrivage_id (complètes, par pages) juste avant l'envoi ; si elles
   // diffèrent de celles affichées (ligne ajoutée, retirée, quantité changée), rien n'est envoyé : l'écran est rafraîchi pour revérifier.
   var relu = null;
@@ -4517,7 +4536,7 @@ async function arrValider() {
     ARR_ETAT.envoi = false;
     ARR_ETAT.lignes = ARR_ETAT.lignes.filter(function(l) { return l.arrivage_id !== a.id; }).concat(relu.rows);
     toast('Réception NON validée : les lignes de l\'arrivage ont changé — vérifiez la saisie puis validez de nouveau', 'err');
-    arrOuvrir(a.id); return;
+    arrOuvrir(a.id); return; // verrou déjà levé : réouverture permise
   }
   // v7.5.150 (revue Codex PR 26 sur fd751b8) : stock et revient ACTUELS des produits relus explicitement juste avant l'envoi
   var val = null;

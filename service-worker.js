@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.164 - Arrivage : verrou de validation garde pendant toute l'operation (navigation bloquee), banc 039 en echec si pglite manque (revue Codex sur 636f873) (26/11/2026)
 // v7.5.163 - Produits : creation a prix nul = prix a definir (non vendable), homonyme d'une reference en attente refuse ; arrivage : correction de taux refusee si le revient a change hors historique (26/11/2026)
 // v7.5.161 - Produits non vendables : remise globale figee tant qu'une ligne figee est presente (base, appli, JARVIS) (26/11/2026)
 // v7.5.158 - Commande ancienne sans lignes rouverte : ligne d'origine reconstruite telle quelle, plus de rapprochement par premier mot (26/11/2026)
