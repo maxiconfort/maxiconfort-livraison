@@ -216,7 +216,7 @@ function nouveauBac(opts) {
       async (d, f2) => { pages.push([d, f2]); return actifs.slice(d, f2 + 1); },
       async (ids) => { parIds.push(ids.slice()); return base.filter(r => ids.includes(r.id)); });
     const vendW = pv.produitsVendables(rows).filter(p => p.actif === true).map(p => p.id);
-    test('catalogue complet : lu par pages de 1 000 au-delà du plafond (2 pages)', pages.length === 2 && rows.filter(r => r.actif).length === 1500, pages);
+    test('catalogue complet : lu par pages au-delà du plafond (2 pages pleines + page vide qui arrête la lecture)', pages.length === 3 && pages[1][0] === 1000 && pages[2][0] === 1500 && rows.filter(r => r.actif).length === 1500, pages);
     test('catalogue complet : composant absent de la lecture chargé PAR IDENTIFIANT', parIds.length === 1 && JSON.stringify(parIds[0]) === '["cach"]', parIds);
     test('catalogue complet : ensemble dont le composant (non lu au départ) est non vendable → écarté', !vendW.includes('p9999-ens') && vendW.includes('p1498'), vendW.length);
     let leve = false;
@@ -352,7 +352,7 @@ function nouveauBac(opts) {
     test('ensemble non vendable (composant sans prix) reconnu par son nom : refusé', R([{ produit: 'Ensemble Nouveau N + Sommier' }]).length === 1);
     test('nom d\'un produit VENDABLE sans produitId : accepté (comportement inchangé)', R([{ produit: 'Matelas Fictif A 140 x 190' }]).length === 0);
     test('nom inconnu (hors catalogue) : accepté', R([{ produitId: '_custom_9', produit: 'Article libre fictif' }]).length === 0);
-    test('produitId fiable d\'un produit vendable : il prime sur le nom', R([{ produitId: 'pr-a', produit: 'Matelas Nouveau N (fictif)' }]).length === 0);
+    test('produitId d\'un produit vendable dont le nom est le sien : accepté', R([{ produitId: 'pr-a', produit: 'Matelas Fictif A 140×190' }]).length === 0);
     test('commande déjà prise qui le contenait par son seul nom : ligne figée, reste modifiable', R([{ produit: 'Matelas Retiré R' }], { lignes: [{ produitId: null, produit: 'matelas retiré r' }] }).length === 0);
     const pvN = await import('file:///' + path.join(racine, 'supabase', 'functions', '_shared', 'produits-vendables.ts').replace(/\\/g, '/'));
     const echant = ['  Matelas  Fictif ÉTÉ 140 × 190 x 25 ', 'Sommier 160X200', 'Ensemble Ça Va 90 x190', '', null, 'MC-TEST-1'];
@@ -360,13 +360,14 @@ function nouveauBac(opts) {
     test('normalisation : même résultat attendu que l\'auto-contrôle SQL', bac.venNorm('  Matelas  Fictif ÉTÉ 140 × 190 x 25 ') === 'matelas fictif ete 140x190x25' && sql.includes("interne.l039_norm('  Matelas  Fictif ÉTÉ 140 × 190 x 25 ') is distinct from 'matelas fictif ete 140x190x25'"));
     const trig = sql.slice(sql.indexOf('create or replace function interne.commandes_produit_vendable_garde()'), sql.indexOf('create trigger commandes_produit_vendable_garde'));
     const ident = sql.slice(sql.indexOf('create or replace function interne.l039_lignes_identifiees'), sql.indexOf('revoke all on function interne.l039_lignes_identifiees'));
+    const designe = sql.slice(sql.indexOf('create or replace function interne.l039_designe'), sql.indexOf('revoke all on function interne.l039_designe'));
     test('base : lignes identifiées (nom / référence) des DEUX côtés AVANT la recherche des produits non vendables',
       trig.indexOf('v_new := interne.l039_lignes_identifiees(v_new);') > 0 && trig.indexOf('v_old := interne.l039_lignes_identifiees(v_old);') > trig.indexOf('into v_old from public.commandes')
       && trig.indexOf('v_new := interne.l039_lignes_identifiees(v_new);') < trig.indexOf('select array_agg(distinct p.id) into v_nv'));
     test('base : produitId EXISTANT fiable ; sinon nom (produit / nom) ou référence (reference / sku / _ugs / nom) d\'un produit NON VENDABLE',
-      ident.includes("when coalesce(e ->> 'produitId', '') <> '' and exists (select 1 from public.produits q where q.id = e ->> 'produitId') then e")
-      && ident.includes("interne.l039_norm(q.nom) in (interne.l039_norm(e ->> 'produit'), interne.l039_norm(e ->> 'nom'))")
-      && ["'reference'", "'sku'", "'_ugs'"].every(k => ident.includes('interne.l039_norm(e ->> ' + k + ')')) && ident.includes('and interne.produit_non_vendable(q.id)')
+      ident.includes("when coalesce(e ->> 'produitId', '') <> '' and exists (select 1 from public.produits q where q.id = e ->> 'produitId'")
+      && designe.includes("interne.l039_norm(p_nom) in (interne.l039_norm(e ->> 'produit'), interne.l039_norm(e ->> 'nom'))")
+      && ["'reference'", "'sku'", "'_ugs'"].every(k => designe.includes('interne.l039_norm(e ->> ' + k + ')')) && ident.includes('and interne.produit_non_vendable(q.id)')
       && ident.includes('end order by t.ord') && sql.includes('revoke all on function interne.l039_lignes_identifiees(jsonb) from public, anon, authenticated;'));
     test('base : normalisation SQL (minuscules, accents, ×, espaces, 140 x 190)', sql.includes("translate(lower(coalesce(p, '')), 'àâäáãåçéèêëíìîïñóòôöõúùûüýÿ×', 'aaaaaaceeeeiiiinooooouuuuyyx')")
       && sql.includes("'(\\d) ?x ?(\\d)', '\\1x\\2', 'g'"));
@@ -431,9 +432,68 @@ function nouveauBac(opts) {
       && !/sb\.from\('produits'\)\.select\('\*'\);/.test(ja) && (ja.match(/if \(!cat\) return catalogueIllisible\(\);/g) || []).length === 2);
   }
 
+  console.log('\n8 quater. REVUE CODEX SUR 4ec0313 (produitId et nom contradictoires, pagination du catalogue serveur)');
+  {
+    // --- point 1 : identifiant d'un produit VENDABLE + nom (ou référence) d'un produit NON VENDABLE = contradiction refusée ---
+    ({ bac } = nouveauBac());
+    const R = (lignes, anc) => bac.venLignesRefusees(lignes, bac.produits, anc || null);
+    const contra = { produitId: 'pr-a', produit: 'Matelas Nouveau N (fictif)', qte: 1, prixUnit: 100 };
+    test('insertion : produitId vendable + nom d\'un produit non vendable → refusé', JSON.stringify(R([contra])) === JSON.stringify(['Matelas Nouveau N (fictif)']));
+    test('insertion : nom contradictoire à la casse / aux espaces près → refusé', R([{ produitId: 'pr-a', produit: '  matelas nouveau n (FICTIF) ' }]).length === 1);
+    test('insertion : produitId vendable + ancien champ « nom » d\'un produit retiré → refusé', R([{ produitId: 'pr-s', nom: 'Matelas Retire R' }]).length === 1);
+    test('insertion : produitId vendable + référence (sku / _ugs) d\'un produit non vendable → refusé', R([{ produitId: 'pr-a', produit: 'Article fictif', sku: 'MC-TEST-1' }]).length === 1 && R([{ produitId: 'pr-a', _ugs: 'mc-test-1' }]).length === 1);
+    test('insertion : produitId vendable + nom d\'un ENSEMBLE non vendable → refusé', R([{ produitId: 'pr-e1', produit: 'Ensemble Nouveau N + Sommier' }]).length === 1);
+    test('nom et identifiant désignant le MÊME produit vendable : accepté (aussi à la casse / au « x » près)', R([{ produitId: 'pr-a', produit: 'Matelas Fictif A 140×190' }, { produitId: 'pr-a', produit: 'matelas fictif a 140 x 190' }]).length === 0);
+    test('produitId vendable sans nom ni référence : accepté (inchangé)', R([{ produitId: 'pr-a', qte: 1 }]).length === 0);
+    test('produitId vendable + libellé libre (aucun produit non vendable désigné) : accepté (inchangé)', R([{ produitId: 'pr-a', produit: 'Matelas A (livraison 2e étage)' }]).length === 0);
+    test('produitId d\'un produit NON vendable à son nom : toujours refusé', R([{ produitId: 'pr-n', produit: 'Matelas Nouveau N (fictif)' }]).length === 1);
+    test('upsert d\'une commande déjà prise : ligne contradictoire INCHANGÉE → reste modifiable', R([contra, { produitId: 'pr-s', produit: 'Sommier Fictif 140×190' }], { lignes: [contra] }).length === 0);
+    test('upsert d\'une commande déjà prise : ligne contradictoire AJOUTÉE → refusée', R([{ produitId: 'pr-a', produit: 'Matelas Fictif A 140×190' }, contra], { lignes: [{ produitId: 'pr-a', produit: 'Matelas Fictif A 140×190' }] }).length === 1);
+    test('upsert : ligne vendable réécrite avec le nom d\'un produit non vendable → refusée', R([contra], { lignes: [{ produitId: 'pr-a', produit: 'Matelas Fictif A 140×190', qte: 1, prixUnit: 100 }] }).length === 1);
+    test('appli : venDesigne (nom, référence, rien à comparer)', bac.venDesigne({ produit: 'matelas fictif a 140 x 190' }, bac.produits[0]) === true && bac.venDesigne({ produit: 'Autre' }, bac.produits[0]) === false
+      && bac.venDesigne({ _ugs: 'mc-test-1' }, bac.produits[2]) === true && bac.venDesigne({ produitId: 'pr-a' }, bac.produits[0]) === false);
+    // même règle dans la base : identifiant gardé seulement s'il est DÉSIGNÉ par la ligne, sinon produit non vendable désigné
+    const identQ = sql.slice(sql.indexOf('create or replace function interne.l039_lignes_identifiees'), sql.indexOf('revoke all on function interne.l039_lignes_identifiees'));
+    const trigQ = sql.slice(sql.indexOf('create or replace function interne.commandes_produit_vendable_garde()'), sql.indexOf('create trigger commandes_produit_vendable_garde'));
+    test('base : produitId existant gardé SEULEMENT si la ligne le désigne (l039_designe), plus de « existe = fiable »',
+      identQ.includes("exists (select 1 from public.produits q where q.id = e ->> 'produitId'\n") && identQ.includes('and interne.l039_designe(e, q.nom, q.reference_interne)) then e')
+      && !identQ.includes("where q.id = e ->> 'produitId') then e"));
+    test('base : sinon produit NON VENDABLE désigné par nom ou référence (même fonction l039_designe)', identQ.includes('where interne.l039_designe(e, q.nom, q.reference_interne)\n             and interne.produit_non_vendable(q.id)'));
+    test('base : l039_designe pure (immutable), jamais NULL, accès retiré', sql.includes('create or replace function interne.l039_designe(e jsonb, p_nom text, p_ref text) returns boolean\nlanguage sql immutable as $')
+      && sql.includes('revoke all on function interne.l039_designe(jsonb, text, text) from public, anon, authenticated;'));
+    test('base : insertion ET upsert passent par la même identification (déclencheur before insert or update, lignes actuelles relues)',
+      sql.includes('create trigger commandes_produit_vendable_garde before insert or update of lignes on public.commandes')
+      && trigQ.includes('select to_jsonb(c.lignes) into v_old from public.commandes c where c.id = new.id;') && trigQ.includes('v_new := interne.l039_lignes_identifiees(v_new);') && trigQ.includes('v_old := interne.l039_lignes_identifiees(v_old);'));
+    const auto10q = sql.slice(sql.indexOf('-- 10. Auto-contrôle à l\'application : revient d\'un lot'));
+    test('base : auto-contrôle EXÉCUTÉ (désignation par nom, autre produit, référence, ligne sans nom, valeurs vides)',
+      ["nom désignant le produit de l''identifiant", 'nom désignant un autre produit', 'référence désignant le produit', 'ligne sans nom ni référence', 'nom et référence vides'].every(c => auto10q.includes("f := '" + c + "'")));
+    // JARVIS (création de commande) : même contradiction refusée
+    const jlQ = await import('file:///' + path.join(racine, 'supabase', 'functions', '_shared', 'jarvis-action-logique.ts').replace(/\\/g, '/'));
+    const catQ = jlQ.catalogueDepuisBase([{ id: 'n', nom: 'Matelas Nouveau N (fictif)', prix: null, vendable: false, prix_vente_defini: false }, { id: 'a', nom: 'Matelas Fictif A 140×190', prix: 100 }]);
+    test('JARVIS : produitId vendable + nom d\'un produit non vendable → refusé', /pas encore vendable/.test(jlQ.lignesCommande([{ produitId: 'a', produit: 'matelas nouveau n (fictif)', qte: 1 }], catQ).erreur || ''));
+    test('JARVIS : produitId vendable + son propre nom (ou un libellé libre) → accepté', !jlQ.lignesCommande([{ produitId: 'a', produit: 'Matelas Fictif A 140 x 190', qte: 1 }], catQ).erreur
+      && !jlQ.lignesCommande([{ produitId: 'a', produit: 'Matelas A', qte: 1 }], catQ).erreur);
+
+    // --- point 2 : pagination du catalogue serveur avec un plafond de la base INFÉRIEUR à la page demandée ---
+    const pvQ = await import('file:///' + path.join(racine, 'supabase', 'functions', '_shared', 'produits-vendables.ts').replace(/\\/g, '/'));
+    const tous = []; for (let n = 0; n < 1499; n++) tous.push({ id: 'p' + String(n).padStart(4, '0'), nom: 'Fictif ' + n, actif: true });
+    tous.push({ id: 'p9999-ens', nom: 'Ensemble fictif', actif: true, composants: [{ id: 'p0001', qte: 1 }, { id: 'p1498', qte: 1 }] });
+    tous[1498].vendable = false; tous[1498].prix_vente_defini = false; // composant non vendable en DERNIÈRE page
+    for (const plafond of [300, 1000, 7]) {
+      const pages = [];
+      const lus = await pvQ.lireCatalogueComplet(async (d, f) => { pages.push([d, f]); return tous.slice(d, Math.min(f + 1, d + plafond)); }, async () => []);
+      const continu = pages.every((pg, i) => pg[0] === Math.min(i * plafond, tous.length));
+      test('plafond ' + plafond + ' (page demandée 1 000) : les 1 500 produits lus, avance du nombre reçu, arrêt sur page vide',
+        lus.length === 1500 && new Set(lus.map(r => r.id)).size === 1500 && continu && pages.length === Math.ceil(1500 / plafond) + 1, { lus: lus.length, pages: pages.length });
+      test('plafond ' + plafond + ' : l\'ensemble dont le composant (dernière page) est non vendable est écarté', !pvQ.produitsVendables(lus).some(r => r.id === 'p9999-ens'));
+    }
+    const src = fs.readFileSync(path.join(racine, 'supabase', 'functions', '_shared', 'produits-vendables.ts'), 'utf8');
+    test('serveur : plus d\'arrêt sur une page « incomplète » (page.length < taillePage)', !/page\.length < taillePage/.test(src) && src.includes('if (!page.length) break;') && src.includes('const debut = rows.length;'));
+  }
+
   console.log('\n9. VERSION');
   const m = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(sw);
-  test('CACHE_VERSION augmentée (v7-5-142 ou plus)', !!m && Number(m[1]) >= 142, m && m[0]);
+  test('CACHE_VERSION augmentée (v7-5-144 ou plus)', !!m && Number(m[1]) >= 144, m && m[0]);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

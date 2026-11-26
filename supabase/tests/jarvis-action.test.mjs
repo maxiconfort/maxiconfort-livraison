@@ -895,6 +895,11 @@ test('v2.19 (revue Codex PR 26 sur 66def07) : catalogue JARVIS COMPLET au-delà 
   assert.equal(catalogueDepuisBase(base.slice(0, plafond)).get('a0000-ens').non_vendable, undefined);
   // nom dicté à la casse / aux espaces / au « × » près : reconnu comme le produit non vendable (jamais une ligne hors catalogue)
   assert.match(lignesCommande([{ produit: 'matelas fictif z 140 x 190', qte: 1 }], cat).erreur || '', /pas encore vendable/);
+  // v2.20 (revue Codex sur 4ec0313) : identifiant d'un produit vendable + nom d'un produit non vendable = contradiction refusée ;
+  // identifiant + son propre nom (ou sans nom) = accepté
+  assert.match(lignesCommande([{ produitId: 'p0001', produit: 'Matelas Fictif Z 140 x 190', qte: 1 }], cat).erreur || '', /pas encore vendable/);
+  assert.equal(lignesCommande([{ produitId: 'p0001', produit: 'produit fictif 1', qte: 1 }], cat).erreur, null);
+  assert.equal(lignesCommande([{ produitId: 'p0001', qte: 1 }], cat).erreur, null);
   // lecture impossible : exception (jamais un catalogue partiel)
   await assert.rejects(catalogueJarvis(async () => { throw new Error('panne'); }, lireParIds));
   const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');

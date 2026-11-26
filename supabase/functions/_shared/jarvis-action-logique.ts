@@ -516,6 +516,11 @@ export function lignesCommande(lignes: Ligne[], catalogue: Catalogue): { lignes:
   for (const l of lignes) {
     const nom = texte(l.produit, 120);
     let p = l.produitId ? catalogue.get(String(l.produitId)) : undefined;
+    // v2.20 (revue Codex PR 26 sur 4ec0313) : identifiant d'un produit + nom d'un AUTRE produit, NON VENDABLE → ligne contradictoire
+    // rapportée au produit non vendable (refusée ci-dessous), comme interne.l039_lignes_identifiees ; nom identique = produit gardé
+    if (p && nomNormalise(nom) && nomNormalise(nom) !== nomNormalise(p.nom)) {
+      for (const x of catalogue.values()) if (x.non_vendable && x.id !== p.id && nomNormalise(x.nom) === nomNormalise(nom)) { p = x; break; }
+    }
     if (!p) for (const x of catalogue.values()) if (x.nom.toLowerCase() === nom.toLowerCase()) { p = x; break; }
     // v2.19 (revue Codex PR 26 sur 66def07) : nom d'un produit NON VENDABLE à la casse, aux accents ou aux espaces près = ce produit
     // (refusé ci-dessous), jamais une ligne « hors catalogue » à son nom (la base la refuserait aussi : interne.l039_lignes_identifiees)

@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.144 - Produits non vendables : identifiant et nom contradictoires refuses, catalogue serveur lu jusqu'a une page vide (26/11/2026)
 // v7.5.142 - Arrivages : lignes lues par pages, revient calcule par la base, produits non vendables reconnus par nom (26/11/2026)
 // v7.5.127 - JARVIS : vue Commandes filtree par origine (#jarvis=commandes:all:::TikTok%20Shop) (09/11/2026)
 // v7.5.126 - JARVIS : vue Commandes filtree par statut (#jarvis=commandes:all:GLS:en-attente) (09/11/2026)
@@ -9,7 +10,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-142';
+const CACHE_VERSION = 'maxiconfort-v7-5-144';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
