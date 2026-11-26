@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.175 - Caisse (revue Codex sur 437ec1e) : verrou du point de caisse valide tenu par la base (migration 038b, declencheur sur depenses), message clair au livreur en cas de refus (26/11/2026)
 // v7.5.171 - Caisse (revue Codex sur 3c3aa05) : "Deja paye" reserve aux commandes soldees (admin : motif journalise), livraisons terminees != tournee cloturee, verrou du point de caisse valide sur la liste Finance (26/11/2026)
 // v7.5.135 - Caisse (revue Codex) : Mixte controle, releve encaisse par arret, depenses uniques/figees/journalisees, refus base != coupure (26/11/2026)
 // v7.5.127 - JARVIS : vue Commandes filtree par origine (#jarvis=commandes:all:::TikTok%20Shop) (09/11/2026)
@@ -10,7 +11,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-171';
+const CACHE_VERSION = 'maxiconfort-v7-5-175';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
