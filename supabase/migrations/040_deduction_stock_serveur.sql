@@ -1,44 +1,97 @@
--- 040 (26/11/2026) : STOCK — le retrait de stock d'une livraison est fait PAR LA BASE, en une seule opération et UNE SEULE
--- FOIS par commande (décision de Borhen du 26/11/2026, « GO » à la solution A, confirmé à 22 h 15 ; PR 29).
+-- 040 (26/11/2026, révisée le 27/11 : règle des 10 retours, relecture complète) : STOCK — les mouvements de stock de
+-- l'application passent PAR LA BASE (décision de Borhen du 26/11/2026, « GO » à la solution A, confirmé à 22 h 15 ; PR 29) :
+--   * le retrait d'une livraison, UNE SEULE FOIS par commande (public.deduire_stock_livraison) ;
+--   * le recrédit à l'annulation, calculé depuis les sorties RÉELLEMENT journalisées (public.recrediter_stock_livraison) ;
+--   * les entrées / sorties / corrections manuelles du bureau (public.mouvement_stock_produit).
 --
 -- RETOUR ARRIÈRE (à exécuter tel quel dans l'éditeur SQL si besoin ; ne supprime ni ne modifie aucune donnée de stock ni
 -- aucune commande) :
 --   drop trigger if exists commandes_stock_deduit_garde on public.commandes;
+--   drop trigger if exists produits_stock_garde on public.produits;
 --   drop function if exists interne.l040_stock_deduit_garde();
+--   drop function if exists interne.l040_stock_garde();
+--   drop function if exists public.mouvement_stock_produit(text, text, integer, text, text);
+--   drop function if exists public.recrediter_stock_livraison(text, boolean);
 --   drop function if exists public.deduire_stock_livraison(text);
+--   drop function if exists interne.l040_rejeu(text, text);
+--   drop function if exists interne.l040_stocks(text[]);
+--   drop function if exists interne.l040_verrous_requis(text[]);
+--   drop function if exists interne.l040_par_fonction();
+--   drop function if exists interne.l040_strict();
 --   drop function if exists interne.l040_trouver_produit(text, text);
 --   drop function if exists interne.l040_dim_compatible(text, text);
 --   drop function if exists interne.l040_dim(text);
 --   drop function if exists interne.l040_qte(jsonb);
---   (La table public.stock_sorties_livraison peut rester : c'est le journal des sorties déjà faites ; la supprimer n'efface
---    que ce journal, aucun stock : drop table if exists public.stock_sorties_livraison;)
---   Puis revenir à l'application v7.5.196 (elle calcule de nouveau le retrait sur le téléphone).
+--   (Les tables public.stock_sorties_livraison, public.stock_operations et interne.l040_reglages peuvent rester : ce sont
+--    des journaux et un réglage ; les supprimer n'efface aucun stock.)
+--   Puis revenir à l'application v7.5.196 (elle calcule de nouveau le stock sur le téléphone).
 --
--- ORDRE DE MISE EN SERVICE (obligatoire) : 038b (PR 24) → 039 (PR 26) → CETTE 040 → PUIS l'application v7.5.197 (PR 29).
--- Si l'application v7.5.197 est en ligne sans la 040, rien n'est perdu : l'appel est gardé en file sur le téléphone
--- (« mise à jour de la base en attente », affiché une fois) et rejoué dès que la fonction existe.
+-- ORDRE DE MISE EN SERVICE (obligatoire) : 038b (PR 24) → 039 (PR 26) → CETTE 040 → PUIS l'application v7.5.198 (PR 29),
+-- puis, quand TOUS les téléphones sont en v7.5.198, le MODE STRICT (une ligne SQL, voir « COMPATIBILITÉ »).
+-- Appli v7.5.198 en ligne sans la 040 : rien n'est perdu (demandes gardées en file sur les téléphones, rejouées dès que
+-- les fonctions existent ; « mise à jour de la base en attente » affiché une fois), mais aucun stock ne bouge entre-temps.
 --
--- Problème (6 retours de Codex sur la PR 29) : le téléphone calculait le nouveau stock (stock lu − quantité) puis l'envoyait
--- produit par produit, puis posait stock_deduit = vrai. Un envoi au résultat incertain (réponse perdue, application fermée
--- pendant l'envoi, deux appareils) ne peut pas être rejoué sans risquer une double déduction, ni abandonné sans risquer une
--- déduction perdue : un téléphone ne peut pas garantir SEUL une déduction unique.
+-- PROBLÈME (10 retours de Codex sur la PR 29) : le téléphone calculait le nouveau stock (stock lu − quantité) et l'envoyait
+-- en valeur absolue. Un envoi au résultat incertain (réponse perdue, application fermée pendant l'envoi, deux appareils) ne
+-- peut être ni rejoué sans risquer un double effet, ni abandonné sans risquer une perte ; et une fiche produit envoyée avec
+-- un stock lu plus tôt écrase un mouvement plus récent. Un téléphone ne peut pas garantir cela SEUL.
 --
--- Solution : public.deduire_stock_livraison(p_cmd_id) fait TOUT dans une seule transaction de la base :
---   1. session vérifiée (admin, collaboratrice, ou livreur PROPRIÉTAIRE de la commande, même règle que la politique
+-- 1. DÉDUCTION — public.deduire_stock_livraison(p_cmd_id), une seule transaction :
+--   a. session vérifiée (admin, collaboratrice, ou livreur PROPRIÉTAIRE de la commande, même règle que la politique
 --      sess_livreur de la migration 019 : livreur de la commande = livreur de la session, date de livraison à ±2 jours) ;
 --      une commande d'un autre livreur répond « commande_introuvable » (comme la politique : elle lui est invisible) ;
---   2. commande VERROUILLÉE (FOR UPDATE) : deux appels simultanés s'attendent ; le second voit stock_deduit = vrai ;
---   3. stock_deduit déjà vrai → { ok: true, deja: true } SANS RIEN TOUCHER (IDEMPOTENT : un téléphone peut renvoyer la
---      demande autant de fois qu'il veut, après une réponse perdue ou une fermeture) ;
---   4. commande pas « livré » → refus clair { ok: false, erreur: 'commande_non_livree' } (rien n'est touché) ;
---   5. quantités calculées comme stkDeduireStock de l'application v7.5.196 (voir « FIDÉLITÉ » ci-dessous) ;
---   6. produits touchés VERROUILLÉS dans un ordre stable (par identifiant) avant toute lecture du stock ;
---   7. stock jamais négatif : nouveau stock = max(0, stock − quantité) ; ce qui manque est renvoyé (manques) ;
---   8. chaque sortie est écrite dans le journal public.stock_sorties_livraison (ajout seul) ;
---   9. stock_deduit = vrai ;
---   tout ou rien : la moindre erreur annule l'opération entière (aucun stock retiré, stock_deduit reste faux).
---   Réponse : { ok, deja, stock_deduit, retraits: [{produit_id, nom, qte, demande, stock_avant, stock_apres, composant_de,
---   substitue_de}], manques: [{produit_id, nom, raison, demande, retire, manque}] }.
+--   b. verrou de la commande (verrou consultatif par identifiant, puis FOR UPDATE de la ligne) : deux appels simultanés
+--      s'attendent ; le second voit stock_deduit = vrai ;
+--   c. stock_deduit déjà vrai → { ok: true, deja: true } SANS RIEN TOUCHER, AVEC le résultat COMPLET de la première
+--      déduction (retraits, manques, produits introuvables) conservé dans public.stock_operations et restitué à l'identique
+--      (réserve Codex n° 1 sur f25b1f1 : une réponse perdue ne fait plus perdre l'alerte d'insuffisance) ; stocks_actuels
+--      donne le stock courant des produits retirés ;
+--   d. commande pas « livré » → refus clair { ok: false, erreur: 'commande_non_livree' } (rien n'est touché) ;
+--   e. VERROUS STABLES (réserve Codex n° 4) : produits des lignes verrouillés (ordre des identifiants), PUIS composition
+--      des ensembles et catégories des composants relues SOUS VERROU ; si elles demandent d'autres produits, les verrous
+--      sont relâchés (sous-transaction annulée) et repris sur l'ensemble agrandi, toujours dans l'ordre des identifiants
+--      (au plus 6 passes ; sinon « composition_instable », rien n'est touché, l'appli renvoie plus tard). Aucun verrou
+--      n'est donc jamais pris hors ordre, et toutes les lectures utilisées sont faites sous verrou ; un substitut n'est
+--      choisi que parmi les produits verrouillés ;
+--   f. quantités calculées comme stkDeduireStock de l'application v7.5.196 (voir « FIDÉLITÉ ») ; stock jamais négatif :
+--      nouveau stock = max(0, stock − quantité) ; ce qui manque est renvoyé (manques) ;
+--   g. chaque sortie est écrite dans le journal public.stock_sorties_livraison (ajout seul) et le résultat complet dans
+--      public.stock_operations ; stock_deduit = vrai ; tout ou rien (la moindre erreur annule tout).
+--   Réponse : { ok, deja, stock_deduit, operation_id, retraits: [{produit_id, nom, qte, demande, stock_avant, stock_apres,
+--   composant_de, substitue_de}], manques: [{produit_id, nom, raison, demande, retire, manque}], stocks_actuels: {id: stock} }.
+--
+-- 2. RECRÉDIT — public.recrediter_stock_livraison(p_cmd_id, p_suppression) (réserve Codex n° 2) : administrateur ou
+--   collaboratrice ; même verrou que la déduction. Rend au stock EXACTEMENT les quantités sorties par la dernière déduction
+--   de la commande (journal stock_sorties_livraison : produit réellement retiré, substitut compris, quantité réellement
+--   retirée — un retrait partiel ne rend que ce qui a été retiré), remet stock_deduit à faux, écrit l'opération. UNE SEULE
+--   FOIS par déduction : rejoué, il répond « deja » avec le même résultat. Refus : commande encore « livré » en base
+--   (« commande_encore_livree » : le statut doit être enregistré avant), commande déduite par une ANCIENNE version de
+--   l'appli (« sans_journal » : quantités inconnues, rien n'est touché, à corriger à la main). p_suppression = vrai
+--   (suppression d'une commande livrée) : accepté même si la commande est encore « livré » ou déjà supprimée (le journal
+--   suffit).
+--
+-- 3. MOUVEMENT MANUEL — public.mouvement_stock_produit(p_produit_id, p_type, p_qte, p_motif, p_cle) (réserve Codex n° 3) :
+--   administrateur ou collaboratrice ; entree / retour (+qte), sortie (−qte, jamais sous 0), correction (stock = qte,
+--   correction explicite du bureau). Calculé PAR LA BASE sur le stock verrouillé (jamais une valeur lue plus tôt) ;
+--   IDEMPOTENT par la clé p_cle choisie par l'appareil (rejoué : « deja », même résultat).
+--
+-- 4. GARDES (déclencheurs ; ils ne REFUSENT JAMAIS une écriture : aucune erreur, aucun code HTTP nouveau) :
+--   * commandes_stock_deduit_garde : stock_deduit VRAI → FAUX n'est accepté que de la fonction de recrédit. Une sauvegarde
+--     ordinaire (POST merge-duplicates d'une commande, file rejouée, ancien téléphone, copie périmée de l'administrateur)
+--     qui renverrait faux est corrigée en vrai, le reste de l'écriture est enregistré (sinon une demande renvoyée déduirait
+--     une 2e fois). L'appli v7.5.198 n'envoie plus du tout stock_deduit (champ tenu par la base). L'en-tête
+--     x-stock-recredit de la version précédente de cette PR est SUPPRIMÉ (remplacé par la fonction de recrédit).
+--   * produits_stock_garde : en MODE STRICT, une écriture d'une session de l'application qui change produits.stock hors des
+--     fonctions ci-dessus est ignorée pour ce champ (le reste de la fiche est enregistré) ; en mode strict, stock_deduit
+--     FAUX → VRAI hors fonction est aussi ignoré.
+--   COMPATIBILITÉ (mode TRANSITOIRE, par défaut) : les téléphones encore en v7.5.196 / v7.5.197 calculent et écrivent
+--   eux-mêmes le stock et posent stock_deduit = vrai : ces écritures restent ACCEPTÉES (sinon leurs livraisons seraient
+--   perdues). L'appli v7.5.198, elle, n'écrit plus JAMAIS le stock d'une fiche existante (fiches envoyées sans le champ
+--   stock, sauf à la création ; mouvements par la fonction). Quand tous les téléphones sont en v7.5.198, passer en mode
+--   strict (une ligne, réversible avec actif = false) :
+--     update interne.l040_reglages set actif = true where cle = 'strict_toutes_versions';
+--   Les programmes serveur (sans session de l'application : stock-sync-shopify, JARVIS, éditeur SQL) ne sont jamais
+--   concernés.
 --
 -- FIDÉLITÉ à stkDeduireStock (application v7.5.196) :
 --   * lignes de la commande (commandes.lignes : produitId, nom ou produit, qte) ; sans lignes : commandes.produit + qte ;
@@ -47,52 +100,31 @@
 --     qui contient le nom du produit, ou nom du produit qui contient les deux premiers mots de la ligne ; produits actifs) ;
 --   * ENSEMBLE (produits.composants non vide) : ce sont ses COMPOSANTS qui sont retirés (qte du composant × quantité),
 --     jamais l'ensemble lui-même ; pas de descente dans un composant qui serait lui-même un ensemble (comme l'appli) ;
---   * SUBSTITUTION AUTOMATIQUE (l'appli la fait, elle est reproduite) : composant en stock insuffisant → produit de même
---     catégorie, même dimension (même règle de comparaison que l'appli), actif, dont le stock suffit ;
---   * produit ou composant introuvable : ignoré (comme l'appli), mais SIGNALÉ dans « manques » (raison).
+--   * SUBSTITUTION AUTOMATIQUE : composant en stock insuffisant → produit de même catégorie, même dimension (même règle de
+--     comparaison que l'appli), actif, dont le stock suffit ;
+--   * produit ou composant introuvable : ignoré (comme l'appli), mais SIGNALÉ dans « manques » (raison) et conservé.
 --   DIFFÉRENCES VOULUES (plus sûres), documentées :
---   * l'appli prenait le premier produit de sa liste en mémoire ; la base prend, à égalité, le plus petit identifiant
---     (ordre stable, le même sur tous les appareils) ; un nom identique passe avant un nom seulement « contenu » ;
---   * un produit au nom vide ne « correspond » plus à n'importe quelle ligne (en JavaScript, ''.includes('') est vrai) ;
---   * l'identifiant d'un produit désactivé est reconnu (l'appli ne chargeait que les produits actifs et retombait sur le nom) ;
---   * substitution : un produit marqué « non vendable » (colonne vendable de la migration 039, si elle existe) n'est jamais
---     pris comme substitut ;
---   * le journal est écrit EN BASE (l'appli ne gardait ses « sorties livraison » qu'en mémoire, perdues au rechargement).
+--   * à égalité, le plus petit identifiant (ordre stable, le même sur tous les appareils) ; un nom identique passe avant un
+--     nom seulement « contenu » ; un produit au nom vide ne « correspond » plus à n'importe quelle ligne ;
+--   * l'identifiant d'un produit désactivé est reconnu (l'appli ne chargeait que les produits actifs) ;
+--   * substitution : jamais un produit « non vendable » (colonne vendable de la 039, si elle existe), et seulement parmi les
+--     produits verrouillés (catégorie lue sous verrou) ;
+--   * le journal est écrit EN BASE (l'appli ne gardait ses « sorties livraison » qu'en mémoire).
 --
--- JOURNAL : public.stock_sorties_livraison, table DÉDIÉE. mouvements_stock n'est PAS utilisé : elle ne contient que des
--- mouvements camion (chargement / retour_depot / livraison depuis le camion, cf. migration 025) lus par stock-sync-shopify
--- et JARVIS ; y écrire les sorties du dépôt fausserait leurs calculs (double compte possible). Lecture : administrateur et
--- collaboratrice ; écriture : uniquement par la fonction ; ni modification ni suppression.
+-- JOURNAUX : public.stock_sorties_livraison (une ligne par produit retiré) et public.stock_operations (une ligne par
+-- opération : déduction, recrédit, mouvement ; résultat complet). mouvements_stock n'est PAS utilisée : elle ne contient
+-- que des mouvements camion (migration 025) lus par stock-sync-shopify et JARVIS. Lecture : administrateur et
+-- collaboratrice ; écriture : uniquement par les fonctions ; ni modification ni suppression.
 --
--- GARDE stock_deduit (déclencheur commandes_stock_deduit_garde) : une sauvegarde ordinaire de l'application (POST
--- merge-duplicates d'une commande, file rejouée, ancien téléphone) ne peut plus REMETTRE stock_deduit à faux après la
--- déduction faite par la base (sinon une demande renvoyée déduirait une deuxième fois). Seule exception : le RECRÉDIT
--- EXPLICITE de l'administrateur (stkReCrediterStock, application v7.5.197 et suivantes), qui remet stock_deduit à faux quand
--- une commande livrée est annulée, reportée ou remise en attente : la sauvegarde qui suit le recrédit porte l'en-tête HTTP
--- x-stock-recredit: 1 (lu dans request.headers, comme x-session-token) ; il faut les TROIS : session administrateur, statut
--- qui n'est plus « livré », en-tête de recrédit. Une sauvegarde PÉRIMÉE de l'administrateur (copie d'avant le « livré »,
--- statut en-route, stock_deduit faux, sans recrédit) ne remet donc PAS stock_deduit à faux (réserve Codex n° 5 sur 9473d23 :
--- sinon une relivraison déduirait deux fois). Les programmes serveur (sans session de l'application) ne sont pas
--- concernés. Passer stock_deduit à vrai reste permis (anciennes versions de l'application, qui l'envoient après leur
--- propre déduction ; ce passage ne peut qu'empêcher une déduction, jamais en provoquer une).
--- POURQUOI IL EST INDISPENSABLE : stock_deduit est le SEUL repère « déjà déduite » de la fonction. Or toute sauvegarde de
--- commande de l'application (sbSaveCommande, toutes versions) renvoie le corps complet, stock_deduit compris, tel qu'il est
--- dans la copie du téléphone. Une copie prise AVANT la déduction (le « livré » gardé en file et rejoué après, un ancien
--- téléphone, un écran resté ouvert) renverrait stock_deduit = faux ; la demande de déduction renvoyée ensuite (réponse
--- perdue, reprise au démarrage) déduirait alors une DEUXIÈME fois.
--- COMPATIBILITÉ (vérifiée par le banc outils/test-040-pglite.js, ancienne et nouvelle façon de sauvegarder) : le déclencheur
--- ne REFUSE JAMAIS une écriture (aucune erreur, aucun code HTTP nouveau pour les téléphones déjà installés) ; il ne corrige
--- qu'UNE valeur, dans UN cas : stock_deduit vrai → faux par une session de l'application, hors recrédit explicite de
--- l'administrateur. Tout le reste de la sauvegarde (statut, paiement, prix…) est enregistré comme avant ; une création de
--- commande, une écriture qui laisse stock_deduit inchangé ou qui le passe à vrai ne sont pas touchées.
---
--- LIMITES : la règle des ±2 jours du livreur s'applique aussi ici : un téléphone resté hors ligne plus de 2 jours après la
--- date de livraison verra sa demande refusée (l'application le signale ; à faire par le bureau). Le recrédit à
--- l'annulation reste calculé par l'application de l'administrateur (inchangé, hors de cette migration).
+-- LIMITES : la règle des ±2 jours du livreur s'applique aussi ici (téléphone hors ligne plus de 2 jours après la date de
+-- livraison : demande refusée, à faire par le bureau). En mode transitoire, un téléphone en ANCIENNE version peut encore
+-- écrire un stock périmé (comme avant la 040) : d'où le mode strict dès que tous les téléphones sont à jour. Le verrouillage
+-- concurrent n'a été vérifié que sur une base jetable à UNE connexion (pglite) : l'ordre des verrous et la relecture sous
+-- verrou sont vérifiés dans le texte des fonctions et par des modifications faites entre deux appels.
 -- Aucune donnée existante n'est modifiée par cette migration.
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
--- 1. Journal des sorties de stock des livraisons (ajout seul)
+-- 1. Journaux (ajout seul) et réglage du mode strict
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 create table if not exists public.stock_sorties_livraison (
   id bigint generated always as identity primary key,
@@ -108,27 +140,66 @@ create table if not exists public.stock_sorties_livraison (
   acteur text,                -- rôle de la session (et livreur) qui a demandé la déduction
   cree_at timestamptz not null default now()
 );
-create index if not exists stock_sorties_livraison_cmd_idx on public.stock_sorties_livraison (cmd_id);
+create index if not exists stock_sorties_livraison_cmd_idx on public.stock_sorties_livraison (cmd_id, id);
 comment on table public.stock_sorties_livraison is 'Sorties de stock des livraisons, écrites UNIQUEMENT par public.deduire_stock_livraison (migration 040). Ajout seul.';
-alter table public.stock_sorties_livraison enable row level security;
-revoke all on table public.stock_sorties_livraison from public, anon, authenticated;
-revoke all on sequence public.stock_sorties_livraison_id_seq from public, anon, authenticated;
-grant select on table public.stock_sorties_livraison to anon;
-drop policy if exists sess_lecture on public.stock_sorties_livraison;
-create policy sess_lecture on public.stock_sorties_livraison for select to anon
-  using ((select public.session_role()) in ('admin', 'collab'));
+
+create table if not exists public.stock_operations (
+  id bigint generated always as identity primary key,
+  nature text not null check (nature in ('deduction', 'recredit', 'mouvement')),
+  cmd_id text,                -- déduction / recrédit
+  produit_id text,            -- mouvement manuel
+  cle text unique,            -- mouvement manuel : clé d'idempotence choisie par l'appareil
+  sortie_max bigint,          -- dernière sortie (stock_sorties_livraison.id) couverte par cette déduction / ce recrédit
+  resultat jsonb not null,    -- résultat COMPLET renvoyé à l'appareil (restitué à l'identique en cas de rejeu)
+  acteur text,
+  cree_at timestamptz not null default now()
+);
+create index if not exists stock_operations_cmd_idx on public.stock_operations (cmd_id, id);
+comment on table public.stock_operations is 'Opérations de stock de l''application (déduction, recrédit, mouvement manuel), écrites UNIQUEMENT par les fonctions de la migration 040. Ajout seul.';
+
+do $$
+declare t text;
+begin
+  foreach t in array array['stock_sorties_livraison', 'stock_operations'] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('revoke all on table public.%I from public, anon, authenticated', t);
+    execute format('revoke all on sequence public.%I from public, anon, authenticated', t || '_id_seq');
+    execute format('grant select on table public.%I to anon', t);
+    execute format('drop policy if exists sess_lecture on public.%I', t);
+    execute format('create policy sess_lecture on public.%I for select to anon using ((select public.session_role()) in (''admin'', ''collab''))', t);
+  end loop;
+end $$;
 
 create or replace function interne.l040_journal_fige() returns trigger
 language plpgsql as $$
 begin
-  raise exception 'stock_sorties_livraison : ajout seul (ni modification ni suppression)';
+  raise exception '% : ajout seul (ni modification ni suppression)', tg_table_name;
 end $$;
 drop trigger if exists stock_sorties_livraison_fige on public.stock_sorties_livraison;
 create trigger stock_sorties_livraison_fige before update or delete on public.stock_sorties_livraison
   for each row execute function interne.l040_journal_fige();
+drop trigger if exists stock_operations_fige on public.stock_operations;
+create trigger stock_operations_fige before update or delete on public.stock_operations
+  for each row execute function interne.l040_journal_fige();
+
+-- réglage : mode strict (faux = transitoire, compatible avec les téléphones en ancienne version) ; schéma interne, aucun
+-- accès pour les sessions de l'application ; une 2e application de la 040 ne change pas un réglage déjà posé
+create table if not exists interne.l040_reglages (cle text primary key, actif boolean not null default false);
+insert into interne.l040_reglages (cle, actif) values ('strict_toutes_versions', false) on conflict (cle) do nothing;
+revoke all on table interne.l040_reglages from public, anon, authenticated;
+
+create or replace function interne.l040_strict() returns boolean
+language sql stable security definer set search_path = interne, pg_catalog as $$
+  select coalesce((select actif from interne.l040_reglages where cle = 'strict_toutes_versions'), false)
+$$;
+-- vrai seulement pendant une écriture faite PAR une fonction de cette migration (réglage local à la transaction, posé
+-- juste avant et effacé juste après ; une requête de l'application ne peut pas le poser)
+create or replace function interne.l040_par_fonction() returns boolean
+language sql stable set search_path = pg_catalog as $$ select coalesce(current_setting('l040.fonction', true), '') = '1' $$;
+revoke all on function interne.l040_strict(), interne.l040_par_fonction() from public, anon, authenticated;
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
--- 2. Fonctions PURES (reproduction des règles de l'application ; testées par l'auto-contrôle de la section 6)
+-- 2. Fonctions PURES et utilitaires (reproduction des règles de l'application ; auto-contrôle de la section 8)
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 -- quantité = Math.max(1, parseInt(qte) || 1) : partie entière en tête du texte, 1 si absente, nulle ou négative (bornée)
 create or replace function interne.l040_qte(p jsonb) returns integer
@@ -174,7 +245,50 @@ begin
    order by id limit 1;
   return r;
 end $$;
-revoke all on function interne.l040_trouver_produit(text, text) from public, anon, authenticated;
+
+-- produits à verrouiller pour livrer les produits p_lignes, lus dans leur état COURANT (appelée sous verrou) : les
+-- produits des lignes, les composants des ensembles, et les substituts possibles (produits des mêmes catégories)
+create or replace function interne.l040_verrous_requis(p_lignes text[]) returns text[]
+language sql stable security definer set search_path = public, pg_catalog as $$
+  with comp as (
+    select distinct e ->> 'id' as id
+      from public.produits p, jsonb_array_elements(case when jsonb_typeof(p.composants) = 'array' then p.composants else '[]'::jsonb end) e
+     where p.id = any (p_lignes) and coalesce(e ->> 'id', '') <> ''
+  ), cats as (
+    select distinct coalesce(x.cat, '') as cat from public.produits x where x.id in (select id from comp)
+  )
+  select coalesce(array_agg(distinct u order by u), '{}') from (
+    select unnest(p_lignes) as u
+    union select id from comp
+    union select x.id from public.produits x where coalesce(x.cat, '') in (select cat from cats)
+  ) t where u is not null
+$$;
+
+-- stock courant des produits (réponse : stocks_actuels)
+create or replace function interne.l040_stocks(p_ids text[]) returns jsonb
+language sql stable security definer set search_path = public, pg_catalog as $$
+  select coalesce(jsonb_object_agg(id, stock), '{}'::jsonb) from public.produits where id = any (coalesce(p_ids, '{}'))
+$$;
+
+-- rejeu : résultat COMPLET de la dernière opération de la commande, si elle est de la nature demandée
+create or replace function interne.l040_rejeu(p_cmd text, p_nature text) returns json
+language plpgsql stable security definer set search_path = public, interne, pg_catalog as $$
+declare o record; v_ids text[];
+begin
+  select id, nature, resultat into o from public.stock_operations
+   where cmd_id = p_cmd and nature in ('deduction', 'recredit') order by id desc limit 1;
+  if found and o.nature = p_nature then
+    select array_agg(x ->> 'produit_id') into v_ids
+      from jsonb_array_elements(coalesce(o.resultat -> 'retraits', o.resultat -> 'retours', '[]'::jsonb)) x;
+    return (o.resultat || jsonb_build_object('ok', true, 'deja', true, 'stock_deduit', p_nature = 'deduction',
+      'operation_id', o.id, 'stocks_actuels', interne.l040_stocks(v_ids)))::json;
+  end if;
+  -- rien de connu (ancienne version de l'appli, ou rien à faire) : déjà dans l'état demandé, rien n'est touché
+  return json_build_object('ok', true, 'deja', true, 'stock_deduit', p_nature = 'deduction', 'resultat_inconnu', true,
+    'retraits', '[]'::json, 'manques', '[]'::json, 'retours', '[]'::json, 'stocks_actuels', '{}'::json);
+end $$;
+revoke all on function interne.l040_trouver_produit(text, text), interne.l040_verrous_requis(text[]),
+  interne.l040_stocks(text[]), interne.l040_rejeu(text, text) from public, anon, authenticated;
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 -- 3. Déduction du stock d'une livraison (une seule fois par commande, tout ou rien)
@@ -188,12 +302,15 @@ declare
   c record; p record; cp record; s record;
   v_lignes jsonb := '[]'::jsonb;   -- [{id (résolu ou null), produitId, nom, qte}]
   l jsonb; e jsonb;
+  v_ids_lignes text[] := '{}';
   v_ids text[] := '{}';
-  v_cats text[] := '{}';
+  v_requis text[];
+  v_stable boolean := false;
   v_pid text; v_q integer; v_req integer; v_av integer; v_ap integer; v_ret integer;
   v_cible text; v_sub text;
   v_retraits jsonb := '[]'::jsonb;
   v_manques jsonb := '[]'::jsonb;
+  v_res jsonb; v_op bigint; v_touches text[];
 begin
   if v_role is null or v_role not in ('admin', 'collab', 'livreur') then
     return json_build_object('ok', false, 'erreur', 'session_requise');
@@ -201,7 +318,9 @@ begin
   if coalesce(btrim(p_cmd_id), '') = '' then return json_build_object('ok', false, 'erreur', 'commande_requise'); end if;
   v_acteur := v_role || coalesce(':' || v_liv, '');
 
-  -- (1)(2) commande visible par la session (même règle que les politiques sess_*), VERROUILLÉE
+  -- (b) verrou de la commande (même verrou que le recrédit, même ordre : consultatif puis ligne)
+  perform pg_advisory_xact_lock(hashtext('l040|' || p_cmd_id));
+  -- (a) commande visible par la session (même règle que les politiques sess_*), VERROUILLÉE
   select id, statut, stock_deduit, lignes, produit, qte into c from public.commandes
    where id = p_cmd_id
      and (v_role <> 'livreur'
@@ -211,16 +330,14 @@ begin
    for update;
   if not found then return json_build_object('ok', false, 'erreur', 'commande_introuvable'); end if;
 
-  -- (3) déjà déduite : rien n'est touché (idempotent)
-  if coalesce(c.stock_deduit, false) then
-    return json_build_object('ok', true, 'deja', true, 'stock_deduit', true, 'retraits', '[]'::json, 'manques', '[]'::json);
-  end if;
-  -- (4) seulement une commande livrée
+  -- (c) déjà déduite : rien n'est touché ; résultat complet de la première déduction restitué (idempotent)
+  if coalesce(c.stock_deduit, false) then return interne.l040_rejeu(c.id, 'deduction'); end if;
+  -- (d) seulement une commande livrée
   if coalesce(c.statut, '') not in ('livré', 'livre') then
     return json_build_object('ok', false, 'erreur', 'commande_non_livree', 'statut', c.statut);
   end if;
 
-  -- (5) lignes de la commande et produits concernés (sans verrou : seulement l'identité des produits)
+  -- lignes de la commande et produits concernés (identité seulement, aucun stock lu ici)
   if jsonb_typeof(c.lignes) = 'array' and jsonb_array_length(c.lignes) > 0 then
     for l in select x.value from jsonb_array_elements(c.lignes) with ordinality as x(value, n) order by x.n loop
       if jsonb_typeof(l) <> 'object' then continue; end if;
@@ -232,28 +349,26 @@ begin
     v_lignes := jsonb_build_array(jsonb_build_object(
       'id', interne.l040_trouver_produit(null, c.produit), 'produitId', null, 'nom', c.produit, 'qte', to_jsonb(c.qte)));
   end if;
-  -- ensemble de verrous : produits des lignes, leurs composants, et les substituts possibles (même catégorie)
-  for l in select x.value from jsonb_array_elements(v_lignes) as x(value) loop
-    v_pid := l ->> 'id';
-    if v_pid is null then continue; end if;
-    v_ids := v_ids || v_pid;
-    select id, composants into p from public.produits where id = v_pid;
-    if jsonb_typeof(p.composants) = 'array' and jsonb_array_length(p.composants) > 0 then
-      for e in select x.value from jsonb_array_elements(p.composants) as x(value) loop
-        if coalesce(e ->> 'id', '') = '' then continue; end if;
-        v_ids := v_ids || (e ->> 'id');
-        select cat into cp from public.produits where id = e ->> 'id';
-        if found then v_cats := v_cats || coalesce(cp.cat, ''); end if;
-      end loop;
-    end if;
-  end loop;
-  if cardinality(v_cats) > 0 then
-    v_ids := v_ids || array(select id from public.produits where coalesce(cat, '') = any (v_cats));
-  end if;
-  -- (6) verrous dans un ordre STABLE (identifiant) : deux déductions simultanées ne peuvent pas s'interbloquer
-  perform 1 from public.produits where id = any (v_ids) order by id for update;
+  select coalesce(array_agg(distinct x ->> 'id' order by x ->> 'id'), '{}') into v_ids_lignes
+    from jsonb_array_elements(v_lignes) x where x ->> 'id' is not null;
 
-  -- (5)(7)(8) retraits, ligne par ligne, dans l'ordre de la commande (lectures APRÈS les verrous)
+  -- (e) VERROUS STABLES : verrouiller (ordre des identifiants), relire la composition SOUS VERROU ; s'il manque des
+  -- produits, annuler la sous-transaction (verrous de la passe relâchés) et recommencer avec l'ensemble agrandi
+  v_ids := v_ids_lignes;
+  for k in 1..6 loop
+    begin
+      perform 1 from public.produits where id = any (v_ids) order by id for update;
+      v_requis := interne.l040_verrous_requis(v_ids_lignes);
+      if v_requis <@ v_ids then v_stable := true; exit; end if;
+      v_ids := array(select distinct u from unnest(v_ids || v_requis) u order by u);
+      raise exception using errcode = 'L4001', message = 'l040_recommencer';
+    exception when sqlstate 'L4001' then null;
+    end;
+  end loop;
+  if not v_stable then return json_build_object('ok', false, 'erreur', 'composition_instable'); end if;
+
+  -- (f)(g) retraits, ligne par ligne, dans l'ordre de la commande (toutes les lectures APRÈS les verrous)
+  perform set_config('l040.fonction', '1', true);
   for l in select x.value from jsonb_array_elements(v_lignes) with ordinality as x(value, n) order by x.n loop
     v_q := interne.l040_qte(l -> 'qte');
     v_pid := l ->> 'id';
@@ -266,6 +381,7 @@ begin
     if jsonb_typeof(p.composants) = 'array' and jsonb_array_length(p.composants) > 0 then
       -- ENSEMBLE : ses composants sont retirés, jamais l'ensemble lui-même
       for e in select x.value from jsonb_array_elements(p.composants) with ordinality as x(value, n) order by x.n loop
+        if coalesce(e ->> 'id', '') = '' then continue; end if;
         select id, nom, cat, dim, stock into cp from public.produits where id = (e ->> 'id');
         if not found then
           v_manques := v_manques || jsonb_build_array(jsonb_build_object('produit_id', e ->> 'id', 'nom', null,
@@ -273,18 +389,17 @@ begin
             'manque', interne.l040_qte(e -> 'qte') * v_q));
           continue;
         end if;
-        perform 1 from public.produits where id = cp.id for update;  -- composition changée entre-temps : verrou ajouté
         v_req := interne.l040_qte(e -> 'qte') * v_q;
         v_cible := cp.id; v_sub := null;
         if coalesce(cp.stock, 0) < v_req then
-          -- SUBSTITUTION AUTOMATIQUE (règle de l'appli) : même catégorie, même dimension, actif, stock suffisant
+          -- SUBSTITUTION AUTOMATIQUE (règle de l'appli) parmi les produits VERROUILLÉS : même catégorie, même dimension,
+          -- actif, vendable, stock suffisant
           select x.id into s from public.produits x
-           where x.id <> cp.id and coalesce(x.actif, true) and x.cat is not distinct from cp.cat
+           where x.id = any (v_ids) and x.id <> cp.id and coalesce(x.actif, true) and x.cat is not distinct from cp.cat
              and coalesce((to_jsonb(x) ->> 'vendable')::boolean, true)
              and interne.l040_dim_compatible(interne.l040_dim(cp.dim), interne.l040_dim(x.dim))
              and coalesce(x.stock, 0) >= v_req
-           order by x.id limit 1
-           for update;
+           order by x.id limit 1;
           if found then v_cible := s.id; v_sub := cp.id; end if;
         end if;
         select stock, nom into s from public.produits where id = v_cible;
@@ -319,27 +434,148 @@ begin
       end if;
     end if;
   end loop;
-
-  -- (9) une seule fois : marquée déduite dans la MÊME transaction
+  -- une seule fois : marquée déduite dans la MÊME transaction
   update public.commandes set stock_deduit = true, updated_at = now() where id = c.id;
-  return json_build_object('ok', true, 'deja', false, 'stock_deduit', true, 'retraits', v_retraits::json, 'manques', v_manques::json);
+  perform set_config('l040.fonction', '', true);
+
+  v_res := jsonb_build_object('retraits', v_retraits, 'manques', v_manques);
+  insert into public.stock_operations (nature, cmd_id, sortie_max, resultat, acteur)
+  values ('deduction', c.id, (select max(id) from public.stock_sorties_livraison where cmd_id = c.id), v_res, v_acteur)
+  returning id into v_op;
+  select array_agg(x ->> 'produit_id') into v_touches from jsonb_array_elements(v_retraits) x;
+  return (v_res || jsonb_build_object('ok', true, 'deja', false, 'stock_deduit', true, 'operation_id', v_op,
+    'stocks_actuels', interne.l040_stocks(v_touches)))::json;
 end $$;
 revoke all on function public.deduire_stock_livraison(text) from public, anon, authenticated;
 grant execute on function public.deduire_stock_livraison(text) to anon;   -- session vérifiée DANS la fonction
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
--- 4. Garde : une sauvegarde ordinaire ne remet pas stock_deduit à faux (sauf recrédit de l'administrateur)
+-- 4. Recrédit d'une livraison annulée (depuis les sorties journalisées, une seule fois par déduction)
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+create or replace function public.recrediter_stock_livraison(p_cmd_id text, p_suppression boolean default false) returns json
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare
+  v_role text := public.session_role();
+  c record; o record; r record; s record;
+  v_trouvee boolean;
+  v_depuis bigint; v_max bigint;
+  v_ids text[];
+  v_retours jsonb := '[]'::jsonb;
+  v_res jsonb; v_op bigint;
+begin
+  if v_role is null then return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
+  if v_role not in ('admin', 'collab') then return json_build_object('ok', false, 'erreur', 'droits_insuffisants'); end if;
+  if coalesce(btrim(p_cmd_id), '') = '' then return json_build_object('ok', false, 'erreur', 'commande_requise'); end if;
+
+  perform pg_advisory_xact_lock(hashtext('l040|' || p_cmd_id));
+  select id, statut, stock_deduit into c from public.commandes where id = p_cmd_id for update;
+  v_trouvee := found;
+  if not v_trouvee and not coalesce(p_suppression, false) then
+    return json_build_object('ok', false, 'erreur', 'commande_introuvable');
+  end if;
+  -- déjà recréditée (ou jamais déduite) : rien n'est touché ; résultat du recrédit restitué (idempotent)
+  if v_trouvee and not coalesce(c.stock_deduit, false) then return interne.l040_rejeu(p_cmd_id, 'recredit'); end if;
+  if v_trouvee and coalesce(c.statut, '') in ('livré', 'livre') and not coalesce(p_suppression, false) then
+    return json_build_object('ok', false, 'erreur', 'commande_encore_livree', 'statut', c.statut);
+  end if;
+  select id, nature, sortie_max into o from public.stock_operations
+   where cmd_id = p_cmd_id and nature in ('deduction', 'recredit') order by id desc limit 1;
+  if not found or o.nature <> 'deduction' then
+    if not v_trouvee then return interne.l040_rejeu(p_cmd_id, 'recredit'); end if; -- commande supprimée : déjà fait / rien à faire
+    -- déduite par une ANCIENNE version de l'appli (aucune sortie journalisée) : quantités inconnues, rien n'est touché
+    return json_build_object('ok', false, 'erreur', 'sans_journal');
+  end if;
+  select coalesce(max(sortie_max), 0) into v_depuis from public.stock_operations where cmd_id = p_cmd_id and nature = 'recredit';
+  v_max := coalesce(o.sortie_max, v_depuis);
+
+  -- produits à recréditer verrouillés dans l'ordre des identifiants, puis lus sous verrou
+  select coalesce(array_agg(distinct produit_id order by produit_id), '{}') into v_ids from public.stock_sorties_livraison
+   where cmd_id = p_cmd_id and id > v_depuis and id <= v_max and qte_retiree > 0;
+  perform 1 from public.produits where id = any (v_ids) order by id for update;
+  perform set_config('l040.fonction', '1', true);
+  for r in select produit_id, sum(qte_retiree)::integer as q, max(produit_nom) as nom from public.stock_sorties_livraison
+            where cmd_id = p_cmd_id and id > v_depuis and id <= v_max and qte_retiree > 0
+            group by produit_id order by produit_id loop
+    select stock, nom into s from public.produits where id = r.produit_id;
+    if not found then
+      v_retours := v_retours || jsonb_build_array(jsonb_build_object('produit_id', r.produit_id, 'nom', r.nom, 'qte', 0,
+        'demande', r.q, 'raison', 'produit_introuvable'));
+      continue;
+    end if;
+    update public.produits set stock = coalesce(s.stock, 0) + r.q, updated_at = now() where id = r.produit_id;
+    v_retours := v_retours || jsonb_build_array(jsonb_build_object('produit_id', r.produit_id, 'nom', coalesce(s.nom, r.nom),
+      'qte', r.q, 'demande', r.q, 'stock_avant', coalesce(s.stock, 0), 'stock_apres', coalesce(s.stock, 0) + r.q));
+  end loop;
+  if v_trouvee then update public.commandes set stock_deduit = false, updated_at = now() where id = c.id; end if;
+  perform set_config('l040.fonction', '', true);
+
+  v_res := jsonb_build_object('retours', v_retours);
+  insert into public.stock_operations (nature, cmd_id, sortie_max, resultat, acteur)
+  values ('recredit', p_cmd_id, v_max, v_res, v_role) returning id into v_op;
+  return (v_res || jsonb_build_object('ok', true, 'deja', false, 'stock_deduit', false, 'operation_id', v_op,
+    'stocks_actuels', interne.l040_stocks(v_ids)))::json;
+end $$;
+revoke all on function public.recrediter_stock_livraison(text, boolean) from public, anon, authenticated;
+grant execute on function public.recrediter_stock_livraison(text, boolean) to anon;   -- session vérifiée DANS la fonction
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 5. Mouvement manuel du bureau (entrée, retour, sortie, correction), calculé par la base, idempotent par clé
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+create or replace function public.mouvement_stock_produit(p_produit_id text, p_type text, p_qte integer,
+  p_motif text default null, p_cle text default null) returns json
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare
+  v_role text := public.session_role();
+  o record; p record;
+  v_av integer; v_ap integer;
+  v_res jsonb; v_op bigint;
+begin
+  if v_role is null then return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
+  if v_role not in ('admin', 'collab') then return json_build_object('ok', false, 'erreur', 'droits_insuffisants'); end if;
+  if coalesce(length(p_cle), 0) not between 8 and 120 then return json_build_object('ok', false, 'erreur', 'cle_requise'); end if;
+  if coalesce(p_type, '') not in ('entree', 'retour', 'sortie', 'correction') then
+    return json_build_object('ok', false, 'erreur', 'type_invalide');
+  end if;
+  if p_qte is null or p_qte < 0 or p_qte > 1000000 or (p_type <> 'correction' and p_qte < 1) then
+    return json_build_object('ok', false, 'erreur', 'quantite_invalide');
+  end if;
+
+  perform pg_advisory_xact_lock(hashtext('l040m|' || p_cle));
+  select id, produit_id, resultat into o from public.stock_operations where cle = p_cle;
+  if found then
+    if o.produit_id is distinct from p_produit_id then return json_build_object('ok', false, 'erreur', 'cle_deja_utilisee'); end if;
+    return (o.resultat || jsonb_build_object('ok', true, 'deja', true, 'operation_id', o.id,
+      'stocks_actuels', interne.l040_stocks(array[p_produit_id])))::json;
+  end if;
+  select id, nom, stock into p from public.produits where id = p_produit_id for update;
+  if not found then return json_build_object('ok', false, 'erreur', 'produit_introuvable'); end if;
+  v_av := coalesce(p.stock, 0);
+  v_ap := case p_type when 'sortie' then greatest(0, v_av - p_qte) when 'correction' then p_qte else v_av + p_qte end;
+  perform set_config('l040.fonction', '1', true);
+  update public.produits set stock = v_ap, updated_at = now() where id = p.id;
+  perform set_config('l040.fonction', '', true);
+  v_res := jsonb_build_object('produit_id', p.id, 'nom', p.nom, 'type', p_type, 'qte', p_qte, 'delta', v_ap - v_av,
+    'stock_avant', v_av, 'stock_apres', v_ap, 'motif', left(coalesce(p_motif, ''), 500));
+  insert into public.stock_operations (nature, produit_id, cle, resultat, acteur)
+  values ('mouvement', p.id, p_cle, v_res, v_role) returning id into v_op;
+  return (v_res || jsonb_build_object('ok', true, 'deja', false, 'operation_id', v_op,
+    'stocks_actuels', interne.l040_stocks(array[p.id])))::json;
+end $$;
+revoke all on function public.mouvement_stock_produit(text, text, integer, text, text) from public, anon, authenticated;
+grant execute on function public.mouvement_stock_produit(text, text, integer, text, text) to anon;   -- session vérifiée DANS la fonction
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 6. Gardes : stock_deduit et stock ne changent que par les fonctions (jamais d'erreur ; voir « COMPATIBILITÉ »)
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 create or replace function interne.l040_stock_deduit_garde() returns trigger
 language plpgsql security definer set search_path = public, interne, pg_catalog as $$
-declare r text; h json; v_recredit boolean := false;
 begin
-  if coalesce(old.stock_deduit, false) and not coalesce(new.stock_deduit, false) then
-    r := public.session_role();
-    begin h := current_setting('request.headers', true)::json; v_recredit := coalesce(h ->> 'x-stock-recredit', '') = '1';
-    exception when others then v_recredit := false; end;
-    if r is not null and not (r = 'admin' and v_recredit and coalesce(new.statut, '') not in ('livré', 'livre')) then
-      new.stock_deduit := true;   -- valeur périmée d'un téléphone : ignorée (le reste de l'écriture est conservé)
+  if new.stock_deduit is distinct from old.stock_deduit and not interne.l040_par_fonction()
+     and public.session_role() is not null then
+    if coalesce(old.stock_deduit, false) and not coalesce(new.stock_deduit, false) then
+      new.stock_deduit := old.stock_deduit;   -- vrai → faux : seulement par la fonction de recrédit
+    elsif interne.l040_strict() then
+      new.stock_deduit := old.stock_deduit;   -- mode strict : faux → vrai seulement par la fonction de déduction
     end if;
   end if;
   return new;
@@ -349,8 +585,22 @@ drop trigger if exists commandes_stock_deduit_garde on public.commandes;
 create trigger commandes_stock_deduit_garde before update on public.commandes
   for each row execute function interne.l040_stock_deduit_garde();
 
+create or replace function interne.l040_stock_garde() returns trigger
+language plpgsql security definer set search_path = public, interne, pg_catalog as $$
+begin
+  if new.stock is distinct from old.stock and not interne.l040_par_fonction()
+     and public.session_role() is not null and interne.l040_strict() then
+    new.stock := old.stock;   -- mode strict : stock d'une fiche existante changé seulement par les fonctions
+  end if;
+  return new;
+end $$;
+revoke all on function interne.l040_stock_garde() from public, anon, authenticated;
+drop trigger if exists produits_stock_garde on public.produits;
+create trigger produits_stock_garde before update on public.produits
+  for each row execute function interne.l040_stock_garde();
+
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
--- 5. Contrôle à l'application : colonnes attendues présentes, journal accepté (essai annulé, rien n'est écrit)
+-- 7. Contrôle à l'application : colonnes attendues présentes, journaux acceptés (essai annulé, rien n'est écrit)
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 do $$
 declare manque text;
@@ -369,16 +619,17 @@ begin
   begin
     insert into public.stock_sorties_livraison (cmd_id, produit_id, produit_nom, qte_demandee, qte_retiree, stock_avant, stock_apres, acteur)
       values ('#TEST-040', '#TEST', 'Essai', 1, 1, 1, 0, 'controle');
+    insert into public.stock_operations (nature, cmd_id, resultat, acteur) values ('deduction', '#TEST-040', '{}'::jsonb, 'controle');
     raise exception 'essai_annule';
   exception when others then
     if sqlerrm <> 'essai_annule' then
-      raise exception 'Contrôle 040 : le journal refuse une sortie (%). Migration annulée.', sqlerrm;
+      raise exception 'Contrôle 040 : un journal refuse une écriture (%). Migration annulée.', sqlerrm;
     end if;
   end;
 end $$;
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
--- 6. Auto-contrôle à l'application : règles de l'appli reproduites (fonctions PURES, valeurs fictives, rien n'est écrit)
+-- 8. Auto-contrôle à l'application : règles de l'appli reproduites (fonctions PURES, valeurs fictives, rien n'est écrit)
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 do $$
 declare f text := null;
