@@ -4296,7 +4296,8 @@ function arrEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, funct
 function arrRevientTexte(v) { return (v == null || isNaN(parseFloat(v))) ? '—' : paiEur(v); }
 
 // ── Données et écran (administrateur) ──
-var ARR_ETAT = { arrivages: [], lignes: [], revients: {}, stocks: {}, entrant: {}, ouvert: null, saisies: {}, envoi: false, erreur: '', vue: null };
+var ARR_ETAT = { arrivages: [], lignes: [], revients: {}, stocks: {}, entrant: {}, ouvert: null, saisies: {}, envoi: false, erreur: '', vue: null,
+  aVerifier: null, verification: false }; // v7.5.173 : aVerifier = { id, ref } tant que le résultat d'un envoi n'est pas relu dans la base
 function arrEntetes() { return { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }; }
 // v7.5.150 (revue Codex PR 26 sur fd751b8, P2) : revients lus EN ENTIER, par pages, ordre stable (produit_id) — avant, une seule
 // requête plafonnée par la base (1 000 lignes) pouvait en perdre. Échec de lecture : revients VIDÉS (jamais d'anciennes valeurs
@@ -4476,6 +4477,8 @@ function arrRendre() {
     }).join('') + '</tbody></table></div>' +
     '<div id="arr-controle" style="margin:12px 0"></div>' +
     (attente ? '<button id="arr-btn-valider" class="btn btn-p" style="width:100%;padding:14px;font-size:15px" onclick="arrValider()">✅ Valider la réception</button>' +
+      // v7.5.173 : résultat d'un envoi resté indéterminé -> relire dans la base avant toute nouvelle tentative
+      '<button id="arr-btn-verifier" class="btn" style="width:100%;padding:12px;font-size:14px;margin-top:8px;display:none" onclick="arrVerifierClic()">🔎 Vérifier dans la base</button>' +
       '<div style="font-size:12px;color:var(--t3);margin-top:6px">Seules les quantités reçues en bon état entrent dans le stock. La validation est définitive et ne peut être faite qu\'une fois.</div>' : '');
   arrMajControle();
 }
@@ -4504,13 +4507,94 @@ function arrMajControle() {
     ' (total ' + (t.recue + t.endommagee + t.manquante) + ')' +
     (c.erreurs.length ? '<ul style="margin:6px 0 0 18px;font-size:12px">' + c.erreurs.map(function(e) { var l = ls.find(function(x) { return x.id === e.ligne; }); var p = l && arrProduit(l.produit_id); return '<li>' + arrEsc((p ? p.nom : 'Arrivage') + ' : ' + e.texte) + '</li>'; }).join('') + '</ul>' : '') + '</div>';
   var b = document.getElementById('arr-btn-valider');
-  if (b) { b.disabled = !attente || !c.ok || ARR_ETAT.envoi; b.textContent = ARR_ETAT.envoi ? '⏳ Validation en cours…' : '✅ Valider la réception'; }
+  var aVerif = !!(ARR_ETAT.aVerifier && ARR_ETAT.aVerifier.id === a.id); // v7.5.173
+  if (b) { b.disabled = !attente || !c.ok || ARR_ETAT.envoi || aVerif; b.textContent = ARR_ETAT.verification ? '⏳ Résultat indéterminé — vérification en cours…' : aVerif ? '⛔ Résultat indéterminé : vérifiez dans la base' : ARR_ETAT.envoi ? '⏳ Validation en cours…' : '✅ Valider la réception'; }
+  var bv = document.getElementById('arr-btn-verifier'); if (bv) { bv.style.display = aVerif ? '' : 'none'; bv.disabled = !!ARR_ETAT.envoi; }
+}
+// v7.5.173 (revue Codex PR 26 sur 4e04efd) : issue d'un envoi de valider_reception_arrivage. « validee » ou « refusee » seulement sur une
+// réponse LUE et explicite : { ok: true } ; { ok: false, erreur } renvoyé par la fonction ; erreur de la base 4xx (hors 408/425/429),
+// où l'opération a été annulée. Tout le reste (pas de réponse, corps illisible, 5xx, 408/425/429, réponse sans ok) = « indeterminee » :
+// la base a PU valider (réponse perdue après l'écriture) — rien n'est affiché comme « validée » ou « non validée » avant relecture.
+function arrIssueValidation(sansReponse, http, j) {
+  if (sansReponse) return 'indeterminee';
+  var st = parseInt(http, 10) || 0;
+  if (j && typeof j === 'object' && j.ok === true && st >= 200 && st < 300) return 'validee';
+  if (j && typeof j === 'object' && j.ok === false && j.erreur && st >= 200 && st < 300) return 'refusee';
+  if (j && typeof j === 'object' && st >= 400 && st < 500 && [408, 425, 429].indexOf(st) < 0) return 'refusee';
+  return 'indeterminee';
+}
+// Conclusion d'une relecture : la base écrit le statut « recu », l'historique des revients et les mouvements de stock dans la MÊME
+// opération. « recu » = validée ; toujours en attente (ou annulé) sans aucun mouvement de cet arrivage = non validée ; tout autre
+// cas (en attente AVEC des mouvements) = incohérent : on n'autorise pas de nouvel envoi.
+function arrConclureRelecture(statut, nbHistorique, nbMouvements) {
+  if (statut === 'recu') return 'validee';
+  if ((statut === 'en_attente' || statut === 'annule') && !nbHistorique && !nbMouvements) return 'non_validee';
+  return 'incoherente';
+}
+// Relecture dans la base : statut de l'arrivage, historique des revients de CET arrivage et mouvements de stock « arrivage:<réf.> ».
+// { ok: true, statut, recu_le, historique, mouvements, quantite } | { ok: false, status } (jamais de conclusion sur une lecture ratée).
+async function arrRelireReception(a) {
+  var b = SUPABASE_URL + '/rest/v1/', id = encodeURIComponent(a.id);
+  var rs = await Promise.all([
+    arrLireTout(b + 'arrivages?select=id,statut,recu_le&id=eq.' + id + '&order=id.asc'),
+    arrLireTout(b + 'prix_revient_historique?select=id,produit_id,quantite&arrivage_id=eq.' + id + '&source=eq.arrivage&order=id.asc'),
+    arrLireTout(b + 'mouvements_stock?select=id,quantite&source=eq.' + encodeURIComponent('arrivage:' + a.reference_interne) + '&order=id.asc')
+  ]);
+  for (var i = 0; i < rs.length; i++) if (!rs[i] || !rs[i].ok) return { ok: false, status: (rs[i] && rs[i].status) || '?' };
+  if (rs[0].rows.length !== 1) return { ok: false, status: 'arrivage introuvable' };
+  var q = rs[1].rows.reduce(function(s, x) { return s + (parseInt(x.quantite, 10) || 0); }, 0);
+  return { ok: true, statut: rs[0].rows[0].statut, recu_le: rs[0].rows[0].recu_le, historique: rs[1].rows.length, mouvements: rs[2].rows.length, quantite: q };
+}
+// Vérification d'un résultat INDÉTERMINÉ (verrou ARR_ETAT.envoi posé par l'appelant). Tant qu'elle n'a pas conclu, l'arrivage reste
+// « à vérifier » : aucun nouvel envoi n'est permis. Renvoie 'validee' | 'non_validee' | 'indeterminee'.
+async function arrVerifierReception(a) {
+  ARR_ETAT.aVerifier = { id: a.id, ref: a.reference_interne }; ARR_ETAT.verification = true;
+  toast('⏳ Réponse de la base non reçue : résultat INDÉTERMINÉ — vérification en cours…', 'info');
+  arrMajControle();
+  var rel = null;
+  try { rel = await arrRelireReception(a); } catch(e) { rel = { ok: false, status: 'pas de connexion' }; }
+  ARR_ETAT.verification = false;
+  if (!rel || !rel.ok) {
+    ARR_ETAT.envoi = false;
+    toast('Résultat INDÉTERMINÉ : vérification impossible (' + ((rel && rel.status) || '?') + '). Rien n\'est renvoyé — touchez « Vérifier dans la base » pour relire.', 'err');
+    arrRendre(); return 'indeterminee';
+  }
+  var concl = arrConclureRelecture(rel.statut, rel.historique, rel.mouvements);
+  if (concl === 'incoherente') {
+    ARR_ETAT.envoi = false;
+    toast('Résultat INDÉTERMINÉ : la base montre l\'arrivage « ' + arrStatutLibelle(rel.statut) + ' » avec ' + (rel.historique + rel.mouvements) + ' mouvement(s). Ne revalidez pas : faites vérifier la base.', 'err');
+    arrRendre(); return 'indeterminee';
+  }
+  ARR_ETAT.aVerifier = null;
+  if (concl === 'validee') {
+    a.statut = 'recu'; if (rel.recu_le) a.recu_le = rel.recu_le; ARR_ETAT.envoi = false;
+    toast('✅ Réception validée (vérifié dans la base : ' + rel.quantite + ' article(s) ajoutés au stock)', 'ok');
+    arrRendre();
+    await arrCharger(); arrRendre();
+    try { await sbLoadProduits(); } catch(e) {}
+    return 'validee';
+  }
+  a.statut = rel.statut; ARR_ETAT.envoi = false;
+  toast('Réception NON validée (vérifié dans la base : arrivage « ' + arrStatutLibelle(rel.statut) + ' », aucun mouvement)' + (rel.statut === 'en_attente' ? ' — vous pouvez valider de nouveau' : ''), 'err');
+  arrRendre(); return 'non_validee';
+}
+// Bouton « Vérifier dans la base » (résultat resté indéterminé) : même verrou que la validation.
+async function arrVerifierClic() {
+  if (ARR_ETAT.envoi || !ARR_ETAT.aVerifier) return;
+  var v = ARR_ETAT.aVerifier, a = ARR_ETAT.arrivages.find(function(x) { return x.id === v.id; });
+  if (!a) { toast('Arrivage introuvable : actualisez la liste', 'err'); return; }
+  ARR_ETAT.envoi = true;
+  try { await arrVerifierReception(a); }
+  catch(e) { toast('Résultat INDÉTERMINÉ : erreur inattendue pendant la vérification (' + ((e && e.message) || e) + ')', 'err'); }
+  finally { if (ARR_ETAT.envoi) { ARR_ETAT.envoi = false; arrMajControle(); } }
 }
 async function arrValider() {
   if (ARR_ETAT.envoi) return;
   if (role !== 'admin') { toast('Réservé à l\'administrateur', 'err'); return; }
   var a = ARR_ETAT.arrivages.find(function(x) { return x.id === ARR_ETAT.ouvert; });
   if (!arrPeutValider(a)) { toast('Cet arrivage a déjà été traité', 'err'); return; }
+  // v7.5.173 : résultat d'un envoi précédent encore INDÉTERMINÉ -> vérifier dans la base d'abord (jamais un second envoi à l'aveugle)
+  if (ARR_ETAT.aVerifier && ARR_ETAT.aVerifier.id === a.id) { toast('Résultat de la validation précédente INDÉTERMINÉ : vérifiez d\'abord dans la base', 'err'); arrMajControle(); return; }
   var ls = arrLignesDe(a.id);
   // v7.5.150 (revue Codex PR 26 sur fd751b8, P2) : quantités FIGÉES ici, avant toute attente — le contrôle, la confirmation et
   // l'envoi portent sur ces valeurs, même si une saisie changeait pendant les relectures (saisies d'ailleurs désactivées)
@@ -4561,13 +4645,18 @@ async function arrValiderEnvoi(a, ls, saisies, vue) {
     toast('Réception NON validée : FOB ou revient de l\'arrivage modifié, ou stock d\'un produit changé — vérifiez le nouvel aperçu puis validez de nouveau', 'err');
     arrRendre(); return;
   }
-  var j = null, http = 0;
+  var j = null, http = 0, sansReponse = false;
   try {
     var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/valider_reception_arrivage', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()),
       body: JSON.stringify(arrCorpsValidation(a.id, ls, saisies, vue.empreinte)) });
     http = r.status; try { j = await r.json(); } catch(e) {}
-  } catch(e) { j = { ok: false, erreur: 'pas de connexion' }; }
-  if (!j || j.ok !== true) {
+  } catch(e) { sansReponse = true; }
+  // v7.5.173 (revue Codex PR 26 sur 4e04efd) : réponse perdue (coupure, délai, corps illisible, 5xx) APRÈS l'envoi : la base a pu valider.
+  // Avant : « Réception NON validée » et bouton réactivé (risque de croire à un échec, ou de renvoyer). Maintenant : résultat
+  // INDÉTERMINÉ, statut et mouvements relus dans la base, et seulement ensuite « validée » ou « non validée ».
+  var issue = arrIssueValidation(sansReponse, http, j);
+  if (issue === 'indeterminee') { await arrVerifierReception(a); return; }
+  if (issue !== 'validee') {
     ARR_ETAT.envoi = false;
     var msg = (j && (j.erreur || j.message)) || ('HTTP ' + http);
     // v7.5.147 : valeurs de valorisation changées dans la base (taux, frais, FOB, revient actuel…) : rien n'a été écrit ; données
