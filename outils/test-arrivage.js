@@ -174,6 +174,38 @@ function nouveauBac(opts) {
   test('total faux : rien n\'est envoyé', !B.appels.some(a => a.url.includes('/rpc/')) && B.toasts.some(t => /Contrôle à corriger/.test(t.m)));
   B = nouveauBac({ role: 'collab' }); B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.ARR_ETAT.ouvert = 7; await B.bac.arrValider();
   test('collaboratrice : validation refusée par l\'appli (et par la base)', !B.appels.some(a => a.url.includes('/rpc/')));
+  // revue Codex PR 26 sur 636f873 : NAVIGATION PENDANT L'ENVOI — le verrou reste posé pendant toute l'opération (avant : arrOuvrir le
+  // remettait à false pendant les relectures, et une seconde validation pouvait partir en parallèle)
+  {
+    let pendantNav = null, p2 = null;
+    const autre = Object.assign(arrivage('en_attente'), { id: 8, reference_interne: 'ARR-TEST-2' });
+    B = nouveauBac({ repondre: (url) => {
+      if (url.includes('/rpc/valider_reception_arrivage')) return { ok: true, status: 200, corps: { ok: true, total_recu: 70 } };
+      if (url.includes('/arrivage_lignes?') && url.includes('arrivage_id=eq.7') && !pendantNav) {
+        // l'utilisateur navigue PENDANT la relecture : réouvre le même arrivage, en ouvre un autre, revient à la liste, actualise,
+        // puis clique de nouveau sur « Valider »
+        B.bac.arrOuvrir(7); B.bac.arrOuvrir(8); B.bac.arrFermer(); B.bac.arrInit(); p2 = B.bac.arrValider();
+        pendantNav = { envoi: B.bac.ARR_ETAT.envoi, ouvert: B.bac.ARR_ETAT.ouvert, refus: B.toasts.filter(t => /Validation de la réception en cours/.test(t.m)).length };
+      }
+      if (url.includes('/arrivages?')) return { ok: true, status: 200, corps: paginer(url, [Object.assign(arrivage('recu')), autre]) };
+      if (url.includes('/arrivage_lignes?')) return { ok: true, status: 200, corps: paginer(url, lignesArr()) };
+      return { ok: true, status: 200, corps: [] };
+    } });
+    B.bac.ARR_ETAT.arrivages = [arrivage('en_attente'), autre]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.arrOuvrir(7);
+    await B.bac.arrValider(); await p2;
+    const nbV = B.appels.filter(a => a.url.includes('/rpc/valider_reception_arrivage')).length;
+    test('navigation pendant l\'envoi : verrou GARDÉ (même arrivage, autre arrivage, retour à la liste, actualiser)', !!pendantNav && pendantNav.envoi === true && pendantNav.ouvert === 7 && pendantNav.refus === 4, pendantNav);
+    test('navigation pendant l\'envoi : second clic sur « Valider » sans effet, UNE seule validation envoyée', nbV === 1, nbV);
+    test('après la validation : verrou levé, navigation de nouveau possible', B.bac.ARR_ETAT.envoi === false && (B.bac.arrOuvrir(8), B.bac.ARR_ETAT.ouvert === 8));
+    // erreur inattendue pendant l'envoi : le verrou est levé quand même (finally), rien n'est envoyé, message clair
+    B = nouveauBac({ repondre: (url) => url.includes('/arrivage_lignes?') ? { ok: true, status: 200, corps: paginer(url, lignesArr()) } : { ok: true, status: 200, corps: [] } });
+    B.bac.ARR_ETAT.arrivages = [arrivage('en_attente')]; B.bac.ARR_ETAT.lignes = lignesArr(); B.bac.arrOuvrir(7);
+    B.bac.arrAppliquerValorisation = () => { throw new Error('panne simulée'); };
+    let leve = null; try { await B.bac.arrValider(); } catch (e) { leve = e; }
+    test('erreur inattendue pendant l\'envoi : verrou levé, rien envoyé, message « erreur inattendue »', !leve && B.bac.ARR_ETAT.envoi === false && !B.appels.some(a => a.url.includes('/rpc/')) && B.toasts.some(t => /erreur inattendue \(panne simulée\)/.test(t.m)), B.toasts);
+    const code = extraireFonction('function arrOuvrir(id)');
+    test('code : arrOuvrir ne remet plus le verrou à false', !/envoi\s*=\s*false/.test(code));
+  }
 
   console.log('\n5. PRODUIT NON VENDABLE : REFUSÉ PARTOUT');
   ({ bac } = nouveauBac());
@@ -1026,6 +1058,25 @@ function nouveauBac(opts) {
   const m = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(sw);
   test('CACHE_VERSION augmentée (v7-5-165 ou plus)', !!m && Number(m[1]) >= 165, m && m[0]);
 
+  // revue Codex PR 26 sur 636f873 : le banc RÉEL de la 039 ne peut plus « réussir » sans dépendance. Il est lancé ici dans un
+  // processus séparé où le paquet est rendu introuvable (aucun téléchargement, aucune base : il s'arrête avant).
+  console.log('\nBANC 039 PGLITE : DÉPENDANCE DÉCLARÉE, ÉCHEC EXPLICITE SI ABSENTE');
+  {
+    const { spawnSync } = require('child_process');
+    const banc = path.join(racine, 'outils', 'test-039-pglite.js');
+    const cacher = "const M=require('module');const o=M._resolveFilename;M._resolveFilename=function(r,...a){if(r==='@electric-sql/pglite'){const e=new Error('introuvable (simulation)');e.code='MODULE_NOT_FOUND';throw e}return o.call(this,r,...a)};require(process.argv[1])";
+    const env = Object.assign({}, process.env); delete env.SAUTER_PGLITE;
+    const sans = spawnSync(process.execPath, ['-e', cacher, banc], { encoding: 'utf8', env, timeout: 60000 });
+    test('dépendance absente : le banc ÉCHOUE (code ≠ 0) avec un message clair', sans.status !== 0 && sans.status !== null && /ÉCHEC DU BANC 039 PGLITE/.test(sans.stderr) && /n'a PAS été testée/.test(sans.stderr), { status: sans.status, err: (sans.stderr || '').slice(0, 200) });
+    const saute = spawnSync(process.execPath, ['-e', cacher, banc], { encoding: 'utf8', env: Object.assign({}, env, { SAUTER_PGLITE: '1' }), timeout: 60000 });
+    test('SAUTER_PGLITE=1 explicite : banc sauté (code 0), message « SAUTÉ VOLONTAIREMENT »', saute.status === 0 && /SAUTÉ VOLONTAIREMENT \(SAUTER_PGLITE=1\)/.test(saute.stdout), { status: saute.status, out: (saute.stdout || '').slice(0, 200) });
+    const pkgJ = JSON.parse(fs.readFileSync(path.join(racine, 'package.json'), 'utf8'));
+    const bancTxt = fs.readFileSync(banc, 'utf8');
+    test('package.json : dépendance de développement déclarée en version EXACTE 0.2.17 (= version exigée par le banc)', pkgJ.devDependencies && pkgJ.devDependencies['@electric-sql/pglite'] === '0.2.17' && bancTxt.includes("const VERSION_ATTENDUE = '0.2.17';") && pkgJ.private === true && !pkgJ.dependencies, pkgJ);
+    test('banc : autre version installée = échec explicite (plus un simple avertissement)', /pkg\.version !== VERSION_ATTENDUE\) \{[\s\S]{0,300}process\.exit\(2\)/.test(bancTxt));
+    const conf = fs.readFileSync(path.join(racine, '_config.yml'), 'utf8');
+    test('site publié : package.json, package-lock.json et node_modules exclus (_config.yml)', ['package.json', 'package-lock.json', 'node_modules'].every((x) => new RegExp('^\\s*- ' + x.replace('.', '\\.') + '\\s*$', 'm').test(conf)));
+  }
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
 })().catch(e => { console.log('ERREUR : ' + (e && e.stack || e)); process.exit(1); });

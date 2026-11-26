@@ -14,5 +14,8 @@ exclude:
   - "*.docx"
   - "*.pdf"
   - .gitignore
+  - package.json
+  - package-lock.json
+  - node_modules
   - .inventaire_map.json
   - inventaire-depot.html

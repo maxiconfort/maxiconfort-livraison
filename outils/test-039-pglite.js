@@ -1,8 +1,10 @@
 // Banc de test RÉEL de la migration 039 (arrivages, prix de revient, produits non vendables) sur une base PostgreSQL JETABLE,
 // EN MÉMOIRE (@electric-sql/pglite = PostgreSQL 16 compilé en WebAssembly, rien n'est écrit sur le disque, aucune connexion).
 // Usage : node outils/test-039-pglite.js
-// Prérequis (facultatif) : npm install --no-save @electric-sql/pglite@0.2.17   (package.json reste inchangé)
-//   Sans ce paquet, le banc est SAUTÉ proprement (message, code 0) : les autres environnements ne cassent pas.
+// Prérequis : la dépendance de développement déclarée dans package.json (@electric-sql/pglite, version EXACTE 0.2.17) : npm install
+//   (revue Codex PR 26 sur 636f873) Sans ce paquet, ou avec une autre version, le banc ÉCHOUE (code 2) : un contrôle automatique ne
+//   peut plus paraître réussi sans avoir testé la migration. Pour le sauter VOLONTAIREMENT (machine sans dépendances) :
+//   SAUTER_PGLITE=1 node outils/test-039-pglite.js   (message « SAUTÉ », code 0 ; ne vaut jamais preuve que la 039 est testée).
 // VALEURS FICTIVES uniquement (dépôt PUBLIC) : aucun prix réel, aucun client, aucun fournisseur.
 //
 // Ce que fait le banc :
@@ -24,11 +26,17 @@ const fs = require('fs'), path = require('path');
 const racine = path.join(__dirname, '..');
 const VERSION_ATTENDUE = '0.2.17';
 
+const SAUTER = process.env.SAUTER_PGLITE === '1';
 let PGlite;
 try { ({ PGlite } = require('@electric-sql/pglite')); } catch (e) {
-  console.log('BANC 039 PGLITE SAUTÉ : le paquet @electric-sql/pglite n\'est pas installé (aucune base de test disponible).');
-  console.log('Pour l\'exécuter : npm install --no-save @electric-sql/pglite@' + VERSION_ATTENDUE + '   puis   node outils/test-039-pglite.js');
-  process.exit(0);
+  if (SAUTER) {
+    console.log('BANC 039 PGLITE SAUTÉ VOLONTAIREMENT (SAUTER_PGLITE=1) : la migration 039 n\'a PAS été testée.');
+    process.exit(0);
+  }
+  console.error('ÉCHEC DU BANC 039 PGLITE : dépendance @electric-sql/pglite absente — la migration 039 n\'a PAS été testée.');
+  console.error('Installer les dépendances déclarées (package.json, devDependencies : @electric-sql/pglite ' + VERSION_ATTENDUE + ') : npm install');
+  console.error('Pour sauter ce banc volontairement : SAUTER_PGLITE=1 node outils/test-039-pglite.js');
+  process.exit(2);
 }
 
 const lireMigration = (n) => fs.readFileSync(path.join(racine, 'supabase', 'migrations', n), 'utf8');
@@ -113,7 +121,11 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   try { let d = path.dirname(require.resolve('@electric-sql/pglite'));
         while (!fs.existsSync(path.join(d, 'package.json')) && path.dirname(d) !== d) d = path.dirname(d);
         pkg = JSON.parse(fs.readFileSync(path.join(d, 'package.json'), 'utf8')); } catch (e) { /* version inconnue : sans effet */ }
-  if (pkg.version !== VERSION_ATTENDUE) console.log('  (avertissement : @electric-sql/pglite ' + pkg.version + ' installé, banc écrit pour ' + VERSION_ATTENDUE + ')');
+  // revue Codex PR 26 sur 636f873 : version EXACTE exigée (celle de package.json) ; une autre version = échec explicite
+  if (pkg.version !== VERSION_ATTENDUE) {
+    console.error('ÉCHEC DU BANC 039 PGLITE : @electric-sql/pglite ' + pkg.version + ' installé, version exigée ' + VERSION_ATTENDUE + ' (package.json) — migration 039 NON testée.');
+    process.exit(2);
+  }
   const db = new PGlite();
   const ver = (await db.query('select version() as v')).rows[0].v;
   console.log('Base jetable en mémoire : ' + ver.split(' on ')[0] + ' (@electric-sql/pglite ' + pkg.version + ')');
