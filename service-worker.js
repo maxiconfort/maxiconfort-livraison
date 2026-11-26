@@ -9,6 +9,8 @@
 // v7.5.147 - Produits non vendables : tous les champs d'une ligne examines ; arrivage : valorisation de l'apercu reverifiee par la base (26/11/2026)
 // v7.5.144 - Produits non vendables : identifiant et nom contradictoires refuses, catalogue serveur lu jusqu'a une page vide (26/11/2026)
 // v7.5.142 - Arrivages : lignes lues par pages, revient calcule par la base, produits non vendables reconnus par nom (26/11/2026)
+// v7.5.136 - Habillage style D : tests du selecteur de periode et du mode nuit (revue Codex sur d9c4e2a) (26/11/2026)
+// v7.5.135 - Caisse (revue Codex) : Mixte controle, releve encaisse par arret, depenses uniques/figees/journalisees, refus base != coupure (26/11/2026)
 // v7.5.127 - JARVIS : vue Commandes filtree par origine (#jarvis=commandes:all:::TikTok%20Shop) (09/11/2026)
 // v7.5.126 - JARVIS : vue Commandes filtree par statut (#jarvis=commandes:all:GLS:en-attente) (09/11/2026)
 // v7.5.121 - Appareil de confiance : collab connectee 40 jours sur un ordinateur (05/11/2026)
@@ -17,7 +19,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-165';
+const CACHE_VERSION = 'maxiconfort-v7-5-169';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
