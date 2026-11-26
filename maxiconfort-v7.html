@@ -9827,7 +9827,8 @@ var RT_MSG_CAISSE_VALIDEE = '⛔ Point de caisse déjà validé par le bureau : 
 // v7.5.184 (revue Codex PR 24 sur 639f2f5, point 1) : la base protège aussi les TOURNÉES (déclencheur tournees_verrou_caisse) :
 // une tournée au point de caisse validé ne peut être ni supprimée ni changée de livreur, de date ou d'identifiant, et aucun
 // changement de tournée ne peut déplacer d'anciennes dépenses sans tournée vers ou depuis une tournée validée.
-var RT_MSG_TOURNEE_CAISSE_VALIDEE = '⛔ Point de caisse déjà validé : cette tournée ne peut être ni supprimée, ni changée de livreur ou de date (ses dépenses en dépendent). Annulez d\'abord la validation de la remise.';
+// v7.5.195 (revue Codex PR 24 sur 59f3a26, point 2) : les résultats et encaissements de ses arrêts sont aussi figés.
+var RT_MSG_TOURNEE_CAISSE_VALIDEE = '⛔ Point de caisse déjà validé : cette tournée ne peut être ni supprimée, ni changée de livreur ou de date, ni changée dans les résultats ou encaissements de ses arrêts (la remise en dépend). Annulez d\'abord la validation de la remise.';
 // v7.5.184 (revue Codex PR 24 sur 639f2f5, point 1) : la base FIGE la tournée d'une dépense à son écriture (tournee_id
 // renseigné). Une correction qui change la DATE ou le LIVREUR détache la dépense de cette tournée : l'appli vide alors
 // tournee_id et la base recalcule le rattachement (même règle que rtDepenseDeTournee).
@@ -9847,6 +9848,23 @@ function rtVerrouBaseEtat(status, corps) {
   return null;
 }
 function rtRefusCaisseValidee(status, texte) { return Number(status) >= 400 && Number(status) < 500 && /POINT_CAISSE_VALIDE/.test(String(texte || '')); }
+// v7.5.195 (revue Codex PR 24 sur 59f3a26, points 1 et 2) : relevé des données d'arrêt qui comptent pour la caisse (MÊME liste
+// que interne.l038b_arrets_caisse de la migration 038b) : un objet par arrêt, dans l'ordre, toujours les mêmes clés (absente
+// = null) ; le client n'est gardé que pour un arrêt sans commande (rattachement par le nom). Envoyé avec la validation de la
+// remise : la base le compare aux arrêts qu'elle a, après la prise du verrou, et refuse si la tournée a changé.
+var RT_ARRET_CAISSE_CLES = ['cmdId', 'client', 'statut', 'paie', 'stpaie', 'encAvant', 'encTournee', 'paie_especes', 'paie_cb', 'enc'];
+function rtArretsCaisse(stops) {
+  return (Array.isArray(stops) ? stops : []).map(function(s) {
+    var o = (s && typeof s === 'object' && !Array.isArray(s)) ? s : {};
+    var r = {};
+    RT_ARRET_CAISSE_CLES.forEach(function(k) { r[k] = o[k] === undefined ? null : o[k]; });
+    if (!(o.cmdId == null || o.cmdId === '')) r.client = null;
+    return r;
+  });
+}
+// Refus de la validation par la base : dépenses ou arrêts changés depuis le calcul du montant attendu (code CAISSE_CHANGEE).
+function rtRefusCaisseChangee(status, texte) { return Number(status) >= 400 && Number(status) < 500 && /CAISSE_CHANGEE/.test(String(texte || '')); }
+var RT_MSG_CAISSE_CHANGEE = '⚠️ Remise NON validée : les dépenses ou les arrêts de cette tournée ont changé depuis le calcul (par exemple une dépense ajoutée par le livreur). La page a été relue : vérifiez le nouveau montant attendu puis validez de nouveau.';
 // v7.5.135 (revue Codex sur f09037c, point 5) : journal des corrections d'une dépense, gardé dans son commentaire
 // (colonne existante, aucune migration) après un séparateur. Chaque ligne : date, auteur, valeurs avant → après, motif.
 var RT_JOURNAL_SEP = '\n— Journal des corrections —\n';
@@ -12453,7 +12471,9 @@ function finRender() {
         var prepaye  = cmdsLv.filter(function(c){ return MODES_PAIE.filter(function(m){return m.cat==='prepaye';}).map(function(m){ return m.id; }).includes(c.paie) && c.stpaie==='Payé'; }).reduce(function(s,c){ return s+(c.montantEnc||c.prix); },0);
         var nonEnc   = cmdsLv.filter(function(c){ return c.stpaie!=='Payé'; }).reduce(function(s,c){ return s+c.prix; },0);
         var tExact = t.date || '';
-        var depEspDetail = deps.filter(function(d){
+        // v7.5.195 (revue Codex PR 24 sur 59f3a26, point 1) : TOUTES les dépenses de la tournée (et non celles de la période
+        // affichée) : même total que celui que la base recalcule à la validation (interne.l038b_depenses_especes)
+        var depEspDetail = depenses.filter(function(d){
           var matchTournee = rtDepenseDeTournee(d, t, tournees); // v7.5.135 : attribution unique
           return (d.livreur||'').toLowerCase() === lv.toLowerCase() && (d.livreur||'').toUpperCase() !== 'CAISSE' && d.modePaie !== 'CB' && matchTournee;
         });
@@ -12469,7 +12489,9 @@ function finRender() {
 
       // v7.5.114 : montants attendus par tournée, repris à la validation de la remise
       window._paiRemisesAttendu = {};
-      retInfos.forEach(function(r){ window._paiRemisesAttendu[r.caisseKey] = { especes: r.aRemettre, cb: r.cb, tournee: r.t.id, livreur: r.lv }; });
+      // v7.5.195 (revue Codex PR 24 sur 59f3a26) : + ce sur quoi le montant est calculé (dépenses en espèces déduites, relevé
+      // des arrêts) : la base le recontrôle dans la transaction de la validation et refuse s'il a changé
+      retInfos.forEach(function(r){ window._paiRemisesAttendu[r.caisseKey] = { especes: r.aRemettre, cb: r.cb, tournee: r.t.id, livreur: r.lv, depEsp: rtArrondi(r.depEspLv), arrets: rtArretsCaisse(r.t.stops) }; });
       // v7.5.129 : toute tournée passée ou du jour non validée a son point de caisse (même sans espèces :
       // carte bleue, déjà payés, reportés, absents à vérifier) ; les tournées à venir restent en ligne compacte.
       var _rtAuj = (function(){ var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })();
@@ -12704,7 +12726,11 @@ async function validerRemiseCaisse(key) {
   // v7.5.184 (revue Codex PR 24 sur 639f2f5, point 2) : dépenses relues JUSTE AVANT la validation (une dépense ajoutée par le
   // livreur depuis le dernier affichage est comptée dans le reste à remettre) ; la base sérialise ensuite la validation et
   // l'écriture des dépenses (verrou consultatif de la 038b).
+  // v7.5.195 (revue Codex PR 24 sur 59f3a26) : la tournée est relue aussi (arrêts à jour) ; la base recontrôle ensuite
+  // dépenses et arrêts DANS la transaction de la validation, après le verrou, et refuse s'ils ont changé (CAISSE_CHANGEE).
   var _relu = false;
+  var _tidRem = /^t_/.test(String(key || '')) ? String(key).slice(2) : '';
+  if (_tidRem && typeof sbRechargerTournee === 'function') { try { await sbRechargerTournee(_tidRem); } catch (e) {} }
   if (typeof sbLoadDepenses === 'function') { try { await sbLoadDepenses(); finRender(); _relu = true; } catch (e) {} }
   if (_relu && !(window._paiRemisesAttendu || {})[key]) { toast('Point de caisse introuvable après relecture des dépenses : remise non validée', 'err'); return; }
   var att = (window._paiRemisesAttendu || {})[key] || { especes: 0, cb: 0 };
@@ -12747,10 +12773,26 @@ async function validerRemiseCaisse(key) {
         especes_remises: entry.remis,
         ecart: entry.ecart,
         cb_encaisse: entry.cb,
-        commentaire: entry.commentaire || null
+        commentaire: entry.commentaire || null,
+        // v7.5.195 (revue Codex PR 24 sur 59f3a26, point 1) : ce sur quoi le montant attendu a été calculé
+        controle_depenses: att.depEsp == null ? null : rtArrondi(att.depEsp),
+        controle_arrets: Array.isArray(att.arrets) ? att.arrets : null
       })
     });
-    if (_rRem && !_rRem.ok) throw new Error('HTTP ' + _rRem.status);
+    if (_rRem && !_rRem.ok) {
+      var _txtRem = ''; try { _txtRem = await _rRem.text(); } catch (_e) {}
+      if (rtRefusCaisseChangee(_rRem.status, _txtRem)) {
+        // la base a refusé : dépenses ou arrêts changés depuis le calcul -> rien de validé, page relue, nouveau montant affiché
+        delete caissesRemises[key];
+        try { localStorage.setItem('caissesRemises', JSON.stringify(caissesRemises)); } catch(_e){}
+        if (_tidRem && typeof sbRechargerTournee === 'function') { try { await sbRechargerTournee(_tidRem); } catch (_e) {} }
+        if (typeof sbLoadDepenses === 'function') { try { await sbLoadDepenses(); } catch (_e) {} }
+        finRender();
+        toast(RT_MSG_CAISSE_CHANGEE, 'err');
+        return;
+      }
+      throw new Error('HTTP ' + _rRem.status);
+    }
   } catch(e) {
     // v7.5.184 (relecture complète du verrou de caisse) : validation NON enregistrée par la base (coupure, session, refus) ->
     // elle n'est plus gardée seulement sur ce poste : la base ne verrouillerait pas les dépenses alors que l'écran dirait « validé ».
