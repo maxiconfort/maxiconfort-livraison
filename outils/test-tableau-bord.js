@@ -158,7 +158,8 @@ const roles = (() => { const b3 = { commandes: [] }; vm.createContext(b3); vm.ru
 const pages = (r) => (r.nav || []).concat(r.plus || []).filter((n) => n.p).map((n) => n.p);
 test('admin : 6 entrées principales', egal(roles.admin.nav.map((n) => n.p), ['dashboard', 'commandes', 'tournees', 'stock', 'finance', 'pins']), roles.admin.nav.map((n) => n.l));
 test('admin : libellés Tableau de bord, Stock / Arrivages, Réglages', egal(roles.admin.nav.map((n) => n.l), ['Tableau de bord', 'Commandes', 'Tournées', 'Stock / Arrivages', 'Encaissements', 'Réglages']));
-test('admin : « Plus » = Suivi, Optimiser, Notifications, Géolocalisation, Camions, Vue livreur, Zones', egal(roles.admin.plus.map((n) => n.p), ['suivi', 'optim', 'notifs', 'gps', 'camion', 'livreur', 'zones']));
+// v7.5.199 : page administrateur « Dropshipping » rangée dans « Plus »
+test('admin : « Plus » = Suivi, Optimiser, Notifications, Géolocalisation, Camions, Dropshipping, Vue livreur, Zones', egal(roles.admin.plus.map((n) => n.p), ['suivi', 'optim', 'notifs', 'gps', 'camion', 'drop', 'livreur', 'zones']));
 test('Santé société retirée du menu, gardée hors menu (JARVIS)', !pages(roles.admin).includes('sante') && roles.admin.cachees.includes('sante') && html.includes('id="p-sante"'));
 test('collab : Tableau de bord, Commandes, Tournées, Stock + Plus (Suivi, Optimiser, Notifications)', egal(roles.collab.nav.map((n) => n.p), ['dashboard', 'commandes', 'tournees', 'stock']) && egal(roles.collab.plus.map((n) => n.p), ['suivi', 'optim', 'notifs']));
 test('collab : aucune page financière ni réservée à l’admin', !pages(roles.collab).some((x) => ['finance', 'pins', 'sante', 'zones', 'gps', 'arrivages'].includes(x)) && !roles.collab.cachees);

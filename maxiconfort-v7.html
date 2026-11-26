@@ -2240,6 +2240,15 @@ Maxiconfort — {TEL_CONTACT}</textarea>
     <div id="arr-contenu"></div>
   </div>
 
+  <!-- v7.5.199 : PAGE DROPSHIPPING (administrateur) : bilan du jour, alertes, fournisseurs, références activées, réglages -->
+  <div class="page" id="p-drop">
+    <div class="sh">
+      <div class="st">🔀 Dropshipping</div>
+      <div class="sd">Ce qu'on a gagné aujourd'hui, fournisseurs, prix d'achat HT et références activées</div>
+    </div>
+    <div id="drop-contenu"></div>
+  </div>
+
   <!-- v7.1.7 : PAGE CONTENU CAMION -->
   <div class="page" id="p-camion">
     <div class="sh">
@@ -3585,6 +3594,7 @@ function oqCle(it) {
   if (!it || !it.data || !it.data.id) return null;
   if (it.type === 'commande') return 'commande|' + it.data.id;
   if (it.type === 'deduction') return 'deduction|' + it.data.id; // v7.5.197 : une seule demande par commande
+  if (it.type === 'drop') return 'drop|' + it.data.id; // v7.5.199 : une demande dropshipping par clé (confirmation, enlèvement…)
   if (it.type === 'produit' && it.oqv) return 'produit|' + oqGenreProduit(it.role) + '|' + it.data.id;
   return null;
 }
@@ -3849,11 +3859,15 @@ async function offlineQueueFlush() {
         // (remis en file par son propre échec, ou gardé) — un « livré » enregistré a quitté la file (oqSucces)
         var _cleC = item.data ? 'commande|' + item.data.id : '';
         if (_cleC && (remaining.concat(offlineQueue)).some(function(x) { return oqCle(x) === _cleC; })) { remaining.push(item); continue; }
+        // v7.5.199 : la confirmation des pièces (drop_confirmer_livraison) passe AVANT la déduction (seules les pièces « Dépôt » livrées sont retirées)
+        if (item.data && (remaining.concat(offlineQueue)).some(function(x) { return oqCle(x) === 'drop|conf:' + item.data.id; })) { remaining.push(item); continue; }
         var _rd = (item.data && item.data.id) ? await stkDeductionEnvoyer(item.data.id, null) : 'abandon';
         if (_rd === 'reessayer') remaining.push(item); else if (_rd === 'ok' || _rd === 'deja') flushed++;
         continue;
       }
       // v7.5.193 (réserve Codex 4) : un ancien élément produit pas encore trié (purge reportée) n'est jamais rejoué
+      // v7.5.199 : demandes dropshipping (fonctions de la base rejouables sans double effet)
+      if (item.type === 'drop') { var _rdp = (typeof dropEnvoyer === 'function') ? await dropEnvoyer(item.data) : 'reessayer'; if (_rdp === 'reessayer') remaining.push(item); else flushed++; continue; }
       if (item.type === 'produit' && !item.oqv) { remaining.push(item); continue; }
       // v7.5.193 (réserve Codex 2) : un produit est rejoué selon le rôle qui l'a mis en file. Fiche admin / collab :
       // jamais envoyée par une session livreur (elle attend une session admin / collab) ; élément du livreur :
@@ -5399,6 +5413,552 @@ try {
   if (_chSaved) chargements = JSON.parse(_chSaved);
 } catch(e) { chargements = {}; }
 
+// ════════════════════════════════════════
+// DROP-DEBUT — v7.5.199 (26/11/2026, décisions de Borhen des 25 et 26/11) : DROPSHIPPING ENCADRÉ ET PROVENANCE DE CHAQUE PIÈCE.
+// Base : migration 041 (fonctions drop_*, tables fournisseurs, fournisseur_prix, drop_produits, commande_pieces,
+// achats_fournisseur, pieces_couts, drop_journal, drop_alertes ; bucket privé drop-tickets). AUCUN prix d'achat, fournisseur ou
+// revient dans ce fichier (dépôt public) : ce sont des DONNÉES saisies dans l'appli par l'administrateur.
+// Le livreur est le DERNIER PARE-FEU, trois points de contrôle par pièce :
+//   1. CHARGEMENT (écran « CHARGEMENT OBLIGATOIRE ») : Dépôt / Chez <fournisseur> / Déjà dans le camion ;
+//   2. ENLÈVEMENT : un arrêt « Enlèvement » apparaît dans la tournée JUSTE AVANT le client (adresse du fournisseur, pièce, prix
+//      prévu HT) ; « Enlevé et payé » : montant HT, Espèces ou CB, photo du ticket ;
+//   3. LIVRAISON : pièce par pièce « Livrée » / « Pas livrée » ; « Livré » BLOQUÉ tant qu'une pièce n'a pas sa provenance.
+// Tant que la migration 041 n'est pas appliquée (drop_version absente), RIEN de ce module n'est affiché ni bloquant.
+// L'arrêt d'enlèvement est AFFICHÉ dans la tournée (calculé d'après les pièces), il n'est pas ajouté à tournees.stops : la
+// clôture, la caisse et la réconciliation des tournées ne changent pas.
+var DROP_PROV_LIB = { depot: 'Dépôt', fournisseur: 'Chez le fournisseur', camion: 'Déjà dans le camion' };
+var DROP_MONTANT_MAX = 5000;
+var dropActif = null;          // null = pas encore vérifié ; true = migration 041 présente ; false = absente
+var dropPieces = {};           // cmdId -> { pieces: [...], perime: bool, at: ms }
+var dropConfirm = {};          // cmdId -> { <pièce>: true|false } (choix du livreur à la livraison, avant envoi)
+try { dropPieces = JSON.parse(localStorage.getItem('mx_drop_pieces') || '{}') || {}; } catch(e) { dropPieces = {}; }
+try { dropConfirm = JSON.parse(localStorage.getItem('mx_drop_confirm') || '{}') || {}; } catch(e) { dropConfirm = {}; }
+function dropSauver() { try { localStorage.setItem('mx_drop_pieces', JSON.stringify(dropPieces)); localStorage.setItem('mx_drop_confirm', JSON.stringify(dropConfirm)); } catch(e) {} }
+function dropEchap(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+// encre lisible sur un fond de couleur (habillage style D : jamais de blanc fixe)
+var DROP_ENCRE = { 'var(--green)': 'var(--sur-vert)', 'var(--orange)': 'var(--sur-orange)', 'var(--blue)': 'var(--sur-bleu)', 'var(--red)': 'var(--sur-rouge)' };
+function dropEncre(fond) { return DROP_ENCRE[fond] || 'var(--text)'; }
+function dropEur(n) { return (typeof paiEur === 'function') ? paiEur(n) : (Math.round((parseFloat(n) || 0) * 100) / 100) + ' €'; }
+
+// ── Fonctions PURES (outils/test-dropshipping.js) ──
+// montant saisi (virgule acceptée) : > 0 et <= DROP_MONTANT_MAX, arrondi au centime
+function dropMontant(txt) {
+  var m = parseFloat(String(txt == null ? '' : txt).replace(/\s/g, '').replace(',', '.'));
+  if (isNaN(m) || m <= 0) return { ok: false, erreur: 'Entrez le montant payé HT' };
+  if (m > DROP_MONTANT_MAX) return { ok: false, erreur: 'Montant trop élevé (' + DROP_MONTANT_MAX + ' € au plus)' };
+  return { ok: true, montant: Math.round(m * 100) / 100 };
+}
+function dropEcart(prevu, paye) { return Math.round(((parseFloat(paye) || 0) - (parseFloat(prevu) || 0)) * 100) / 100; }
+// chemin du ticket : <livreur en minuscules>/<commande sans #>/<fichier> (même règle que la base, interne.l041_chemin_ticket_ok)
+function dropCheminTicket(livreur, cmdId, pieceId, ts) {
+  var l = String(livreur || '').toLowerCase().replace(/[^a-z0-9._-]/g, '-');
+  return l + '/' + String(cmdId || '').replace(/#/g, '') + '/ticket-' + pieceId + '-' + (ts || Date.now()) + '.jpg';
+}
+// pièces d'une ligne : toutes déclarées ? une pièce « Dépôt » à charger ?
+function dropEtatLigne(pieces, ligneIdx) {
+  var ps = (pieces || []).filter(function(p) { return p && p.ligne_idx === ligneIdx; });
+  var decl = ps.filter(function(p) { return !!p.provenance; }).length;
+  return { total: ps.length, declarees: decl, complete: ps.length > 0 && decl === ps.length,
+           depot: ps.some(function(p) { return p.provenance === 'depot'; }) };
+}
+// la ligne compte comme « chargée » : toutes ses pièces déclarées ET (cochée, ou aucune pièce à prendre au dépôt)
+function dropLigneChargee(pieces, ligneIdx, cochee) {
+  var e = dropEtatLigne(pieces, ligneIdx);
+  if (!e.total) return !!cochee;            // pas de pièces connues : règle d'avant
+  return e.complete && (!!cochee || !e.depot);
+}
+// livraison possible ? (3e pare-feu) — renvoie '' ou la raison du blocage
+function dropRaisonBlocage(pieces, confirm) {
+  var ps = pieces || [], cf = confirm || {};
+  if (!ps.length) return '';
+  var sansProv = ps.filter(function(p) { return !p.provenance && p.livraison !== 'livree' && p.livraison !== 'non_livree'; });
+  if (sansProv.length) return 'Provenance manquante : ' + sansProv.map(function(p) { return p.libelle; }).join(', ') + ' (Dépôt, fournisseur ou camion)';
+  var nonPaye = ps.filter(function(p) { return p.provenance === 'fournisseur' && !(p.achat && p.achat.statut === 'paye') && cf[p.id] !== false; });
+  if (nonPaye.length) return 'Enlèvement non validé : ' + nonPaye.map(function(p) { return p.libelle; }).join(', ') + ' — « Enlevé et payé » d\'abord';
+  var aConfirmer = ps.filter(function(p) { return !p.livraison && cf[p.id] !== true && cf[p.id] !== false; });
+  if (aConfirmer.length) return 'Indiquez pièce par pièce ce qui est livré (' + aConfirmer.length + ' pièce' + (aConfirmer.length > 1 ? 's' : '') + ')';
+  return '';
+}
+// enlèvements à faire pour une commande (pièces fournisseur pas encore livrées)
+function dropEnlevements(pieces) {
+  return (pieces || []).filter(function(p) { return p && p.provenance === 'fournisseur' && p.livraison !== 'livree' && p.livraison !== 'non_livree'; });
+}
+function dropListeConfirmation(pieces, confirm) {
+  var cf = confirm || {};
+  return (pieces || []).map(function(p) { return { id: p.id, livree: p.livraison ? p.livraison === 'livree' : cf[p.id] === true }; });
+}
+
+// ── Base (fonctions drop_* de la migration 041) ──
+async function dropRpc(nom, params) {
+  var resp, txt = '', corps = null;
+  try {
+    resp = await fetch(SUPABASE_URL + '/rest/v1/rpc/' + nom, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
+      body: JSON.stringify(params || {}) });
+  } catch(e) { return { reseau: true }; }
+  try { txt = await resp.text(); corps = txt ? JSON.parse(txt) : null; } catch(e) { corps = null; }
+  return { statut: resp.status, httpOk: resp.ok, corps: corps, absente: resp.status === 404 || !!(corps && corps.code === 'PGRST202') };
+}
+async function dropVerifier() {
+  if (dropActif === true) return true;
+  var r = await dropRpc('drop_version', {});
+  if (r.absente) dropActif = false;
+  else if (r.httpOk && r.corps === '041') dropActif = true;
+  return dropActif === true;
+}
+async function dropChargerPieces(cmdId) {
+  if (!cmdId || dropActif !== true) return null;
+  var r = await dropRpc('drop_pieces', { p_cmd_id: cmdId });
+  if (r.httpOk && r.corps && r.corps.ok) {
+    dropPieces[cmdId] = { pieces: r.corps.pieces || [], perime: !!r.corps.perime, at: Date.now() };
+    dropSauver();
+    return dropPieces[cmdId];
+  }
+  return null;
+}
+function dropPiecesDe(cmdId) { return (dropActif === true && dropPieces[cmdId]) ? (dropPieces[cmdId].pieces || []) : []; }
+// pièces de toutes les commandes RANOU d'une tournée (une à la fois), puis nouvel affichage
+var _dropChargementEnCours = {};
+async function dropChargerTournee(t, apres, force) {
+  if (!t || !t.id || _dropChargementEnCours[t.id]) return;
+  _dropChargementEnCours[t.id] = true;
+  try {
+    if (!(await dropVerifier())) return;
+    var change = false;
+    for (var i = 0; i < (t.stops || []).length; i++) {
+      var s = t.stops[i]; if (!s || !s.cmdId) continue;
+      var c = (typeof findCmdForStop === 'function') ? findCmdForStop(s) : null;
+      if (c && (c.transporteur || 'RANOU') !== 'RANOU') continue;
+      if (!force && dropPieces[s.cmdId] && Date.now() - (dropPieces[s.cmdId].at || 0) < 60000) continue; // relu au plus une fois par minute
+      var avant = JSON.stringify(dropPieces[s.cmdId] && dropPieces[s.cmdId].pieces);
+      var r = await dropChargerPieces(s.cmdId);
+      if (r && JSON.stringify(r.pieces) !== avant) change = true;
+    }
+    if (change && typeof apres === 'function') apres();
+  } catch(e) { console.warn('[drop] chargement des pièces :', e && e.message); }
+  finally { delete _dropChargementEnCours[t.id]; }
+}
+function dropRemplacerPiece(cmdId, piece) {
+  if (!piece || !dropPieces[cmdId]) return;
+  var l = dropPieces[cmdId].pieces || [];
+  var i = l.findIndex(function(p) { return p.id === piece.id; });
+  if (i > -1) l[i] = piece; else l.push(piece);
+  dropSauver();
+}
+function dropRafraichir() {
+  try { var t = tournees.find(function(x) { return x.id === currentLvTourneeId; }); if (t && document.getElementById('lv-sas-chargement') && document.getElementById('lv-sas-chargement').style.display === 'block') { sasGenererListe(t); sasMettreAJourCompteur(t); } } catch(e) {}
+  try { if (typeof renderLivreur === 'function' && role === 'livreur') renderLivreur(); } catch(e) {}
+}
+var DROP_ERREURS = {
+  dropshipping_inactif: 'Cette référence n\'est pas activée en dropshipping (à faire par l\'administrateur)',
+  prix_fournisseur_absent: 'Pas de prix pour ce fournisseur (à saisir par l\'administrateur)',
+  piece_camion_indisponible: 'Cette pièce n\'est plus disponible dans le camion',
+  achat_deja_paye: 'Pièce déjà achetée et payée : provenance figée',
+  piece_deja_confirmee: 'Livraison déjà confirmée pour cette pièce',
+  point_caisse_valide: 'Point de caisse déjà validé pour cette tournée : voir le bureau',
+  chemin_ticket_invalide: 'Photo du ticket refusée',
+  enlevement_non_paye: 'Enlèvement non validé : « Enlevé et payé » d\'abord',
+  provenance_manquante: 'Provenance manquante pour une pièce',
+  pieces_incompletes: 'Indiquez chaque pièce (livrée ou pas)',
+  session_requise: 'Session expirée : reconnectez-vous', commande_introuvable: 'Commande introuvable', piece_introuvable: 'Pièce introuvable'
+};
+function dropMessageErreur(corps) { var e = corps && corps.erreur; return DROP_ERREURS[e] || ('Refus de la base' + (e ? ' (' + e + ')' : '')); }
+
+// 1er pare-feu : déclaration au chargement (réseau nécessaire : la base renvoie les choix possibles)
+var _dropDeclEnCours = {};
+async function dropDeclarer(cmdId, pieceId, prov, fournisseurId, stockCamionId) {
+  if (_dropDeclEnCours[pieceId]) return;
+  _dropDeclEnCours[pieceId] = true;
+  try {
+    var r = await dropRpc('drop_declarer', { p_piece_id: pieceId, p_provenance: prov, p_fournisseur_id: fournisseurId || null, p_stock_camion_id: stockCamionId || null });
+    if (r.reseau) { toast('📵 Pas de réseau : la provenance n\'est pas enregistrée, réessayez', 'err'); return; }
+    if (r.httpOk && r.corps && r.corps.ok) {
+      dropRemplacerPiece(cmdId, r.corps.piece);
+      // la case « chargé » de la ligne est cochée dès que toutes ses pièces sont déclarées
+      var p = r.corps.piece, ps = dropPiecesDe(cmdId);
+      if (p && dropEtatLigne(ps, p.ligne_idx).complete && !(chargements[cmdId] && chargements[cmdId][p.ligne_idx] && chargements[cmdId][p.ligne_idx].charge)
+          && dropEtatLigne(ps, p.ligne_idx).depot && typeof toggleChargement === 'function') {
+        try { var pr = toggleChargement(cmdId, p.ligne_idx, true); if (pr && pr.catch) pr.catch(function() {}); } catch(e) {}
+      }
+      // sinon, on recharge pour avoir les choix à jour (pièce du camion prise, etc.)
+      await dropChargerPieces(cmdId);
+    } else toast('⛔ ' + dropMessageErreur(r.corps), 'err');
+  } finally { delete _dropDeclEnCours[pieceId]; dropRafraichir(); }
+}
+function dropDeclarerClic(btn) {
+  if (!btn || !btn.dataset) return;
+  dropDeclarer(btn.dataset.cmd, parseInt(btn.dataset.piece, 10), btn.dataset.prov, btn.dataset.f ? parseInt(btn.dataset.f, 10) : null, btn.dataset.sc || null);
+}
+
+// file d'attente : confirmations, enlèvements payés et « non livrée » sont rejoués sans double effet (fonctions idempotentes)
+function dropPoser(cle, fn, params, cmdId) {
+  var data = { id: cle, fn: fn, params: params, cmdId: cmdId || (params && params.p_cmd_id) || null };
+  try { offlineQueueAdd('drop', data); } catch(e) { console.warn('[drop] file :', e && e.message); }
+  return dropEnvoyer(data);
+}
+async function dropEnvoyer(data) {
+  if (!data || !data.fn) return 'abandon';
+  var r = await dropRpc(data.fn, data.params || {});
+  if (r.reseau || r.absente || (!r.httpOk && (typeof httpTemporaire !== 'function' || httpTemporaire(r.statut)))) return 'reessayer';
+  try { offlineQueue = offlineQueue.filter(function(it) { return !(it && it.type === 'drop' && it.data && it.data.id === data.id); }); oqEcrire(); } catch(e) {}
+  if (r.httpOk && r.corps && r.corps.ok) {
+    if (data.fn === 'drop_enlever_payer' && r.corps.depense) dropDepenseLocale(r.corps.depense);
+    if (data.cmdId) { try { await dropChargerPieces(data.cmdId); } catch(e) {} }
+    return 'ok';
+  }
+  try { notifAjout('err', 'commande', '⛔ Dropshipping refusé par la base' + (data.cmdId ? ' — ' + data.cmdId : ''), dropMessageErreur(r.corps), 'Voir', 'livreur'); } catch(e) {}
+  return 'refus';
+}
+function dropDepenseLocale(d) {
+  if (!d || !d.id || typeof depenses === 'undefined') return;
+  if (depenses.some(function(x) { return x && x.id === d.id; })) return;
+  depenses.push({ id: d.id, date: d.date, cat: d.cat, montant: d.montant, livreur: d.livreur, comment: d.comment, modePaie: d.modePaie, tourneeId: d.tourneeId });
+  try { localStorage.setItem('mx_depenses_cache', JSON.stringify(depenses)); } catch(e) {}
+}
+
+// 3e pare-feu : choix du livreur, puis envoi juste après le « livré »
+function dropChoisirLivraison(cmdId, pieceId, livree) {
+  dropConfirm[cmdId] = dropConfirm[cmdId] || {};
+  dropConfirm[cmdId][pieceId] = !!livree;
+  dropSauver(); dropRafraichir();
+}
+// ligne « chargée » dans l'écran de chargement (règle d'avant si les pièces ne sont pas connues)
+function dropLigneOk(cmdId, idx) {
+  var ch = chargements[cmdId] && chargements[cmdId][idx];
+  var ps = dropPiecesDe(cmdId);
+  return ps.length ? dropLigneChargee(ps, idx, !!(ch && ch.charge)) : !!(ch && ch.charge);
+}
+function dropBloqueLivre(cmdId) {
+  if (dropActif !== true || !cmdId) return '';
+  return dropRaisonBlocage(dropPiecesDe(cmdId), dropConfirm[cmdId]);
+}
+function dropApresLivre(cmdId) {
+  var ps = dropPiecesDe(cmdId);
+  if (!ps.length || !ps.some(function(p) { return !p.livraison; })) return Promise.resolve('rien');
+  var liste = dropListeConfirmation(ps, dropConfirm[cmdId]);
+  var pr = dropPoser('conf:' + cmdId, 'drop_confirmer_livraison', { p_cmd_id: cmdId, p_pieces: liste });
+  return Promise.resolve(pr).catch(function() { return 'reessayer'; });
+}
+function dropApresNonLivre(cmdId) {
+  var ps = dropPiecesDe(cmdId);
+  if (!ps.some(function(p) { return p.provenance && !p.livraison; })) return Promise.resolve('rien');
+  delete dropConfirm[cmdId]; dropSauver();
+  return Promise.resolve(dropPoser('nonliv:' + cmdId, 'drop_commande_non_livree', { p_cmd_id: cmdId })).catch(function() { return 'reessayer'; });
+}
+
+// 2e pare-feu : « Enlevé et payé » (fenêtre : montant HT, Espèces / CB, photo du ticket)
+var _dropEnl = null;
+function dropOuvrirEnlevement(cmdId, pieceId) {
+  var p = dropPiecesDe(cmdId).find(function(x) { return x.id === pieceId; });
+  if (!p) return;
+  _dropEnl = { cmdId: cmdId, piece: p, mode: null, photo: null };
+  var fond = document.getElementById('drop-enl-modal');
+  if (fond) fond.remove();
+  fond = document.createElement('div');
+  fond.id = 'drop-enl-modal';
+  fond.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9995;display:flex;align-items:center;justify-content:center;padding:14px';
+  var prevu = p.achat ? p.achat.prix_prevu_ht : '';
+  fond.innerHTML = '<div style="background:var(--card);border-radius:16px;padding:18px;max-width:420px;width:100%;max-height:92vh;overflow:auto">' +
+    '<div style="font-size:18px;font-weight:900;margin-bottom:4px">🏭 Enlevé et payé</div>' +
+    '<div style="font-size:14px;color:var(--t2);margin-bottom:12px">' + dropEchap(p.libelle) + ' · chez ' + dropEchap(p.fournisseur ? p.fournisseur.nom : '?') + '<br>Prix prévu : <strong>' + dropEur(prevu) + ' HT</strong></div>' +
+    '<label style="font-size:13px;font-weight:700">Montant payé HT</label>' +
+    '<input id="drop-enl-montant" type="text" inputmode="decimal" value="' + dropEchap(prevu) + '" style="width:100%;padding:14px;font-size:22px;font-weight:800;text-align:center;border:2px solid var(--brd2);border-radius:12px;background:var(--bg);color:var(--text);box-sizing:border-box;margin:6px 0 12px">' +
+    '<div style="display:flex;gap:10px;margin-bottom:12px">' +
+      '<button type="button" id="drop-enl-esp" onclick="dropEnlMode(\'especes\')" style="flex:1;padding:16px;border-radius:12px;border:2px solid var(--brd2);background:transparent;color:var(--text);font-size:16px;font-weight:800;font-family:var(--font)">💶 Espèces</button>' +
+      '<button type="button" id="drop-enl-cb" onclick="dropEnlMode(\'cb\')" style="flex:1;padding:16px;border-radius:12px;border:2px solid var(--brd2);background:transparent;color:var(--text);font-size:16px;font-weight:800;font-family:var(--font)">💳 CB</button>' +
+    '</div>' +
+    '<label style="display:block;padding:14px;border:2px dashed var(--brd2);border-radius:12px;text-align:center;font-weight:800;cursor:pointer;margin-bottom:12px">📷 Photo du ticket' +
+      '<input id="drop-enl-photo" type="file" accept="image/*" capture="environment" style="display:none" onchange="dropEnlPhoto(this)"></label>' +
+    '<div id="drop-enl-photo-etat" style="font-size:12px;color:var(--t3);text-align:center;margin:-6px 0 10px">Aucune photo</div>' +
+    '<div id="drop-enl-msg" style="min-height:18px;font-size:13px;font-weight:700;color:var(--red);text-align:center;margin-bottom:8px"></div>' +
+    '<div style="display:flex;gap:10px"><button type="button" onclick="dropFermerEnlevement()" style="flex:1;padding:14px;border-radius:12px;border:2px solid var(--brd2);background:transparent;color:var(--text);font-weight:800;font-family:var(--font)">Annuler</button>' +
+    '<button type="button" id="drop-enl-ok" onclick="dropValiderEnlevement()" style="flex:2;padding:14px;border-radius:12px;border:none;background:var(--green);color:var(--sur-vert);font-weight:900;font-size:16px;font-family:var(--font)">✅ Enlevé et payé</button></div></div>';
+  document.body.appendChild(fond);
+}
+function dropFermerEnlevement() { var f = document.getElementById('drop-enl-modal'); if (f) f.remove(); _dropEnl = null; }
+function dropEnlMode(m) {
+  if (!_dropEnl) return; _dropEnl.mode = m;
+  ['esp', 'cb'].forEach(function(k) { var b = document.getElementById('drop-enl-' + k); if (b) { var on = (k === 'esp' ? 'especes' : 'cb') === m; b.style.background = on ? 'var(--green)' : 'transparent'; b.style.color = on ? 'var(--sur-vert)' : 'var(--text)'; } });
+}
+// photo réduite (1280 px, JPEG) avant l'envoi
+function dropEnlPhoto(input) {
+  if (!_dropEnl || !input || !input.files || !input.files[0]) return;
+  var etat = document.getElementById('drop-enl-photo-etat');
+  var fichier = input.files[0];
+  try {
+    var img = new Image(), url = URL.createObjectURL(fichier);
+    img.onload = function() {
+      try {
+        var max = 1280, w = img.width, h = img.height, k = Math.min(1, max / Math.max(w, h));
+        var cv = document.createElement('canvas'); cv.width = Math.round(w * k); cv.height = Math.round(h * k);
+        cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+        cv.toBlob(function(b) { if (_dropEnl) _dropEnl.photo = b || fichier; if (etat) etat.textContent = '✅ Photo prête'; }, 'image/jpeg', 0.7);
+      } catch(e) { _dropEnl.photo = fichier; if (etat) etat.textContent = '✅ Photo prête'; }
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = function() { _dropEnl.photo = fichier; if (etat) etat.textContent = '✅ Photo prête'; };
+    img.src = url;
+  } catch(e) { _dropEnl.photo = fichier; if (etat) etat.textContent = '✅ Photo prête'; }
+}
+async function dropEnvoyerPhoto(chemin, blob) {
+  try {
+    var r = await fetch(SUPABASE_URL + '/storage/v1/object/drop-tickets/' + chemin, { method: 'POST',
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'image/jpeg', 'x-upsert': 'false' }, body: blob });
+    return r.ok;
+  } catch(e) { return false; }
+}
+async function dropValiderEnlevement() {
+  if (!_dropEnl) return;
+  var msg = document.getElementById('drop-enl-msg'), btn = document.getElementById('drop-enl-ok');
+  var m = dropMontant((document.getElementById('drop-enl-montant') || {}).value);
+  if (!m.ok) { if (msg) msg.textContent = m.erreur; return; }
+  if (!_dropEnl.mode) { if (msg) msg.textContent = 'Choisissez Espèces ou CB'; return; }
+  if (!_dropEnl.photo) { if (msg) msg.textContent = 'Prenez la photo du ticket'; return; }
+  var e = _dropEnl; if (btn) { btn.disabled = true; btn.textContent = 'Envoi…'; }
+  var cmd = commandes.find(function(c) { return c.id === e.cmdId; }) || {};
+  var chemin = dropCheminTicket(cmd.livreur || livNom || '', e.cmdId, e.piece.id);
+  var photoOk = await dropEnvoyerPhoto(chemin, e.photo);
+  if (!photoOk) toast('⚠️ Photo du ticket non envoyée : le bureau est prévenu (ticket à garder)', 'info');
+  var res = await dropPoser('enl:' + e.piece.id, 'drop_enlever_payer', { p_piece_id: e.piece.id, p_montant_ht: m.montant, p_mode: e.mode, p_ticket_path: photoOk ? chemin : null }, e.cmdId);
+  dropFermerEnlevement();
+  var ec = dropEcart(e.piece.achat && e.piece.achat.prix_prevu_ht, m.montant);
+  if (res === 'ok') toast('✅ Enlevé et payé : ' + dropEur(m.montant) + ' HT (' + (e.mode === 'cb' ? 'CB' : 'espèces') + ')' + (ec ? ' — écart ' + (ec > 0 ? '+' : '') + dropEur(ec) + ' signalé au bureau' : ''), 'ok');
+  else if (res === 'reessayer') toast('📵 Enregistré sur le téléphone : envoyé dès le retour du réseau', 'info');
+  dropRafraichir();
+}
+
+// ── Affichage livreur ──
+function dropBtn(lib, actif, attrs, couleur) {
+  return '<button type="button" onclick="dropDeclarerClic(this)" ' + attrs + ' style="flex:1 1 30%;min-height:52px;padding:10px 8px;border-radius:12px;border:2px solid ' + (actif ? couleur : 'var(--brd2)') + ';background:' + (actif ? couleur : 'transparent') + ';color:' + (actif ? dropEncre(couleur) : 'var(--text)') + ';font-size:14px;font-weight:800;font-family:var(--font);cursor:pointer">' + lib + '</button>';
+}
+// écran de chargement : trois gros boutons par pièce
+function dropSasLigneHtml(cmd, ligneIdx) {
+  if (dropActif !== true || !cmd) return '';
+  var ps = dropPiecesDe(cmd.id).filter(function(p) { return p.ligne_idx === ligneIdx; });
+  if (!ps.length) return '';
+  return ps.map(function(p) {
+    var base = 'data-cmd="' + dropEchap(cmd.id) + '" data-piece="' + p.id + '" ';
+    var fige = !!(p.livraison || (p.achat && p.achat.statut === 'paye'));
+    var html = '<div style="padding:8px 0 10px 38px;border-top:1px dashed var(--brd)"><div style="font-size:13px;font-weight:700;margin-bottom:6px">' + dropEchap(p.libelle) +
+      (p.provenance ? ' — <span style="color:var(--green)">' + DROP_PROV_LIB[p.provenance] + (p.provenance === 'fournisseur' && p.fournisseur ? ' ' + dropEchap(p.fournisseur.nom) : '') + '</span>' : ' — <span style="color:var(--orange)">provenance ?</span>') + '</div>';
+    if (fige) return html + '<div style="font-size:12px;color:var(--t3)">Provenance figée (achat payé ou livraison confirmée)</div></div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px">' + dropBtn('🏠 Dépôt', p.provenance === 'depot', base + 'data-prov="depot"', 'var(--green)');
+    (p.drop_actif ? (p.fournisseurs || []).slice(0, 3) : []).forEach(function(f) {
+      html += dropBtn('🏭 Chez ' + dropEchap(f.nom) + '<br><small>' + dropEur(f.prix_prevu_ht) + ' HT</small>', p.provenance === 'fournisseur' && p.fournisseur_id === f.id, base + 'data-prov="fournisseur" data-f="' + f.id + '"', 'var(--orange)');
+    });
+    var sc = (p.camion || [])[0];
+    if (sc || p.provenance === 'camion') html += dropBtn('🚚 Déjà dans le camion', p.provenance === 'camion', base + 'data-prov="camion" data-sc="' + dropEchap(p.provenance === 'camion' ? p.stock_camion_id : sc.id) + '"', 'var(--blue)');
+    return html + '</div></div>';
+  }).join('');
+}
+// arrêt « Enlèvement » affiché JUSTE AVANT le client concerné
+function dropEnlevementHtml(t, s, i) {
+  if (dropActif !== true || !s || !s.cmdId || (s.statut === 'livré')) return '';
+  var enl = dropEnlevements(dropPiecesDe(s.cmdId));
+  if (!enl.length) return '';
+  return enl.map(function(p) {
+    var f = p.fournisseur || {}, a = p.achat || {}, paye = a.statut === 'paye';
+    return '<div class="lv-card" style="border:2px solid ' + (paye ? 'var(--green)' : 'var(--orange)') + ';background:' + (paye ? 'var(--gl)' : 'var(--card)') + '">' +
+      '<div style="font-size:12px;font-weight:800;color:var(--orange);text-transform:uppercase">🏭 Enlèvement avant l\'arrêt ' + (i + 1) + ' (' + dropEchap(s.client) + ')</div>' +
+      '<div style="font-size:16px;font-weight:900;margin:4px 0">' + dropEchap(f.nom || 'Fournisseur') + '</div>' +
+      '<div style="font-size:13px;color:var(--t2)">' + dropEchap(f.adresse || '') + '</div>' +
+      '<div style="font-size:14px;margin:8px 0"><strong>' + dropEchap(p.libelle) + '</strong> · prévu <strong>' + dropEur(a.prix_prevu_ht) + ' HT</strong></div>' +
+      (paye ? '<div style="font-weight:800;color:var(--gd)">✅ Enlevé et payé : ' + dropEur(a.montant_paye_ht) + ' HT (' + (a.mode === 'cb' ? 'CB' : 'espèces') + ')' + (a.ticket ? '' : ' — ⚠️ photo du ticket manquante') + '</div>'
+            : '<div style="display:flex;gap:8px"><a href="https://waze.com/ul?q=' + encodeURIComponent(f.adresse || '') + '" target="_blank" style="flex:1;padding:14px;border-radius:12px;background:#1FCECA;color:#000;font-weight:900;text-align:center;text-decoration:none">Waze</a>' +
+              '<button type="button" onclick="dropOuvrirEnlevement(\'' + dropEchap(s.cmdId) + '\',' + p.id + ')" style="flex:2;padding:14px;border-radius:12px;border:none;background:var(--green);color:var(--sur-vert);font-size:16px;font-weight:900;font-family:var(--font)">✅ Enlevé et payé</button></div>') +
+      '</div>';
+  }).join('');
+}
+// livraison chez le client : deux boutons par pièce
+function dropLivraisonHtml(t, s, i) {
+  if (dropActif !== true || !s || !s.cmdId || s.statut === 'livré') return '';
+  var ps = dropPiecesDe(s.cmdId); if (!ps.length) return '';
+  var cf = dropConfirm[s.cmdId] || {};
+  var raison = dropRaisonBlocage(ps, cf);
+  return '<div style="margin:10px 0;padding:10px;border:2px solid ' + (raison ? 'var(--orange)' : 'var(--green)') + ';border-radius:12px">' +
+    '<div style="font-size:13px;font-weight:800;margin-bottom:6px">📦 Pièces livrées chez le client</div>' +
+    ps.map(function(p) {
+      var v = p.livraison ? p.livraison === 'livree' : cf[p.id];
+      var b = function(val, lib, coul) { return '<button type="button" onclick="dropChoisirLivraison(\'' + dropEchap(s.cmdId) + '\',' + p.id + ',' + val + ')" ' + (p.livraison ? 'disabled ' : '') + 'style="flex:1;min-height:48px;border-radius:12px;border:2px solid ' + (v === val ? coul : 'var(--brd2)') + ';background:' + (v === val ? coul : 'transparent') + ';color:' + (v === val ? dropEncre(coul) : 'var(--text)') + ';font-weight:800;font-family:var(--font)">' + lib + '</button>'; };
+      return '<div style="padding:6px 0;border-top:1px solid var(--brd)"><div style="font-size:13px;font-weight:700">' + dropEchap(p.libelle) +
+        ' <span style="font-weight:600;color:' + (p.provenance ? 'var(--t3)' : 'var(--red)') + '">(' + (p.provenance ? DROP_PROV_LIB[p.provenance] : 'provenance manquante') + ')</span></div>' +
+        '<div style="display:flex;gap:8px;margin-top:6px">' + b(true, '✅ Livrée', 'var(--green)') + b(false, '✖ Pas livrée', 'var(--red)') + '</div></div>';
+    }).join('') +
+    (raison ? '<div style="font-size:12px;font-weight:700;color:var(--orange);margin-top:6px">🔒 ' + dropEchap(raison) + '</div>' : '') + '</div>';
+}
+
+// ── Administrateur : page Dropshipping (fournisseurs, prix d'achat HT, activation par référence, alertes, bilan du jour) ──
+var dropAdm = { fournisseurs: [], prix: [], actifs: [], alertes: [], bilan: null, date: '', recherche: '' };
+async function dropLire(table, requete) {
+  try {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/' + table + '?' + (requete || 'select=*'), { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
+    if (!r.ok) return null; return await r.json();
+  } catch(e) { return null; }
+}
+async function dropEcrire(table, corps, filtre) {
+  try {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/' + table + (filtre ? '?' + filtre : ''), { method: filtre ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': filtre ? 'return=minimal' : 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(corps) });
+    if (!r.ok) { var t = ''; try { t = await r.text(); } catch(e) {} toast('⛔ Non enregistré : ' + (t || ('HTTP ' + r.status)).slice(0, 160), 'err'); return false; }
+    return true;
+  } catch(e) { toast('📵 Pas de réseau : non enregistré', 'err'); return false; }
+}
+async function dropPageInit() {
+  var el = document.getElementById('drop-contenu'); if (!el) return;
+  if (role !== 'admin') { el.innerHTML = '<div class="card">Réservé à l\'administrateur.</div>'; return; }
+  el.innerHTML = '<div class="card">Chargement…</div>';
+  if (!(await dropVerifier())) { el.innerHTML = '<div class="card">⏳ Module non disponible : la migration 041 n\'est pas encore appliquée sur la base.</div>'; return; }
+  if (!dropAdm.date) { var d = new Date(); dropAdm.date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  var res = await Promise.all([dropLire('fournisseurs', 'select=*&order=nom'), dropLire('fournisseur_prix', 'select=*'), dropLire('drop_produits', 'select=*'),
+    dropRpc('drop_controler', {}), dropRpc('drop_bilan_jour', { p_date: dropAdm.date }), dropLire('parametres', 'select=cle,valeur&cle=like.drop_*')]);
+  dropAdm.fournisseurs = res[0] || []; dropAdm.prix = res[1] || []; dropAdm.actifs = res[2] || [];
+  dropAdm.alertes = (res[3].corps && res[3].corps.alertes) || []; dropAdm.bilan = res[4].corps && res[4].corps.ok ? res[4].corps : null;
+  dropAdm.reglages = {}; (res[5] || []).forEach(function(r) { dropAdm.reglages[r.cle] = r.valeur; });
+  dropPageRendre();
+}
+function dropBilanHtml(b) {
+  if (!b) return '<div class="card">Bilan indisponible.</div>';
+  var carte = function(lib, val, coul, note) { return '<div class="card" style="flex:1 1 160px"><div class="card-t">' + lib + '</div><div style="font-size:24px;font-weight:900;color:' + (coul || 'var(--text)') + '">' + val + '</div>' + (note ? '<div style="font-size:11px;color:var(--t3);margin-top:4px">' + note + '</div>' : '') + '</div>'; };
+  var h = '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px">' +
+    carte('Ventes livrées HT', dropEur(b.ventes_ht), null, b.commandes + ' commande' + (b.commandes > 1 ? 's' : '')) +
+    carte('Coût des produits', dropEur(b.cout_produits_ht), null, (b.pieces_cout_inconnu ? b.pieces_cout_inconnu + ' pièce(s) sans coût connu · ' : '') + (b.commandes_cout_estime ? b.commandes_cout_estime + ' estimée(s) au revient' : 'coûts figés')) +
+    carte('GLS', dropEur(b.gls_ht), null, b.commandes_gls_non_renseigne ? b.commandes_gls_non_renseigne + ' commande(s) GLS : coût non renseigné (Réglages ci-dessous)' : '') +
+    carte('Résultat', dropEur(b.resultat_ht), b.resultat_ht >= 0 ? 'var(--green)' : 'var(--red)', b.resultat_net_ht != null ? 'Après charges fixes (' + dropEur(b.charges_fixes_ht) + ') : ' + dropEur(b.resultat_net_ht) : 'Sans les charges fixes') + '</div>';
+  h += '<table style="width:100%;font-size:12px;border-collapse:collapse"><tr style="text-align:left;color:var(--t3)"><th>Commande</th><th>Vente HT</th><th>Coût</th><th>GLS</th><th>Marge</th><th>Provenance</th></tr>' +
+    (b.detail || []).map(function(c) {
+      var pv = c.provenances ? Object.keys(c.provenances).map(function(k) { return (DROP_PROV_LIB[k] || (k === 'non_declaree' ? 'non déclarée' : k)) + ' ×' + c.provenances[k]; }).join(', ') : '';
+      return '<tr style="border-top:1px solid var(--brd)"><td><a href="#" onclick="ouvrirCmd(\'' + dropEchap(c.cmd_id) + '\');return false">' + dropEchap(c.cmd_id) + '</a></td><td>' + dropEur(c.vente_ht) + '</td><td>' + dropEur(c.cout_ht) + (c.cout_estime ? ' <small>(estimé)</small>' : '') + '</td><td>' + (c.gls_ht != null ? dropEur(c.gls_ht) : '—') + '</td><td><strong>' + dropEur(c.marge_ht) + '</strong></td><td>' + dropEchap(pv) + '</td></tr>';
+    }).join('') + '</table>';
+  return h;
+}
+function dropPageRendre() {
+  var el = document.getElementById('drop-contenu'); if (!el) return;
+  var A = dropAdm, rg = A.reglages || {};
+  var nomF = function(id) { var f = A.fournisseurs.find(function(x) { return x.id === id; }); return f ? f.nom : '?'; };
+  var h = '<div class="card" style="margin-bottom:14px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><div class="card-t" style="margin:0">💶 Bilan du jour (HT)</div>' +
+    '<input type="date" value="' + A.date + '" onchange="dropAdm.date=this.value;dropPageInit()" style="padding:6px;border-radius:8px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)"></div><div style="margin-top:10px">' + dropBilanHtml(A.bilan) + '</div></div>';
+  h += '<div class="card" style="margin-bottom:14px"><div class="card-t">🔔 Alertes (' + A.alertes.length + ')</div>' + (A.alertes.length ? A.alertes.map(function(a) {
+    return '<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--brd);font-size:13px"><span style="flex:1">' + dropEchap(a.message) + ' <small style="color:var(--t3)">' + new Date(a.cree_at).toLocaleString('fr-FR') + '</small></span>' +
+      (a.cmd_id ? '<button class="btn btn-sm" onclick="ouvrirCmd(\'' + dropEchap(a.cmd_id) + '\')">Voir</button>' : '') + '<button class="btn btn-sm" onclick="dropAlerteVue(' + a.id + ')">Vu</button></div>';
+  }).join('') : '<div style="font-size:13px;color:var(--t3)">Aucune alerte.</div>') + '</div>';
+  h += '<div class="card" style="margin-bottom:14px"><div class="card-t">🏭 Fournisseurs</div>' + A.fournisseurs.map(function(f) {
+    return '<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--brd);font-size:13px;opacity:' + (f.actif ? 1 : .5) + '"><span style="flex:1"><strong>' + dropEchap(f.nom) + '</strong> — ' + dropEchap(f.adresse) + (f.telephone ? ' · ' + dropEchap(f.telephone) : '') + '</span>' +
+      '<button class="btn btn-sm" onclick="dropFournisseurActif(' + f.id + ',' + (!f.actif) + ')">' + (f.actif ? 'Désactiver' : 'Réactiver') + '</button></div>';
+  }).join('') +
+    '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px"><input id="drop-f-nom" placeholder="Nom" style="flex:1 1 140px;padding:8px;border-radius:8px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)">' +
+    '<input id="drop-f-adresse" placeholder="Adresse" style="flex:2 1 220px;padding:8px;border-radius:8px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)">' +
+    '<input id="drop-f-tel" placeholder="Téléphone (facultatif)" style="flex:1 1 140px;padding:8px;border-radius:8px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)">' +
+    '<button class="btn btn-p" onclick="dropAjouterFournisseur()">+ Ajouter</button></div></div>';
+  // références : activation + prix par fournisseur (2 ou 3), recherche
+  var rech = String(A.recherche || '').toLowerCase();
+  var liste = (typeof produits !== 'undefined' ? produits : []).filter(function(p) {
+    if (!p || !p.id || (p.composants && p.composants.length)) return false;   // un ensemble se découpe en composants : prix sur les composants
+    var actif = A.actifs.some(function(d) { return d.produit_id === p.id && d.actif; });
+    return rech ? String(p.nom || '').toLowerCase().indexOf(rech) > -1 : (actif || (parseInt(p.stock, 10) || 0) <= 0);
+  }).slice(0, 60);
+  h += '<div class="card" style="margin-bottom:14px"><div class="card-t">🔀 Références en dropshipping (activées par vous, une par une)</div>' +
+    '<input placeholder="Rechercher une référence…" value="' + dropEchap(A.recherche) + '" oninput="dropAdm.recherche=this.value;clearTimeout(window._dropRech);window._dropRech=setTimeout(dropPageRendre,300)" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--brd2);background:var(--bg);color:var(--text);margin-bottom:8px;box-sizing:border-box">' +
+    '<div style="font-size:11px;color:var(--t3);margin-bottom:6px">Sans recherche : références en rupture et références activées.</div>' +
+    liste.map(function(p) {
+      var act = A.actifs.find(function(d) { return d.produit_id === p.id; });
+      var on = !!(act && act.actif);
+      var prixP = A.prix.filter(function(x) { return x.produit_id === p.id; });
+      return '<div style="padding:8px 0;border-top:1px solid var(--brd);font-size:13px"><div style="display:flex;gap:8px;align-items:center"><span style="flex:1"><strong>' + dropEchap(p.nom) + '</strong> <small style="color:var(--t3)">stock ' + (parseInt(p.stock, 10) || 0) + '</small></span>' +
+        '<button class="btn btn-sm' + (on ? ' btn-p' : '') + '" onclick="dropActiver(\'' + dropEchap(p.id) + '\',' + (!on) + ')">' + (on ? '✅ Dropshipping activé' : 'Activer le dropshipping') + '</button></div>' +
+        '<div style="margin-top:4px">' + prixP.map(function(x) { return '<span style="display:inline-block;margin:2px 6px 2px 0;padding:2px 8px;border-radius:8px;background:var(--bg2);opacity:' + (x.actif ? 1 : .5) + '">' + dropEchap(nomF(x.fournisseur_id)) + ' : ' + dropEur(x.prix_achat_ht) + ' HT <a href="#" onclick="dropPrixActif(' + x.id + ',' + (!x.actif) + ');return false">' + (x.actif ? '✖' : '↺') + '</a></span>'; }).join('') +
+        '<select id="drop-pf-' + dropEchap(p.id) + '" style="padding:4px;border-radius:6px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)"><option value="">Fournisseur…</option>' + A.fournisseurs.filter(function(f) { return f.actif; }).map(function(f) { return '<option value="' + f.id + '">' + dropEchap(f.nom) + '</option>'; }).join('') + '</select> ' +
+        '<input id="drop-pp-' + dropEchap(p.id) + '" placeholder="Prix HT" inputmode="decimal" style="width:80px;padding:4px;border-radius:6px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)"> <button class="btn btn-sm" onclick="dropAjouterPrix(\'' + dropEchap(p.id) + '\')">Enregistrer le prix</button></div></div>';
+    }).join('') + '</div>';
+  h += '<div class="card"><div class="card-t">⚙️ Réglages</div>' +
+    [['drop_camion_alerte_jours', 'Alerte : pièce achetée dans le camion depuis plus de (jours)'], ['drop_gls_cout_commande_ht', 'Coût GLS HT par commande (vide = non renseigné)'],
+     ['drop_charges_fixes_jour_ht', 'Charges fixes du jour HT (vide = non comptées)'], ['drop_tva_pct', 'TVA (%) pour passer les ventes en HT']].map(function(r) {
+      return '<div style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:13px"><span style="flex:1">' + r[1] + '</span><input id="drop-rg-' + r[0] + '" value="' + dropEchap(rg[r[0]] || '') + '" inputmode="decimal" style="width:90px;padding:6px;border-radius:6px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)"></div>';
+    }).join('') + '<button class="btn btn-p" style="margin-top:8px" onclick="dropSauverReglages()">Enregistrer les réglages</button></div>';
+  el.innerHTML = h;
+}
+async function dropAjouterFournisseur() {
+  var nom = String((document.getElementById('drop-f-nom') || {}).value || '').trim(), adr = String((document.getElementById('drop-f-adresse') || {}).value || '').trim();
+  var tel = String((document.getElementById('drop-f-tel') || {}).value || '').trim();
+  if (!nom || !adr) { toast('Nom et adresse obligatoires', 'err'); return; }
+  if (await dropEcrire('fournisseurs', { nom: nom, adresse: adr, telephone: tel || null })) { toast('✅ Fournisseur ajouté', 'ok'); dropPageInit(); }
+}
+async function dropFournisseurActif(id, actif) { if (await dropEcrire('fournisseurs', { actif: !!actif }, 'id=eq.' + id)) dropPageInit(); }
+async function dropActiver(produitId, actif) {
+  if (actif && !confirm('Activer le dropshipping pour cette référence ?\nLe livreur pourra la prendre chez un de ses fournisseurs.')) return;
+  if (await dropEcrire('drop_produits', { produit_id: produitId, actif: !!actif, motif: actif ? 'activé par l\'administrateur' : 'désactivé par l\'administrateur' })) dropPageInit();
+}
+async function dropAjouterPrix(produitId) {
+  var f = parseInt((document.getElementById('drop-pf-' + produitId) || {}).value, 10);
+  var m = dropMontant((document.getElementById('drop-pp-' + produitId) || {}).value);
+  if (!f) { toast('Choisissez le fournisseur', 'err'); return; }
+  if (!m.ok) { toast(m.erreur.replace('payé ', ''), 'err'); return; }
+  var ex = dropAdm.prix.find(function(x) { return x.produit_id === produitId && x.fournisseur_id === f; });
+  var okE = ex ? await dropEcrire('fournisseur_prix', { prix_achat_ht: m.montant, actif: true }, 'id=eq.' + ex.id)
+               : await dropEcrire('fournisseur_prix', { produit_id: produitId, fournisseur_id: f, prix_achat_ht: m.montant });
+  if (okE) { toast('✅ Prix enregistré', 'ok'); dropPageInit(); }
+}
+async function dropPrixActif(id, actif) { if (await dropEcrire('fournisseur_prix', { actif: !!actif }, 'id=eq.' + id)) dropPageInit(); }
+async function dropAlerteVue(id) { var r = await dropRpc('drop_alerte_vue', { p_id: id }); if (r.httpOk) dropPageInit(); }
+async function dropSauverReglages() {
+  var cles = ['drop_camion_alerte_jours', 'drop_gls_cout_commande_ht', 'drop_charges_fixes_jour_ht', 'drop_tva_pct'], tout = true;
+  for (var i = 0; i < cles.length; i++) {
+    var v = String((document.getElementById('drop-rg-' + cles[i]) || {}).value || '').trim();
+    if (v && isNaN(parseFloat(v.replace(',', '.')))) { toast('Valeur invalide : ' + v, 'err'); return; }
+    if (!(await dropEcrire('parametres', { cle: cles[i], valeur: v }))) tout = false;
+  }
+  if (tout) { toast('✅ Réglages enregistrés', 'ok'); dropPageInit(); }
+}
+// fiche commande et détail de tournée (admin) : provenance, fournisseur, prix payé, mode, photo du ticket, heure, marge
+function dropPiecesAdminHtml(m) {
+  if (!m || !m.ok) return '';
+  return '<div style="font-size:12px;margin-top:6px">' + (m.pieces || []).map(function(p) {
+    return '<div style="padding:4px 0;border-top:1px solid var(--brd)"><strong>' + dropEchap(p.libelle) + '</strong> — ' + (p.provenance ? DROP_PROV_LIB[p.provenance] : '<span style="color:var(--orange)">provenance non déclarée</span>') +
+      (p.fournisseur ? ' · ' + dropEchap(p.fournisseur) : '') +
+      (p.montant_paye_ht != null ? ' · payé <strong>' + dropEur(p.montant_paye_ht) + ' HT</strong> (' + (p.mode === 'cb' ? 'CB' : 'espèces') + ', prévu ' + dropEur(p.prix_prevu_ht) + ')' : (p.prix_prevu_ht != null ? ' · prévu ' + dropEur(p.prix_prevu_ht) + ' HT' : '')) +
+      (p.paye_at ? ' · ' + new Date(p.paye_at).toLocaleString('fr-FR') : '') +
+      (p.ticket_path ? ' · <a href="#" onclick="dropVoirTicket(\'' + dropEchap(p.ticket_path) + '\');return false">🧾 ticket</a>' : (p.provenance === 'fournisseur' && p.montant_paye_ht != null ? ' · ⚠️ pas de photo' : '')) +
+      (p.livraison ? ' · ' + (p.livraison === 'livree' ? '✅ livrée' : '✖ non livrée') : '') +
+      ' · coût ' + (p.cout_ht != null ? dropEur(p.cout_ht) : '?') + (p.fige ? '' : ' (estimé)') + '</div>';
+  }).join('') + '<div style="padding-top:6px;font-weight:800">Vente ' + dropEur(m.vente_ht) + ' HT − coût ' + dropEur(m.cout_ht) + (m.gls_ht != null ? ' − GLS ' + dropEur(m.gls_ht) : '') + ' = marge ' + dropEur(m.marge_ht) + ' HT' + (m.cout_inconnu ? ' (' + m.cout_inconnu + ' pièce(s) sans coût connu)' : '') + '</div></div>';
+}
+async function dropFicheCommande(cmdId) {
+  if (role !== 'admin' || !(await dropVerifier())) return;
+  var r = await dropRpc('drop_marge_commande', { p_cmd_id: cmdId });
+  var body = document.getElementById('panel-body');
+  if (!body || typeof currentCmdId === 'undefined' || currentCmdId !== cmdId || !r.httpOk || !r.corps || !r.corps.ok) return;
+  var div = document.getElementById('drop-fiche') || document.createElement('div');
+  div.id = 'drop-fiche';
+  div.innerHTML = '<div class="card" style="margin-top:12px"><div class="card-t">📦 Provenance des pièces et marge</div>' + dropPiecesAdminHtml(r.corps) + '</div>';
+  if (!div.parentNode) body.appendChild(div);
+}
+async function dropTourneeDetail(t) {
+  if (role !== 'admin' || !t || !(await dropVerifier())) return;
+  var det = document.getElementById('tournee-detail'); if (!det) return;
+  var div = document.getElementById('td-drop') || document.createElement('div');
+  div.id = 'td-drop'; div.innerHTML = '<div class="card" style="margin-top:12px"><div class="card-t">📦 Provenance des pièces (dropshipping)</div><div id="td-drop-liste" style="font-size:12px;color:var(--t3)">Chargement…</div></div>';
+  if (!div.parentNode) det.appendChild(div);
+  var html = '';
+  for (var i = 0; i < (t.stops || []).length; i++) {
+    var s = t.stops[i]; if (!s || !s.cmdId) continue;
+    var r = await dropRpc('drop_marge_commande', { p_cmd_id: s.cmdId });
+    if (r.httpOk && r.corps && r.corps.ok) html += '<div style="margin-top:8px;color:var(--text)"><strong>' + (i + 1) + '. ' + dropEchap(s.client) + ' (' + dropEchap(s.cmdId) + ')</strong>' + dropPiecesAdminHtml(r.corps) + '</div>';
+  }
+  if (typeof currentTourneeId !== 'undefined' && currentTourneeId !== t.id) return;
+  var l = document.getElementById('td-drop-liste'); if (l) l.innerHTML = html || 'Aucune pièce.';
+}
+async function dropVoirTicket(chemin) {
+  try {
+    var r = await fetch(SUPABASE_URL + '/storage/v1/object/sign/drop-tickets/' + chemin, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }, body: JSON.stringify({ expiresIn: 300 }) });
+    var j = r.ok ? await r.json() : null;
+    var u = j && (j.signedURL || j.signedUrl);
+    if (!u) { toast('Ticket non lisible (HTTP ' + r.status + ')', 'err'); return; }
+    window.open(u.indexOf('http') === 0 ? u : SUPABASE_URL + '/storage/v1' + u, '_blank');
+  } catch(e) { toast('📵 Pas de réseau', 'err'); }
+}
+// DROP-FIN
+
 // ── v7.1.7 : STOCK CAMION (qui contient quoi dans quel camion) ──
 // Structure : stockCamion = [{id, livreur, produit_libelle, quantite, source_cmd_id, charge_at, status, ...}]
 var stockCamion = [];
@@ -5824,7 +6384,7 @@ function calculerProgressionChargement(t) {
     lignes.forEach(function(ligne, idx) {
       total++;
       var ch = chargements[cmd.id] && chargements[cmd.id][idx];
-      if (ch && ch.charge) {
+      if ((typeof dropLigneOk === 'function' && dropActif === true) ? dropLigneOk(cmd.id, idx) : (ch && ch.charge)) { // v7.5.199 : provenance de chaque pièce
         charges++;
       } else {
         manquants.push({
@@ -7364,6 +7924,7 @@ const ROLES = {
       {p:'notifs',i:'🔔',l:'Notifications',badge:true},
       {p:'gps',i:'📍',l:'Géolocalisation'},
       {p:'camion',i:'🚛',l:'Contenu camions'},
+      {p:'drop',i:'🔀',l:'Dropshipping'}, // v7.5.199
       {p:'livreur',i:'🚚',l:'Vue livreur'},
       {p:'zones',i:'🗺️',l:'Zones',vers:'finance'},
     ],
@@ -7570,7 +8131,7 @@ function goTo(p, el) {
   navPlusOuvrir(!!(el && el.closest && el.closest('#nav-plus'))); // v7.5.138 : « Plus » ouvert seulement si la page affichée y est rangée
   if(p==='finance' && el && el.getAttribute && el.getAttribute('data-p')==='finance') showFinTab('enc', document.getElementById('fin-tab-enc'));
   document.querySelectorAll('.stk-arr-seg').forEach(function(s){ s.style.display = role==='admin' ? '' : 'none'; });
-  const titles={dashboard:'Tableau de bord',commandes:'Commandes',tournees:'Tournées',livreur:'Ma tournée',finance:'Encaissements',pins:'Réglages',camion:'Contenu camion',suivi:'Suivi logistique',sante:'Santé société',arrivages:'Arrivages',stock:'Stock',notifs:'Notifications',optim:'Optimiser tournée',gps:'Géolocalisation'};
+  const titles={dashboard:'Tableau de bord',commandes:'Commandes',tournees:'Tournées',livreur:'Ma tournée',finance:'Encaissements',pins:'Réglages',camion:'Contenu camion',suivi:'Suivi logistique',sante:'Santé société',arrivages:'Arrivages',drop:'Dropshipping',stock:'Stock',notifs:'Notifications',optim:'Optimiser tournée',gps:'Géolocalisation'};
   var _gpage_title=document.getElementById('page-title'); if(_gpage_title) _gpage_title.textContent=titles[p]||p;
 
   if(p==='commandes') {
@@ -7596,6 +8157,7 @@ function goTo(p, el) {
   if(p==='finance') { renderFinance(); finRender(); }
   if(p==='stock') { stkRender(); stkApplyRoleVisibility(); stkChargerArrivage(); } // v7.5.136 : stock entrant + revient (admin)
   if(p==='arrivages') arrInit(); // v7.5.136
+  if(p==='drop' && typeof dropPageInit === 'function') dropPageInit(); // v7.5.199
   if(p==='camion') { renderCamionContenu(); }
   if(p==='gps') { gpsInit(); setTimeout(function(){ gpsChargerPositions(); }, 800); }
   if(p==='optim') optimInit();
@@ -10662,6 +11224,7 @@ function ouvrirCmd(id) {
   // v7.4.7 : footer compact en 2 lignes explicites avec boutons icones
   // Ligne 1 = actions principales, ligne 2 = secondaires + admin
   var btnStyleSm = 'justify-content:center;padding:8px 10px;font-size:12px;flex:0 0 auto';
+  if (role === 'admin' && typeof dropFicheCommande === 'function') { try { dropFicheCommande(c.id); } catch(e) {} } // v7.5.199 : provenance des pièces et marge
   document.getElementById('panel-footer').innerHTML =
     '<div style="display:flex;gap:6px;flex-wrap:wrap;width:100%;margin-bottom:6px">' +
       (!isLivree ? '<button id="pa-edit-btn" data-cmdid="'+c.id+'" class="btn btn-p" style="'+btnStyleSm+'">✏️ Modifier</button>' :
@@ -12425,6 +12988,8 @@ function renderLivreur() {
     {k:'annulé',     ico:'<i class="icd icd-annule"></i>', lbl:'Annulé'},
   ];
 
+  // v7.5.199 : pièces des commandes de la tournée (dropshipping), relues au plus une fois par minute ; nouvel affichage si elles changent
+  if (role === 'livreur' && typeof dropChargerTournee === 'function') { try { dropChargerTournee(t, function() { if (typeof dropRafraichir === 'function') dropRafraichir(); }); } catch(e) {} }
   document.getElementById('lv-list').innerHTML = t.stops.map(function(s, i) {
     var st  = s.statut || 'en-attente';
     var cfg = stColors[st] || stColors['en-attente'];
@@ -12454,7 +13019,8 @@ function renderLivreur() {
         '<span class="sticon">'+sd.ico+'</span>'+sd.lbl+'</button>';
     }).join('');
 
-    return '<div class="lv-card '+(done?'lv-done':isActive?'lv-active':'')+'" id="lvc-'+i+'">'+
+    return ((typeof dropEnlevementHtml === 'function') ? dropEnlevementHtml(t, s, i) : '') + // v7.5.199 : arrêt « Enlèvement » juste avant le client
+      '<div class="lv-card '+(done?'lv-done':isActive?'lv-active':'')+'" id="lvc-'+i+'">'+
 
       // ── Top card ──
       '<div class="lv-card-top">'+
@@ -12542,6 +13108,7 @@ function renderLivreur() {
           // ── v7.5.129 : résultat de l'arrêt (Livré / Reporté / Client absent) + autres statuts repliés ──
           '<div class="lv-statuts-wrap">'+
             (st === 'reporté' || st === 'absent' ? '<div class="lv-resultat-bandeau '+(st === 'absent' ? 'lv-res-absent' : 'lv-res-reporte')+'">'+(st === 'absent' ? '🔔 Client absent'+(s.reportAu ? ' — à reporter au '+fmtDate(s.reportAu) : '') : '📅 Reporté'+(s.reportAu ? ' — le client propose le '+fmtDate(s.reportAu) : ''))+'<span style="font-weight:600;font-size:11px;display:block;opacity:.8">Vous pouvez encore changer le résultat</span></div>' : '')+
+            ((typeof dropLivraisonHtml === 'function') ? dropLivraisonHtml(t, s, i) : '')+ // v7.5.199 : 3e pare-feu, pièce par pièce
             '<div class="lv-statuts-lbl">Résultat de la livraison</div>'+
             '<div class="lv-resultats-grid">'+resBtns+'</div>'+
             '<details class="lv-autres-statuts"><summary>Autres statuts (en route, arrivé, annulé…)</summary><div class="lv-statuts-grid" style="margin-top:8px">'+stBtns+'</div></details>'+
@@ -12837,7 +13404,7 @@ function sasGenererListe(t) {
     var lignes = cmd.lignes && cmd.lignes.length ? cmd.lignes : [{produit: cmd.produit, qte: cmd.qte || 1}];
     var chCmd = chargements[cmd.id] || {};
     var totalC = lignes.length, chargesC = 0;
-    lignes.forEach(function(l, idx){ if (chCmd[idx] && chCmd[idx].charge) chargesC++; });
+    lignes.forEach(function(l, idx){ if ((typeof dropLigneOk === 'function' && dropActif === true) ? dropLigneOk(cmd.id, idx) : (chCmd[idx] && chCmd[idx].charge)) chargesC++; }); // v7.5.199
     var allOk = chargesC === totalC;
     html += '<div style="background:'+(allOk?'var(--gl)':'var(--card)')+';border:2px solid '+(allOk?'var(--green)':'var(--brd)')+';border-radius:14px;padding:14px;margin-bottom:12px">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
@@ -12855,7 +13422,8 @@ function sasGenererListe(t) {
         '<span style="flex:1;'+(isCharged?'text-decoration:line-through;color:var(--t3)':'color:var(--text);font-weight:600')+'">' +
           (qte>1?'<strong style="color:var(--blue);background:var(--bl);padding:2px 7px;border-radius:6px;margin-right:6px">×'+qte+'</strong>':'') + lib +
         '</span>' +
-      '</label>';
+      '</label>' +
+      ((typeof dropSasLigneHtml === 'function') ? dropSasLigneHtml(cmd, idx) : ''); // v7.5.199 : 1er pare-feu, provenance de chaque pièce
     });
     html += '</div>';
   });
@@ -13471,6 +14039,10 @@ function setLvSt(tid, idx, st, _annOk) {
   const s=t.stops[idx];
   // v7.5.117 : annuler exige un motif (fenêtre) ; sans motif confirmé, rien n'est modifié ni enregistré
   if (st === 'annulé' && s && s.statut !== 'annulé' && !_annOk) { var _cAnn = commandes.find(function(c){ return c.id === s.cmdId; }) || null; annDemanderMotif(_cAnn || { id: s.cmdId || '', client: s.client || '' }, function(m){ if (_cAnn) { _cAnn.annMotif = m.motif; _cAnn.annCom = m.commentaire; } setLvSt(tid, idx, st, true); }); return; }
+  // v7.5.199 (dropshipping) : « Livré » BLOQUÉ tant qu'une pièce n'a pas sa provenance, qu'un enlèvement n'est pas payé ou que les pièces
+  // ne sont pas confirmées ; reporté / absent : les pièces achetées partent dans le stock du camion (base, rejouable)
+  if (st === 'livré' && s && s.statut !== 'livré' && typeof dropBloqueLivre === 'function') { var _dropB = dropBloqueLivre(s.cmdId); if (_dropB) { toast('🔒 ' + _dropB, 'err'); return; } }
+  if ((st === 'reporté' || st === 'absent') && s && s.cmdId && typeof dropApresNonLivre === 'function') { try { dropApresNonLivre(s.cmdId); } catch(e) {} }
   // v7.1.6 : Plus de popup d'alerte chargement ici (remplacé par le SAS bloquant à l'ouverture)
   // Marquer l'horodatage du changement de statut (pour détection 1er client du jour)
   if (s) s.heureStatut = new Date().toISOString();
@@ -13793,6 +14365,8 @@ function validerSig(){
   const t=tournees.find(x=>x.id===tid);
   if(!t) return;
   const s=t.stops[idx];
+  // v7.5.199 : même contrôle des pièces qu'à l'ouverture de la signature (elles ont pu changer entre-temps)
+  if (s && typeof dropBloqueLivre === 'function') { var _dropB2 = dropBloqueLivre(s.cmdId); if (_dropB2) { toast('🔒 ' + _dropB2, 'err'); return; } }
   // v7.5.129 : montant encaissé = ce qui reste dû par défaut ; seulement à la baisse, avec un motif
   var _rtCtl = null, _rtCmd = null, _rtReste = 0, _rtDeja = 0, _rtMotif = '';
   if (!sigCodActif && sigPaieEncaisse && !sigPrepaidMode && sigPaieMode !== 'Mixte' && typeof rtControleMontant === 'function') {
@@ -13951,6 +14525,8 @@ function validerSig(){
     // base (« deduction|<commande> », reprise au chargement si l'application est fermée ou rechargée pendant
     // l'enregistrement) et (2) le « livré » avec son encaissement (retiré dès que l'envoi réussit, rejoué sinon) : ni
     // le « livré » ni l'encaissement ni la déduction ne dépendent d'un envoi qui aboutit.
+    // v7.5.199 : confirmation des pièces livrées envoyée à la base (gardée en file), la déduction l'attend
+    var _pDrop = null; try { _pDrop = (typeof dropApresLivre === 'function') ? dropApresLivre(_cmdLivre.id) : null; } catch(e) { console.warn('[drop] confirmation :', e && e.message); }
     try { stkDeductionPoser(_cmdLivre); } catch(e) { console.warn('[stock] demande de déduction :', e && e.message); }
     try { offlineQueueAdd('commande', _cmdLivre); } catch(e) { console.warn('[livré] enregistrement préventif :', e && e.message); }
     try { _pLivre = sbSaveCommande(_cmdLivre); } catch(e) { console.warn('[livré] enregistrement :', e && e.message); } // ✅ Sync commande Supabase → Realtime admin
@@ -13958,6 +14534,7 @@ function validerSig(){
     // aucun rejet de promesse ne remonte sans être traité.
     Promise.resolve(_pLivre)
       .catch(function(e) { console.warn('[livré] enregistrement :', e && e.message); })
+      .then(function() { return _pDrop; }).catch(function() {}) // v7.5.199 : pièces confirmées d'abord
       .then(function() { return stkDemanderDeduction(_cmdLivre); }) // v7.5.197 : la base déduit, une seule fois
       .catch(function(e) { console.warn('[stock] déduction à la livraison :', e && e.message); })
       .then(function() {
@@ -21961,6 +22538,7 @@ function afficherTournee(id) {
       '</div>' +
     '</div>';
   }).join('');
+  if (role === 'admin' && typeof dropTourneeDetail === 'function') { try { dropTourneeDetail(t); } catch(e) {} } // v7.5.199
   det.scrollIntoView({behavior:'smooth', block:'start'});
 }
 

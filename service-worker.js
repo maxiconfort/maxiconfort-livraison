@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.199 - Dropshipping encadre et provenance de chaque piece (migration 041) : 3 pare-feu du livreur (chargement Depot / fournisseur / camion, enlevement paye avec photo du ticket, livraison piece par piece), stock du camion, page admin Dropshipping (bilan du jour, alertes, fournisseurs, prix HT, references activees) (27/11/2026)
 // v7.5.198 - Fusion de la PR 29 (v7.5.197 : stock d'une livraison deduit par la base, migration 040) dans Commandes filtres (v7.5.190) : refus definitif de la base (v7.5.135) garde dans la file corrigee, livre local protege aussi dans le temps reel factorise (26/11/2026)
 // v7.5.197 - Stock d'une livraison deduit PAR LA BASE (fonction deduire_stock_livraison, migration 040), une seule fois par commande ; demande gardee en file et rejouee sans double effet ; calcul du stock sur le telephone supprime (26/11/2026)
 // v7.5.196 - Deductions de stock suivies sur l'appareil (reprises apres fermeture), stock_deduit seulement si tous les produits sont enregistres, PATCH du livreur conditionnel (delta), versions anciennes invalidees apres un succes (26/11/2026)
@@ -55,7 +56,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-198';
+const CACHE_VERSION = 'maxiconfort-v7-5-199';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
