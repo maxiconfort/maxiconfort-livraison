@@ -107,7 +107,11 @@ create policy sess_livreur on public.depenses for all to anon
   const VERROU = /POINT_CAISSE_VALIDE/;
   const POST = "insert into public.depenses (id, date_depense, cat, montant, livreur, comment, mode_paie, tournee_id) values ($1, $2, 'Péage', $3, 'LIVREUR-TEST', '', 'Espèces', $4)";
   const UPSERT = POST + ' on conflict (id) do update set montant = excluded.montant, mode_paie = excluded.mode_paie, tournee_id = excluded.tournee_id';
-  const valider = (tid) => q('admin', "insert into public.caisse_remises (key_remise, livreur, periode, validee, par) values ($1, 'LIVREUR-TEST', $2, true, 'admin')", ['t_' + tid, AUJ]);
+  // v7.5.195 (revue Codex PR 24 sur 59f3a26) : l'appli envoie avec la validation ce sur quoi elle a calculé le montant attendu
+  // (dépenses en espèces, relevé des arrêts) ; ici calculés depuis la base comme le ferait une appli à jour.
+  const ctrl = async (tid) => (await q('proprio', 'select interne.l038b_depenses_especes($1) as d, interne.l038b_arrets_caisse((select t.stops::jsonb from public.tournees t where t.id = $1)) as a', [tid]))[0];
+  const INS_REMISE = "insert into public.caisse_remises (key_remise, livreur, periode, validee, par, controle_depenses, controle_arrets) values ($1, $2, $3, true, 'admin', $4, $5)";
+  const valider = async (tid, livreur, periode) => { const c = await ctrl(tid); return q('admin', INS_REMISE, ['t_' + tid, livreur || 'LIVREUR-TEST', periode || AUJ, c.d, JSON.stringify(c.a)]); };
   const annuler = (tid) => q('admin', 'delete from public.caisse_remises where key_remise = $1', ['t_' + tid]);
 
   // ===================================================================================================================
@@ -153,6 +157,9 @@ create policy sess_livreur on public.depenses for all to anon
 
   // ===================================================================================================================
   console.log('\n2. LE PROBLÈME : le livreur ne lit pas caisse_remises (politique sess_admin seulement)');
+  // tournées T-V et T-L (date lointaine : sans effet sur les dépenses sans tournée des sections suivantes) ; v7.5.195 : la base
+  // refuse de valider le point de caisse d'une tournée qu'elle n'a pas
+  await q('maintenance', "insert into public.tournees (id, livreur, date_tournee, statut, stops) values ('T-V', 'LIVREUR-TEST', '2000-01-01', 'terminée', '[]'), ('T-L', 'LIVREUR-TEST', '2000-01-01', 'terminée', '[]')");
   await q('livreur', POST, ['d1', AUJ, 5, 'T-V']);
   await q('livreur', POST, ['d2', AUJ, 6, 'T-L']);
   await valider('T-V');
@@ -209,7 +216,7 @@ create policy sess_livreur on public.depenses for all to anon
   m = await echec('livreur', "update public.depenses set montant = 6 where id = 's1'");
   test('seule T-B (2e du jour) validée : la dépense sans tournée appartient à T-A -> modifiable (même règle que l\'appli)', m === null && (await dep('s1')).montant === 6, m);
   await annuler('T-B');
-  await q('admin', "insert into public.caisse_remises (key_remise, livreur, periode, validee, par) values ('t_T-O', 'AUTRE-TEST', $1, true, 'admin')", [J2]);
+  await valider('T-O', 'AUTRE-TEST', J2);
   m = await echec('livreur', "update public.depenses set montant = 5 where id = 's2'");
   test('tournée validée d\'un AUTRE livreur le même jour -> sans effet sur la dépense', m === null, m);
   await valider('T-Z');
@@ -257,7 +264,7 @@ create policy sess_livreur on public.depenses for all to anon
     test('déclencheur ' + trig + ' désactivé -> verrou_caisse_actif() = faux', (await db.query('select public.verrou_caisse_actif() as v')).rows[0].v === false);
     await db.exec('rollback; reset role;');
   }
-  for (const f of ["interne.l038b_cle('x')", "interne.l038b_verrouiller(array['x'])", "interne.l038b_validee('x')", "interne.l038b_premiere('x', 'y', null, null)", "interne.l038b_sans_tournee('x', 'y')"]) {
+  for (const f of ["interne.l038b_cle('x')", "interne.l038b_verrouiller(array['x'])", "interne.l038b_validee('x')", "interne.l038b_premiere('x', 'y', null, null)", "interne.l038b_sans_tournee('x', 'y')", "interne.l038b_depenses_especes('x')", "interne.l038b_arrets_caisse('[]')"]) {
     test('anon ne peut pas appeler ' + f.split('(')[0], !!(await echec('anon', 'select ' + f)));
   }
 
@@ -291,7 +298,7 @@ create policy sess_livreur on public.depenses for all to anon
 
   // ===================================================================================================================
   console.log('\n8. TOURNÉES : une tournée validée et les anciennes dépenses sans tournée restent en place (point 1)');
-  await q('maintenance', "insert into public.tournees (id, livreur, date_tournee, statut, stops) values ('T-P', 'LIVREUR-TEST', $1, 'terminée', '[]')", [J5]);
+  await q('maintenance', "insert into public.tournees (id, livreur, date_tournee, statut, stops) values ('T-P', 'LIVREUR-TEST', $1, 'terminée', '[{\"etape\":1}]')", [J5]);
   await valider('T-P');
   const tour = async (id) => (await q('maintenance', 'select id, livreur, date_tournee, statut from public.tournees where id = $1', [id]))[0] || null;
   m = await echec('admin', "delete from public.tournees where id = 'T-P'");
@@ -302,8 +309,8 @@ create policy sess_livreur on public.depenses for all to anon
   test('admin : changer la DATE d\'une tournée validée -> refusé', VERROU.test(m || '') && (await tour('T-P')).date_tournee === J5, m);
   m = await echec('admin', "update public.tournees set id = 'T-P2' where id = 'T-P'");
   test('admin : changer l\'IDENTIFIANT d\'une tournée validée -> refusé', VERROU.test(m || '') && (await tour('T-P')) !== null, m);
-  m = await echec('livreur', "insert into public.tournees (id, livreur, date_tournee, statut, stops, updated_at) values ('T-P', 'LIVREUR-TEST', $1, 'terminée', '[{\"etape\":1}]', now()) on conflict (id) do update set livreur = excluded.livreur, date_tournee = excluded.date_tournee, statut = excluded.statut, stops = excluded.stops, updated_at = excluded.updated_at", [J5]);
-  test('livreur : sauvegarde ordinaire (upsert sbSaveTournee : statut, arrêts) d\'une tournée validée -> acceptée', m === null, m);
+  m = await echec('livreur', "insert into public.tournees (id, livreur, date_tournee, statut, stops, updated_at) values ('T-P', 'LIVREUR-TEST', $1, 'terminée', '[{\"etape\":1,\"heure\":\"10:00\"}]', now()) on conflict (id) do update set livreur = excluded.livreur, date_tournee = excluded.date_tournee, statut = excluded.statut, stops = excluded.stops, updated_at = excluded.updated_at", [J5]);
+  test('livreur : sauvegarde ordinaire (upsert sbSaveTournee : statut, heure d\'un arrêt) d\'une tournée validée -> acceptée', m === null, m);
   m = await echec('livreur', "insert into public.tournees (id, livreur, date_tournee, statut) values ('T-P', 'LIVREUR-TEST', $1, 'terminée') on conflict (id) do update set date_tournee = excluded.date_tournee", [J7]);
   test('livreur : upsert qui change la DATE d\'une tournée validée -> refusé', VERROU.test(m || '') && (await tour('T-P')).date_tournee === J5, m);
   m = await echec('service_role', "update public.tournees set date_tournee = $1 where id = 'T-P'", [J7]);
@@ -360,7 +367,8 @@ create policy sess_livreur on public.depenses for all to anon
   test('clés distinctes pour deux tournées (T-L ≠ T-V), stables d\'un appel à l\'autre', kTL !== kTV && kTL === (await cle('T-L')));
   let v = await verrousPris('livreur', POST, ['k1', AUJ, 1, 'T-L']);
   test('dépense (ajout, livreur) : verrou de T-L pris', !v.err && v.cles.includes(kTL), v);
-  v = await verrousPris('admin', "insert into public.caisse_remises (key_remise, livreur, periode, validee, par) values ('t_T-L', 'LIVREUR-TEST', 'x', true, 'admin') on conflict (key_remise) do update set validee = excluded.validee");
+  const cTL = await ctrl('T-L');
+  v = await verrousPris('admin', INS_REMISE + ' on conflict (key_remise) do update set validee = excluded.validee', ['t_T-L', 'LIVREUR-TEST', 'x', cTL.d, JSON.stringify(cTL.a)]);
   test('VALIDATION de la remise t_T-L (upsert, admin) : MÊME verrou (T-L)', !v.err && v.cles.includes(kTL), v);
   v = await verrousPris('admin', "delete from public.caisse_remises where key_remise = 't_T-V'");
   test('ANNULATION de la remise t_T-V (admin) : verrou de T-V pris', !v.err && v.cles.includes(kTV), v);
@@ -372,9 +380,97 @@ create policy sess_livreur on public.depenses for all to anon
   test('verrou rendu à la fin de la transaction (plus aucun verrou consultatif ensuite)', (await db.query("select count(*)::int as n from pg_locks where locktype = 'advisory'")).rows[0].n === 0);
   test('séquentiel : la remise validée puis la dépense écrite dans la MÊME transaction -> la dépense voit la validation (refusée)', await (async () => {
     await contexte('admin'); await db.exec('begin');
-    let e = null; try { await db.query("insert into public.caisse_remises (key_remise, livreur, periode, validee, par) values ('t_T-L', 'LIVREUR-TEST', 'x', true, 'admin')"); await db.query(POST, ['k2', AUJ, 1, 'T-L']); } catch (x) { e = x.message; }
+    let e = null; try { await db.query(INS_REMISE, ['t_T-L', 'LIVREUR-TEST', 'x', cTL.d, JSON.stringify(cTL.a)]); await db.query(POST, ['k2', AUJ, 1, 'T-L']); } catch (x) { e = x.message; }
     await db.exec('rollback'); await db.exec('reset role'); return VERROU.test(e || '');
   })());
+
+  // ===================================================================================================================
+  console.log('\n10. VALIDATION RECONTRÔLÉE PAR LA BASE, ARRÊTS FIGÉS (revue Codex PR 24 sur 59f3a26, points 1 et 2)');
+  console.log('   LIMITE : pglite = UNE seule connexion : la concurrence est SIMULÉE (écriture intercalée entre le calcul de l\'appli et');
+  console.log('   la validation) ; une écriture réellement simultanée attend le verrou consultatif (section 9), puis est contrôlée.');
+  const CHG = /CAISSE_CHANGEE/;
+  const J9 = (await db.query("select to_char(current_date + 9, 'YYYY-MM-DD') as d")).rows[0].d;
+  const STOPS_K = [{ cmdId: '#T1', client: 'CLIENT-FICTIF', statut: 'livré', paie: 'Espèces', stpaie: 'Payé', encTournee: { esp: 100 }, heure: '10:00' }, { client: 'CLIENT-FICTIF-2', statut: 'absent' }];
+  await q('maintenance', "insert into public.tournees (id, livreur, date_tournee, statut, stops) values ('T-K', 'LIVREUR-TEST', $1, 'terminée', $2)", [J9, JSON.stringify(STOPS_K)]);
+  await q('livreur', POST, ['g1', J9, 10, 'T-K']);
+  const remK = async () => (await q('maintenance', "select validee from public.caisse_remises where key_remise = 't_T-K'"))[0] || null;
+  const INS_K = INS_REMISE + ' on conflict (key_remise) do update set validee = excluded.validee, controle_depenses = excluded.controle_depenses, controle_arrets = excluded.controle_arrets';
+  const validerK = (c) => echec('admin', INS_K, ['t_T-K', 'LIVREUR-TEST', J9, c.d, JSON.stringify(c.a)]);
+  const c0 = await ctrl('T-K');
+  test('relevé de la base : 10 € de dépenses en espèces, 2 arrêts (champs sans effet caisse retirés)', Number(c0.d) === 10 && c0.a.length === 2 && !('heure' in c0.a[0]) && c0.a[0].client === null && c0.a[1].client === 'CLIENT-FICTIF-2', c0);
+  // a. une dépense arrive ENTRE le calcul de l'appli et la validation (ce que la relecture seule ne protégeait pas)
+  await q('livreur', POST, ['g2', J9, 5, 'T-K']);
+  m = await validerK(c0);
+  test('concurrence simulée : dépense ajoutée APRÈS le calcul, AVANT la validation -> validation REFUSÉE (CAISSE_CHANGEE), rien de validé', CHG.test(m || '') && (await remK()) === null, m);
+  test('… le message donne les deux montants (10 € envoyé, 15 € en base)', /10(\.00)? € envoyé, 15(\.00)? € en base/.test(m || ''), m);
+  await q('livreur', "insert into public.depenses (id, date_depense, cat, montant, livreur, comment, mode_paie, tournee_id) values ('g3', $1, 'Péage', 7, 'LIVREUR-TEST', '', 'CB', 'T-K')", [J9]);
+  const c1 = await ctrl('T-K');
+  test('dépense payée par CB : non déduite du point de caisse (relevé = 15 €)', Number(c1.d) === 15, c1.d);
+  m = await validerK(c1);
+  test('recalcul sur l\'état à jour puis validation -> ACCEPTÉE', m === null && (await remK()).validee === true, m);
+  m = await echec('livreur', POST, ['g4', J9, 3, 'T-K']);
+  test('après validation : nouvelle dépense refusée (POINT_CAISSE_VALIDE)', VERROU.test(m || '') && (await dep('g4')) === null, m);
+  test('même transaction : contrôle puis dépense — la dépense voit la validation (refusée)', await (async () => {
+    await annuler('T-K'); const c = await ctrl('T-K'); await contexte('admin'); await db.exec('begin');
+    let e = null; try { await db.query(INS_K, ['t_T-K', 'LIVREUR-TEST', J9, c.d, JSON.stringify(c.a)]); await db.query(POST, ['g5', J9, 1, 'T-K']); } catch (x) { e = x.message; }
+    await db.exec('rollback'); await db.exec('reset role'); return VERROU.test(e || '') && (await remK()) === null;
+  })());
+  test('même transaction : dépense écrite AVANT la validation (avant le verrou) -> vue par le contrôle, validation refusée', await (async () => {
+    const c = await ctrl('T-K'); await contexte('admin'); await db.exec('begin');
+    let e = null; try { await db.query(POST, ['g6', J9, 2, 'T-K']); await db.query(INS_K, ['t_T-K', 'LIVREUR-TEST', J9, c.d, JSON.stringify(c.a)]); } catch (x) { e = x.message; }
+    await db.exec('rollback'); await db.exec('reset role'); return CHG.test(e || '') && (await dep('g6')) === null;
+  })());
+  // b. un ARRÊT change entre le calcul et la validation
+  const c2 = await ctrl('T-K');
+  await q('livreur', "update public.tournees set stops = $1 where id = 'T-K'", [JSON.stringify([Object.assign({}, STOPS_K[0], { encTournee: { esp: 80 } }), STOPS_K[1]])]);
+  m = await validerK(c2);
+  test('concurrence simulée : encaissement d\'un arrêt changé APRÈS le calcul -> validation REFUSÉE (CAISSE_CHANGEE)', CHG.test(m || '') && (await remK()) === null, m);
+  await q('livreur', "update public.tournees set stops = $1 where id = 'T-K'", [JSON.stringify(STOPS_K)]);
+  // c. contrôle absent (ancienne appli en cache) / tournée inconnue / validation à false
+  m = await echec('admin', "insert into public.caisse_remises (key_remise, livreur, periode, validee, par) values ('t_T-K', 'LIVREUR-TEST', $1, true, 'admin')", [J9]);
+  test('validation SANS contrôle (ancienne appli en cache) -> refusée « application à recharger »', CHG.test(m || '') && /recharger/.test(m || '') && (await remK()) === null, m);
+  m = await echec('admin', INS_REMISE, ['t_T-INCONNUE', 'LIVREUR-TEST', J9, 0, '[]']);
+  test('validation d\'une tournée absente de la base -> refusée (tournée introuvable)', CHG.test(m || '') && /introuvable/.test(m || ''), m);
+  m = await echec('admin', "insert into public.caisse_remises (key_remise, livreur, periode, validee, par) values ('t_T-K', 'LIVREUR-TEST', $1, false, 'admin')", [J9]);
+  test('remise enregistrée NON validée (validee = false) : aucun contrôle', m === null, m);
+  await q('maintenance', "delete from public.caisse_remises where key_remise = 't_T-K'");
+  m = await echec('service_role', "insert into public.caisse_remises (key_remise, livreur, periode, validee, par) values ('t_T-K', 'LIVREUR-TEST', $1, true, 'serveur')", [J9]);
+  test('service_role (serveur) : validation sans contrôle acceptée (exception inchangée)', m === null && (await remK()).validee === true, m);
+  m = await echec('admin', "delete from public.caisse_remises where key_remise = 't_T-K'");
+  test('ANNULATION (suppression) : jamais contrôlée -> acceptée', m === null && (await remK()) === null, m);
+  // d. arrêts d'une tournée validée figés pour ce qui compte pour la caisse
+  { const c = await ctrl('T-K'); m = await validerK(c); test('T-K de nouveau validée (contrôle juste)', m === null, m); }
+  const stopsK = async () => JSON.stringify((await q('maintenance', "select stops from public.tournees where id = 'T-K'"))[0].stops);
+  const avantK = await stopsK();
+  const varianteK = (f) => { const s = JSON.parse(avantK); f(s); return JSON.stringify(s); };
+  const UPS_T = "insert into public.tournees (id, livreur, date_tournee, statut, stops, updated_at) values ('T-K', 'LIVREUR-TEST', $1, 'terminée', $2, now()) on conflict (id) do update set livreur = excluded.livreur, date_tournee = excluded.date_tournee, statut = excluded.statut, stops = excluded.stops, updated_at = excluded.updated_at";
+  for (const [nom, f] of [
+    ['le RÉSULTAT d\'un arrêt (livré -> reporté)', (s) => { s[0].statut = 'reporté'; }],
+    ['l\'ENCAISSEMENT sur la tournée', (s) => { s[0].encTournee = { esp: 50 }; }],
+    ['le MODE de paiement', (s) => { s[0].paie = 'CB'; }],
+    ['le STATUT du paiement', (s) => { s[0].stpaie = 'Non payé'; }],
+    ['l\'acompte avant tournée', (s) => { s[0].encAvant = 20; }],
+    ['la part espèces / CB', (s) => { s[0].paie_especes = 60; s[0].paie_cb = 40; }],
+    ['la trace d\'encaissement', (s) => { s[0].enc = { mode: 'Espèces', montant: 100 }; }],
+    ['la COMMANDE d\'un arrêt', (s) => { s[0].cmdId = '#T9'; }],
+    ['le client d\'un arrêt SANS commande', (s) => { s[1].client = 'AUTRE-FICTIF'; }],
+    ['la liste (AJOUT d\'un arrêt)', (s) => { s.push({ cmdId: '#T2', statut: 'livré' }); }],
+    ['la liste (RETRAIT d\'un arrêt)', (s) => { s.pop(); }],
+  ]) {
+    m = await echec('livreur', UPS_T, [J9, varianteK(f)]);
+    test('tournée validée : upsert (sbSaveTournee) qui change ' + nom + ' -> REFUSÉ, arrêts intacts', VERROU.test(m || '') && (await stopsK()) === avantK, m);
+  }
+  m = await echec('admin', "update public.tournees set stops = jsonb_set(stops, '{0,statut}', '\"absent\"') where id = 'T-K'");
+  test('tournée validée : PATCH de l\'administrateur sur le résultat d\'un arrêt -> REFUSÉ', VERROU.test(m || '') && (await stopsK()) === avantK, m);
+  m = await echec('livreur', UPS_T, [J9, varianteK((s) => { s[0].gps = [48.8, 2.3]; s[0].heure = '11:00'; s[0].photo = 'photo-fictive'; s[0].signature = 'sig-fictive'; s[0].client = 'NOM CORRIGÉ'; })]);
+  test('tournée validée : GPS, heure, photo, signature, nom du client d\'un arrêt AVEC commande -> ACCEPTÉS (sans effet caisse)', m === null && (await stopsK()) !== avantK, m);
+  m = await echec('livreur', "update public.tournees set statut = 'clôturée' where id = 'T-K'");
+  test('tournée validée : statut de la TOURNÉE -> accepté', m === null, m);
+  m = await echec('service_role', "update public.tournees set stops = jsonb_set(stops, '{0,statut}', '\"reporté\"') where id = 'T-K'");
+  test('service_role (serveur) : non bloqué', m === null, m);
+  await annuler('T-K');
+  m = await echec('livreur', "update public.tournees set stops = jsonb_set(stops, '{0,statut}', '\"livré\"') where id = 'T-K'");
+  test('validation ANNULÉE : le résultat d\'un arrêt est de nouveau modifiable', m === null, m);
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
