@@ -186,6 +186,12 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
     await db.exec('rollback; reset role;');
     test('auto-contrôle section 10 : une décision faussée (création collaboratrice vendable) fait ÉCHOUER la migration', !!e10 && /Auto-contrôle 039/.test(e10), e10);
     test('… et la vraie décision est revenue après annulation', (await un('proprio', 'select interne.l039_creation_etat(false, 199) as e')).e === 'a_definir');
+    // relecture SANS le verrou de la réception (simples SELECT) : la section 10 fait échouer la migration
+    await db.exec('set role l26_postgres; begin;');
+    await db.exec("create or replace function public.statut_reception_arrivage(p_arrivage_id bigint) returns json language plpgsql volatile security definer set search_path = public, pg_catalog as $f$ begin if (select public.session_role()) is distinct from 'admin' then return null; end if; return (select json_build_object('ok', true, 'statut', statut) from public.arrivages where id = p_arrivage_id); end $f$");
+    let e10b = null; try { await db.exec(bloc); } catch (e) { e10b = e.message; }
+    await db.exec('rollback; reset role;');
+    test('auto-contrôle section 10 : une relecture SANS le verrou de l\'arrivage (for update) fait ÉCHOUER la migration', !!e10b && /statut_reception_arrivage/.test(e10b), e10b);
   }
 
   // ---------- catalogue FICTIF chargé côté serveur (service_role, session NULL = flux serveur / administrateur) ----------
@@ -483,6 +489,30 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   test('arrivage passé « recu », ordre de réception tiré, date et auteur', a1.statut === 'recu' && a1.ordre_reception !== null && a1.recu_le !== null && a1.recu_par === 'admin', a1);
   e = await echec('service_role', "insert into public.stock_entrees (app_produit_id, quantite, motif) values ('pr-a', 1, 'autre_motif')");
   test('contrainte élargie de stock_entrees.motif : motif inconnu toujours refusé', !!e && /stock_entrees_motif_check/.test(e), e);
+  // RELECTURE SOUS VERROU statut_reception_arrivage (revue Codex PR 26 sur ce01159) : appel, résultat, droits. La CONCURRENCE réelle
+  // (une réception encore en cours dans une autre connexion, que la relecture doit attendre) est HORS DE PORTÉE de pglite (une seule
+  // connexion) : elle est garantie par le même premier verrou (select … for update sur l'arrivage), vérifié par l'auto-contrôle 039.
+  {
+    const st = await rpc('admin', 'select public.statut_reception_arrivage($1) as r', [arr1]);
+    const nbH = await compte('public.prix_revient_historique', "arrivage_id = $1 and source = 'arrivage'", [arr1]);
+    const nbM = await compte('public.mouvements_stock', "source = 'arrivage:ARR-TEST-1'");
+    test('statut_reception_arrivage (admin) après réception : « recu », date, historique, mouvements et quantité de CET arrivage',
+      st && st.ok === true && st.statut === 'recu' && !!st.recu_le && st.historique === nbH && nbH > 0 && st.mouvements === nbM && nbM > 0 && st.quantite === 86, st);
+    avant = await photo();
+    await rpc('admin', 'select public.statut_reception_arrivage($1) as r', [arr1]);
+    test('… lecture seule : aucune écriture (le verrou sert seulement à attendre)', (await photo()) === avant);
+    for (const qui of ['collab', 'livreur', 'anon']) {
+      const x = await rpc(qui, 'select public.statut_reception_arrivage($1) as r', [arr1]);
+      test('statut_reception_arrivage refusé hors administrateur (' + qui + ') : « session_admin_requise », aucun statut', x && x.ok === false && x.erreur === 'session_admin_requise' && x.statut === undefined, x);
+    }
+    e = await echec('authenticated', 'select public.statut_reception_arrivage($1)', [arr1]);
+    test('statut_reception_arrivage : authenticated n\'a pas le droit d\'exécution', !!e && /permission denied/i.test(e), e);
+    const intro = await rpc('admin', 'select public.statut_reception_arrivage($1) as r', [999999]);
+    test('statut_reception_arrivage : arrivage inconnu -> « arrivage_introuvable »', intro && intro.ok === false && intro.erreur === 'arrivage_introuvable', intro);
+    const def = await un('proprio', "select p.prosecdef as d, p.provolatile as v, p.prosrc as s from pg_proc p where p.proname = 'statut_reception_arrivage'");
+    test('statut_reception_arrivage : SECURITY DEFINER, VOLATILE, même premier verrou que la réception (for update sur l\'arrivage), attente bornée',
+      def.d === true && def.v === 'v' && /from public\.arrivages where id = p_arrivage_id for update/.test(def.s) && /lock_timeout', '2s'/.test(def.s) && /lock_not_available/.test(def.s));
+  }
   // DOUBLE VALIDATION (concurrence simulée : pglite n'a qu'une connexion, les deux appels sont successifs)
   avant = await photo();
   r = await valider('admin', saisie(bonne), emp);
@@ -494,6 +524,8 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   const arr2 = (await un('service_role', "insert into public.arrivages (reference_interne, taux_change, taux_provisoire, frais_import_ht) values ('ARR-TEST-2', 1.1, true, 0) returning id")).id;
   await q('service_role', "insert into public.arrivage_lignes (arrivage_id, produit_id, quantite_attendue, fob_unitaire) values ($1, 'pr-a', 5, 20)", [arr2]);
   const l2 = (await un('proprio', 'select id from public.arrivage_lignes where arrivage_id = $1', [arr2])).id;
+  { const st = await rpc('admin', 'select public.statut_reception_arrivage($1) as r', [arr2]);
+    test('statut_reception_arrivage (admin) avant réception : « en_attente », aucun historique ni mouvement', st && st.ok === true && st.statut === 'en_attente' && st.historique === 0 && st.mouvements === 0 && st.quantite === 0 && st.recu_le === null, st); }
   r = await rpc('admin', 'select public.valider_reception_arrivage($1, $2::jsonb, $3) as r', [arr2, JSON.stringify([{ ligne_id: Number(l2), recue: 5, endommagee: 0, manquante: 0 }]), await empreinte(arr2)]);
   const cumpA2 = r4((38 * cumpA + 5 * 22) / 43);
   test('2e lot pr-a : CUMP = (38 × ' + cumpA + ' + 5 × 22) / 43 = ' + cumpA2, r.ok && (await un('proprio', "select prix_revient_ht::float8 as v from public.produits_revient where produit_id = 'pr-a'")).v === cumpA2, r);

@@ -1,5 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.178 - Fusion de la PR 26 (arrivage v7.5.177 : verification sous le verrou de la reception ; style D v7.5.176 : vert de jour lisible ; caisse v7.5.175 : verrou du point de caisse tenu par la base) dans tableau de bord + menus (26/11/2026)
+// v7.5.177 - Arrivage (revue Codex sur ce01159) : resultat indetermine verifie par statut_reception_arrivage (meme verrou que la reception : attend une validation encore en cours) ; fusion du style D v7.5.176 et de la caisse v7.5.175 (26/11/2026)
+// v7.5.176 - Habillage style D : vert de jour fonce (#1f7a52, texte blanc >= 4,5:1, WCAG AA) pour boutons, notifications de succes, export CSV, "Especes a remettre" ; tests de contraste des paires de jour ; fusion de la caisse v7.5.175 (26/11/2026)
+// v7.5.175 - Caisse (revue Codex sur 437ec1e) : verrou du point de caisse valide tenu par la base (migration 038b, declencheur sur depenses), message clair au livreur en cas de refus (26/11/2026)
 // v7.5.174 - Fusion des corrections arrivage v7.5.173, habillage v7.5.172 et caisse v7.5.171 dans tableau de bord + menus ; numero en double corrige (fusion ex-v7.5.164 -> v7.5.166) (26/11/2026)
 // v7.5.173 - Arrivage : reponse de validation perdue = resultat indetermine, statut et mouvements relus avant toute nouvelle tentative (revue Codex sur 4e04efd) ; fusion de l'habillage v7.5.172 et de la caisse v7.5.171 (26/11/2026)
 // v7.5.172 - Habillage style D : texte des montants positifs lisible en mode nuit (var(--sur-vert)) (revue Codex sur a12696a) ; fusion de la caisse v7.5.171 (26/11/2026)
@@ -39,7 +43,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-174';
+const CACHE_VERSION = 'maxiconfort-v7-5-178';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

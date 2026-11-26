@@ -124,7 +124,7 @@ console.log('\nCONTRASTE DU TEXTE SUR LES FONDS DE COULEUR (mode jour et mode nu
   const blocJour = styleD.slice(styleD.indexOf(':root{'), styleD.indexOf('@media (prefers-color-scheme: dark)'));
   const blocNuitAppareil = styleD.slice(styleD.indexOf(':root:not(.light-mode){'), styleD.indexOf(':root.dark-mode{'));
   const blocNuitChoisie = styleD.slice(styleD.indexOf(':root.dark-mode{'));
-  const jeton = (bloc, nom) => { const m = new RegExp('--' + nom + ':\s*(#[0-9a-fA-F]{6})').exec(bloc); return m ? m[1].toLowerCase() : null; };
+  const jeton = (bloc, nom) => { const m = new RegExp('--' + nom + ':\\s*(#[0-9a-fA-F]{6})').exec(bloc); return m ? m[1].toLowerCase() : null; };
   const paires = [['vert-plein', 'sur-vert'], ['green', 'sur-vert'], ['blue', 'sur-bleu'], ['red', 'sur-rouge'], ['orange', 'sur-orange'], ['violet', 'sur-violet']];
   for (const [nomBloc, bloc] of [['nuit (réglage de l\'appareil)', blocNuitAppareil], ['nuit (choix « nuit »)', blocNuitChoisie]]) {
     const mesures = paires.map(([fond, encre]) => [fond, jeton(bloc, fond), jeton(bloc, encre)]);
@@ -132,7 +132,16 @@ console.log('\nCONTRASTE DU TEXTE SUR LES FONDS DE COULEUR (mode jour et mode nu
     test('mode ' + nomBloc + ' : encre lisible sur chaque fond de couleur (contraste ≥ 4,5:1)', mesures.every((m) => m[1] && m[2] && contraste(m[1], m[2]) >= 4.5), mesures.map((m) => m[0] + ' ' + (m[1] && m[2] ? contraste(m[1], m[2]).toFixed(2) : '?')));
     test('mode ' + nomBloc + ' : le BLANC y serait illisible (contraste < 3:1), d\'où la correction', mesures.filter((m) => m[0] !== 'red').every((m) => m[1] && contraste(m[1], '#ffffff') < 3));
   }
-  test('mode jour : encres « sur-… » blanches (rendu de jour inchangé)', paires.every(([, encre]) => jeton(blocJour, encre) === '#ffffff'), paires.map(([, e]) => e + '=' + jeton(blocJour, e)));
+  // v7.5.176 (revue Codex PR 25, P2) : paires de JOUR mesurées (ratio WCAG réel), comme la nuit
+  test('jeton lu malgré des espaces après les deux-points (expression « \\s* » réelle)', jeton('--green:   #123456;', 'green') === '#123456' && jeton('--green:sss#123456;', 'green') === null);
+  { const mesures = paires.map(([fond, encre]) => [fond, jeton(blocJour, fond), jeton(blocJour, encre)]);
+    test('mode jour : chaque encre « sur-… » est définie', mesures.every((m) => m[1] && m[2]), mesures);
+    test('mode jour : encre lisible sur chaque fond de couleur (contraste ≥ 4,5:1 : boutons .btn-g, succès, export CSV, « Espèces à remettre »…)', mesures.every((m) => m[1] && m[2] && contraste(m[1], m[2]) >= 4.5), mesures.map((m) => m[0] + ' ' + (m[1] && m[2] ? contraste(m[1], m[2]).toFixed(2) : '?')));
+    test('mode jour : vert plein + texte blanc ≥ 4,5:1 (avant #2f9e6b : 3,37:1)', jeton(blocJour, 'sur-vert') === '#ffffff' && contraste(jeton(blocJour, 'vert-plein'), '#ffffff') >= 4.5 && contraste(jeton(blocJour, 'green'), '#ffffff') >= 4.5 && contraste(jeton(blocJour, 'teal'), '#ffffff') >= 4.5);
+    test('mode jour : l\'ancien vert #2f9e6b n\'est plus la valeur d\'aucun jeton ni d\'aucun style', !/(--[a-z-]+|color|background(?:-color)?)\s*:\s*#2f9e6b/i.test(html));
+    test('mode jour : le vert reste lisible comme TEXTE sur les fonds clairs (carte, fond, vert clair : ≥ 4,5:1)', ['carte', 'fond', 'gl'].every((f) => jeton(blocJour, f) && contraste(jeton(blocJour, 'green'), jeton(blocJour, f)) >= 4.5), ['carte', 'fond', 'gl'].map((f) => f + ' ' + (jeton(blocJour, f) ? contraste(jeton(blocJour, 'green'), jeton(blocJour, f)).toFixed(2) : '?')));
+    test('calcul WCAG vérifié sur des valeurs connues (noir/blanc 21:1, #2f9e6b/blanc 3,37:1)', Math.abs(contraste('#000000', '#ffffff') - 21) < 0.01 && contraste('#2f9e6b', '#ffffff').toFixed(2) === '3.37');
+  }
   const caisse = extraireFonction('function renderLivreurCaisse(t)');
   test('« Ma caisse du jour » : montant positif sur fond vert plein écrit avec l\'encre « sur-vert » (plus de blanc)', /netARemettre > 0 \? 'var\(--vert-plein\)'/.test(caisse) && (caisse.match(/netARemettre > 0 \? 'var\(--sur-vert\)'/g) || []).length === 2 && !/'#fff'/.test(caisse));
   // toute la page : plus de texte blanc dans un style dont le fond est une couleur qui s'éclaircit la nuit

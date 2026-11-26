@@ -736,7 +736,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
   }
   console.log('\n8. MISE EN LIGNE');
 
-test('CACHE_VERSION augmentée (v7-5-174 ou plus, au-dessus de la PR 26 v7-5-173)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 174; })());
+test('CACHE_VERSION augmentée (v7-5-178 ou plus, au-dessus de la PR 26 v7-5-177)', (() => { const m2 = /CACHE_VERSION = 'maxiconfort-v7-5-(\d+)'/.exec(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')); return m2 && Number(m2[1]) >= 178; })());
 test('en-tête du service worker : aucun numéro de version en double (ex-v7.5.164 de la fusion renuméroté v7.5.166)', (() => { const nums = (fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8').match(/^\/\/ v7\.5\.\d+ /mg) || []).map((x) => x.trim()); return nums.length > 10 && new Set(nums).size === nums.length && nums.filter((x) => x === '// v7.5.164').length === 1 && nums.includes('// v7.5.166'); })());
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

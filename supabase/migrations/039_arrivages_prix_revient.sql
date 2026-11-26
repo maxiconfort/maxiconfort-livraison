@@ -960,12 +960,51 @@ begin
      group by l.produit_id;
 end $$;
 
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- 7 bis. Statut d'une réception, relu SOUS LE MÊME VERROU que la réception (ADMINISTRATEUR) — revue Codex PR 26 sur ce01159, P2
+-- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+-- Problème : quand la réponse de valider_reception_arrivage est perdue (coupure, délai), la transaction d'origine peut ENCORE
+-- tourner dans la base (elle attend ses verrous ou écrit). Trois SELECT ordinaires (arrivage, historique, mouvements) liraient alors
+-- l'état d'AVANT son commit : « en_attente », aucun mouvement -> l'appli concluait « NON validée » et permettait un nouvel envoi.
+-- Ici : select … for update sur la ligne de l'arrivage = le PREMIER verrou que prennent valider_reception_arrivage et
+-- recalculer_revient_arrivage. Cette fonction ATTEND donc la fin (commit ou annulation) de toute réception en cours sur cet arrivage,
+-- puis relit le statut, l'historique des revients de CET arrivage et ses mouvements de stock, tous après ce commit (READ COMMITTED :
+-- chaque lecture faite après l'obtention du verrou voit les écritures validées). Attente bornée (lock_timeout 2 s) : au-delà,
+-- { ok: false, erreur: 'verification_occupee' } — l'appli garde alors le résultat INDÉTERMINÉ (aucun nouvel envoi) et propose de
+-- revérifier. Lecture seule : le verrou ne sert qu'à attendre, il est rendu à la fin de l'appel (rien n'est écrit).
+-- Une réception dont la requête n'a pas encore ATTEINT la base n'est pas visible (rien à attendre) : si l'appli renvoie ensuite, la
+-- base refuse l'un des deux envois (statut relu sous verrou : « arrivage_deja_traite ») ; une double réception reste impossible.
+create or replace function public.statut_reception_arrivage(p_arrivage_id bigint) returns json
+language plpgsql volatile security definer set search_path = public, pg_catalog as $$
+declare
+  a public.arrivages%rowtype;
+  v_hist integer; v_qte integer; v_mvts integer;
+begin
+  if (select public.session_role()) is distinct from 'admin' then
+    return json_build_object('ok', false, 'erreur', 'session_admin_requise');
+  end if;
+  perform set_config('lock_timeout', '2s', true);
+  begin
+    select * into a from public.arrivages where id = p_arrivage_id for update;
+  exception when lock_not_available then
+    return json_build_object('ok', false, 'erreur', 'verification_occupee');
+  end;
+  if not found then return json_build_object('ok', false, 'erreur', 'arrivage_introuvable'); end if;
+  select count(*), coalesce(sum(quantite), 0) into v_hist, v_qte
+    from public.prix_revient_historique where arrivage_id = a.id and source = 'arrivage';
+  select count(*) into v_mvts from public.mouvements_stock where source = 'arrivage:' || a.reference_interne;
+  return json_build_object('ok', true, 'id', a.id, 'statut', a.statut, 'recu_le', a.recu_le,
+                           'historique', v_hist, 'mouvements', v_mvts, 'quantite', v_qte);
+end $$;
+
 revoke all on function public.valider_reception_arrivage(bigint, jsonb, text) from public, anon, authenticated;
 revoke all on function public.recalculer_revient_arrivage(bigint, numeric) from public, anon, authenticated;
 revoke all on function public.stock_entrant() from public, anon, authenticated;
+revoke all on function public.statut_reception_arrivage(bigint) from public, anon, authenticated;
 grant execute on function public.valider_reception_arrivage(bigint, jsonb, text) to anon;
 grant execute on function public.recalculer_revient_arrivage(bigint, numeric) to anon;
 grant execute on function public.stock_entrant() to anon;
+grant execute on function public.statut_reception_arrivage(bigint) to anon;   -- session administrateur exigée dans la fonction
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 -- 8. Contrôle à l'application de la migration : mouvements_stock accepte une entrée « entree » (essai annulé, rien n'est écrit)
@@ -1151,6 +1190,22 @@ begin
   if not interne.l039_continuite_rompue(null, 21) then f := 'continuité rompue : revient courant absent'; end if;
   if not interne.l039_continuite_rompue(21, null) then f := 'continuité rompue : revient sans historique'; end if;
   if interne.l039_continuite_rompue(null, null) then f := 'continuité : rien à comparer'; end if;
+  -- RELECTURE SOUS VERROU (revue Codex PR 26 sur ce01159) : statut_reception_arrivage prend le même premier verrou que la réception
+  if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                  where n.nspname = 'public' and p.proname = 'statut_reception_arrivage' and p.prosecdef and p.provolatile = 'v'
+                    and p.proconfig is not null and exists (select 1 from unnest(p.proconfig) x where x like 'search_path=%')
+                    and p.prosrc ~ 'from public\.arrivages where id = p_arrivage_id for update'
+                    and p.prosrc ~ 'session_role\(\)\) is distinct from ''admin''') then
+    f := 'statut_reception_arrivage : SECURITY DEFINER, VOLATILE, search_path, verrou de l''arrivage (for update) et session admin';
+  end if;
+  if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                  where n.nspname = 'public' and p.proname = 'valider_reception_arrivage'
+                    and p.prosrc ~ 'from public\.arrivages where id = p_arrivage_id for update') then
+    f := 'valider_reception_arrivage : même premier verrou (for update sur l''arrivage) que statut_reception_arrivage';
+  end if;
+  if has_function_privilege('authenticated', 'public.statut_reception_arrivage(bigint)', 'execute') then
+    f := 'statut_reception_arrivage : non exécutable par authenticated';
+  end if;
   if f is not null then
     raise exception 'Auto-contrôle 039 (revient / identification) en échec : cas « % ». Migration annulée.', f;
   end if;

@@ -55,7 +55,9 @@ function nouveauBac(role) {
     // v7.5.135 : contrôles des dépenses (tournée clôturée, point de caisse validé, journal)
     'function rtRemiseValideeTournee(t)', 'function depLvTourneeVisee(cible)', 'function depLvControle(t)', 'function depLvAuteur()', 'function depLvQuand()',
     // v7.5.171 : verrou du point de caisse validé (tous les chemins des dépenses)
-    'function depVerrouCaisse(etats)'])
+    'function depVerrouCaisse(etats)',
+    // v7.5.175 : refus du verrou de la base (migration 038b)
+    'async function sbSaveDepense(d)', 'function sbSaveEchec(type, data, ctx, status, detail)'])
     vm.runInContext(extraireFonction(f), bac);
   vm.runInContext('var lvReportCible = null, depLvCatSelected = "", depLvCible = null, currentLvTourneeId = null;', bac);
   let _n = 0; bac.generateId = (p) => p + '-test-' + (++_n);
@@ -798,6 +800,56 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
     test('livreur : changement de mode enregistré APRÈS la validation du point de caisse -> refusé, rien envoyé', envois.length === 0 && bac.depenses[0].modePaie === 'Espèces' && /annulez d'abord la validation/.test(bac._toasts.pop()[0]));
   }
 
+  // ══════════ 9. Revue Codex PR 24 sur 437ec1e (v7.5.175) : verrou tenu par la BASE ══════════
+  console.log('\n9. REVUE CODEX SUR 437ec1e : verrou du point de caisse validé tenu par la base (038b), message clair au livreur');
+  const REFUS = { ok: false, status: 400, text: async () => '{"code":"P0001","message":"POINT_CAISSE_VALIDE : le point de caisse de la tournée T-V est déjà validé, dépense non modifiable"}' };
+  { const { bac: p9 } = nouveauBac();
+    test('refus reconnu : 400 + POINT_CAISSE_VALIDE', p9.rtRefusCaisseValidee(400, await REFUS.text()) === true);
+    test('pas un refus du verrou : 500, 401 sans le code, texte vide', !p9.rtRefusCaisseValidee(500, 'POINT_CAISSE_VALIDE') && !p9.rtRefusCaisseValidee(401, 'JWT expired') && !p9.rtRefusCaisseValidee(400, ''));
+    test('message clair : point de caisse validé, demander au bureau', /Point de caisse déjà validé par le bureau/.test(p9.RT_MSG_CAISSE_VALIDEE) && /Demandez au bureau/.test(p9.RT_MSG_CAISSE_VALIDEE));
+  }
+  // téléphone du livreur : caisse_remises illisible -> caissesRemises VIDE ; c'est la base qui refuse
+  { const { bac, envois } = nouveauBac();
+    bac.tournees = [{ id: 'T-V', livreur: 'RANOU', date: AUJ7, statut: 'en cours', stops: [] }];
+    bac.depenses = [{ id: 'dv', livreur: 'RANOU', tourneeId: 'T-V', date: AUJ7, cat: 'Péage', modePaie: 'Espèces', montant: 5, comment: '' }];
+    bac.caissesRemises = {};
+    vm.runInContext(extraireFonction('function lvModifierDepense(depId)'), bac);
+    const enfants = {}; bac.document.createElement = () => fauxElement('cree'); bac.document.body = { appendChild(e) { enfants[e.id] = e; } };
+    const base = bac.document.getElementById; bac.document.getElementById = (id) => { if (enfants[id]) return enfants[id]; const e = base(id); if (!e.addEventListener) e.addEventListener = function(ev, fn) { this._clic = fn; }; return e; };
+    bac.fetch = async (url, opt) => { envois.push({ url, opt }); return REFUS; };
+    bac.lvModifierDepense('dv'); const feuille = enfants['lv-dep-sheet'];
+    feuille.dataset.mode = 'CB'; bac.document.getElementById('lv-dep-motif').value = 'Payé avec la carte société';
+    await bac.document.getElementById('lv-dep-valider')._clic();
+    const dernier = bac._toasts[bac._toasts.length - 1] || [];
+    test('livreur (caisse illisible) : changement de mode refusé PAR LA BASE -> valeurs d\'avant remises', envois.length === 1 && bac.depenses[0].modePaie === 'Espèces' && bac.depenses[0].comment === '', bac.depenses[0]);
+    test('livreur : message clair (point de caisse validé), pas de « Mode mis à jour »', /Point de caisse déjà validé par le bureau/.test(dernier[0]) && dernier[1] === 'err' && !bac._toasts.some((t) => /Mode mis à jour/.test(t[0])), bac._toasts);
+  }
+  { const { bac, els, envois } = nouveauBac();
+    bac.tournees = [{ id: 'T-V', livreur: 'RANOU', date: AUJ7, statut: 'en cours', stops: [] }];
+    bac.caissesRemises = {};
+    vm.runInContext('currentLvTourneeId = "T-V";', bac);
+    bac.fetch = async (url, opt) => { envois.push({ url, body: JSON.parse(opt.body) }); return REFUS; };
+    bac.ouvrirDepenseLivreur(); vm.runInContext('depLvCatSelected = "Parking";', bac); els['dep-lv-montant'].value = '7';
+    await bac.validerDepenseLivreur();
+    const dernier = bac._toasts[bac._toasts.length - 1] || [];
+    test('livreur : AJOUT refusé par la base -> envoyé une fois, retiré de la liste locale (rien déduit de la caisse)', envois.length === 1 && envois[0].body.tournee_id === 'T-V' && bac.depenses.length === 0, bac.depenses);
+    test('livreur : AJOUT refusé -> message clair, pas de « Dépense enregistrée »', /Point de caisse déjà validé par le bureau/.test(dernier[0]) && !bac._toasts.some((t) => /Dépense enregistrée/.test(t[0])), bac._toasts);
+  }
+  { const { bac } = nouveauBac(); let file = 0; bac.offlineQueueAdd = () => { file++; }; bac.navigator = { onLine: true };
+    bac.fetch = async () => REFUS;
+    const r = await bac.sbSaveDepense({ id: 'dq', tourneeId: 'T-V', montant: 3, modePaie: 'Espèces' });
+    test('file hors ligne rejouée : refus du verrou = définitif (pas remis dans la file), message clair', r && r.refuse === true && file === 0 && /Point de caisse déjà validé/.test((bac._toasts.pop() || [])[0]));
+    bac.fetch = async () => ({ ok: false, status: 503, text: async () => 'Service Unavailable' });
+    await bac.sbSaveDepense({ id: 'dq2', tourneeId: 'T-V', montant: 3, modePaie: 'Espèces' });
+    test('coupure ou panne (503) : toujours remise dans la file de réessai', file === 1);
+  }
+  { const mig = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'migrations', '038b_depenses_verrou_caisse_validee.sql'), 'utf8');
+    test('migration 038b : déclencheur avant ajout, modification et suppression sur depenses', /create trigger depenses_verrou_caisse before insert or update or delete on public\.depenses/.test(mig));
+    test('migration 038b : clé « t_ » + tournée, ancienne ET nouvelle tournée contrôlées', /'t_' \|\| v_tid/.test(mig) && /old\.tournee_id/.test(mig) && /new\.tournee_id/.test(mig));
+    test('migration 038b : erreur POINT_CAISSE_VALIDE (celle que l\'appli reconnaît), retour arrière en tête, auto-contrôle', /POINT_CAISSE_VALIDE/.test(mig) && /^-- 038b[\s\S]{0,400}RETOUR ARRIÈRE/.test(mig) && /Auto-contrôle 038b/.test(mig));
+    test('migration 038b : aucune nouvelle lecture ouverte sur caisse_remises (pas de politique, pas de grant)', !/create policy/i.test(mig) && !/\bgrant\b/i.test(mig));
+  }
+
   // ══════════ 6. Garde-fous (lecture du code) ══════════
   console.log('\n6. GARDE-FOUS (lecture du code)');
   const blocRT = extraireBloc('// ── RT-DEBUT', '// RT-FIN');
@@ -810,7 +862,7 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
   test('Retour de tournée : bouton « Valider le point de caisse » branché sur validerRemiseCaisse (caisse_remises)', /validerRemiseCaisse\(\\'' \+ r\.caisseKey \+ '\\'\)"[^>]*>✅ Valider le point de caisse/.test(html));
   test('validerRemiseCaisse écrit toujours dans caisse_remises (mécanisme existant)', /rest\/v1\/caisse_remises', \{\s*method: 'POST'/.test(extraireFonction('async function validerRemiseCaisse(key)')));
   test('ancre JARVIS (bloc JVUE) présente', html.indexOf('// JVUE-DEBUT') > 0 && html.indexOf('// JVUE-FIN') > html.indexOf('// JVUE-DEBUT'));
-  test('CACHE_VERSION augmentée (v7-5-171 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(7[1-9]|[89]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
+  test('CACHE_VERSION augmentée (v7-5-175 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-1(7[5-9]|[89]\d)'/.test(fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8')));
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
