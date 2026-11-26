@@ -1,5 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.185 - Habillage style D : fusion de la PR 24 (v7.5.184, relecture complete du verrou de caisse) (26/11/2026)
+// v7.5.184 - Caisse (revue Codex sur 639f2f5, regle des 10 retours) : rattachement des depenses fige par la base, tournees validees protegees, verrou consultatif partage avec la validation de la remise (26/11/2026)
 // v7.5.176 - Habillage style D : vert de jour fonce (#1f7a52, texte blanc >= 4,5:1, WCAG AA) pour boutons, notifications de succes, export CSV, "Especes a remettre" ; tests de contraste des paires de jour ; fusion de la caisse v7.5.175 (26/11/2026)
 // v7.5.175 - Caisse (revue Codex sur 437ec1e) : verrou du point de caisse valide tenu par la base (migration 038b, declencheur sur depenses), message clair au livreur en cas de refus (26/11/2026)
 // v7.5.172 - Habillage style D : texte des montants positifs lisible en mode nuit (var(--sur-vert)) (revue Codex sur a12696a) ; fusion de la caisse v7.5.171 (26/11/2026)
@@ -14,7 +16,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-180';
+const CACHE_VERSION = 'maxiconfort-v7-5-185';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
