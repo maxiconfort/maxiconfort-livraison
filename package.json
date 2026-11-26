@@ -4,7 +4,8 @@
   "description": "Dépendances de développement des bancs de test (outils/). L'application elle-même n'a aucune dépendance npm.",
   "scripts": {
     "test:039": "node outils/test-039-pglite.js",
-    "test:038b": "node outils/test-038b-pglite.js"
+    "test:038b": "node outils/test-038b-pglite.js",
+    "test:041": "node outils/test-041-pglite.js"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.2.17"
