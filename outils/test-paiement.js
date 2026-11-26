@@ -40,6 +40,9 @@ function nouveauBac() {
   vm.runInContext(extraireFonction('function syncRefusDefinitif(status)') + ' ' + extraireFonction('function syncMessageRefus(status, texte)') + ' ' + extraireFonction('async function sbSaveCommande(cmd, opts)'), bac);
   vm.runInContext('var sigStopId=null, sigPaieEncaisse=false, sigPaieMode="Espèces", sigPrepaidMode=null, sigCmdMarketplace=null, sigCtx=null, scv=null;', bac);
   vm.runInContext('var sigCodActif=false, sigCodChoix=null, sigCodMontant=0;', bac);
+  // v7.5.171 : règles « Déjà payé » et fin des livraisons (bloc RT) utilisées par validerSig / setLvSt
+  vm.runInContext('var RT_MOTIF_MIN = 5;', bac);
+  for (const f of ['function rtArrondi(n)', 'function rtEurTexte(n)', 'function rtResteDu(prix, montantEnc, stpaie)', 'function rtControleDejaPaye(resteDu, qui, motif)', 'function rtLivraisonsTerminees(t)', 'function rtStatutApresArret(t)']) vm.runInContext(extraireFonction(f), bac);
   for (const f of ['function _sigPaieBtns(actif)', 'function sigTogglePaie(encaisse)', 'function sigDejaPaye()', 'function sigSelectMode(mode)', 'function sigCodChoisir(ch)', 'function paiSigPreparer(cmdSig, banner)', 'function validerSig()', 'function chgStopPaie(tid, idx, val)',
     // v7.5.114
     'async function paiModifierAdmin(id, mode, statut, montant, motif, ticket)', 'function paiDemanderMotif()', 'async function chgPaieMode(id, val)', 'async function chgPaieStatut(id, val)', 'async function sauvegarderPaie()',

@@ -31,6 +31,8 @@ function nouveauBac(roleS) {
     closePanel() {}, ouvrirCmd() {}, sbSaveTournee(t) { tournee.push(JSON.parse(JSON.stringify(t))); }, retirerStockCamion() {}, paiVerrouBody() {}, findCmdForStop(s) { return bac.commandes.find(c => c.id === s.cmdId) || null; } };
   vm.createContext(bac);
   vm.runInContext(extraireBloc('// ANN-DEBUT', '// ANN-FIN'), bac);
+  // v7.5.171 : fin des livraisons ≠ clôture (bloc RT), utilisée par setLvSt
+  for (const f of ['function rtLivraisonsTerminees(t)', 'function rtStatutApresArret(t)']) vm.runInContext(extraireFonction(f), bac);
   for (const f of ['function syncRefusDefinitif(status)', 'function syncMessageRefus(status, texte)', 'async function sbSaveCommande(cmd, opts)', 'function chgStatut(id, st, _annOk)', 'function setLvSt(tid, idx, st, _annOk)']) vm.runInContext(extraireFonction(f), bac);
   return { bac, envois, tournee, champ: id => parId[id] };
 }
