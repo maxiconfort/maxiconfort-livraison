@@ -32,8 +32,9 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { VERSION, alerteCorrectionStock, apercuCommande, catalogueJarvis, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, variantesTel, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_COMPTES, STATUTS_COMPTES_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, variantesTel, resumeCredits, lignesCommande, produitPrincipalNonVendable, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_COMPTES, STATUTS_COMPTES_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 import { lireCompteSmsOVH } from '../_shared/ovh-sms.ts';
+import { nomNormalise } from '../_shared/produits-vendables.ts';
 import { envoyerAvecReservation, echecCertain, phraseIndetermine } from '../_shared/sms-prevenir.ts';
 import { actionFactureSms, FOURNISSEUR_USAGE } from '../_shared/jarvis-facture-sms.ts';
 
@@ -268,6 +269,12 @@ Deno.serve(async (req: Request) => {
     }
     if (d.action === 'modifier_commande') {
       const m = champsModification(d, c!);
+      // v2.22 (revue Codex PR 26 sur cf58971) : commande sans lignes dont le produit principal CHANGE vers un produit non vendable
+      if (m.apres.produit !== undefined && nomNormalise(m.apres.produit) !== nomNormalise(c!.produit)) {
+        const catM = await catalogue(); if (!catM) return catalogueIllisible();
+        const nvM = produitPrincipalNonVendable(m.apres.lignes !== undefined ? m.apres.lignes : c!.lignes, m.apres.produit, catM);
+        if (nvM) return rep(422, { ok: false, erreur: `« ${nvM.nom} » n'est pas encore vendable (prix de vente à définir)` });
+      }
       const visible = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'updated_at').map(([k, v]) => [k, k === 'tel' ? telMasque(String(v)) : k === 'adresse' ? String(v).replace(/^.*?(\b\d{5}\b)/, '… $1') : k === 'client' ? '(nom)' : v]));
       if (!confirme) return rep(200, { ...base, avant: visible(m.avant), apres: visible(m.apres), avertissements: m.avertissements });
       const { error } = await sb.from('commandes').update(m.apres).eq('id', d.cmdId); if (error) return ecritureRefusee(error);
@@ -322,7 +329,11 @@ Deno.serve(async (req: Request) => {
     if (d.action === 'envoyer_facture_sms') return actionFactureSms(c!, confirme, base, { interne, rep, cle: SECRET_JARVIS, consommer: consommerUsageFacture }, d.autorisation);
     if (d.action === 'sav') {
       const sav = construireSav(d, c!);
-      const visible = { id: sav.id, produit: sav.produit, origine: sav.origine, date_livraison: sav.date_livraison, instr: sav.instr };
+      // v2.22 (revue Codex PR 26 sur cf58971) : SAV sans lignes = produit à livrer contrôlé comme une ligne (la base le refuse aussi)
+      const catS = await catalogue(); if (!catS) return catalogueIllisible();
+      const nvS = produitPrincipalNonVendable(sav.lignes, sav.produit, catS);
+      if (nvS) return rep(422, { ok: false, erreur: `« ${nvS.nom} » n'est pas encore vendable (prix de vente à définir)` });
+      const visible ={ id: sav.id, produit: sav.produit, origine: sav.origine, date_livraison: sav.date_livraison, instr: sav.instr };
       if (!confirme) return rep(200, { ...base, sav: visible });
       const { data: existe } = await sb.from('commandes').select('id').eq('id', sav.id).maybeSingle();
       if (existe) return rep(409, { ok: false, erreur: 'numéro de SAV déjà pris : recommence dans une seconde' });

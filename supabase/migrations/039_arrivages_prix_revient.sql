@@ -275,17 +275,39 @@ language sql stable security definer set search_path = public, interne, pg_catal
 $$;
 revoke all on function interne.l039_lignes_identifiees(jsonb) from public, anon, authenticated;
 
+-- COMMANDE SANS LIGNES (revue Codex PR 26 sur cf58971) : une commande peut n'avoir que son PRODUIT PRINCIPAL (colonnes produit, qte,
+-- prix de la table commandes : il n'y a ni produit_id ni sku dans cette table) et des lignes absentes (NULL), vides ([]) ou d'un autre
+-- format — commandes anciennes, SAV créés par l'application (reprise) ou par JARVIS (lignes NULL). Avant, le déclencheur acceptait
+-- aussitôt une telle commande : une commande NOUVELLE au nom d'un produit non vendable passait. Désormais, sans au moins une ligne, le
+-- produit principal devient UNE ligne de comparaison {produit, qte, prixUnit = prix} : identifiée par son nom ou sa référence comme
+-- les autres (l039_lignes_identifiees), donc refusée dans une commande nouvelle, et figée dans une commande existante (même produit,
+-- même quantité, même prix). Un libellé libre (« Reprise — … », « REMBOURSEMENT — … ») ne désigne aucun produit : inchangé. Lignes
+-- présentes (tableau non vide) : prises telles quelles, comme avant. Sert seulement à la COMPARAISON (rien n'est écrit). Pure.
+-- Même règle que venLignesEffectives (application) et produitPrincipalNonVendable (JARVIS).
+create or replace function interne.l039_lignes_effectives(p_lignes jsonb, p_produit text, p_qte jsonb, p_prix jsonb) returns jsonb
+language sql immutable as $$
+  select case
+    when jsonb_typeof(p_lignes) = 'array' and p_lignes <> '[]'::jsonb then p_lignes
+    when interne.l039_norm(p_produit) is null then '[]'::jsonb
+    else jsonb_build_array(jsonb_build_object('produit', p_produit, 'qte', coalesce(p_qte, 'null'::jsonb),
+                                              'prixUnit', coalesce(p_prix, 'null'::jsonb), 'principal', true))
+  end
+$$;
+revoke all on function interne.l039_lignes_effectives(jsonb, text, jsonb, jsonb) from public, anon, authenticated;
+
 create or replace function interne.commandes_produit_vendable_garde() returns trigger
 language plpgsql security definer set search_path = public, interne, pg_catalog as $$
-declare v_nv text[]; v_modif text[]; v_refus text; v_new jsonb := to_jsonb(new.lignes); v_old jsonb;
+declare v_nv text[]; v_modif text[]; v_refus text; v_old jsonb;
+  v_new jsonb := interne.l039_lignes_effectives(to_jsonb(new.lignes), new.produit::text, to_jsonb(new.qte), to_jsonb(new.prix));
 begin
-  if jsonb_typeof(v_new) is distinct from 'array' then return new; end if;
-  if tg_op = 'UPDATE' then v_old := to_jsonb(old.lignes);
+  if v_new = '[]'::jsonb then return new; end if;
+  if tg_op = 'UPDATE' then v_old := interne.l039_lignes_effectives(to_jsonb(old.lignes), old.produit::text, to_jsonb(old.qte), to_jsonb(old.prix));
   else
     -- enregistrement « upsert » de l'application (INSERT … ON CONFLICT) : le déclencheur INSERT voit la ligne proposée AVANT
     -- la détection du conflit ; si la commande existe déjà, ses lignes actuelles servent de référence (comme pour un UPDATE).
-    -- Commande nouvelle : v_old reste NULL, toute ligne d'un produit non vendable est donc refusée.
-    select to_jsonb(c.lignes) into v_old from public.commandes c where c.id = new.id;
+    -- Commande nouvelle : v_old reste NULL, toute ligne d'un produit non vendable est donc refusée (produit principal compris).
+    select interne.l039_lignes_effectives(to_jsonb(c.lignes), c.produit::text, to_jsonb(c.qte), to_jsonb(c.prix)) into v_old
+      from public.commandes c where c.id = new.id;
   end if;
   -- lignes sans produitId fiable : rapportées au produit non vendable reconnu par nom ou référence (revue Codex sur 66def07),
   -- des deux côtés (une commande déjà prise qui le contenait par son seul nom reste modifiable si cette ligne ne change pas)
@@ -304,7 +326,8 @@ begin
     using errcode = 'P0001';
 end $$;
 drop trigger if exists commandes_produit_vendable_garde on public.commandes;
-create trigger commandes_produit_vendable_garde before insert or update of lignes on public.commandes
+-- produit, qte et prix aussi (revue Codex PR 26 sur cf58971) : ce sont les lignes de comparaison d'une commande sans lignes
+create trigger commandes_produit_vendable_garde before insert or update of lignes, produit, qte, prix on public.commandes
   for each row execute function interne.commandes_produit_vendable_garde();
 
 -- Une variante Shopify « certaine » (utilisée pour importer les commandes et publier le stock) ne peut pas pointer vers un
@@ -910,6 +933,32 @@ begin
   if interne.l039_empreinte('CUMP', 1.1, 30, true, '[]') = interne.l039_empreinte('CUMP', 1.2, 30, true, '[]') then f := 'empreinte : taux changé'; end if;
   if interne.l039_empreinte('CUMP', 1.1, 30, true, '[]') = interne.l039_empreinte('CUMP', 1.1, 31, true, '[]') then f := 'empreinte : frais changés'; end if;
   if interne.l039_fmt(null, 4) <> '' or interne.l039_fmt(21, 4) <> '21.0000' then f := 'nombre à échelle fixe'; end if;
+  -- commande SANS LIGNES (revue Codex PR 26 sur cf58971) : le produit principal devient la ligne de comparaison
+  if interne.l039_lignes_effectives(null, 'Matelas Nouveau N (fictif)', '2', '0')
+       is distinct from '[{"produit":"Matelas Nouveau N (fictif)","qte":2,"prixUnit":0,"principal":true}]'::jsonb then f := 'lignes absentes : produit principal'; end if;
+  if jsonb_array_length(interne.l039_lignes_effectives('[]', 'Matelas Nouveau N (fictif)', '1', '0')) <> 1 then f := 'lignes vides : produit principal'; end if;
+  if jsonb_array_length(interne.l039_lignes_effectives('{"produit":"x"}', 'Matelas Nouveau N (fictif)', '1', '0')) <> 1 then f := 'lignes d''un autre format : produit principal'; end if;
+  if interne.l039_lignes_effectives(null, '   ', '1', '0') is distinct from '[]'::jsonb then f := 'sans lignes ni produit : rien à comparer'; end if;
+  if interne.l039_lignes_effectives('[{"produitId":"pr-a"}]', 'Matelas Nouveau N (fictif)', '1', '0')
+       is distinct from '[{"produitId":"pr-a"}]'::jsonb then f := 'lignes présentes prises telles quelles'; end if;
+  -- chaîne complète (identification par le nom, puis comparaison) : nouvelle commande refusée, commande existante inchangée acceptée,
+  -- quantité ou prix du produit principal modifiés refusés
+  if interne.lignes_non_vendables_modifiees(
+       jsonb_build_array(interne.l039_ligne_identifiee(interne.l039_lignes_effectives(null, 'Matelas Nouveau N (fictif)', '1', '0') -> 0,
+                                                     '[{"id":"pr-n","designe":true,"nv":true}]')), null, array['pr-n']) is distinct from array['pr-n']
+    then f := 'commande nouvelle sans lignes au nom d''un produit non vendable'; end if;
+  if interne.lignes_non_vendables_modifiees(
+       jsonb_build_array(interne.l039_ligne_identifiee(interne.l039_lignes_effectives(null, 'Matelas Nouveau N (fictif)', '1', '0') -> 0,
+                                                     '[{"id":"pr-n","designe":true,"nv":true}]')),
+       jsonb_build_array(interne.l039_ligne_identifiee(interne.l039_lignes_effectives('[]', 'Matelas Nouveau N (fictif)', '1', '0') -> 0,
+                                                     '[{"id":"pr-n","designe":true,"nv":true}]')), array['pr-n']) is not null
+    then f := 'commande existante sans lignes inchangée'; end if;
+  if interne.lignes_non_vendables_modifiees(
+       jsonb_build_array(interne.l039_ligne_identifiee(interne.l039_lignes_effectives(null, 'Matelas Nouveau N (fictif)', '2', '0') -> 0,
+                                                     '[{"id":"pr-n","designe":true,"nv":true}]')),
+       jsonb_build_array(interne.l039_ligne_identifiee(interne.l039_lignes_effectives(null, 'Matelas Nouveau N (fictif)', '1', '0') -> 0,
+                                                     '[{"id":"pr-n","designe":true,"nv":true}]')), array['pr-n']) is distinct from array['pr-n']
+    then f := 'quantité du produit principal modifiée'; end if;
   if f is not null then
     raise exception 'Auto-contrôle 039 (revient / identification) en échec : cas « % ». Migration annulée.', f;
   end if;
