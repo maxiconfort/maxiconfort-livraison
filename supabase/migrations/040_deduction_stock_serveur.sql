@@ -68,8 +68,10 @@
 --   FOIS par déduction : rejoué, il répond « deja » avec le même résultat. Refus : commande encore « livré » en base
 --   (« commande_encore_livree » : le statut doit être enregistré avant), commande déduite par une ANCIENNE version de
 --   l'appli (« sans_journal » : quantités inconnues, rien n'est touché, à corriger à la main). p_suppression = vrai
---   (suppression d'une commande livrée) : accepté même si la commande est encore « livré » ou déjà supprimée (le journal
---   suffit).
+--   (suppression d'une commande livrée) : la commande encore présente est SUPPRIMÉE PAR LA FONCTION, dans la même
+--   transaction, avant le recrédit (v7.5.208, avis chatgpt-review sur 8905a30 : jamais de recrédit pour une commande qui
+--   reste livrée ; suppression refusée par la base → « suppression_refusee », rien n'est recrédité) ; commande déjà
+--   supprimée : recrédit depuis le journal.
 --
 -- 3. MOUVEMENT MANUEL — public.mouvement_stock_produit(p_produit_id, p_type, p_qte, p_motif, p_cle) (réserve Codex n° 3) :
 --   administrateur ou collaboratrice ; entree / retour (+qte), sortie (−qte, jamais sous 0), correction (stock = qte,
@@ -487,6 +489,22 @@ begin
   perform pg_advisory_xact_lock(hashtext('l040|' || p_cmd_id));
   select id, statut, stock_deduit into c from public.commandes where id = p_cmd_id for update;
   v_trouvee := found;
+  -- v7.5.208 (avis chatgpt-review sur 8905a30) : p_suppression n'est plus une simple DÉCLARATION de l'appelant. Commande
+  -- encore présente : elle est RÉELLEMENT SUPPRIMÉE ICI, dans la même transaction et sous le même verrou, AVANT tout recrédit
+  -- (mêmes droits que la suppression par l'appli : administrateur ou collaboratrice). Si la base refuse la suppression,
+  -- rien n'est recrédité (« suppression_refusee ») : jamais de stock rendu pour une commande qui reste livrée. Le recrédit
+  -- se fait ensuite comme pour une commande déjà supprimée (depuis le journal des sorties).
+  if v_trouvee and coalesce(p_suppression, false) then
+    begin
+      delete from public.commandes where id = c.id;
+    exception when others then
+      return json_build_object('ok', false, 'erreur', 'suppression_refusee', 'detail', left(sqlerrm, 300));
+    end;
+    if exists (select 1 from public.commandes where id = p_cmd_id) then
+      return json_build_object('ok', false, 'erreur', 'suppression_refusee');
+    end if;
+    v_trouvee := false;
+  end if;
   if not v_trouvee and not coalesce(p_suppression, false) then
     return json_build_object('ok', false, 'erreur', 'commande_introuvable');
   end if;

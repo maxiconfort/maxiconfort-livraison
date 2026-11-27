@@ -464,7 +464,29 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   await deduire('livreur', '#RC3');
   const pbRC3 = await stock('pb');
   rc = await recrediter('admin', '#RC3', true);
-  test('suppression d\'une commande encore « livré » (p_suppression) : recrédit fait (pb +2)', rc.ok === true && (await stock('pb')) === pbRC3 + 2, rc);
+  test('suppression d\'une commande encore « livré » (p_suppression) : commande SUPPRIMÉE par la fonction, dans la même transaction, puis recrédit fait (pb +2)',
+    rc.ok === true && (await stock('pb')) === pbRC3 + 2 && (await q('proprio', "select 1 from public.commandes where id = '#RC3'")).length === 0, rc);
+  // v7.5.208 (avis chatgpt-review sur 8905a30) : p_suppression sur une commande toujours livrée dont la suppression est
+  // REFUSÉE par la base (ici un déclencheur fictif qui refuse la suppression) : rien n'est recrédité, la commande reste
+  // livrée et déduite — le recrédit n'est plus accordé sur la seule déclaration de l'appelant
+  await commande('#RC5', { lignes: [{ produitId: 'pb', qte: 2 }] });
+  await deduire('livreur', '#RC5');
+  await q('proprio', `create or replace function public.t040_refus_suppression() returns trigger language plpgsql as $f$
+    begin if old.id = '#RC5' then raise exception 'SUPPRESSION_REFUSEE_FICTIVE'; end if; return old; end $f$`);
+  await q('proprio', 'create trigger t040_refus_suppression before delete on public.commandes for each row execute function public.t040_refus_suppression()');
+  const pbRC5 = await stock('pb'), opsRC5 = await nbOps('#RC5');
+  for (const qui of ['admin', 'collab']) {
+    rc = await recrediter(qui, '#RC5', true);
+    test('p_suppression sur une commande encore « livré » dont la suppression est refusée (' + qui + ') : « suppression_refusee », RIEN recrédité, commande toujours là, livrée et déduite',
+      rc.ok === false && rc.erreur === 'suppression_refusee' && (await stock('pb')) === pbRC5 && (await deduit('#RC5')) === true
+      && (await nbOps('#RC5')) === opsRC5 && (await un('proprio', "select statut from public.commandes where id = '#RC5'")).statut === 'livré', rc);
+  }
+  test('p_suppression par un livreur : « droits_insuffisants », rien supprimé ni recrédité',
+    (await recrediter('livreur', '#RC5', true)).erreur === 'droits_insuffisants' && (await stock('pb')) === pbRC5);
+  await q('proprio', 'drop trigger t040_refus_suppression on public.commandes');
+  rc = await recrediter('admin', '#RC5', true);
+  test('… suppression de nouveau acceptée : commande supprimée et recrédit fait une seule fois (pb +2)',
+    rc.ok === true && rc.deja === false && (await stock('pb')) === pbRC5 + 2 && (await q('proprio', "select 1 from public.commandes where id = '#RC5'")).length === 0, rc);
   await commande('#RC4', { lignes: [{ produitId: 'pb', qte: 1 }] });
   await deduire('livreur', '#RC4');
   await q('proprio', "delete from public.commandes where id = '#RC4'");
