@@ -12675,7 +12675,7 @@ function chgStatut(id, st, _annOk) {
 //   arretsRemettre(cmdId, refuse) : après le refus du statut « refuse », remet CHAQUE champ que la synchronisation avait changé
 //     (statut, heure, heureStatut…), seulement s'il porte encore la valeur posée par elle (un changement fait entre-temps n'est
 //     jamais écrasé) ; un arrêt retiré est replacé à son rang s'il n'est dans aucune tournée ; chaque tournée touchée est
-//     RÉENREGISTRÉE (sbSaveTournee). Rend le nombre de tournées réenregistrées.
+//     RÉENREGISTRÉE (sbSaveTournee), après la fin de l'enregistrement précédent. Rend le nombre de tournées remises.
 //   arretsOublier(cmdId, memo) : réponse reçue → relevé oublié (seulement si c'est encore celui de ce changement).
 var _arretsAvantStatut = {};
 function arretsRelever(cmdId) {
@@ -12690,14 +12690,27 @@ function arretsRelever(cmdId) {
 function arretsOublier(cmdId, memo) {
   try { if (memo && _arretsAvantStatut[cmdId] === memo) delete _arretsAvantStatut[cmdId]; } catch(e) {}
 }
-function arretsRemettre(cmdId, refuse) {
-  var m = _arretsAvantStatut[cmdId];
-  if (!m || m.vers !== refuse) return 0;
-  delete _arretsAvantStatut[cmdId];
-  if (typeof tournees === 'undefined' || !Array.isArray(tournees)) return 0;
+// v7.5.211 (avis chatgpt-review PR 31 sur 3b46387, point 1) : ORDRE DES ENREGISTREMENTS. La synchronisation enregistre la tournée
+// (arrêt « livré ») AVANT la réponse de la base sur la commande ; si le réenregistrement de la remise partait sans attendre la fin
+// de ce premier envoi, la base pouvait les recevoir dans l'ordre inverse et garder l'arrêt refusé. Chaque envoi d'une tournée fait
+// par la synchronisation est donc noté (arretsNoterEnvoi) ; la remise est faite TOUT DE SUITE à l'écran, puis réenregistrée
+// seulement une fois ces envois terminés (réussis ou non) — au plus tard après ARRETS_ATTENTE_MAX si l'un d'eux ne répond jamais.
+var _arretsEnvois = {}, ARRETS_ATTENTE_MAX = 30000;
+function arretsNoterEnvoi(tid, p) {
+  var sansErreur = Promise.resolve(p).catch(function() {});
+  var pr = _arretsEnvois[tid] ? Promise.all([_arretsEnvois[tid], sansErreur]) : sansErreur;
+  _arretsEnvois[tid] = pr;
+  pr.then(function() { if (_arretsEnvois[tid] === pr) delete _arretsEnvois[tid]; });
+  return pr;
+}
+// remise des champs changés par la synchronisation (relevé « m ») dans les tournées ACTUELLES ; sans effet si elle est déjà faite
+// (rejouable : tournées relues depuis la base entre-temps). seulementTid : une seule tournée. Rend les tournées modifiées.
+function arretsAppliquer(m, cmdId, seulementTid) {
+  var faits = [];
+  if (!m || typeof tournees === 'undefined' || !Array.isArray(tournees)) return faits;
   var egal = function(a, b) { return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b); };
-  var nb = 0;
   (m.avant || []).forEach(function(av) {
+    if (seulementTid !== undefined && av.tid !== seulementTid) return;
     var t = tournees.find(function(x) { return x && x.id === av.tid; });
     if (!t || !Array.isArray(t.stops)) return;
     var ap = (m.apres || []).find(function(x) { return x.tid === av.tid; }) || null;
@@ -12717,9 +12730,31 @@ function arretsRemettre(cmdId, refuse) {
       var ailleurs = tournees.some(function(x) { return x && Array.isArray(x.stops) && x.stops.some(function(y) { return y && y.cmdId === cmdId; }); });
       if (!ailleurs) { t.stops.splice(Math.min(av.rang, t.stops.length), 0, JSON.parse(JSON.stringify(av.arret))); change = true; }
     }
-    if (change) { nb++; try { sbSaveTournee(t); } catch(e) { console.warn('[statut] arrêt remis, enregistrement :', e && e.message); } }
+    if (change) faits.push(av.tid);
   });
-  return nb;
+  return faits;
+}
+function arretsRemettre(cmdId, refuse) {
+  var m = _arretsAvantStatut[cmdId];
+  if (!m || m.vers !== refuse) return 0;
+  delete _arretsAvantStatut[cmdId];
+  var tids = arretsAppliquer(m, cmdId); // à l'écran tout de suite
+  tids.forEach(function(tid) {
+    var fait = false;
+    var envoyer = function() {
+      if (fait) return; fait = true;
+      try {
+        arretsAppliquer(m, cmdId, tid); // tournées relues depuis la base pendant l'attente : remise refaite avant l'envoi
+        var t = tournees.find(function(x) { return x && x.id === tid; });
+        if (t) arretsNoterEnvoi(tid, sbSaveTournee(t));
+      } catch(e) { console.warn('[statut] arrêt remis, enregistrement :', e && e.message); }
+    };
+    var enCours = _arretsEnvois[tid];
+    if (!enCours) { envoyer(); return; }
+    enCours.then(envoyer, envoyer); // seulement APRÈS la fin de l'enregistrement précédent de cette tournée
+    try { if (typeof setTimeout === 'function') setTimeout(envoyer, ARRETS_ATTENTE_MAX); } catch(e) {}
+  });
+  return tids.length;
 }
 
 // v7.5.211 (défaut observé en production, GO de Borhen) : la base a REFUSÉ définitivement l'enregistrement d'un changement de statut
@@ -13587,7 +13622,9 @@ function reconcilierTournees() {
 
     var ids = Object.keys(aSauver);
     if (ids.length) {
-      ids.forEach(function(id){ try { sbSaveTournee(aSauver[id]); } catch(_e){} });
+      // v7.5.211 (avis chatgpt-review PR 31 sur 3b46387, point 1) : envoi noté (arretsNoterEnvoi) — la remise d'un arrêt après un
+      // statut refusé attend la fin de cet enregistrement avant de réenregistrer la tournée (jamais dans l'ordre inverse)
+      ids.forEach(function(id){ try { var _pT = sbSaveTournee(aSauver[id]); if (typeof arretsNoterEnvoi === 'function') arretsNoterEnvoi(id, _pT); } catch(_e){} });
       if (typeof renderTournees === 'function') renderTournees();
       console.log('[reconcilierTournees] ' + ids.length + ' tournée(s) synchronisée(s).');
     }

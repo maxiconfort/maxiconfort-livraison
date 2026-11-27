@@ -813,10 +813,11 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
           document: { getElementById: () => null }, stkDeductionPoser() {}, stkDemanderDeduction() {}, stkReCrediterStock() {},
           annDemanderMotif(c, f) { f({ motif: 'essai', commentaire: '' }); },
           cmdEligibleTournee: (c) => !!(c && c.date && c.statut !== 'annulé' && c.statut !== 'livré'), nextTourneeId: () => 'T-NEUVE', paiModeStop: () => 'Espèces',
-          sbSaveTournee(t) { b._sauvT.push(JSON.parse(JSON.stringify(t))); }, sbSaveCommande: () => Promise.resolve(reponse()) };
+          _minuteurs: [], setTimeout(f, ms) { b._minuteurs.push({ f, ms }); return b._minuteurs.length; }, _retourT: null,
+          sbSaveTournee(t) { b._sauvT.push(JSON.parse(JSON.stringify(t))); return b._retourT ? b._retourT(b._sauvT.length) : undefined; }, sbSaveCommande: () => Promise.resolve(reponse()) };
         vm.createContext(b);
-        vm.runInContext(['var _arretsAvantStatut = {};', extraireFonction('function arretsRelever(cmdId)'), extraireFonction('function arretsOublier(cmdId, memo)'),
-          extraireFonction('function arretsRemettre(cmdId, refuse)'), extraireFonction('function cmdRemettreStatut(c, ancien, refuse, res)'),
+        vm.runInContext(['var _arretsAvantStatut = {};', 'var _arretsEnvois = {}, ARRETS_ATTENTE_MAX = 30000;', extraireFonction('function arretsRelever(cmdId)'), extraireFonction('function arretsOublier(cmdId, memo)'),
+          extraireFonction('function arretsNoterEnvoi(tid, p)'), extraireFonction('function arretsAppliquer(m, cmdId, seulementTid)'), extraireFonction('function arretsRemettre(cmdId, refuse)'), extraireFonction('function cmdRemettreStatut(c, ancien, refuse, res)'),
           extraireFonction('function reconcilierTournees()'), extraireFonction('function chgStatut(id, st, _annOk)')].join('\n'), b);
         return b;
       };
@@ -884,6 +885,46 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
       bA.chgStatut('#A1', 'arrivé'); bA.chgStatut('#A1', 'livré'); await attendre();
       test('arrêt : refus d\'un premier changement déjà remplacé → le « livré » suivant (accepté) garde son arrêt « livré »',
         bA.commandes[0].statut === 'livré' && bA.tournees[0].stops[0].statut === 'livré');
+      // 8) avis chatgpt-review sur 3b46387, point 1 : ORDRE des enregistrements — la remise n'est réenregistrée qu'APRÈS la fin du
+      //    premier enregistrement de la tournée (arrêt « livré »), jamais avant (la base pourrait les recevoir dans l'ordre inverse)
+      for (const issue of ['réussi', 'en échec']) {
+        let finir = null, rejeter = null;
+        bA = bacArret(() => REFUS);
+        bA._retourT = (n) => (n === 1 ? new Promise((ok, ko) => { finir = ok; rejeter = ko; }) : undefined);
+        bA.commandes = [CMD()]; bA.tournees = [TOURNEE([ARRET()])];
+        bA.chgStatut('#A1', 'livré'); await attendre();
+        test('ordre (1er enregistrement ' + issue + ') : refus reçu AVANT la fin du 1er enregistrement → arrêt remis à l\'écran tout de suite, mais PAS encore réenregistré',
+          bA.commandes[0].statut === 'en-attente' && bA.tournees[0].stops[0].statut === 'en-route' && bA._sauvT.length === 1 && bA._sauvT[0].stops[0].statut === 'livré', bA._sauvT.length);
+        if (issue === 'réussi') finir(); else rejeter(new Error('503'));
+        await attendre();
+        test('ordre (1er enregistrement ' + issue + ') : une fois le 1er enregistrement terminé → tournée réenregistrée avec l\'arrêt remis (dernier envoi)',
+          bA._sauvT.length === 2 && bA._sauvT[1].stops[0].statut === 'en-route', bA._sauvT.map((t) => t.stops[0].statut));
+        bA._minuteurs.forEach((m) => m.f()); await attendre();
+        test('ordre (1er enregistrement ' + issue + ') : le délai de garde ne renvoie rien une 2e fois', bA._sauvT.length === 2 && bA._minuteurs.length === 1 && bA._minuteurs[0].ms === 30000);
+      }
+      {
+        // tournées relues depuis la base PENDANT l'attente (arrêt « livré » relu) : la remise est refaite juste avant l'envoi
+        let finir = null;
+        bA = bacArret(() => REFUS);
+        bA._retourT = (n) => (n === 1 ? new Promise((ok) => { finir = ok; }) : undefined);
+        bA.commandes = [CMD()]; bA.tournees = [TOURNEE([ARRET()])];
+        bA.chgStatut('#A1', 'livré'); await attendre();
+        bA.tournees = JSON.parse(JSON.stringify([bA._sauvT[0]])); // relève : la base rend encore l'arrêt « livré »
+        finir(); await attendre();
+        test('ordre : tournées relues pendant l\'attente (arrêt « livré ») → remise refaite, réenregistrée « en-route »',
+          bA.tournees[0].stops[0].statut === 'en-route' && bA._sauvT.length === 2 && bA._sauvT[1].stops[0].statut === 'en-route', bA._sauvT.map((t) => t.stops[0].statut));
+        // premier enregistrement qui ne répond JAMAIS : la remise part au délai de garde (30 s), une seule fois
+        bA = bacArret(() => REFUS);
+        bA._retourT = (n) => (n === 1 ? new Promise(() => {}) : undefined);
+        bA.commandes = [CMD()]; bA.tournees = [TOURNEE([ARRET()])];
+        bA.chgStatut('#A1', 'livré'); await attendre();
+        const avantGarde = bA._sauvT.length;
+        bA._minuteurs.forEach((m) => m.f()); bA._minuteurs.forEach((m) => m.f()); await attendre();
+        test('ordre : 1er enregistrement sans réponse → remise réenregistrée au délai de garde (30 s), une seule fois',
+          avantGarde === 1 && bA._sauvT.length === 2 && bA._sauvT[1].stops[0].statut === 'en-route');
+        test('reconcilierTournees : chaque enregistrement de tournée est noté pour la remise (arretsNoterEnvoi)',
+          /var _pT = sbSaveTournee\(aSauver\[id\]\); if \(typeof arretsNoterEnvoi === 'function'\) arretsNoterEnvoi\(id, _pT\);/.test(extraireFonction('function reconcilierTournees()')));
+      }
       const fRem = extraireFonction('function cmdRemettreStatut(c, ancien, refuse, res)');
       test('cmdRemettreStatut : l\'arrêt est remis AVANT la synchronisation normale',
         fRem.indexOf('arretsRemettre(c.id, refuse)') > 0 && fRem.indexOf('arretsRemettre(c.id, refuse)') < fRem.indexOf('reconcilierTournees()'));
