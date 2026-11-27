@@ -13,7 +13,8 @@
 //      bilan du jour, les alertes, le journal, les droits par rôle et les politiques du stockage des tickets.
 // LIMITES : une seule connexion (la concurrence est garantie par les verrous FOR UPDATE, vérifiés dans le texte) ; pas de
 // PostgREST ni d'API Storage (appels reproduits en SQL) ; session par paramètre au lieu des en-têtes ; types des colonnes
-// historiques supposés d'après les envois de l'application.
+// historiques : stock_camion relevé dans la vraie base (v7.5.205) ; les autres supposés d'après l'appli — le banc d'intégration
+// outils/test-041-integration-pglite.js reproduit TOUS les types relevés et applique les vraies 038b → 039 → 040 → 041.
 const fs = require('fs'), path = require('path');
 const racine = path.join(__dirname, '..');
 const VERSION_ATTENDUE = '0.2.17';
@@ -70,9 +71,12 @@ create table public.caisse_remises (
   id bigint generated always as identity primary key, key_remise text unique, livreur text, periode text, validee boolean,
   date_remise timestamptz, par text, especes_attendues numeric, especes_remises numeric, ecart numeric, cb_encaisse numeric, commentaire text);
 create table public.parametres (cle text primary key, valeur text);
+-- v7.5.205 : types RELEVÉS dans la vraie base (information_schema, 27/11/2026) — id uuid (gen_random_uuid()), livreur et
+-- produit_libelle NOT NULL, quantite NOT NULL défaut 1
 create table public.stock_camion (
-  id text primary key, livreur text, produit_libelle text, quantite integer, source_cmd_id text, source_tournee_id text,
-  charge_at timestamptz, charge_par text, status text, retour_at timestamptz, retour_par text);
+  id uuid primary key default gen_random_uuid(), livreur text not null, produit_libelle text not null, quantite integer not null default 1,
+  source_cmd_id text, source_tournee_id text, charge_at timestamptz default now(), charge_par text, status text default 'en_camion',
+  retour_at timestamptz, retour_par text, notes text, created_at timestamptz default now(), updated_at timestamptz default now());
 -- 039 : seule la table produits_revient est nécessaire ici (DDL recopiée de la 039)
 create table public.produits_revient (
   produit_id text primary key references public.produits(id) on update cascade on delete cascade,
@@ -399,7 +403,8 @@ grant select, insert, update, delete on storage.objects to anon;
 
   // =========================================================================================================================
   console.log('\n9. ALERTES (camion > N jours), MARGE, BILAN DU JOUR (administrateur seul)');
-  await q(P, "insert into public.stock_camion (id, livreur, produit_libelle, quantite, source_cmd_id, charge_at, status, produit_id, achat_id) values ('sc-vieux', 'Livreur-A', 'Matelas fictif 180', 1, '#C1', now() - interval '4 days', 'en_camion', 'pm180', $1)", [ach.id]);
+  // v7.5.205 : une ligne par achat (index unique) — la ligne « ancienne » (fabriquée) est rattachée à l'achat payé du matelas de #C1 (livré : aucune autre ligne pour cet achat)
+  await q(P, "insert into public.stock_camion (livreur, produit_libelle, quantite, source_cmd_id, charge_at, status, produit_id, achat_id) values ('Livreur-A', 'Matelas fictif 180', 1, '#C1', now() - interval '4 days', 'en_camion', 'pm180', $1)", [ach.id]);
   r = await rpc('admin', 'public.drop_controler()', []);
   test('pièce achetée dans le camion depuis 4 jours (> 3) → alerte', r.ok && r.alertes.some(a => a.type === 'camion_ancien'), r);
   await q('admin', "update public.parametres set valeur = '5' where cle = 'drop_camion_alerte_jours'");
@@ -646,6 +651,108 @@ grant select, insert, update, delete on storage.objects to anon;
   await q(P, "update public.commandes set statut = 'livré' where id = '#B1'");
   r = await rpc('admin', 'public.drop_marge_commande($1)', ['#B1']);
   test('marge d\'une commande hors bornes (sans pièces) : coût signalé inconnu, jamais estimé sur une quantité tronquée', r.ok && r.cout_inconnu === 1 && r.cout_ht === 0, r);
+
+  console.log('\n19. v7.5.205 (A) : TYPES DE LA VRAIE BASE — stock_camion.id est un uuid');
+  const typ = async (t, c) => (await un(P, 'select udt_name from information_schema.columns where table_schema = $1 and table_name = $2 and column_name = $3', ['public', t, c]) || {}).udt_name;
+  test('types alignés : stock_camion.id, commande_pieces.stock_camion_id et stock_camion_demande = uuid ; stock_camion.utilise_par_piece / achat_id = bigint',
+    (await typ('stock_camion', 'id')) === 'uuid' && (await typ('commande_pieces', 'stock_camion_id')) === 'uuid' && (await typ('commande_pieces', 'stock_camion_demande')) === 'uuid'
+    && (await typ('stock_camion', 'utilise_par_piece')) === 'int8' && (await typ('stock_camion', 'achat_id')) === 'int8');
+  test('ligne du camion créée par la base : un VRAI uuid (défaut de la table), jamais un texte « sc_drop_… »', /^[0-9a-f-]{36}$/.test(String(sc3.id)) && (await nb("public.stock_camion where id::text like 'sc_drop_%'")) === 0);
+  test('index unique partiel : une seule ligne du camion par achat', !!(await un(P, "select 1 as x from pg_indexes where indexname = 'stock_camion_achat_unique' and indexdef ilike '%(achat_id)%where%achat_id is not null%'")));
+  await cmd('#U1', { lignes: [{ produitId: 'pm180', qte: 1 }], prix: 480 });
+  const pU1 = (await rpc('livreur', 'public.drop_pieces($1)', ['#U1'])).pieces[0];
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pU1.id, 'camion', 'sc_1700000000_abcdef']);
+  test('identifiant de ligne du camion qui n\'est pas un uuid (ancienne appli) : refus propre « piece_camion_indisponible », jamais une erreur de type', r.ok === false && r.erreur === 'piece_camion_indisponible', r);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pU1.id, 'camion', '00000000-0000-0000-0000-000000000000']);
+  test('uuid inconnu : « piece_camion_indisponible »', r.ok === false && r.erreur === 'piece_camion_indisponible', r);
+  test('texte : plus aucun identifiant « sc_drop_ » ni comparaison au paramètre texte dans la 041', !/'sc_drop_'/.test(sql041) && !/where id = p_stock_camion_id/.test(sql041));
+
+  console.log('\n20. v7.5.205 (C, revue native P1) : LIVRAISON PARTIELLE PUIS ANNULATION — la pièce achetée non livrée n\'est jamais livrée deux fois');
+  await cmd('#R1', { lignes: [{ produitId: 'pm180', qte: 2 }], prix: 960 });
+  const [pR1, pR2] = (await rpc('livreur', 'public.drop_pieces($1)', ['#R1'])).pieces;
+  for (const x of [pR1, pR2]) {
+    await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [x.id, 'fournisseur', F1]);
+    await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [x.id, 192, 'cb', null]);
+  }
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#R1', JSON.stringify([{ id: pR1.id, livree: true }, { id: pR2.id, livree: false }])]);
+  const achR2 = (await un(P, 'select achat_id from public.commande_pieces where id = $1', [pR2.id])).achat_id;
+  const scR2 = await un(P, 'select * from public.stock_camion where achat_id = $1', [achR2]);
+  test('livraison partielle : la 2e pièce achetée non livrée part dans le stock du camion (uuid, rattachée à son achat)', r.ok && scR2 && scR2.status === 'en_camion' && /^[0-9a-f-]{36}$/.test(scR2.id), { r, scR2 });
+  await q('livreur', "update public.commandes set statut = 'livré' where id = '#R1'");
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#R1']);
+  test('déduction de #R1 : rien retiré du dépôt (pièces fournisseur)', r.ok && r.retraits.length === 0, r);
+  await q('admin', "update public.commandes set statut = 'annulé' where id = '#R1'");
+  r = await rpc('admin', 'public.recrediter_stock_livraison($1, false)', ['#R1']);
+  const pR2b = await un(P, 'select * from public.commande_pieces where id = $1', [pR2.id]);
+  const pR1b = await un(P, 'select * from public.commande_pieces where id = $1', [pR1.id]);
+  test('annulation : la pièce NON livrée est remise à zéro (plus de provenance fournisseur ni d\'achat payé) ; la pièce livrée garde son achat ; cycle 2',
+    r.ok && pR2b.provenance === null && pR2b.achat_id === null && pR2b.cycle === 2 && pR1b.provenance === 'fournisseur' && pR1b.achat_id !== null && pR1b.cycle === 2
+    && r.pieces_a_redeclarer.length === 1 && r.pieces_a_redeclarer[0].stock_camion_id === scR2.id, { r, pR2b });
+  test('l\'article acheté reste UNE seule ligne du camion, disponible (aucune ligne en double)', (await nb('public.stock_camion where achat_id = $1', [achR2])) === 1
+    && (await un(P, 'select status, utilise_par_piece from public.stock_camion where id = $1', [scR2.id])).status === 'en_camion'
+    && (await un(P, 'select utilise_par_piece from public.stock_camion where id = $1', [scR2.id])).utilise_par_piece === null);
+  await q('admin', "update public.commandes set statut = 'en-route' where id = '#R1'");
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#R1', JSON.stringify([{ id: pR1.id, livree: true }, { id: pR2.id, livree: true }])]);
+  test('relivraison : la pièce remise à zéro ne se confirme pas « livrée » sous son ancien achat (provenance manquante)', r.ok === false && r.erreur === 'provenance_manquante' && r.piece === pR2.id, r);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pR2.id, 'camion', scR2.id]);
+  test('relivraison : « Déjà dans le camion » sur l\'article acheté, sans nouvel achat', r.ok && r.piece.origine === 'fournisseur' && r.piece.stock_camion_id === scR2.id
+    && (await nb("public.achats_fournisseur where cmd_id = '#R1' and statut <> 'annule'")) === 2, r);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#R1', JSON.stringify([{ id: pR1.id, livree: true }, { id: pR2.id, livree: true }])]);
+  test('relivraison confirmée : l\'article sort du camion (livré) ; coût du cycle 2 = achat d\'origine (achat_camion)', r.ok
+    && (await un(P, 'select status from public.stock_camion where id = $1', [scR2.id])).status === 'livre'
+    && (await un(P, 'select source from public.pieces_couts where piece_id = $1 and cycle = 2', [pR2.id])).source === 'achat_camion', r);
+  await cmd('#R3', { lignes: [{ produitId: 'pm180', qte: 1 }], prix: 480 });
+  const pR3 = (await rpc('livreur', 'public.drop_pieces($1)', ['#R3'])).pieces[0];
+  test('l\'article livré n\'est plus proposé à une autre commande', !pR3.camion.some(x => x.id === scR2.id), pR3.camion);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pR3.id, 'camion', scR2.id]);
+  test('… ni déclarable « Déjà dans le camion »', r.ok === false && r.erreur === 'piece_camion_indisponible', r);
+  // garde de la confirmation : un état ancien (pièce restée « fournisseur » alors que son achat est au camion) est refusé
+  await cmd('#R4', { lignes: [{ produitId: 'pm180', qte: 1 }], prix: 480 });
+  const pR4 = (await rpc('livreur', 'public.drop_pieces($1)', ['#R4'])).pieces[0];
+  await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pR4.id, 'fournisseur', F1]);
+  await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pR4.id, 192, 'cb', null]);
+  const achR4 = (await un(P, 'select achat_id from public.commande_pieces where id = $1', [pR4.id])).achat_id;
+  await rpc('livreur', 'public.drop_commande_non_livree($1)', ['#R4']);
+  await q(P, "update public.commande_pieces set provenance = 'fournisseur', origine = 'fournisseur', fournisseur_id = $2, achat_id = $3 where id = $1", [pR4.id, F1, achR4]);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#R4', JSON.stringify([{ id: pR4.id, livree: true }])]);
+  test('garde : pièce « fournisseur » dont l\'achat est au camion → « livrée » REFUSÉ (achat_au_camion), rien de confirmé', r.ok === false && r.erreur === 'achat_au_camion'
+    && (await un(P, 'select livraison from public.commande_pieces where id = $1', [pR4.id])).livraison === null, r);
+
+  console.log('\n21. v7.5.205 (D, revue native P2) : RÉSERVATION ET CONSOMMATION PAR UNITÉ (ligne du camion de plusieurs unités)');
+  // ligne chargée la veille par l'appli : 2 unités, sans produit_id (libellé), sans achat
+  const scW = (await un(P, "insert into public.stock_camion (livreur, produit_libelle, quantite, source_cmd_id, charge_at, status) values ('Livreur-A', 'Matelas fictif 140', 2, '#AVANT', now() - interval '1 day', 'en_camion') returning id")).id;
+  await cmd('#W1', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360 });
+  await cmd('#W2', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360 });
+  await cmd('#W3', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360 });
+  const pW1 = (await rpc('livreur', 'public.drop_pieces($1)', ['#W1'])).pieces[0];
+  test('la ligne de 2 unités est proposée avec sa quantité', pW1.camion.some(x => x.id === scW && x.quantite === 2), pW1.camion);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pW1.id, 'camion', scW]);
+  const uW1 = r.piece && r.piece.stock_camion_id;
+  test('1re unité déclarée : la ligne est DÉCOUPÉE (une unité réservée à la pièce, la ligne d\'origine garde 1 unité libre)', r.ok && uW1 && uW1 !== scW
+    && (await un(P, 'select quantite, utilise_par_piece from public.stock_camion where id = $1', [scW])).quantite === 1
+    && (await un(P, 'select utilise_par_piece from public.stock_camion where id = $1', [scW])).utilise_par_piece === null
+    && (await un(P, 'select quantite, utilise_par_piece, scinde_de from public.stock_camion where id = $1', [uW1])).scinde_de === scW, r);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pW1.id, 'camion', scW]);
+  test('même déclaration rejouée (ligne d\'origine) : « deja », aucune 2e unité prise', r.ok && r.deja === true && (await un(P, 'select quantite from public.stock_camion where id = $1', [scW])).quantite === 1, r);
+  const pW2 = (await rpc('livreur', 'public.drop_pieces($1)', ['#W2'])).pieces[0];
+  test('la 2e unité RESTE disponible pour une autre commande (avant : toute la ligne était réservée)', pW2.camion.some(x => x.id === scW && x.quantite === 1) && !pW2.camion.some(x => x.id === uW1), pW2.camion);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pW2.id, 'camion', scW]);
+  test('2e unité déclarée par une autre commande : acceptée', r.ok && r.piece.stock_camion_id === scW, r);
+  const pW3 = (await rpc('livreur', 'public.drop_pieces($1)', ['#W3'])).pieces[0];
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pW3.id, 'camion', scW]);
+  test('plus d\'unité libre : 3e commande refusée', r.ok === false && r.erreur === 'piece_camion_indisponible', r);
+  for (const [c, p] of [['#W1', pW1], ['#W2', pW2]]) await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', [c, JSON.stringify([{ id: p.id, livree: true }])]);
+  test('livraisons confirmées : CHAQUE unité sort du camion (2 lignes d\'une unité « livre »), rien ne reste en camion',
+    (await nb("public.stock_camion where (id = $1 or scinde_de = $1) and status = 'livre' and quantite = 1", [scW])) === 2
+    && (await nb("public.stock_camion where (id = $1 or scinde_de = $1) and status = 'en_camion'", [scW])) === 0);
+  // une unité réservée puis libérée (redéclarée Dépôt) redevient disponible
+  const scV = (await un(P, "insert into public.stock_camion (livreur, produit_libelle, quantite, source_cmd_id, charge_at, status) values ('Livreur-A', 'Matelas fictif 140', 3, '#AVANT', now() - interval '1 day', 'en_camion') returning id")).id;
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pW3.id, 'camion', scV]);
+  const uW3 = r.piece && r.piece.stock_camion_id;
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pW3.id, 'depot']);
+  test('unité libérée (redéclarée Dépôt) : de nouveau disponible, le total des unités est conservé (2 + 1)', r.ok
+    && (await un(P, 'select utilise_par_piece from public.stock_camion where id = $1', [uW3])).utilise_par_piece === null
+    && Number((await un(P, "select sum(quantite)::int as n from public.stock_camion where (id = $1 or scinde_de = $1) and status = 'en_camion'", [scV])).n) === 3, r);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
