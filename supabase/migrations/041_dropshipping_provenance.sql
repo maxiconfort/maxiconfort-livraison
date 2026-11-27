@@ -1324,9 +1324,12 @@ begin
   -- « stock tampon » ne se confirme livrée que si son fournisseur a encore, dans ses lots, une unité qui ne soit pas déjà
   -- promise à une autre pièce livrée en attente de sortie (lots verrouillés dans l'ordre) ; sinon refus : le livreur
   -- redéclare la provenance (Dépôt — stock BMS, fournisseur…) — jamais une pièce du dépôt retirée en silence au revient BMS.
+  -- v7.5.209 (revue native P2 sur 3fefbc9) : MÊME prédicat que la consommation des lots (interne.l041_du_tampon) — une unité
+  -- du stock tampon gardée dans le camion et reprise « Déjà dans le camion » (provenance camion) est contrôlée comme une
+  -- pièce déclarée « stock tampon ».
   for g in select q.produit_id, q.fournisseur_id, min(q.libelle) as libelle, count(*)::integer as n
              from public.commande_pieces q join jsonb_array_elements(p_pieces) x on x ->> 'id' = q.id::text
-            where q.cmd_id = c.id and q.provenance = 'tampon' and q.livraison is null and (x ->> 'livree')::boolean
+            where q.cmd_id = c.id and interne.l041_du_tampon(q.provenance, q.origine, q.fournisseur_id) and q.livraison is null and (x ->> 'livree')::boolean
             group by q.produit_id, q.fournisseur_id order by q.produit_id, q.fournisseur_id loop
     perform 1 from public.stock_tampon_lots l where l.produit_id = g.produit_id and l.fournisseur_id = g.fournisseur_id order by l.id for update;
     if coalesce((select sum(l.quantite_restante) from public.stock_tampon_lots l where l.produit_id = g.produit_id and l.fournisseur_id = g.fournisseur_id), 0)
@@ -1539,13 +1542,15 @@ begin
   -- retirée en silence du stock du dépôt au prix de revient BMS : refus AVANT toute écriture (alerte), jusqu'à la correction
   -- explicite et tracée de l'administrateur (drop_tampon_corriger : la pièce est notée « Dépôt — stock BMS », motif
   -- journalisé) ou sa dérogation (drop_livre_sans_confirmation, motif journalisé)
+  -- v7.5.209 (revue native P2 sur 3fefbc9) : MÊME prédicat que la sortie des lots ci-dessous (interne.l041_du_tampon) : une
+  -- unité du stock tampon gardée dans le camion (provenance camion) est contrôlée comme une pièce « stock tampon »
   if not v_derog then
     perform 1 from public.stock_tampon_lots l
      where (l.produit_id, l.fournisseur_id) in (select q.produit_id, q.fournisseur_id from public.commande_pieces q
-                                                 where q.cmd_id = c.id and q.provenance = 'tampon')
+                                                 where q.cmd_id = c.id and interne.l041_du_tampon(q.provenance, q.origine, q.fournisseur_id))
      order by l.id for update;
     if exists (select 1 from (select q.produit_id, q.fournisseur_id, min(q.libelle) as libelle, count(*) as n from public.commande_pieces q
-                                where q.cmd_id = c.id and q.provenance = 'tampon' and coalesce(q.livraison, 'livree') = 'livree'
+                                where q.cmd_id = c.id and interne.l041_du_tampon(q.provenance, q.origine, q.fournisseur_id) and coalesce(q.livraison, 'livree') = 'livree'
                                   and not exists (select 1 from public.tampon_sorties ts where ts.piece_id = q.id and ts.cycle = q.cycle)
                                 group by q.produit_id, q.fournisseur_id) g
                 where coalesce((select sum(l.quantite_restante) from public.stock_tampon_lots l

@@ -1228,6 +1228,60 @@ grant select, insert, update, delete on storage.objects to anon;
   e = await echec('livreur', "update public.stock_camion set status = 'retourne_depot' where id = $1", [uOrd]);
   test('ligne ordinaire du chargement retournée au dépôt : stock du dépôt inchangé', e === null && (await stock('py140')) === s140O, e);
 
+  console.log('\n31. v7.5.209 (revue native P2 sur 3fefbc9) : UNITÉ TAMPON GARDÉE DANS LE CAMION — mêmes contrôles de lot qu\'une pièce « stock tampon »');
+  await q(P, "insert into public.produits (id, nom, cat, prix, stock) values ('pz-tc', 'Oreiller fictif Z', 'Oreiller', 30, 5), ('pz-td', 'Oreiller fictif W', 'Oreiller', 30, 5)");
+  await q(P, "insert into public.produits_revient (produit_id, prix_revient_ht) values ('pz-tc', 6), ('pz-td', 6)");
+  r = (await un('admin', ENTREE, ['cle-entree-z31', F1, AUJ, 'cb', null, JSON.stringify([{ produit_id: 'pz-tc', qte: 1, prix_ht: 4 }, { produit_id: 'pz-td', qte: 1, prix_ht: 4 }])])).r;
+  test('lots tampon d\'UNE unité chez F1 (pz-tc, pz-td)', r.ok, r);
+  // unité gardée dans le camion venue du stock tampon (pièce « stock tampon » pas livrée)
+  const garder = async (cmdId, prod) => {
+    await cmd(cmdId, { lignes: [{ produitId: prod, nom: 'Oreiller fictif', qte: 1 }], prix: 40 });
+    const pc = (await rpc('livreur', 'public.drop_pieces($1)', [cmdId])).pieces[0];
+    await ins(cmdId, 'Oreiller fictif', 1, 0);
+    await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pc.id, 'tampon', F1]);
+    await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', [cmdId, JSON.stringify([{ id: pc.id, livree: false }])]);
+    const g = await un(P, 'select * from public.stock_camion where source_cmd_id = $1 and status = $2', [cmdId, 'en_camion']);
+    await q(P, "update public.stock_camion set charge_at = now() - interval '1 day' where id = $1", [g.id]);
+    return g;
+  };
+  const gZ1 = await garder('#T31Z1', 'pz-tc');
+  test('unité tampon gardée dans le camion (fournisseur du lot)', gZ1 && String(gZ1.tampon_fournisseur_id) === String(F1), gZ1);
+  // une AUTRE commande épuise le lot (pièce « stock tampon » confirmée livrée : la seule unité lui est promise)
+  await cmd('#T31Z2', { lignes: [{ produitId: 'pz-tc', nom: 'Oreiller fictif', qte: 1 }], prix: 40 });
+  const pZ2 = (await rpc('livreur', 'public.drop_pieces($1)', ['#T31Z2'])).pieces[0];
+  await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pZ2.id, 'tampon', F1]);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#T31Z2', JSON.stringify([{ id: pZ2.id, livree: true }])]);
+  test('autre commande « stock tampon » confirmée : la dernière unité du lot lui est promise', r.ok, r);
+  // pièce reprise « Déjà dans le camion » sur l'unité tampon gardée : MÊME refus qu'une pièce déclarée « stock tampon »
+  await cmd('#T31Z3', { lignes: [{ produitId: 'pz-tc', nom: 'Oreiller fictif', qte: 1 }], prix: 40 });
+  const pZ3 = (await rpc('livreur', 'public.drop_pieces($1)', ['#T31Z3'])).pieces[0];
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pZ3.id, 'camion', gZ1.id]);
+  test('« Déjà dans le camion » sur l\'unité tampon gardée : origine dépôt, fournisseur du lot', r.ok && r.piece.origine === 'depot' && String(r.piece.fournisseur_id) === String(F1), r);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#T31Z3', JSON.stringify([{ id: pZ3.id, livree: true }])]);
+  test('lot épuisé par une autre commande : confirmation REFUSÉE « stock_tampon_epuise » (comme une pièce « stock tampon »), rien de confirmé, unité intacte',
+    r.ok === false && r.erreur === 'stock_tampon_epuise' && (await un(P, 'select livraison from public.commande_pieces where id = $1', [pZ3.id])).livraison === null
+    && (await un(P, 'select status from public.stock_camion where id = $1', [gZ1.id])).status === 'en_camion', r);
+  await cmd('#T31Z4', { lignes: [{ produitId: 'pz-tc', nom: 'Oreiller fictif', qte: 1 }], prix: 40 });
+  const pZ4 = (await rpc('livreur', 'public.drop_pieces($1)', ['#T31Z4'])).pieces[0];
+  await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pZ4.id, 'tampon', F1]);
+  const rZ4 = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#T31Z4', JSON.stringify([{ id: pZ4.id, livree: true }])]);
+  test('… témoin : pièce DÉCLARÉE « stock tampon » sur le même lot : même refus', rZ4.ok === false && rZ4.erreur === r.erreur, rZ4);
+  // contrôle AVANT LA DÉDUCTION : lot vidé entre la confirmation et la déduction
+  const gW1 = await garder('#T31W1', 'pz-td');
+  await cmd('#T31W2', { lignes: [{ produitId: 'pz-td', nom: 'Oreiller fictif', qte: 1 }], prix: 40 });
+  const pW2 = (await rpc('livreur', 'public.drop_pieces($1)', ['#T31W2'])).pieces[0];
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pW2.id, 'camion', gW1.id]);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#T31W2', JSON.stringify([{ id: pW2.id, livree: true }])]);
+  test('unité tampon gardée, lot encore disponible : confirmation acceptée', r.ok, r);
+  await q(P, "update public.stock_tampon_lots set quantite_restante = 0 where produit_id = 'pz-td'");
+  await q('livreur', "update public.commandes set statut = 'livré' where id = '#T31W2'");
+  const sTd = await stock('pz-td');
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#T31W2']);
+  test('lot vidé avant la déduction : REFUS « stock_tampon_epuise » AVANT toute écriture (stock du dépôt intact, aucun coût au revient BMS, alerte), comme une pièce « stock tampon »',
+    r.ok === false && r.erreur === 'stock_tampon_epuise' && (await stock('pz-td')) === sTd && (await nb('public.pieces_couts where piece_id = $1', [pW2.id])) === 0
+    && (await nb("public.drop_alertes where type = 'tampon_epuise' and cle = 'cmd:#T31W2' and vue_at is null")) === 1
+    && !(await un(P, "select stock_deduit from public.commandes where id = '#T31W2'")).stock_deduit, r);
+
   }
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
