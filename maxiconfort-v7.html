@@ -4732,17 +4732,42 @@ async function arrValider() {
   var t = c.total;
   if (!confirm('Valider la réception de ' + a.reference_interne + ' ?\n\n• ' + t.recue + ' article(s) en bon état AJOUTÉS au stock\n• ' + t.endommagee + ' endommagé(s) : NON ajoutés\n• ' + t.manquante + ' manquant(s)\n\nPrix de revient recalculé (' + (ARR_METHODES[ARR_METHODE_VALORISATION] || ARR_METHODE_VALORISATION) + ').\nCette validation est DÉFINITIVE (une seule fois).')) return;
   ARR_ETAT.envoi = true; arrMajControle();
+  var suivi = { tentative: null, issue: null }; // v7.5.198 (revue chatgpt-review sur 2a4db2f) : jusqu'où l'envoi est allé
   try { // revue Codex PR 26 sur 636f873 : verrou levé à coup sûr, même sur une erreur inattendue (finally)
-    await arrValiderEnvoi(a, ls, saisies, vue);
+    await arrValiderEnvoi(a, ls, saisies, vue, suivi);
   } catch(e) {
-    toast('Réception NON validée : erreur inattendue (' + ((e && e.message) || e) + ')', 'err');
+    arrErreurInattendue(a, suivi, e);
   } finally {
     if (ARR_ETAT.envoi) { ARR_ETAT.envoi = false; arrMajControle(); }
   }
 }
 // Suite de arrValider, verrou posé (ARR_ETAT.envoi = true) : relectures, contrôles, envoi. Chaque sortie lève le verrou AVANT de
 // redessiner (pour que le bouton revienne) ; arrValider le lève de toute façon à la fin.
-async function arrValiderEnvoi(a, ls, saisies, vue) {
+// v7.5.198 (revue chatgpt-review PR 26 sur 2a4db2f) : erreur INATTENDUE pendant la validation. Avant : toujours « Réception NON validée »
+// et bouton libéré, même si la requête était déjà partie (la base a pu valider) et sans état « à vérifier » en mémoire avant un
+// rechargement. Maintenant, selon `suivi` (rempli par arrValiderEnvoi) :
+//  - rien n'est parti (aucune tentative gardée) : « NON validée, rien n'a été envoyé » ;
+//  - réponse DÉFINITIVE déjà lue (validée ou refusée) : ce résultat est rappelé, rien d'autre ;
+//  - sinon (requête partie, résultat non conclu) : résultat INDÉTERMINÉ — l'arrivage est remis « à vérifier » avec la MÊME tentative
+//    (Valider bloqué, « Vérifier dans la base » imposé), sauf si une relecture de la base a déjà conclu (tentative effacée de l'appareil).
+function arrErreurInattendue(a, suivi, e) {
+  var txt = (e && e.message) || e;
+  ARR_ETAT.verification = false; ARR_ETAT.verificationId = null;
+  if (!suivi || !suivi.tentative) { toast('Réception NON validée : erreur inattendue (' + txt + ') — rien n\'a été envoyé', 'err'); return; }
+  if (suivi.issue === 'validee') { toast('Réception validée par la base, mais erreur inattendue ensuite (' + txt + ') : actualisez la liste', 'err'); return; }
+  if (suivi.issue === 'refusee') { toast('Réception NON validée (refusée par la base), puis erreur inattendue (' + txt + ')', 'err'); return; }
+  var k = String(a.id), lisible = true, gardee = null;
+  try { localStorage.getItem(ARR_CLE_TENTATIVES); gardee = arrLireTentatives()[k] || null; } catch(x) { lisible = false; }
+  // relecture déjà conclue = plus « à vérifier » en mémoire ET tentative effacée de l'appareil (stockage lisible) ; sinon : indéterminé
+  if (lisible && !arrAVerifierDe(a.id) && !(gardee && gardee.tentative === String(suivi.tentative))) {
+    toast('Erreur inattendue après la vérification dans la base (' + txt + ') : actualisez la liste', 'err'); return;
+  }
+  ARR_ETAT.aVerifier[k] = { id: a.id, ref: a.reference_interne, tentative: suivi.tentative };
+  toast('Résultat INDÉTERMINÉ : erreur inattendue après l\'envoi de la réception (' + txt + '). La base a pu la valider : rien n\'est renvoyé — touchez « Vérifier dans la base »', 'err');
+  try { arrRendre(); } catch(x) {}
+}
+async function arrValiderEnvoi(a, ls, saisies, vue, suivi) {
+  suivi = suivi || {};
   // revue Codex PR 26 sur 66def07 : lignes de CET arrivage relues par arrivage_id (complètes, par pages) juste avant l'envoi ; si elles
   // diffèrent de celles affichées (ligne ajoutée, retirée, quantité changée), rien n'est envoyé : l'écran est rafraîchi pour revérifier.
   var relu = null;
@@ -4773,6 +4798,7 @@ async function arrValiderEnvoi(a, ls, saisies, vue) {
   var tentative = arrNouvelleTentative(); // v7.5.191 : identifiant de CET envoi (jamais réutilisé)
   // v7.5.198 : tentative gardée sur l'appareil AVANT l'envoi ; si elle ne peut pas l'être, rien n'est envoyé
   if (!arrGarderTentative(a, tentative)) { ARR_ETAT.envoi = false; toast('Réception NON validée : cet appareil ne peut pas garder la trace de l\'envoi (stockage du navigateur indisponible) — rien n\'a été envoyé', 'err'); arrMajControle(); return; }
+  suivi.tentative = tentative; // dès ici, toute erreur inattendue = résultat INDÉTERMINÉ (la requête peut être partie)
   try {
     var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/valider_reception_arrivage', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()),
       body: JSON.stringify(arrCorpsValidation(a.id, ls, saisies, vue.empreinte, tentative)) });
@@ -4783,6 +4809,7 @@ async function arrValiderEnvoi(a, ls, saisies, vue) {
   // INDÉTERMINÉ, statut et mouvements relus dans la base, et seulement ensuite « validée » ou « non validée ».
   var issue = arrIssueValidation(sansReponse, http, j);
   if (issue === 'indeterminee') { await arrVerifierReception(a, tentative); return; }
+  suivi.issue = issue === 'validee' ? 'validee' : 'refusee';
   arrOublierTentative(a.id, tentative); // v7.5.198 : réponse DÉFINITIVE (validée ou refusée) : plus rien à vérifier pour cet envoi
   if (issue !== 'validee') {
     ARR_ETAT.envoi = false;
