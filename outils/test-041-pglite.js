@@ -806,6 +806,45 @@ grant select, insert, update, delete on storage.objects to anon;
   test('date d\'activation illisible : côté sûr (toutes les commandes concernées)', DECOUP.test(await echec('livreur', "update public.commandes set statut = 'livré' where id = '#E8'") || ''));
   await q('admin', "update public.parametres set valeur = $1 where cle = 'drop_actif_depuis'", [ACTIF]);
 
+  console.log('\n23. v7.5.205 (avis chatgpt-review sur 3728fb8, point 3) : STOCK TAMPON ÉPUISÉ ENTRE LA DÉCLARATION ET LA LIVRAISON');
+  await q(P, "insert into public.produits (id, nom, cat, prix, stock) values ('pt-or', 'Oreiller fictif', 'Oreiller', 30, 2)");
+  await q(P, "insert into public.produits_revient (produit_id, prix_revient_ht) values ('pt-or', 8)");
+  r = (await un('admin', ENTREE, ['cle-entree-or', F1, AUJ, 'especes', null, JSON.stringify([{ produit_id: 'pt-or', qte: 1, prix_ttc: 12 }])])).r;
+  test('lot tampon d\'UNE unité chez F1 (oreiller fictif, coût HT 10)', r.ok && r.lots[0].prix_ht === 10, r);
+  await cmd('#K1', { lignes: [{ produitId: 'pt-or', qte: 1 }], prix: 36 });
+  await cmd('#K2', { lignes: [{ produitId: 'pt-or', qte: 1 }], prix: 36 });
+  const pK1 = (await rpc('livreur', 'public.drop_pieces($1)', ['#K1'])).pieces[0];
+  const pK2 = (await rpc('livreur', 'public.drop_pieces($1)', ['#K2'])).pieces[0];
+  for (const x of [pK1, pK2]) await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [x.id, 'tampon', F1]);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#K1', JSON.stringify([{ id: pK1.id, livree: true }])]);
+  test('1re commande confirmée : la dernière unité du lot lui est promise', r.ok, r);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#K2', JSON.stringify([{ id: pK2.id, livree: true }])]);
+  test('2e commande déclarée sur le même lot (épuisé entre-temps) : « livrée » REFUSÉ (stock_tampon_epuise), rien de confirmé', r.ok === false && r.erreur === 'stock_tampon_epuise'
+    && (await un(P, 'select livraison from public.commande_pieces where id = $1', [pK2.id])).livraison === null, r);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pK2.id, 'depot']);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#K2', JSON.stringify([{ id: pK2.id, livree: true }])]);
+  test('… redéclarée « Dépôt — stock BMS » : confirmée, coût au revient BMS assumé', r.ok && (await un(P, 'select source from public.pieces_couts where piece_id = $1', [pK2.id])).source === 'revient', r);
+  // lot vidé entre la confirmation et la déduction (correction de lot, autre écriture) : la déduction refuse au lieu de retirer en silence
+  await q(P, "update public.stock_tampon_lots set quantite_restante = 0 where produit_id = 'pt-or'");
+  await q('livreur', "update public.commandes set statut = 'livré' where id = '#K1'");
+  const sOr = await stock('pt-or');
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#K1']);
+  test('lot épuisé à la déduction : REFUS (stock_tampon_epuise) AVANT toute écriture — stock du dépôt intact, aucun coût au revient, alerte', r.ok === false && r.erreur === 'stock_tampon_epuise'
+    && (await stock('pt-or')) === sOr && (await nb('public.pieces_couts where piece_id = $1', [pK1.id])) === 0
+    && (await nb("public.drop_alertes where type = 'tampon_epuise' and cle = 'cmd:#K1' and vue_at is null")) === 1
+    && !(await un(P, "select stock_deduit from public.commandes where id = '#K1'")).stock_deduit, r);
+  test('correction : refusée au livreur, motif obligatoire', (await rpc('livreur', 'public.drop_tampon_corriger($1, $2)', [pK1.id, 'lot vide'])).erreur === 'admin_requis'
+    && (await rpc('admin', 'public.drop_tampon_corriger($1, $2)', [pK1.id, 'x'])).erreur === 'motif_requis');
+  r = await rpc('admin', 'public.drop_tampon_corriger($1, $2)', [pK1.id, 'Lot vidé à l\'inventaire, pièce prise au stock BMS']);
+  test('correction EXPLICITE de l\'administrateur : pièce notée « Dépôt — stock BMS », coût figé au revient 8, journalisée (motif), alerte vue', r.ok && r.cout_ht === 8
+    && (await un(P, 'select provenance from public.commande_pieces where id = $1', [pK1.id])).provenance === 'depot'
+    && (await nb("public.drop_journal where action = 'correction_tampon_vers_depot' and piece_id = $1 and details ->> 'motif' like 'Lot vidé%'", [pK1.id])) === 1
+    && (await nb("public.drop_alertes where type = 'tampon_epuise' and cle = 'cmd:#K1' and vue_at is null")) === 0, r);
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#K1']);
+  test('après correction : la déduction retire la pièce du dépôt (1), coût = revient corrigé', r.ok && (await stock('pt-or')) === sOr - 1
+    && Number((await un(P, 'select cout_ht from public.pieces_couts where piece_id = $1', [pK1.id])).cout_ht) === 8, r);
+  test('correction : impossible une 2e fois (commande déduite)', (await rpc('admin', 'public.drop_tampon_corriger($1, $2)', [pK1.id, 'Encore une correction'])).ok === false);
+
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error('ERREUR DU BANC :', e); process.exit(1); });

@@ -20,7 +20,7 @@
 --        public.drop_confirmer_livraison(text, jsonb), public.drop_commande_non_livree(text), public.drop_controler(),
 --        public.drop_alerte_vue(bigint), public.drop_bilan_jour(text), public.drop_marge_commande(text),
 --        public.drop_reinitialiser_pieces(text), public.drop_tampon_entree(text, bigint, date, text, text, jsonb),
---        public.drop_tampon_etat();
+--        public.drop_tampon_etat(), public.drop_tampon_corriger(bigint, text);
 --   3) les tables (fournisseurs, fournisseur_prix, drop_produits, commande_pieces, achats_fournisseur, pieces_couts,
 --      drop_journal, drop_alertes, stock_tampon_entrees, stock_tampon_lots, tampon_sorties, tampon_retours, drop_derogations)
 --      et les colonnes ajoutées à stock_camion peuvent rester : elles ne sont lues par rien d'autre.
@@ -973,7 +973,7 @@ end $$;
 -- 3e pare-feu : LIVRAISON, pièce par pièce. p_pieces = [{ "id": <pièce>, "livree": true|false }, …] : TOUTES les pièces
 create or replace function public.drop_confirmer_livraison(p_cmd_id text, p_pieces jsonb) returns json
 language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
-declare c record; p record; e jsonb; v_liv boolean; v_n integer; v_cout record; v_camion uuid; v_res jsonb := '[]'::jsonb;
+declare c record; p record; e jsonb; v_liv boolean; v_n integer; v_cout record; v_camion uuid; v_res jsonb := '[]'::jsonb; g record;
 begin
   if public.session_role() is null or public.session_role() not in ('admin', 'livreur') then
     return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
@@ -1014,6 +1014,22 @@ begin
        and not exists (select 1 from public.stock_camion sc where sc.id = p.stock_camion_id and sc.status = 'en_camion'
                          and sc.utilise_par_piece = p.id) then
       return json_build_object('ok', false, 'erreur', 'piece_camion_indisponible', 'piece', p.id, 'libelle', p.libelle); end if;
+  end loop;
+  -- v7.5.205 (avis chatgpt-review sur 3728fb8, point 3) : STOCK TAMPON ÉPUISÉ entre la déclaration et la livraison. Une pièce
+  -- « stock tampon » ne se confirme livrée que si son fournisseur a encore, dans ses lots, une unité qui ne soit pas déjà
+  -- promise à une autre pièce livrée en attente de sortie (lots verrouillés dans l'ordre) ; sinon refus : le livreur
+  -- redéclare la provenance (Dépôt — stock BMS, fournisseur…) — jamais une pièce du dépôt retirée en silence au revient BMS.
+  for g in select q.produit_id, q.fournisseur_id, min(q.libelle) as libelle, count(*)::integer as n
+             from public.commande_pieces q join jsonb_array_elements(p_pieces) x on x ->> 'id' = q.id::text
+            where q.cmd_id = c.id and q.provenance = 'tampon' and q.livraison is null and (x ->> 'livree')::boolean
+            group by q.produit_id, q.fournisseur_id order by q.produit_id, q.fournisseur_id loop
+    perform 1 from public.stock_tampon_lots l where l.produit_id = g.produit_id and l.fournisseur_id = g.fournisseur_id order by l.id for update;
+    if coalesce((select sum(l.quantite_restante) from public.stock_tampon_lots l where l.produit_id = g.produit_id and l.fournisseur_id = g.fournisseur_id), 0)
+       - (select count(*) from public.commande_pieces q2 where q2.cmd_id <> c.id and q2.provenance = 'tampon' and q2.produit_id = g.produit_id
+            and q2.fournisseur_id = g.fournisseur_id and q2.livraison = 'livree'
+            and not exists (select 1 from public.tampon_sorties ts where ts.piece_id = q2.id and ts.cycle = q2.cycle)) < g.n then
+      return json_build_object('ok', false, 'erreur', 'stock_tampon_epuise', 'produit_id', g.produit_id, 'libelle', g.libelle);
+    end if;
   end loop;
   for p in select q.* from public.commande_pieces q where q.cmd_id = c.id and q.livraison is null order by q.id loop
     select x into e from jsonb_array_elements(p_pieces) x where x ->> 'id' = p.id::text limit 1;
@@ -1147,6 +1163,26 @@ begin
     perform interne.l041_alerte('livre_sans_confirmation', 'cmd:' || c.id, c.id, null, null,
       'Livré sans confirmation des pièces : ' || c.id || ' — stock NON retiré tant que les pièces ne sont pas confirmées (ou dérogation de l''administrateur)', null);
     return json_build_object('ok', false, 'erreur', 'pieces_non_confirmees');
+  end if;
+  -- v7.5.205 (avis chatgpt-review sur 3728fb8, point 3) : une pièce « stock tampon » dont le lot est ÉPUISÉ n'est jamais
+  -- retirée en silence du stock du dépôt au prix de revient BMS : refus AVANT toute écriture (alerte), jusqu'à la correction
+  -- explicite et tracée de l'administrateur (drop_tampon_corriger : la pièce est notée « Dépôt — stock BMS », motif
+  -- journalisé) ou sa dérogation (drop_livre_sans_confirmation, motif journalisé)
+  if not v_derog then
+    perform 1 from public.stock_tampon_lots l
+     where (l.produit_id, l.fournisseur_id) in (select q.produit_id, q.fournisseur_id from public.commande_pieces q
+                                                 where q.cmd_id = c.id and q.provenance = 'tampon')
+     order by l.id for update;
+    if exists (select 1 from (select q.produit_id, q.fournisseur_id, min(q.libelle) as libelle, count(*) as n from public.commande_pieces q
+                                where q.cmd_id = c.id and q.provenance = 'tampon' and coalesce(q.livraison, 'livree') = 'livree'
+                                  and not exists (select 1 from public.tampon_sorties ts where ts.piece_id = q.id and ts.cycle = q.cycle)
+                                group by q.produit_id, q.fournisseur_id) g
+                where coalesce((select sum(l.quantite_restante) from public.stock_tampon_lots l
+                                 where l.produit_id = g.produit_id and l.fournisseur_id = g.fournisseur_id), 0) < g.n) then
+      perform interne.l041_alerte('tampon_epuise', 'cmd:' || c.id, c.id, null, null,
+        'Stock tampon épuisé à la livraison : ' || c.id || ' — stock NON retiré ; l''administrateur corrige la provenance (« Dépôt — stock BMS », motif) ou déroge', null);
+      return json_build_object('ok', false, 'erreur', 'stock_tampon_epuise');
+    end if;
   end if;
   select coalesce(array_agg(distinct produit_id order by produit_id), '{}') into v_ids
     from public.commande_pieces where cmd_id = c.id and produit_id is not null;
@@ -1293,6 +1329,35 @@ begin
 end $$;
 revoke all on function public.recrediter_stock_livraison(text, boolean) from public, anon, authenticated;
 grant execute on function public.recrediter_stock_livraison(text, boolean) to anon;   -- session vérifiée DANS la fonction de la 040
+
+-- v7.5.205 (avis chatgpt-review sur 3728fb8, point 3) : CORRECTION EXPLICITE ET TRACÉE de l'administrateur pour une pièce
+-- « stock tampon » livrée dont le lot s'est épuisé avant la sortie (la déduction refuse « stock_tampon_epuise ») : la pièce est
+-- notée « Dépôt — stock BMS » (elle sort donc du stock du dépôt à la déduction), coût figé au prix de revient, motif
+-- obligatoire au journal, alerte vue. Jamais pour une pièce déjà sortie de son lot ni une commande déjà déduite.
+create or replace function public.drop_tampon_corriger(p_piece_id bigint, p_motif text) returns json
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare p record; c record; v_motif text := btrim(coalesce(p_motif, '')); v_rev numeric;
+begin
+  if public.session_role() is distinct from 'admin' then return json_build_object('ok', false, 'erreur', 'admin_requis'); end if;
+  if length(v_motif) < 5 or length(v_motif) > 500 then return json_build_object('ok', false, 'erreur', 'motif_requis'); end if;
+  select cmd_id into p from public.commande_pieces where id = p_piece_id;
+  if not found then return json_build_object('ok', false, 'erreur', 'piece_introuvable'); end if;
+  perform pg_advisory_xact_lock(hashtext('l040|' || p.cmd_id));
+  select id, stock_deduit into c from public.commandes where id = p.cmd_id for update;
+  select * into p from public.commande_pieces where id = p_piece_id for update;
+  if p.provenance is distinct from 'tampon' or coalesce(p.livraison, '') <> 'livree' then
+    return json_build_object('ok', false, 'erreur', 'pas_une_piece_tampon_livree'); end if;
+  if coalesce(c.stock_deduit, false) or exists (select 1 from public.tampon_sorties ts where ts.piece_id = p.id and ts.cycle = p.cycle) then
+    return json_build_object('ok', false, 'erreur', 'deja_sortie'); end if;
+  select prix_revient_ht into v_rev from public.produits_revient where produit_id = p.produit_id;
+  update public.commande_pieces set provenance = 'depot', origine = 'depot', fournisseur_id = null where id = p.id;
+  insert into public.pieces_couts (piece_id, cycle, cmd_id, cout_ht, source)
+  values (p.id, p.cycle, p.cmd_id, v_rev, case when v_rev is null then 'inconnu' else 'revient' end) on conflict (piece_id, cycle) do nothing;
+  perform interne.l041_journal('correction_tampon_vers_depot', p.cmd_id, p.id, null, v_rev,
+    jsonb_build_object('motif', v_motif, 'fournisseur_id', p.fournisseur_id, 'cycle', p.cycle));
+  update public.drop_alertes set vue_par = interne.l041_acteur(), vue_at = now() where type = 'tampon_epuise' and cle = 'cmd:' || p.cmd_id and vue_at is null;
+  return json_build_object('ok', true, 'piece', p.id, 'cout_ht', v_rev);
+end $$;
 
 -- v7.5.201 (revue Codex, réserve n° 1) : EXCEPTION EXPLICITE de l'administrateur — « livré » accepté sans confirmation des
 -- pièces pour le cycle en cours (motif obligatoire, journalisé, alerte) ; la déduction retire alors les pièces non fournisseur
@@ -1601,7 +1666,8 @@ declare f text;
 begin
   foreach f in array array['drop_tampon_entree(text, bigint, date, text, text, jsonb)', 'drop_tampon_etat()', 'drop_pieces(text)', 'drop_reinitialiser_pieces(text)', 'drop_declarer(bigint, text, bigint, text)',
     'drop_enlever_payer(bigint, numeric, text, text, numeric)', 'drop_ticket_ajouter(bigint, text)', 'drop_livre_sans_confirmation(text, text)', 'drop_confirmer_livraison(text, jsonb)',
-    'drop_commande_non_livree(text)', 'drop_controler()', 'drop_alerte_vue(bigint)', 'drop_marge_commande(text)', 'drop_bilan_jour(text)'] loop
+    'drop_commande_non_livree(text)', 'drop_controler()', 'drop_alerte_vue(bigint)', 'drop_marge_commande(text)', 'drop_bilan_jour(text)',
+    'drop_tampon_corriger(bigint, text)'] loop
     execute format('revoke all on function public.%s from public, anon, authenticated', f);
     execute format('grant execute on function public.%s to anon', f);   -- session vérifiée DANS chaque fonction
   end loop;

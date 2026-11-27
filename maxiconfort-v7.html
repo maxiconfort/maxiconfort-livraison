@@ -6018,13 +6018,10 @@ async function dropDeclarer(cmdId, pieceId, prov, fournisseurId, stockCamionId) 
     if (r.reseau) { toast('📵 Pas de réseau : la provenance n\'est pas enregistrée, réessayez', 'err'); return; }
     if (r.httpOk && r.corps && r.corps.ok) {
       dropRemplacerPiece(cmdId, r.corps.piece);
-      // la case « chargé » de la ligne est cochée dès que toutes ses pièces sont déclarées
-      var p = r.corps.piece, ps = dropPiecesDe(cmdId);
-      if (p && dropEtatLigne(ps, p.ligne_idx).complete && !(chargements[cmdId] && chargements[cmdId][p.ligne_idx] && chargements[cmdId][p.ligne_idx].charge)
-          && dropEtatLigne(ps, p.ligne_idx).depot && typeof toggleChargement === 'function') {
-        try { var pr = toggleChargement(cmdId, p.ligne_idx, true); if (pr && pr.catch) pr.catch(function() {}); } catch(e) {}
-      }
-      // sinon, on recharge pour avoir les choix à jour (pièce du camion prise, etc.)
+      // v7.5.205 (avis chatgpt-review sur 5d095d5, point 2) : la provenance NE PROUVE PAS la présence physique dans le camion.
+      // La case « chargé » d'une ligne qui contient une pièce à prendre au dépôt n'est JAMAIS cochée d'office : le livreur la
+      // coche lui-même (confirmation de chargement DISTINCTE de la déclaration de provenance).
+      // on recharge pour avoir les choix à jour (pièce du camion prise, etc.)
       await dropChargerPieces(cmdId);
     } else toast('⛔ ' + dropMessageErreur(r.corps), 'err');
   } finally { delete _dropDeclEnCours[pieceId]; dropRafraichir(); }

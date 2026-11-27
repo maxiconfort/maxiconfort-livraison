@@ -137,10 +137,18 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     await bac.dropDeclarer('#D1', 1, 'fournisseur', 11, null); await attendre();
     const env = bac._envois.find((e) => /drop_declarer/.test(e.url));
     test('déclaration envoyée à la base (pièce, provenance, fournisseur)', env && env.body.p_piece_id === 1 && env.body.p_provenance === 'fournisseur' && env.body.p_fournisseur_id === 11);
-    // ligne entièrement déclarée avec une pièce Dépôt : la case « chargé » est cochée automatiquement
+    // v7.5.205 (avis chatgpt-review sur 5d095d5, point 2) : la provenance ne prouve PAS la présence physique — la dernière
+    // déclaration d'une ligne qui contient une pièce Dépôt NE coche PAS la ligne ; elle reste « à charger » tant que le
+    // livreur ne l'a pas cochée lui-même (confirmation de chargement distincte)
     bac.dropPieces['#D1'].pieces[0].provenance = 'fournisseur';
+    bac.chargements = {};
     await bac.dropDeclarer('#D1', 2, 'depot', null, null); await attendre();
-    test('dernière pièce de la ligne déclarée (Dépôt) : la ligne est cochée « chargée »', bac._coches.some((c) => c[0] === '#D1' && c[1] === 0 && c[2] === true), bac._coches);
+    bac.dropPieces['#D1'].pieces[1] = Object.assign({}, bac.dropPieces['#D1'].pieces[1], { provenance: 'depot' });
+    test('dernière pièce de la ligne déclarée (Dépôt) : la ligne N\'EST PAS cochée d\'office', !bac._coches.some((c) => c[0] === '#D1' && c[2] === true), bac._coches);
+    test('… et ne compte pas « chargée » tant que le livreur ne l\'a pas cochée', bac.dropLigneOk('#D1', 0) === false);
+    bac.chargements['#D1'] = { 0: { charge: true } };
+    test('… cochée par le livreur : chargée', bac.dropLigneOk('#D1', 0) === true);
+    bac.chargements = {};
     const { bac: bR } = nouveauBac({ reponse: () => 'reseau' }); bR.dropActif = true; bR.dropPieces['#D1'] = { pieces: [PIECE(1)] };
     await bR.dropDeclarer('#D1', 1, 'depot', null, null);
     test('pas de réseau : message clair, rien de supposé', bR._toasts.some((t) => /Pas de réseau/.test(t[0])) && bR.dropPieces['#D1'].pieces[0].provenance === null);
