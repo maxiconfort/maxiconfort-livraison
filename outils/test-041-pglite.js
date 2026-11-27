@@ -699,15 +699,22 @@ grant select, insert, update, delete on storage.objects to anon;
   r = await rpc('admin', 'public.recrediter_stock_livraison($1, false)', ['#R1']);
   const pR2b = await un(P, 'select * from public.commande_pieces where id = $1', [pR2.id]);
   const pR1b = await un(P, 'select * from public.commande_pieces where id = $1', [pR1.id]);
-  test('annulation : la pièce NON livrée est remise à zéro (plus de provenance fournisseur ni d\'achat payé) ; la pièce livrée garde son achat ; cycle 2',
-    r.ok && pR2b.provenance === null && pR2b.achat_id === null && pR2b.cycle === 2 && pR1b.provenance === 'fournisseur' && pR1b.achat_id !== null && pR1b.cycle === 2
-    && r.pieces_a_redeclarer.length === 1 && r.pieces_a_redeclarer[0].stock_camion_id === scR2.id, { r, pR2b });
+  const achR1 = (await un(P, "select id from public.achats_fournisseur where piece_id = $1 and statut = 'paye'", [pR1.id])).id;
+  const scR1 = await un(P, 'select * from public.stock_camion where achat_id = $1', [achR1]);
+  // v7.5.208 (règle des 10 retours) : commande ANNULÉE après livraison → aucun achat payé ne reste attaché à la commande annulée
+  test('annulation : la pièce NON livrée est remise à zéro ; v7.5.208 : la pièce LIVRÉE puis reprise aussi — son article acheté passe dans le STOCK DU CAMION (rattaché à son achat) ; cycle 2',
+    r.ok && pR2b.provenance === null && pR2b.achat_id === null && pR2b.cycle === 2 && pR1b.provenance === null && pR1b.achat_id === null && pR1b.cycle === 2
+    && r.pieces_a_redeclarer.length === 1 && r.pieces_a_redeclarer[0].stock_camion_id === scR2.id && r.pieces_liberees === 1
+    && scR1 && scR1.status === 'en_camion' && scR1.utilise_par_piece === null
+    && (await nb("public.drop_journal where action = 'commande_annulee_apres_livraison' and cmd_id = '#R1'")) === 1, { r, pR2b, pR1b, scR1 });
   test('l\'article acheté reste UNE seule ligne du camion, disponible (aucune ligne en double)', (await nb('public.stock_camion where achat_id = $1', [achR2])) === 1
     && (await un(P, 'select status, utilise_par_piece from public.stock_camion where id = $1', [scR2.id])).status === 'en_camion'
     && (await un(P, 'select utilise_par_piece from public.stock_camion where id = $1', [scR2.id])).utilise_par_piece === null);
   await q('admin', "update public.commandes set statut = 'en-route' where id = '#R1'");
   r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#R1', JSON.stringify([{ id: pR1.id, livree: true }, { id: pR2.id, livree: true }])]);
-  test('relivraison : la pièce remise à zéro ne se confirme pas « livrée » sous son ancien achat (provenance manquante)', r.ok === false && r.erreur === 'provenance_manquante' && r.piece === pR2.id, r);
+  test('relivraison : une pièce remise à zéro ne se confirme pas « livrée » sous son ancien achat (provenance manquante)', r.ok === false && r.erreur === 'provenance_manquante' && [pR1.id, pR2.id].includes(r.piece), r);
+  const rR1 = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pR1.id, 'camion', scR1.id]);
+  test('v7.5.208 : relivraison — l\'article livré puis repris se redéclare « Déjà dans le camion » sur SON achat, sans nouvel achat', rR1.ok && rR1.piece.origine === 'fournisseur' && rR1.piece.stock_camion_id === scR1.id, rR1);
   r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pR2.id, 'camion', scR2.id]);
   test('relivraison : « Déjà dans le camion » sur l\'article acheté, sans nouvel achat', r.ok && r.piece.origine === 'fournisseur' && r.piece.stock_camion_id === scR2.id
     && (await nb("public.achats_fournisseur where cmd_id = '#R1' and statut <> 'annule'")) === 2, r);
@@ -883,7 +890,12 @@ grant select, insert, update, delete on storage.objects to anon;
   test('rejeu : déjà réconcilié → rien de plus (cycle 2 conservé, pas de 2e journal)', r.ok && r.deja === true && !r.pieces_rouvertes_sans_deduction
     && (await nb("public.commande_pieces where cmd_id = '#Q1' and cycle = 2")) === 2
     && (await nb("public.drop_journal where action = 'recredit_pieces' and cmd_id = '#Q1'")) === 1, r);
+  test('v7.5.208 : commande annulée — l\'unité du camion est LIBÉRÉE (disponible pour une autre commande), la pièce « Déjà dans le camion » est remise à zéro ; la pièce Dépôt garde sa déclaration',
+    (await un(P, 'select utilise_par_piece from public.stock_camion where id = $1', [uR])).utilise_par_piece === null
+    && (await un(P, 'select provenance from public.commande_pieces where id = $1', [pQ1.id])).provenance === null
+    && (await un(P, 'select provenance from public.commande_pieces where id = $1', [pQ2.id])).provenance === 'depot');
   await q('admin', "update public.commandes set statut = 'en-route' where id = '#Q1'");
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pQ1.id, 'camion', uR]);
   r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Q1', JSON.stringify([{ id: pQ1.id, livree: true }, { id: pQ2.id, livree: true }])]);
   await q('livreur', "update public.commandes set statut = 'livré' where id = '#Q1'");
   const rR = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#Q1']);
@@ -980,6 +992,120 @@ grant select, insert, update, delete on storage.objects to anon;
     r.ok && r.chargement.fermees.length === 0 && (await nb("public.stock_camion where source_cmd_id = '#Z3'")) === 0, r);
   test('texte : la confirmation appelle la réconciliation du chargement dans la même fonction',
     /create or replace function public\.drop_confirmer_livraison[\s\S]*?interne\.l041_reconcilier_chargement\(c\.id, c\.livreur\)[\s\S]*?end \$\$;/.test(sql041));
+
+  // =========================================================================================================================
+  console.log('\n27. v7.5.208 (RÈGLE DES 10 RETOURS ; revue native P2 sur bac211e) : UNITÉ GARDÉE RATTACHÉE À SA LIGNE DE CHARGEMENT, garde du camion, rejeux');
+  await q(P, "insert into public.produits (id, nom, cat, prix, stock) values ('py140', 'Matelas fictif Y', 'Matelas', 300, 5), ('py90', 'Sommier fictif Y', 'Sommier', 120, 5), ('py80', 'Oreiller fictif Y', 'Linge', 30, 9)");
+  await q(P, "insert into public.produits_revient (produit_id, prix_revient_ht) values ('py140', 90), ('py90', 35), ('py80', 6)");
+  const ins = (cmdId, lib, qte, idx, quand) => un('livreur', "insert into public.stock_camion (livreur, produit_libelle, quantite, source_cmd_id, source_tournee_id, charge_par, status, ligne_idx, charge_at) values ('Livreur-A', $1, $2, $3, 'T-1', 'Livreur-A', 'en_camion', $4, coalesce($5::timestamptz, now())) returning id", [lib, qte, cmdId, idx, quand || null]);
+  // A) la réserve native : 2 lignes, UNE seule cochée au chargement, départ par le déblocage du bureau
+  await cmd('#Y1', { lignes: [{ produitId: 'py140', nom: 'Matelas fictif Y', qte: 1 }, { produitId: 'py90', nom: 'Sommier fictif Y', qte: 1 }], prix: 500 });
+  const pY1 = (await rpc('livreur', 'public.drop_pieces($1)', ['#Y1'])).pieces;
+  await ins('#Y1', 'Matelas fictif Y', 1, 0);                 // seule la ligne 0 (matelas) est cochée
+  for (const p of pY1) await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [p.id, 'depot']);
+  const mY1 = pY1.find((p) => p.produit_id === 'py140'), sY1 = pY1.find((p) => p.produit_id === 'py90');
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Y1', JSON.stringify([{ id: mY1.id, livree: true }, { id: sY1.id, livree: false }])]);
+  test('réserve native : matelas (ligne cochée) livré, sommier (ligne JAMAIS cochée) « pas livré » → AUCUNE unité fictive dans le camion',
+    r.ok && r.chargement.fermees.length === 1 && r.chargement.fermees[0].ligne_idx === 0 && r.chargement.gardees.length === 0
+    && (await nb("public.stock_camion where source_cmd_id = '#Y1' and status = 'en_camion'")) === 0, r);
+  await q(P, "update public.stock_camion set charge_at = now() - interval '1 day' where source_cmd_id = '#Y1'");
+  await cmd('#Y2', { lignes: [{ produitId: 'py90', nom: 'Sommier fictif Y', qte: 1 }], prix: 140 });
+  const pY2 = (await rpc('livreur', 'public.drop_pieces($1)', ['#Y2'])).pieces[0];
+  test('… le lendemain, l\'article resté au DÉPÔT n\'est PAS proposé « Déjà dans le camion »', (pY2.camion || []).length === 0, pY2.camion);
+  // B) la ligne cochée garde SON unité non livrée
+  await cmd('#Y3', { lignes: [{ produitId: 'py140', nom: 'Matelas fictif Y', qte: 1 }, { produitId: 'py90', nom: 'Sommier fictif Y', qte: 1 }], prix: 500 });
+  const pY3 = (await rpc('livreur', 'public.drop_pieces($1)', ['#Y3'])).pieces;
+  await ins('#Y3', 'Sommier fictif Y', 1, 1);                 // seule la ligne 1 (sommier) est cochée
+  for (const p of pY3) await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [p.id, 'depot']);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Y3', JSON.stringify(pY3.map((p) => ({ id: p.id, livree: false })))]);
+  const gY3 = await q(P, "select * from public.stock_camion where source_cmd_id = '#Y3' and status = 'en_camion'");
+  test('ligne cochée, pièce « pas livrée » : SON unité est gardée (ligne 1, sommier) ; la ligne jamais cochée (matelas) ne garde rien',
+    r.ok && gY3.length === 1 && gY3[0].produit_id === 'py90' && gY3[0].ligne_idx === 1 && String(gY3[0].piece_id) === String(pY3.find((p) => p.produit_id === 'py90').id), { r, gY3 });
+  // C) plafond : ligne de 2 unités, une seule chargée (ligne du camion de 1) → une seule unité gardée
+  await cmd('#Y4', { lignes: [{ produitId: 'py90', nom: 'Sommier fictif Y', qte: 2 }], prix: 280 });
+  const pY4 = (await rpc('livreur', 'public.drop_pieces($1)', ['#Y4'])).pieces;
+  await ins('#Y4', 'Sommier fictif Y', 1, 0);
+  for (const p of pY4) await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [p.id, 'depot']);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Y4', JSON.stringify(pY4.map((p) => ({ id: p.id, livree: false })))]);
+  test('plafond : 1 unité chargée sur 2 commandées, 2 pièces « pas livrées » → UNE seule unité gardée (jamais plus que ce qui a été chargé)',
+    r.ok && r.chargement.gardees.length === 1 && (await nb("public.stock_camion where source_cmd_id = '#Y4' and status = 'en_camion'")) === 1, r);
+  // D) ligne du camion sans indice (ancienne) : rattachée par son libellé ; libellé inconnu : fermée, non rattachée, rien gardé
+  await cmd('#Y5', { lignes: [{ produitId: 'py140', nom: 'Matelas fictif Y', qte: 1 }, { produitId: 'py90', nom: 'Sommier fictif Y', qte: 1 }], prix: 500 });
+  const pY5 = (await rpc('livreur', 'public.drop_pieces($1)', ['#Y5'])).pieces;
+  await ins('#Y5', 'Sommier fictif Y', 1, null);
+  await ins('#Y5', 'Article inconnu', 1, null);
+  for (const p of pY5) await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [p.id, 'depot']);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Y5', JSON.stringify(pY5.map((p) => ({ id: p.id, livree: false })))]);
+  test('ligne du camion SANS indice : rattachée par son libellé (sommier → ligne 1, unité gardée) ; libellé inconnu → fermée « non rattachée », rien gardé ; tout tracé',
+    r.ok && r.chargement.fermees.length === 1 && r.chargement.fermees[0].ligne_idx === 1 && r.chargement.non_rattachees.length === 1
+    && r.chargement.gardees.length === 1 && r.chargement.gardees[0].ligne_idx === 1
+    && (await nb("public.stock_camion where source_cmd_id = '#Y5' and status = 'en_camion'")) === 1
+    && (await nb("public.drop_journal where action = 'chargement_reconcilie' and cmd_id = '#Y5' and jsonb_array_length(details -> 'non_rattachees') = 1")) === 1, r);
+  // E) unité réservée UNE fois puis libérée : plus une ligne du chargement de sa commande d'origine (jamais fermée par elle)
+  await cmd('#Y6', { lignes: [{ produitId: 'py140', nom: 'Matelas fictif Y', qte: 1 }], prix: 360 });
+  const pY6 = (await rpc('livreur', 'public.drop_pieces($1)', ['#Y6'])).pieces[0];
+  const uY6 = (await ins('#Y6', 'Matelas fictif Y', 1, 0, new Date(Date.now() - 86400000).toISOString())).id;   // chargée la veille (report)
+  await cmd('#Y7', { lignes: [{ produitId: 'py140', nom: 'Matelas fictif Y', qte: 1 }], prix: 360 });
+  const pY7 = (await rpc('livreur', 'public.drop_pieces($1)', ['#Y7'])).pieces[0];
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pY7.id, 'camion', uY6]);
+  test('« Déjà dans le camion » sur la ligne d\'une unité d\'une autre commande : réservée, marquée « réservée une fois »',
+    r.ok && r.piece.stock_camion_id === uY6 && (await un(P, 'select reservee_une_fois from public.stock_camion where id = $1', [uY6])).reservee_une_fois === true, r);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Y7', JSON.stringify([{ id: pY7.id, livree: false }])]);
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pY6.id, 'depot']);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Y6', JSON.stringify([{ id: pY6.id, livree: true }])]);
+  test('… libérée (pièce de #Y7 pas livrée), elle RESTE dans le camion quand #Y6 est confirmée (unité libre, jamais fermée par sa commande d\'origine)',
+    r.ok && r.chargement.fermees.length === 0 && (await un(P, 'select status, utilise_par_piece from public.stock_camion where id = $1', [uY6])).status === 'en_camion', r);
+  // F) unité gardée venue du STOCK TAMPON : elle sortira de SON lot (coût réel, lot décompté), jamais au revient BMS
+  r = (await un('admin', ENTREE, ['cle-entree-y80', F1, AUJ, 'cb', null, JSON.stringify([{ produit_id: 'py80', qte: 3, prix_ht: 4 }])])).r;
+  await cmd('#Y8', { lignes: [{ produitId: 'py80', nom: 'Oreiller fictif Y', qte: 1 }], prix: 40 });
+  const pY8 = (await rpc('livreur', 'public.drop_pieces($1)', ['#Y8'])).pieces[0];
+  await ins('#Y8', 'Oreiller fictif Y', 1, 0);
+  await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pY8.id, 'tampon', F1]);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Y8', JSON.stringify([{ id: pY8.id, livree: false }])]);
+  const gY8 = await un(P, "select * from public.stock_camion where source_cmd_id = '#Y8' and status = 'en_camion'");
+  test('pièce « stock tampon » pas livrée : unité gardée avec le FOURNISSEUR DE SON LOT', r.ok && gY8 && String(gY8.tampon_fournisseur_id) === String(F1), { r, gY8 });
+  await q(P, "update public.stock_camion set charge_at = now() - interval '1 day' where id = $1", [gY8.id]);
+  await cmd('#Y9', { lignes: [{ produitId: 'py80', nom: 'Oreiller fictif Y', qte: 1 }], prix: 40 });
+  const pY9 = (await rpc('livreur', 'public.drop_pieces($1)', ['#Y9'])).pieces[0];
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pY9.id, 'camion', gY8.id]);
+  test('le lendemain « Déjà dans le camion » : la pièce reprend le fournisseur du lot (origine dépôt)', r.ok && r.piece.origine === 'depot' && String(r.piece.fournisseur_id) === String(F1), r);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Y9', JSON.stringify([{ id: pY9.id, livree: true }])]);
+  test('… confirmée : coût PAS encore figé (il le sera à la sortie de son lot)', r.ok && (await nb('public.pieces_couts where piece_id = $1', [pY9.id])) === 0, r);
+  const lotY = await un(P, "select id, quantite_restante from public.stock_tampon_lots where produit_id = 'py80'");
+  const s80 = await stock('py80');
+  await q('livreur', "update public.commandes set statut = 'livré' where id = '#Y9'");
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#Y9']);
+  test('déduction : la pièce sort de SON lot (lot −1, sortie tracée), stock du dépôt −1, coût = prix réel du lot (4), pas le revient BMS (6)',
+    r.ok && r.lots_tampon.length === 1 && (await un(P, 'select quantite_restante from public.stock_tampon_lots where id = $1', [lotY.id])).quantite_restante === lotY.quantite_restante - 1
+    && (await stock('py80')) === s80 - 1 && Number((await un(P, 'select cout_ht from public.pieces_couts where piece_id = $1', [pY9.id])).cout_ht) === 4
+    && (await un(P, 'select source from public.pieces_couts where piece_id = $1', [pY9.id])).source === 'tampon', r);
+  // G) garde du camion : une session de l'appli ne fabrique ni ne ranime une unité
+  const GARDE = /STOCK_CAMION_RESERVE/;
+  const achAny = (await un(P, "select id from public.achats_fournisseur where statut = 'paye' limit 1")).id;
+  test('garde : le livreur ne crée pas une unité rattachée à un achat (ni pièce, ni réservation, ni lot tampon)',
+    GARDE.test(await echec('livreur', "insert into public.stock_camion (livreur, produit_libelle, quantite, status, achat_id) values ('Livreur-A', 'X', 1, 'en_camion', $1)", [achAny]) || '')
+    && GARDE.test(await echec('livreur', "insert into public.stock_camion (livreur, produit_libelle, quantite, status, tampon_fournisseur_id) values ('Livreur-A', 'X', 1, 'en_camion', $1)", [F1]) || ''));
+  test('garde : le livreur ne libère ni ne réserve une unité directement, ne change pas sa quantité',
+    GARDE.test(await echec('livreur', 'update public.stock_camion set utilise_par_piece = null where id = $1', [gY8.id]) || '')
+    && GARDE.test(await echec('livreur', 'update public.stock_camion set quantite = 5 where id = $1', [uY6]) || ''));
+  const livreY = (await un(P, "select id from public.stock_camion where source_cmd_id = '#Y1' and status = 'livre' limit 1")).id;
+  test('garde : une ligne sortie (livrée) n\'est JAMAIS ranimée « en_camion » par l\'appli', GARDE.test(await echec('livreur', "update public.stock_camion set status = 'en_camion' where id = $1", [livreY]) || ''));
+  test('garde : le retour au dépôt d\'une ligne (statut de sortie) reste permis à l\'appli', (await echec('livreur', "update public.stock_camion set status = 'retourne_depot', retour_at = now(), retour_par = 'Livreur-A' where id = $1", [uY6])) === null);
+  // H) ligne du chargement reçue APRÈS la confirmation de toutes les pièces (téléphone resté hors ligne) : fermée par la base
+  const tard = await ins('#Y1', 'Sommier fictif Y', 1, 1);
+  test('ligne du chargement reçue après la confirmation : enregistrée FERMÉE « livre », tracée — jamais proposée « Déjà dans le camion »',
+    (await un(P, 'select status from public.stock_camion where id = $1', [tard.id])).status === 'livre'
+    && (await nb("public.drop_journal where action = 'chargement_tardif_ferme' and cmd_id = '#Y1'")) === 1);
+  // I) rejeu d'une confirmation avec une pièce répétée (issues contradictoires) : refusée, rien de confirmé
+  await cmd('#Y10', { lignes: [{ produitId: 'py90', nom: 'Sommier fictif Y', qte: 1 }], prix: 140 });
+  const pY10 = (await rpc('livreur', 'public.drop_pieces($1)', ['#Y10'])).pieces[0];
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pY10.id, 'depot']);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Y10', JSON.stringify([{ id: pY10.id, livree: true }, { id: pY10.id, livree: false }])]);
+  test('confirmation où la même pièce figure deux fois (livrée ET pas livrée) : REFUSÉE (pieces_incompletes), rien de confirmé',
+    r.ok === false && r.erreur === 'pieces_incompletes' && (await un(P, 'select livraison from public.commande_pieces where id = $1', [pY10.id])).livraison === null, r);
+  test('texte : la réconciliation lit l\'indice de la ligne (ligne_idx), plafonne par la quantité chargée et exclut les unités réservées une fois / découpées',
+    /create or replace function interne\.l041_reconcilier_chargement[\s\S]*?r\.ligne_idx[\s\S]*?v_cap := least[\s\S]*?end \$\$;/.test(sql041)
+    && /sc\.scinde_de is null and not coalesce\(sc\.reservee_une_fois, false\)/.test(sql041));
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

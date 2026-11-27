@@ -15,6 +15,7 @@
 --        grant execute on function public.recrediter_stock_livraison(text, boolean) to anon;
 --        drop trigger if exists commandes_livre_garde on public.commandes;
 --        drop trigger if exists commandes_annulee_pieces on public.commandes;
+--        drop trigger if exists stock_camion_garde_041 on public.stock_camion;
 --   2) drop function if exists public.drop_version(), public.drop_pieces(text), public.drop_declarer(bigint, text, bigint, text),
 --        public.drop_enlever_payer(bigint, numeric, text, text, numeric), public.drop_ticket_ajouter(bigint, text),
 --        public.drop_livre_sans_confirmation(text, text),
@@ -123,6 +124,18 @@
 --     les lignes du camion créées par l'appli au chargement de la commande sont fermées « livre », quelle que soit la provenance
 --     déclarée ; seule une ligne d'une unité par pièce « pas livrée » d'origine dépôt reste dans le camion — un article livré
 --     n'est jamais reproposé « Déjà dans le camion ».
+--
+-- v7.5.208 (RÈGLE DES 10 RETOURS : relecture complète et correction groupée ; revue native P2 sur bac211e) :
+--   * UNITÉ GARDÉE RATTACHÉE À SA LIGNE DE CHARGEMENT : stock_camion.ligne_idx (envoyé par l'appli), sinon le libellé ; une
+--     ligne de commande jamais chargée ne garde rien ; au plus la quantité chargée de la ligne (plus d'unité fictive).
+--   * UNITÉ RÉSERVÉE UNE FOIS (stock_camion.reservee_une_fois) et unité découpée : jamais refermées par la confirmation de
+--     leur commande d'origine (une unité libérée reste dans le camion).
+--   * UNITÉ GARDÉE VENUE DU STOCK TAMPON (stock_camion.tampon_fournisseur_id) : reprise « Déjà dans le camion », elle sort de
+--     SON lot à la déduction, au prix réel du lot (interne.l041_du_tampon).
+--   * GARDE DU STOCK DU CAMION (déclencheur stock_camion_garde_041) : une session de l'appli ne fabrique, ne réserve, ne
+--     libère ni ne ranime une unité ; une ligne du chargement reçue après la confirmation des pièces est fermée « livre ».
+--   * ANNULATION APRÈS LIVRAISON : achat payé → stock du camion, unité du camion libérée (comme avant livraison).
+--   * CONFIRMATION : une pièce répétée dans la liste est refusée (pieces_incompletes).
 --
 -- LIMITES : un « livré » posé hors session de l'application (serveur, maintenance) n'est pas bloqué par le déclencheur ; la
 -- déduction refuse alors (« pieces_non_confirmees ») et une alerte est posée. Le stockage des photos utilise la même session
@@ -392,6 +405,12 @@ alter table public.stock_camion add column if not exists utilise_par_piece bigin
 -- texte. Les lignes créées par la 041 reçoivent donc un vrai uuid (défaut de la table) ; la rejouabilité est garantie par
 -- l'achat : une seule ligne du camion par achat (index unique partiel ci-dessous).
 alter table public.stock_camion add column if not exists scinde_de uuid;             -- v7.5.205 : ligne d'origine d'une unité découpée
+-- v7.5.208 (règle des 10 retours) : ligne de la commande chargée (indice de commandes.lignes, envoyé par l'appli au
+-- chargement) ; unité réservée une fois par une pièce (« Déjà dans le camion » : ce n'est plus une ligne de chargement de sa
+-- commande d'origine, même libérée) ; fournisseur du lot quand l'unité vient du stock tampon (elle sortira de SON lot)
+alter table public.stock_camion add column if not exists ligne_idx integer;
+alter table public.stock_camion add column if not exists reservee_une_fois boolean default false;   -- NULL accepté (envoi complet de l'appli) : lu avec coalesce
+alter table public.stock_camion add column if not exists tampon_fournisseur_id bigint;
 create unique index if not exists stock_camion_achat_unique on public.stock_camion (achat_id) where achat_id is not null;
 -- rejouabilité : une 041 d'avant la v7.5.205 (jamais appliquée en production) aurait créé stock_camion_id en texte
 do $$
@@ -669,6 +688,65 @@ begin
 end $$;
 revoke all on function interne.l041_decomposer(jsonb, text, jsonb) from public, anon, authenticated;
 
+-- v7.5.208 (règle des 10 retours) : la pièce sort-elle d'un LOT du stock tampon à la livraison ? Oui pour « Dépôt — stock
+-- tampon », et pour une pièce « Déjà dans le camion » dont l'unité vient du stock tampon (pièce « pas livrée » gardée dans le
+-- camion : fournisseur du lot noté sur l'unité, repris par la pièce). Pure.
+create or replace function interne.l041_du_tampon(p_provenance text, p_origine text, p_fournisseur bigint) returns boolean
+language sql immutable set search_path = pg_catalog as $$
+  select coalesce(p_provenance = 'tampon' or (p_provenance = 'camion' and p_origine = 'depot' and p_fournisseur is not null), false) $$;
+
+-- v7.5.208 (règle des 10 retours) : marque « écriture par une fonction de la 041 » (transaction seulement), lue par la garde
+-- du stock du camion ci-dessous. Posée par chaque fonction qui écrit stock_camion ; une requête de l'API est une transaction
+-- à elle seule (aucune écriture directe ne suit un appel de fonction dans la même transaction).
+create or replace function interne.l041_camion_fonction(p_on boolean) returns void
+language plpgsql volatile set search_path = pg_catalog as $$
+begin perform set_config('l041.fonction', case when p_on then '1' else '' end, true); end $$;
+revoke all on function interne.l041_camion_fonction(boolean) from public, anon, authenticated;
+
+-- v7.5.208 (règle des 10 retours, question c) : GARDE DU STOCK DU CAMION. La table stock_camion reste écrite directement par
+-- l'appli (lignes du chargement, retours au dépôt), mais une session de l'appli ne peut plus fabriquer ni ranimer une unité :
+--   * à la création : aucune colonne de la 041 (achat, pièce, réservation, unité découpée, lot tampon) ;
+--   * à la modification : colonnes de la 041, quantité et commande d'origine inchangées ; jamais de retour à « en_camion »
+--     d'une ligne sortie (livrée, retournée) — seules les fonctions de la 041 le font (recrédit) ;
+--   * ligne du chargement reçue APRÈS la confirmation de toutes les pièces de sa commande (téléphone resté hors ligne) :
+--     enregistrée fermée « livre » (l'article est chez le client), tracée au journal — jamais proposée « Déjà dans le camion ».
+create or replace function interne.l041_stock_camion_garde() returns trigger
+language plpgsql security definer set search_path = public, interne, pg_catalog as $$
+begin
+  if public.session_role() is null or coalesce(current_setting('l041.fonction', true), '') = '1' then return new; end if;
+  if tg_op = 'INSERT' then
+    if new.achat_id is not null or new.piece_id is not null or new.utilise_par_piece is not null or new.scinde_de is not null
+       or coalesce(new.reservee_une_fois, false) or new.tampon_fournisseur_id is not null then
+      raise exception using errcode = 'P0001',
+        message = 'STOCK_CAMION_RESERVE : une unité achetée, gardée ou réservée ne se crée que par les fonctions du dropshipping (041)';
+    end if;
+    if coalesce(new.status, 'en_camion') = 'en_camion' and new.source_cmd_id is not null
+       and not exists (select 1 from public.stock_camion x where x.id = new.id)
+       and exists (select 1 from public.commande_pieces q where q.cmd_id = new.source_cmd_id)
+       and not exists (select 1 from public.commande_pieces q where q.cmd_id = new.source_cmd_id and q.livraison is null) then
+      new.status := 'livre'; new.retour_at := now(); new.retour_par := 'base:041';
+      new.notes := coalesce(nullif(new.notes, '') || ' ; ', '') || 'Ligne du chargement reçue après la confirmation des pièces : fermée par la base (041)';
+      perform interne.l041_journal('chargement_tardif_ferme', new.source_cmd_id, null, null, null,
+        jsonb_build_object('stock_camion_id', new.id, 'libelle', new.produit_libelle, 'quantite', new.quantite, 'ligne_idx', new.ligne_idx));
+    end if;
+    return new;
+  end if;
+  if new.achat_id is distinct from old.achat_id or new.piece_id is distinct from old.piece_id
+     or new.utilise_par_piece is distinct from old.utilise_par_piece or new.scinde_de is distinct from old.scinde_de
+     or coalesce(new.reservee_une_fois, false) is distinct from coalesce(old.reservee_une_fois, false) or new.tampon_fournisseur_id is distinct from old.tampon_fournisseur_id
+     or new.ligne_idx is distinct from old.ligne_idx or new.produit_id is distinct from old.produit_id
+     or new.quantite is distinct from old.quantite or new.source_cmd_id is distinct from old.source_cmd_id
+     or (coalesce(old.status, '') <> 'en_camion' and new.status = 'en_camion') then
+    raise exception using errcode = 'P0001',
+      message = 'STOCK_CAMION_RESERVE : unité du camion modifiable seulement par les fonctions du dropshipping (041) — statut de sortie seul permis';
+  end if;
+  return new;
+end $$;
+revoke all on function interne.l041_stock_camion_garde() from public, anon, authenticated;
+drop trigger if exists stock_camion_garde_041 on public.stock_camion;
+create trigger stock_camion_garde_041 before insert or update on public.stock_camion
+  for each row execute function interne.l041_stock_camion_garde();
+
 -- coût d'une pièce : Dépôt = prix de revient (039) ; Fournisseur = prix payé HT ; Camion = achat d'origine, sinon revient
 create or replace function interne.l041_cout_piece(p_piece bigint, out cout numeric, out source text, out achat bigint)
 language plpgsql stable security definer set search_path = public, pg_catalog as $$
@@ -687,6 +765,15 @@ begin
       select id, montant_paye_ht into a from public.achats_fournisseur where id = sc.achat_id and statut = 'paye';
       if found then cout := a.montant_paye_ht; source := 'achat_camion'; achat := a.id; return; end if;
       source := 'inconnu'; return;
+    end if;
+    -- v7.5.208 : unité du camion venue du STOCK TAMPON (pièce « pas livrée » gardée) : coût = prix réel de SON lot
+    if interne.l041_du_tampon(p.provenance, p.origine, p.fournisseur_id) then
+      select ts.prix_achat_ht into cout from public.tampon_sorties ts where ts.piece_id = p.id and ts.cycle = p.cycle;
+      if found then source := 'tampon'; return; end if;
+      select l.prix_achat_ht into cout from public.stock_tampon_lots l
+       where l.produit_id = p.produit_id and l.fournisseur_id = p.fournisseur_id and l.quantite_restante > 0
+       order by l.date_achat, l.id limit 1;
+      if found then source := 'tampon'; return; end if;
     end if;
     select prix_revient_ht into cout from public.produits_revient where produit_id = p.produit_id;
     source := case when cout is null then 'inconnu' else 'revient_camion' end; return;
@@ -713,6 +800,7 @@ create or replace function interne.l041_vers_camion(p_piece bigint) returns uuid
 language plpgsql security definer set search_path = public, interne, pg_catalog as $$
 declare p record; a record; v_id uuid; v_liv text; v_n integer;
 begin
+  perform interne.l041_camion_fonction(true);   -- v7.5.208 : écriture du camion par la 041 (garde stock_camion_garde_041)
   select * into p from public.commande_pieces where id = p_piece;
   if not found or p.provenance is distinct from 'fournisseur' or p.achat_id is null then return null; end if;
   select * into a from public.achats_fournisseur where id = p.achat_id;
@@ -837,6 +925,7 @@ begin
   if not found then return json_build_object('ok', false, 'erreur', 'commande_introuvable'); end if;
   if exists (select 1 from public.commande_pieces where cmd_id = p_cmd_id and livraison = 'livree') then
     return json_build_object('ok', false, 'erreur', 'pieces_deja_livrees'); end if;
+  perform interne.l041_camion_fonction(true);
   for p in select * from public.commande_pieces where cmd_id = p_cmd_id order by id for update loop
     perform interne.l041_vers_camion(p.id);
     update public.achats_fournisseur set statut = 'annule' where id = p.achat_id and statut = 'prevu';
@@ -853,6 +942,7 @@ create or replace function public.drop_declarer(p_piece_id bigint, p_provenance 
 returns json language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
 declare p record; c record; a record; v_fp record; sc record; v_prix_prevu numeric; v_tournee text; v_achat bigint; v_origine text;
   v_sc uuid := interne.l041_uuid(p_stock_camion_id); v_unite uuid;   -- v7.5.205 : identifiant de ligne du camion = uuid
+  v_tf bigint;                                                        -- v7.5.208 : fournisseur du lot tampon de l'unité du camion
 begin
   if public.session_role() is null or public.session_role() not in ('admin', 'livreur') then
     return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
@@ -890,6 +980,7 @@ begin
       return json_build_object('ok', false, 'erreur', 'piece_camion_indisponible'); end if;
   end if;
   -- l'ancienne déclaration est défaite : achat prévu annulé, pièce du camion libérée
+  perform interne.l041_camion_fonction(true);
   update public.achats_fournisseur set statut = 'annule' where id = p.achat_id and statut = 'prevu';
   update public.stock_camion set utilise_par_piece = null where utilise_par_piece = p.id;
   v_achat := null; v_origine := 'depot';
@@ -912,19 +1003,26 @@ begin
     -- vaut toujours une unité.
     if sc.achat_id is null and coalesce(sc.quantite, 1) > 1 then
       update public.stock_camion set quantite = quantite - 1 where id = sc.id;
+      -- v7.5.208 : l'unité découpée n'est jamais une ligne de chargement (reservee_une_fois) ; elle garde le lot tampon d'origine
       insert into public.stock_camion (livreur, produit_libelle, quantite, source_cmd_id, source_tournee_id, charge_at, charge_par,
-                                       status, produit_id, piece_id, utilise_par_piece, scinde_de)
+                                       status, produit_id, piece_id, utilise_par_piece, scinde_de, reservee_une_fois, tampon_fournisseur_id)
       values (sc.livreur, sc.produit_libelle, 1, sc.source_cmd_id, sc.source_tournee_id, sc.charge_at, sc.charge_par,
-              'en_camion', sc.produit_id, sc.piece_id, p.id, sc.id)
+              'en_camion', sc.produit_id, sc.piece_id, p.id, sc.id, true, sc.tampon_fournisseur_id)
       returning id into v_unite;
     else
-      update public.stock_camion set utilise_par_piece = p.id where id = sc.id;
+      -- v7.5.208 (règle des 10 retours) : une ligne réservée UNE fois n'est plus une ligne de chargement de sa commande
+      -- d'origine : libérée (pièce « pas livrée », redéclarée), elle reste une unité libre du camion, jamais fermée « livre »
+      -- par la réconciliation du chargement de sa commande d'origine (l'article n'y est plus rattaché)
+      update public.stock_camion set utilise_par_piece = p.id, reservee_une_fois = true where id = sc.id;
       v_unite := sc.id;
     end if;
     v_origine := case when sc.achat_id is not null then 'fournisseur' else 'depot' end;
+    v_tf := case when sc.achat_id is null then sc.tampon_fournisseur_id end;
   end if;
   update public.commande_pieces set provenance = p_provenance, origine = v_origine,
-         fournisseur_id = case when p_provenance in ('fournisseur', 'tampon') then p_fournisseur_id end, achat_id = v_achat,
+         -- v7.5.208 : « Déjà dans le camion » d'une unité venue du stock tampon → fournisseur du lot (sortie de SON lot)
+         fournisseur_id = case when p_provenance in ('fournisseur', 'tampon') then p_fournisseur_id
+                               when p_provenance = 'camion' then v_tf end, achat_id = v_achat,
          stock_camion_id = case when p_provenance = 'camion' then v_unite end,
          stock_camion_demande = case when p_provenance = 'camion' then v_sc end,
          declare_par = interne.l041_acteur(), declare_at = now()
@@ -1032,32 +1130,89 @@ end $$;
 -- dépôt (Dépôt — stock BMS ou stock tampon). Les pièces achetées non livrées ont déjà leur ligne (l041_vers_camion) ; une
 -- pièce du camion non livrée garde la sienne (libérée). Sans ligne de chargement (ligne jamais cochée, déblocage du
 -- bureau), rien n'est créé : rien ne prouve que l'article est dans le camion. Rejouable : la confirmation ne passe qu'une fois.
+-- v7.5.208 (RÈGLE DES 10 RETOURS ; revue native P2 sur bac211e) : chaque unité gardée est RATTACHÉE À SA LIGNE DE CHARGEMENT
+-- EFFECTIVE. Avant, il suffisait qu'UNE ligne de la commande ait une ligne du camion pour que toutes les pièces « pas
+-- livrées » d'origine dépôt de la commande soient gardées — même celles d'une ligne jamais cochée (restée au dépôt,
+-- déblocage du bureau) : une unité FICTIVE, proposée le lendemain « Déjà dans le camion ». Désormais :
+--   * une ligne de chargement = ligne du camion de la commande (source_cmd_id), encore « en_camion », sans achat ni pièce
+--     d'origine, non réservée, jamais réservée (reservee_une_fois) et pas une unité découpée (scinde_de) ;
+--   * elle est rattachée à SA ligne de commande : indice envoyé par l'appli (ligne_idx) ; sinon (ligne plus ancienne) par
+--     son libellé — même lecture que l'appli : lignes[i].produit, sinon lignes[i].nom, sinon le produit de la commande —
+--     à la première ligne de même libellé pas encore remplie ; une ligne du camion qu'aucune ligne de commande ne reconnaît
+--     est fermée sans rien garder (« non rattachée », journalisée) ;
+--   * pour chaque ligne de commande chargée, on garde au plus autant d'unités que la ligne du camion en portait
+--     (quantité chargée × pièces par unité de la ligne), et seulement pour SES pièces « pas livrées » d'origine dépôt
+--     (Dépôt — stock BMS ou stock tampon ; une pièce tampon garde le fournisseur de son lot) ;
+--   * une ligne de commande jamais chargée ne garde RIEN (rien ne prouve que l'article est dans le camion).
 create or replace function interne.l041_reconcilier_chargement(p_cmd_id text, p_livreur text) returns jsonb
 language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
-declare r record; p record; v_ferme jsonb := '[]'::jsonb; v_garde jsonb := '[]'::jsonb; v_id uuid;
-  v_vu boolean := false; v_liv text; v_tour text; v_at timestamptz; v_par text;
+declare r record; p record; c record; v_ferme jsonb := '[]'::jsonb; v_garde jsonb := '[]'::jsonb; v_non jsonb := '[]'::jsonb; v_id uuid;
+  v_lignes jsonb; v_nl integer; v_l integer; v_prem integer; v_i integer; v_lib text; v_att jsonb := '{}'::jsonb; v_k text;
+  v_q integer; v_ql integer; v_np integer; v_cap integer; v_n integer; e jsonb;
 begin
+  perform interne.l041_camion_fonction(true);
+  select id, lignes, produit, qte into c from public.commandes where id = p_cmd_id;
+  if jsonb_typeof(c.lignes) = 'array' and jsonb_array_length(c.lignes) > 0 then v_lignes := c.lignes;
+  else v_lignes := jsonb_build_array(jsonb_build_object('produit', c.produit, 'qte', to_jsonb(c.qte))); end if;   -- même lecture que l041_decomposer
+  v_nl := jsonb_array_length(v_lignes);
   for r in select sc.* from public.stock_camion sc
             where sc.source_cmd_id = p_cmd_id and sc.status = 'en_camion' and sc.achat_id is null and sc.piece_id is null
-              and sc.utilise_par_piece is null
+              and sc.utilise_par_piece is null and sc.scinde_de is null and not coalesce(sc.reservee_une_fois, false)
             order by sc.charge_at, sc.id for update loop
     update public.stock_camion set status = 'livre', retour_at = now(), retour_par = interne.l041_acteur() where id = r.id;
-    v_ferme := v_ferme || jsonb_build_array(jsonb_build_object('id', r.id, 'libelle', r.produit_libelle, 'quantite', r.quantite));
-    if not v_vu then v_vu := true; v_liv := r.livreur; v_tour := r.source_tournee_id; v_at := r.charge_at; v_par := r.charge_par; end if;
+    v_l := null; v_prem := null;
+    if r.ligne_idx is not null and r.ligne_idx >= 0 and r.ligne_idx < v_nl then
+      v_l := r.ligne_idx;
+    else
+      for v_i in 0 .. v_nl - 1 loop
+        v_lib := case when jsonb_typeof(v_lignes -> v_i) = 'object'
+                      then coalesce(nullif(v_lignes -> v_i ->> 'produit', ''), nullif(v_lignes -> v_i ->> 'nom', '')) end;
+        if v_lib is not null and btrim(v_lib) = btrim(coalesce(r.produit_libelle, '')) then
+          if v_prem is null then v_prem := v_i; end if;
+          if coalesce((v_att -> v_i::text ->> 'q')::integer, 0) < interne.l040_qte(v_lignes -> v_i -> 'qte') then v_l := v_i; exit; end if;
+        end if;
+      end loop;
+      v_l := coalesce(v_l, v_prem);
+    end if;
+    if v_l is null then
+      v_non := v_non || jsonb_build_array(jsonb_build_object('id', r.id, 'libelle', r.produit_libelle, 'quantite', r.quantite));
+      continue;
+    end if;
+    v_ferme := v_ferme || jsonb_build_array(jsonb_build_object('id', r.id, 'libelle', r.produit_libelle, 'quantite', r.quantite, 'ligne_idx', v_l));
+    if v_att ? v_l::text then
+      v_att := jsonb_set(v_att, array[v_l::text, 'q'], to_jsonb((v_att -> v_l::text ->> 'q')::integer + greatest(1, coalesce(r.quantite, 1))));
+    else
+      v_att := v_att || jsonb_build_object(v_l::text, jsonb_build_object('q', greatest(1, coalesce(r.quantite, 1)), 'liv', r.livreur,
+                 'tour', r.source_tournee_id, 'at', r.charge_at, 'par', r.charge_par));
+    end if;
   end loop;
-  if not v_vu then return jsonb_build_object('fermees', v_ferme, 'gardees', v_garde); end if;
-  for p in select q.* from public.commande_pieces q
-            where q.cmd_id = p_cmd_id and q.livraison = 'non_livree' and q.provenance in ('depot', 'tampon')
-              and not exists (select 1 from public.stock_camion s2 where s2.piece_id = q.id and s2.achat_id is null and s2.status = 'en_camion')
-            order by q.id loop
-    insert into public.stock_camion (livreur, produit_libelle, quantite, source_cmd_id, source_tournee_id, charge_at, charge_par,
-                                     status, produit_id, piece_id)
-    values (coalesce(nullif(v_liv, ''), p_livreur, ''), p.libelle, 1, p_cmd_id, v_tour, v_at, v_par, 'en_camion', p.produit_id, p.id)
-    returning id into v_id;
-    v_garde := v_garde || jsonb_build_array(jsonb_build_object('id', v_id, 'piece_id', p.id, 'libelle', p.libelle));
+  for v_k in select k from jsonb_object_keys(v_att) k order by k::integer loop
+    e := v_att -> v_k; v_l := v_k::integer;
+    v_q := (e ->> 'q')::integer;                                         -- unités de la ligne réellement chargées
+    v_ql := greatest(1, interne.l040_qte(v_lignes -> v_l -> 'qte'));     -- unités de la ligne commandées
+    select count(*)::integer into v_np from public.commande_pieces where cmd_id = p_cmd_id and ligne_idx = v_l;
+    v_cap := least(v_np, (v_q::bigint * v_np / v_ql)::integer);          -- pièces que ces unités chargées représentent
+    v_n := 0;
+    for p in select q.* from public.commande_pieces q
+              where q.cmd_id = p_cmd_id and q.ligne_idx = v_l and q.livraison = 'non_livree' and q.provenance in ('depot', 'tampon')
+              order by q.id loop
+      exit when v_n >= v_cap;
+      v_n := v_n + 1;
+      if exists (select 1 from public.stock_camion s2 where s2.piece_id = p.id and s2.achat_id is null and s2.status = 'en_camion') then continue; end if;
+      insert into public.stock_camion (livreur, produit_libelle, quantite, source_cmd_id, source_tournee_id, charge_at, charge_par,
+                                       status, produit_id, piece_id, ligne_idx, tampon_fournisseur_id)
+      values (coalesce(nullif(e ->> 'liv', ''), p_livreur, ''), p.libelle, 1, p_cmd_id, e ->> 'tour', (e ->> 'at')::timestamptz, e ->> 'par',
+              'en_camion', p.produit_id, p.id, v_l, case when p.provenance = 'tampon' then p.fournisseur_id end)
+      returning id into v_id;
+      v_garde := v_garde || jsonb_build_array(jsonb_build_object('id', v_id, 'piece_id', p.id, 'libelle', p.libelle, 'ligne_idx', v_l,
+                                                                 'tampon_fournisseur_id', case when p.provenance = 'tampon' then p.fournisseur_id end));
+    end loop;
   end loop;
-  perform interne.l041_journal('chargement_reconcilie', p_cmd_id, null, null, null, jsonb_build_object('fermees', v_ferme, 'gardees', v_garde));
-  return jsonb_build_object('fermees', v_ferme, 'gardees', v_garde);
+  if jsonb_array_length(v_ferme) > 0 or jsonb_array_length(v_non) > 0 then
+    perform interne.l041_journal('chargement_reconcilie', p_cmd_id, null, null, null,
+      jsonb_build_object('fermees', v_ferme, 'gardees', v_garde, 'non_rattachees', v_non));
+  end if;
+  return jsonb_build_object('fermees', v_ferme, 'gardees', v_garde, 'non_rattachees', v_non);
 end $$;
 revoke all on function interne.l041_reconcilier_chargement(text, text) from public, anon, authenticated;
 
@@ -1083,7 +1238,9 @@ begin
   if not exists (select 1 from public.commande_pieces where cmd_id = c.id and livraison is null) then
     return json_build_object('ok', true, 'deja', true); end if;
   -- contrôles AVANT toute écriture : chaque pièce une fois, provenance déclarée, pièce fournisseur payée
-  if (select count(distinct (x ->> 'id')) from jsonb_array_elements(p_pieces) x) <> v_n
+  -- v7.5.208 (règle des 10 retours, question d) : chaque pièce UNE seule fois — un identifiant répété (deux issues
+  -- contradictoires pour la même pièce) est refusé au lieu d'être lu au hasard
+  if (select count(distinct (x ->> 'id')) from jsonb_array_elements(p_pieces) x) <> v_n or jsonb_array_length(p_pieces) <> v_n
      or exists (select 1 from jsonb_array_elements(p_pieces) x
                  where not exists (select 1 from public.commande_pieces q where q.cmd_id = c.id and q.id::text = x ->> 'id')
                     or jsonb_typeof(x -> 'livree') <> 'boolean') then
@@ -1117,17 +1274,20 @@ begin
             group by q.produit_id, q.fournisseur_id order by q.produit_id, q.fournisseur_id loop
     perform 1 from public.stock_tampon_lots l where l.produit_id = g.produit_id and l.fournisseur_id = g.fournisseur_id order by l.id for update;
     if coalesce((select sum(l.quantite_restante) from public.stock_tampon_lots l where l.produit_id = g.produit_id and l.fournisseur_id = g.fournisseur_id), 0)
-       - (select count(*) from public.commande_pieces q2 where q2.cmd_id <> c.id and q2.provenance = 'tampon' and q2.produit_id = g.produit_id
+       - (select count(*) from public.commande_pieces q2 where q2.cmd_id <> c.id and interne.l041_du_tampon(q2.provenance, q2.origine, q2.fournisseur_id)
+            and q2.produit_id = g.produit_id
             and q2.fournisseur_id = g.fournisseur_id and q2.livraison = 'livree'
             and not exists (select 1 from public.tampon_sorties ts where ts.piece_id = q2.id and ts.cycle = q2.cycle)) < g.n then
       return json_build_object('ok', false, 'erreur', 'stock_tampon_epuise', 'produit_id', g.produit_id, 'libelle', g.libelle);
     end if;
   end loop;
+  perform interne.l041_camion_fonction(true);
   for p in select q.* from public.commande_pieces q where q.cmd_id = c.id and q.livraison is null order by q.id loop
     select x into e from jsonb_array_elements(p_pieces) x where x ->> 'id' = p.id::text limit 1;
     v_liv := (e ->> 'livree')::boolean;
     if v_liv then
-      if p.provenance is distinct from 'tampon' then   -- tampon : coût figé à la sortie de son lot (deduire_stock_livraison)
+      -- tampon (et v7.5.208 : unité du camion venue du stock tampon) : coût figé à la sortie de son lot (deduire_stock_livraison)
+      if not interne.l041_du_tampon(p.provenance, p.origine, p.fournisseur_id) then
         select * into v_cout from interne.l041_cout_piece(p.id);
         insert into public.pieces_couts (piece_id, cycle, cmd_id, cout_ht, source, achat_id)
         values (p.id, p.cycle, c.id, v_cout.cout, v_cout.source, v_cout.achat) on conflict (piece_id, cycle) do nothing;
@@ -1161,6 +1321,7 @@ create or replace function interne.l041_liberer_non_livrees(p_cmd_id text, p_act
 language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
 declare p record; v_n integer := 0; v_camion uuid;
 begin
+  perform interne.l041_camion_fonction(true);
   for p in select q.* from public.commande_pieces q where q.cmd_id = p_cmd_id and q.livraison is null and q.provenance is not null order by q.id for update loop
     v_camion := interne.l041_vers_camion(p.id);
     update public.achats_fournisseur set statut = 'annule' where id = p.achat_id and statut = 'prevu';
@@ -1340,8 +1501,10 @@ begin
   end loop;
   -- STOCK TAMPON : chaque pièce « tampon » livrée sort de SON lot (premier entré, premier sorti, chez son fournisseur) ;
   -- lots verrouillés dans l'ordre (identifiant), coût figé = prix d'achat réel du lot
+  -- v7.5.208 (règle des 10 retours) : y compris une pièce « Déjà dans le camion » dont l'unité vient du stock tampon (pièce
+  -- « pas livrée » gardée dans le camion) — elle sort de SON lot au prix réel, jamais au revient BMS en laissant le lot plein
   for pt in select q.id, q.produit_id, q.fournisseur_id, q.libelle, q.cycle from public.commande_pieces q
-            where q.cmd_id = c.id and q.provenance = 'tampon' and coalesce(q.livraison, 'livree') = 'livree'
+            where q.cmd_id = c.id and interne.l041_du_tampon(q.provenance, q.origine, q.fournisseur_id) and coalesce(q.livraison, 'livree') = 'livree'
               and not exists (select 1 from public.tampon_sorties ts where ts.piece_id = q.id and ts.cycle = q.cycle) order by q.id loop
     select l.id, l.prix_achat_ht into lot from public.stock_tampon_lots l
      where l.produit_id = pt.produit_id and l.fournisseur_id = pt.fournisseur_id and l.quantite_restante > 0
@@ -1408,7 +1571,7 @@ create or replace function public.recrediter_stock_livraison(p_cmd_id text, p_su
 language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
 -- l041_enveloppe_recredit (repère lu par la section ci-dessus : ne pas retirer)
 declare v jsonb; ts record; v_lots jsonb := '[]'::jsonb; v_n integer := 0; v_op bigint; pq record; v_rd jsonb := '[]'::jsonb; v_cam uuid;
-  v_sans_deduction boolean := false;
+  v_sans_deduction boolean := false; v_lib integer := 0;
 begin
   if coalesce(btrim(p_cmd_id), '') <> '' then perform pg_advisory_xact_lock(hashtext('l040|' || p_cmd_id)); end if;
   v := interne.l041_recrediter_040(p_cmd_id, p_suppression)::jsonb;
@@ -1431,6 +1594,7 @@ begin
   end if;
   v_op := nullif(v ->> 'operation_id', '')::bigint;
   if v_sans_deduction then v_op := null; end if;
+  perform interne.l041_camion_fonction(true);
   perform 1 from public.commande_pieces where cmd_id = p_cmd_id order by id for update;
   -- sorties du stock tampon pas encore rendues : chacune revient dans SON lot (lots verrouillés dans l'ordre)
   for ts in select s.id, s.lot_id, s.piece_id from public.tampon_sorties s
@@ -1462,11 +1626,30 @@ begin
    where cmd_id = p_cmd_id and livraison = 'non_livree';
   update public.commande_pieces set cycle = cycle + 1, livraison = null, livraison_par = null, livraison_at = null where cmd_id = p_cmd_id;
   get diagnostics v_n = row_count;
+  -- v7.5.208 (règle des 10 retours, question b) : commande ANNULÉE (ou supprimée) APRÈS sa livraison : comme pour une
+  -- annulation avant livraison (v7.5.206), aucun achat payé ne reste attaché à une commande annulée — l'article acheté livré
+  -- puis repris passe dans le STOCK DU CAMION (rattaché à son achat) et l'unité du camion d'une pièce « Déjà dans le camion »
+  -- est libérée (disponible pour une autre commande) ; leurs déclarations sont remises à zéro. Les pièces « Dépôt » et
+  -- « stock tampon » gardent leur déclaration (leur stock est déjà rendu par le recrédit). Une relivraison (statut remis
+  -- « en attente », annulation de la livraison par le bureau) garde tous ses choix.
+  if coalesce(p_suppression, false) or not exists (select 1 from public.commandes where id = p_cmd_id)
+     or exists (select 1 from public.commandes where id = p_cmd_id and coalesce(statut, '') in ('annulé', 'annule')) then
+    for pq in select x.* from public.commande_pieces x where x.cmd_id = p_cmd_id and x.livraison is null
+                 and x.provenance in ('fournisseur', 'camion') order by x.id loop
+      v_cam := interne.l041_vers_camion(pq.id);
+      update public.achats_fournisseur set statut = 'annule' where id = pq.achat_id and statut = 'prevu';
+      update public.stock_camion set utilise_par_piece = null where utilise_par_piece = pq.id;
+      update public.commande_pieces set provenance = null, origine = null, fournisseur_id = null, achat_id = null, stock_camion_id = null,
+             stock_camion_demande = null, declare_par = null, declare_at = null where id = pq.id;
+      v_lib := v_lib + 1;
+    end loop;
+    if v_lib > 0 then perform interne.l041_journal('commande_annulee_apres_livraison', p_cmd_id, null, null, null, jsonb_build_object('pieces', v_lib)); end if;
+  end if;
   perform interne.l041_journal('recredit_pieces', p_cmd_id, null, null, null,
     jsonb_build_object('operation_id', v_op, 'lots_restaures', v_lots, 'pieces_nouveau_cycle', v_n, 'pieces_redeclarer', v_rd,
-                       'sans_deduction', v_sans_deduction));
+                       'sans_deduction', v_sans_deduction, 'pieces_liberees', v_lib));
   return (v || jsonb_build_object('lots_tampon_restaures', v_lots, 'pieces_nouveau_cycle', v_n, 'pieces_a_redeclarer', v_rd,
-                                  'pieces_rouvertes_sans_deduction', v_sans_deduction))::json;
+                                  'pieces_rouvertes_sans_deduction', v_sans_deduction, 'pieces_liberees', v_lib))::json;
 end $$;
 revoke all on function public.recrediter_stock_livraison(text, boolean) from public, anon, authenticated;
 grant execute on function public.recrediter_stock_livraison(text, boolean) to anon;   -- session vérifiée DANS la fonction de la 040

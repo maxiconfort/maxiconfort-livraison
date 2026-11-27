@@ -411,6 +411,25 @@ grant select, insert, update, delete on storage.objects to anon;
   test('… puis proposée « Déjà dans le camion » à une commande du livreur (produit retrouvé par le libellé)',
     ((await rpc('livreur', 'public.drop_pieces($1)', ['#I12'])).pieces.find((p) => p.produit_id === 'pq90').camion || []).some((c) => c.id === rep.id));
 
+  console.log('\n11 quater. v7.5.208 (règle des 10 retours ; revue native P2 sur bac211e) : UNE SEULE LIGNE COCHÉE — l\'unité gardée suit SA ligne (code réel de l\'appli, table réelle)');
+  vm.runInContext(morceau('function scCorpsEnvoi(', '// après la lecture de la base'), bac);
+  bac.dropModuleActif = () => true;   // migration 041 présente : l'appli envoie l'indice de la ligne chargée
+  await cmd('#I13', [{ produitId: 'pq140', nom: 'Matelas fictif Q', qte: 1 }, { produitId: 'pq90', nom: 'Sommier fictif Q', qte: 1 }], 504);
+  const pI13 = (await rpc('livreur', 'public.drop_pieces($1)', ['#I13'])).pieces;
+  const lI13 = bac.scEntreeCamion('Livreur-A', 'Sommier fictif Q', 1, '#I13', 'T-I1', 'Livreur-A', null, null, 1);   // seule la ligne 1 cochée
+  const cI13 = bac.scCorpsEnvoi(lI13);
+  test('l\'appli envoie l\'indice de la ligne chargée (ligne_idx = 1) quand le module est actif, jamais sinon',
+    cI13.ligne_idx === 1 && (() => { bac.dropModuleActif = () => false; const x = bac.scCorpsEnvoi(lI13); bac.dropModuleActif = () => true; return !('ligne_idx' in x); })(), cI13);
+  let eI13 = null; try { await q('livreur', 'insert into public.stock_camion select * from json_populate_record(null::public.stock_camion, $1::json) on conflict (id) do nothing', [JSON.stringify(cI13)]); } catch (e) { eI13 = e.message; }
+  test('… ligne acceptée par la table réelle (session du livreur, garde de la 041)', eI13 === null && (await nb('public.stock_camion where id = $1 and ligne_idx = 1', [lI13.id])) === 1, eI13);
+  for (const p of pI13) await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [p.id, 'depot']);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#I13', JSON.stringify(pI13.map((p) => ({ id: p.id, livree: false })))]);
+  const gI13 = await q(P, "select * from public.stock_camion where source_cmd_id = '#I13' and status = 'en_camion'");
+  test('deux pièces « pas livrées », une seule ligne cochée : SEULE l\'unité de la ligne chargée (sommier) reste dans le camion — aucune unité fictive pour le matelas resté au dépôt',
+    r.ok && gI13.length === 1 && gI13[0].produit_id === 'pq90' && gI13[0].ligne_idx === 1, { r, gI13 });
+  let eFab = null; try { await q('livreur', 'insert into public.stock_camion select * from json_populate_record(null::public.stock_camion, $1::json)', [JSON.stringify(Object.assign(bac.scEntreeCamion('Livreur-A', 'Sommier fictif Q', 1, '#I13', 'T-I1', 'Livreur-A'), { utilise_par_piece: pI13[0].id }))]); } catch (e) { eFab = e.message; }
+  test('garde de la 041 sur la table réelle : une unité « réservée » fabriquée par l\'appli est refusée', /STOCK_CAMION_RESERVE/.test(eFab || ''), eFab);
+
   console.log('\n12. REJEU FINAL DE LA 041 : le relevé des commandes livrées à l\'activation n\'est JAMAIS complété');
   await db.exec('set role l41i_postgres');
   let eFin = null; try { await db.exec(lireMigration('041_dropshipping_provenance.sql')); } catch (e) { eFin = e.message; }

@@ -543,6 +543,23 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     test('texte : la signature (validerSig) appelle scApresLivre ; le succès de la confirmation (dropEnvoyer) appelle scApresConfirmation ; setLvSt ne retire plus toutes les lignes de la commande',
       /scApresLivre\(_cmdLivre\.id/.test(vs) && /estConf && typeof scApresConfirmation === 'function'/.test(CODE_DROP)
       && !/sc\.status === 'en_camion' && sc\.source_cmd_id === cLv\.id/.test(html) && /scApresLivre\(cLv\.id/.test(html));
+
+    // v7.5.208 (règle des 10 retours ; revue native P2 sur bac211e) : indice de la ligne chargée, règles de la base suivies
+    const eI = b.scEntreeCamion('LIVREUR-TEST', 'Sommier fictif 90', 1, '#W1', null, 'admin', null, null, 1);
+    const eX = b.scEntreeCamion('LIVREUR-TEST', 'Sommier fictif 90', 1, '#W1', null, 'admin', null, null, 'x');
+    const eN = b.scEntreeCamion('LIVREUR-TEST', 'Sommier fictif 90', 1, '#W1', null, 'admin', null, null, -1);
+    test('v7.5.208 : la ligne du camion garde l\'indice de la ligne chargée (ligne_idx) ; un indice invalide n\'est jamais inventé', eI.ligne_idx === 1 && !('ligne_idx' in eX) && !('ligne_idx' in eN), { eI, eX, eN });
+    b.dropModuleActif = () => true;
+    const cA = b.scCorpsEnvoi(Object.assign({ a_envoyer: true }, eI));
+    b.dropModuleActif = () => false;
+    const cI = b.scCorpsEnvoi(Object.assign({ a_envoyer: true }, eI));
+    test('v7.5.208 : l\'indice est envoyé à la base seulement quand la migration 041 est présente (colonne ligne_idx), jamais de marque locale', cA.ligne_idx === 1 && !('ligne_idx' in cI) && !('a_envoyer' in cA), { cA, cI });
+    const lst2 = [L(c1, '#V1'), L(c2, '#V1', { scinde_de: c4 }), L(c3, '#V1', { reservee_une_fois: true })];
+    test('v7.5.208 : scLignesChargement exclut l\'unité découpée et l\'unité déjà réservée une fois (même règle que la base)', JSON.stringify(b.scLignesChargement(lst2, '#V1').map((x) => x.id)) === JSON.stringify([c1]));
+    test('texte v7.5.208 : toggleChargement et l\'annulation de livraison passent l\'indice de la ligne ; la confirmation envoie d\'abord les lignes du chargement « à envoyer » de la commande',
+      /ajouterStockCamion\(livreurCible, produitLib, qte, cmdId, t \? t\.id : null, parUser, ligneIdx\)/.test(html)
+      && /ajouterStockCamion\(t\.livreur, produitLib, qte, cmd\.id, t\.id, 'admin', li\)/.test(html)
+      && /data\.fn === 'drop_confirmer_livraison'[\s\S]{0,200}scEnvoyerChargement\(data\.cmdId\)[\s\S]{0,80}var r = await dropRpc\(data\.fn/.test(html));
   }
 
   {

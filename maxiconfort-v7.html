@@ -6039,6 +6039,12 @@ function dropPoser(cle, fn, params, cmdId) {
 }
 async function dropEnvoyer(data) {
   if (!data || !data.fn) return 'abandon';
+  // v7.5.208 (règle des 10 retours, question d) : les lignes du chargement de la commande encore « à envoyer » (téléphone
+  // hors ligne au chargement) partent AVANT la confirmation : la base les réconcilie (unités « pas livrées » gardées) au lieu
+  // de les recevoir après coup (elles seraient alors fermées « livre » par la base, sans unité gardée)
+  if (data.fn === 'drop_confirmer_livraison' && data.cmdId && typeof scEnvoyerChargement === 'function') {
+    try { await scEnvoyerChargement(data.cmdId); } catch(e) {}
+  }
   var r = await dropRpc(data.fn, data.params || {});
   if (r.reseau || r.absente || (!r.httpOk && (typeof httpTemporaire !== 'function' || httpTemporaire(r.statut)))) return 'reessayer';
   try { offlineQueue = offlineQueue.filter(function(it) { return !(it && it.type === 'drop' && it.data && it.data.id === data.id); }); oqEcrire(); } catch(e) {}
@@ -6628,8 +6634,11 @@ function scUuid() {
 }
 function scEstUuid(id) { return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id || '')); }
 // ligne envoyée à la table stock_camion (colonnes RÉELLES uniquement ; livreur et produit_libelle NOT NULL). Pure.
-function scEntreeCamion(livreur, produitLib, qte, cmdId, tourneeId, parUser, id, quand) {
-  return {
+// v7.5.208 (règle des 10 retours ; revue native P2 sur bac211e) : indice de la ligne de commande chargée (ligneIdx), gardé
+// sur l'appareil et envoyé à la base (colonne ligne_idx de la 041) : la réconciliation du chargement rattache chaque unité
+// gardée à SA ligne — une ligne jamais cochée ne laisse jamais d'unité fictive dans le camion.
+function scEntreeCamion(livreur, produitLib, qte, cmdId, tourneeId, parUser, id, quand, ligneIdx) {
+  var e = {
     id: id || scUuid(),
     livreur: String(livreur || ''),
     produit_libelle: String(produitLib || ''),
@@ -6640,11 +6649,17 @@ function scEntreeCamion(livreur, produitLib, qte, cmdId, tourneeId, parUser, id,
     charge_par: parUser || 'inconnu',
     status: 'en_camion'
   };
+  var li = parseInt(ligneIdx, 10);
+  if (!isNaN(li) && li >= 0 && String(li) === String(ligneIdx).trim()) e.ligne_idx = li;
+  return e;
 }
 // corps de l'envoi : la ligne locale SANS ses marques locales (a_envoyer…). Pure.
 function scCorpsEnvoi(entry) {
-  var c = scEntreeCamion(entry.livreur, entry.produit_libelle, entry.quantite, entry.source_cmd_id, entry.source_tournee_id, entry.charge_par, entry.id, entry.charge_at);
+  var c = scEntreeCamion(entry.livreur, entry.produit_libelle, entry.quantite, entry.source_cmd_id, entry.source_tournee_id, entry.charge_par, entry.id, entry.charge_at, entry.ligne_idx);
   if (entry.notes) c.notes = String(entry.notes);   // v7.5.207 : colonne réelle (trace d'une reprise d'ancienne ligne locale)
+  // v7.5.208 : la colonne ligne_idx n'existe qu'avec la migration 041 — envoyée seulement quand le module est actif
+  var actif = false; try { actif = (typeof dropModuleActif === 'function') && dropModuleActif() === true; } catch(e) { actif = false; }
+  if (!actif) delete c.ligne_idx;
   return c;
 }
 // après la lecture de la base : lignes de la base + lignes locales pas encore enregistrées (uuid valide). Pure.
@@ -6678,7 +6693,7 @@ function scConvertirAnciennes(stock, statutCmd, nouvelUuid) {
       return;
     }
     var aVerifier = st === null || st === undefined;
-    var n = scEntreeCamion(s.livreur, s.produit_libelle, s.quantite, s.source_cmd_id, s.source_tournee_id, s.charge_par, nouvelUuid(), s.charge_at);
+    var n = scEntreeCamion(s.livreur, s.produit_libelle, s.quantite, s.source_cmd_id, s.source_tournee_id, s.charge_par, nouvelUuid(), s.charge_at, s.ligne_idx);
     n.a_envoyer = true; n.reprise_de = String(s.id);
     n.notes = 'Reprise v7.5.207 de l\'ancienne ligne locale ' + String(s.id) + (aVerifier ? ' (commande inconnue sur l\'appareil : à vérifier)' : '');
     res.push(n);
@@ -6700,7 +6715,14 @@ function scReprendreAnciennes() {
     if (typeof chargements !== 'undefined' && chargements) {
       Object.keys(chargements).forEach(function(cmd) { Object.keys(chargements[cmd] || {}).forEach(function(i) {
         var ch = chargements[cmd][i];
-        r.converties.concat(r.ecartees).forEach(function(cv) { if (ch && ch.stockCamionId === cv.ancien) ch.stockCamionId = cv.nouveau || null; });
+        r.converties.concat(r.ecartees).forEach(function(cv) {
+          if (ch && ch.stockCamionId === cv.ancien) {
+            ch.stockCamionId = cv.nouveau || null;
+            // v7.5.208 : la ligne reprise connaît désormais SA ligne de commande (indice du chargement)
+            var nv = cv.nouveau ? stockCamion.find(function(x) { return x && x.id === cv.nouveau; }) : null;
+            if (nv && nv.ligne_idx === undefined && /^[0-9]+$/.test(String(i))) nv.ligne_idx = parseInt(i, 10);
+          }
+        });
       }); });
       if (typeof mxEcrire === 'function') mxEcrire('mx_chargements', JSON.stringify(chargements));
     }
@@ -6719,7 +6741,9 @@ function scReprendreAnciennes() {
 // pièce d'origine, non réservées par une pièce), encore dans le camion. Pure.
 function scLignesChargement(stock, cmdId) {
   return (stock || []).filter(function(s) {
-    return s && cmdId && s.status === 'en_camion' && s.source_cmd_id === cmdId && !s.achat_id && !s.piece_id && !s.utilise_par_piece;
+    // v7.5.208 : ni unité découpée (scinde_de), ni unité déjà réservée une fois par une pièce (même règle que la base)
+    return s && cmdId && s.status === 'en_camion' && s.source_cmd_id === cmdId && !s.achat_id && !s.piece_id && !s.utilise_par_piece
+      && !s.scinde_de && !s.reservee_une_fois;
   });
 }
 // après la CONFIRMATION des pièces par la base (qui a fermé ces lignes et gardé une ligne par unité non livrée) : retrait de
@@ -6782,6 +6806,14 @@ async function scEnvoyer(entry) {
   } catch(e) { console.warn('[stockCamion] enregistrement :', e && e.message); return false; }
 }
 
+// v7.5.208 : envoi des lignes du chargement d'UNE commande encore « à envoyer » (même uuid : jamais de doublon)
+async function scEnvoyerChargement(cmdId) {
+  var l = (stockCamion || []).filter(function(s) { return s && s.a_envoyer && scEstUuid(s.id) && s.source_cmd_id === cmdId; });
+  for (var i = 0; i < l.length; i++) { await scEnvoyer(l[i]); }
+  if (l.length) { try { localStorage.setItem('mx_stock_camion', JSON.stringify(stockCamion)); } catch(e) {} }
+  return l.length;
+}
+
 // Charger stock camion depuis Supabase
 async function sbLoadStockCamion() {
   try {
@@ -6810,8 +6842,8 @@ async function sbLoadStockCamion() {
 }
 
 // Ajouter un produit au stock camion (lors du chargement)
-async function ajouterStockCamion(livreur, produitLib, qte, cmdId, tourneeId, parUser) {
-  var entry = scEntreeCamion(livreur, produitLib, qte, cmdId, tourneeId, parUser);
+async function ajouterStockCamion(livreur, produitLib, qte, cmdId, tourneeId, parUser, ligneIdx) {
+  var entry = scEntreeCamion(livreur, produitLib, qte, cmdId, tourneeId, parUser, null, null, ligneIdx);   // v7.5.208 : ligne chargée
   entry.a_envoyer = true;   // retiré dès que la base a accepté la ligne
   stockCamion.push(entry);
   try { localStorage.setItem('mx_stock_camion', JSON.stringify(stockCamion)); } catch(e) {}
@@ -7138,7 +7170,7 @@ async function toggleChargement(cmdId, ligneIdx, charge) {
     if (charge && !ancienCharge) {
       // CHARGEMENT : dépôt → camion
       if (livreurCible && produitLib) {
-        var newId = await ajouterStockCamion(livreurCible, produitLib, qte, cmdId, t ? t.id : null, parUser);
+        var newId = await ajouterStockCamion(livreurCible, produitLib, qte, cmdId, t ? t.id : null, parUser, ligneIdx);   // v7.5.208 : indice de la ligne
         if (chargements[cmdId] && chargements[cmdId][ligneIdx]) {
           chargements[cmdId][ligneIdx].stockCamionId = newId;
           try { mxEcrire('mx_chargements', JSON.stringify(chargements)); } catch(e) {} // v7.5.119 : mémoire + localStorage
@@ -14499,11 +14531,11 @@ function annulerLivraison(tid, idx) {
     try {
       // On recharge la marchandise dans le camion (logique : RANOU reprend les produits)
       var lignesCmd = cmd.lignes && cmd.lignes.length ? cmd.lignes : [{produit: cmd.produit, qte: cmd.qte || 1}];
-      lignesCmd.forEach(function(ligne) {
+      lignesCmd.forEach(function(ligne, li) {
         var produitLib = ligne.produit || ligne.nom || '';
         var qte = ligne.qte || 1;
         if (produitLib && t.livreur) {
-          ajouterStockCamion(t.livreur, produitLib, qte, cmd.id, t.id, 'admin');
+          ajouterStockCamion(t.livreur, produitLib, qte, cmd.id, t.id, 'admin', li);   // v7.5.208 : indice de la ligne
         }
       });
     } catch(e) { console.warn('[annulerLivraison] stock camion:', e); }
