@@ -1283,6 +1283,60 @@ grant select, insert, update, delete on storage.objects to anon;
     && (await nb("public.drop_alertes where type = 'tampon_epuise' and cle = 'cmd:#T31W2' and vue_at is null")) === 1
     && !(await un(P, "select stock_deduit from public.commandes where id = '#T31W2'")).stock_deduit, r);
 
+  console.log('\n32. v7.5.210 (revue native P2 sur a1d9e57) : LOT ÉPUISÉ APRÈS LA CONFIRMATION D\'UNE UNITÉ TAMPON DU CAMION → dérogation motivée');
+  // suite du cas #T31W2 : pièce confirmée livrée, lot vidé, déduction refusée — avant v7.5.210, aucune issue
+  r = await rpc('admin', 'public.drop_livre_sans_confirmation($1, $2)', ['#T31W2', 'motif de test']);
+  test('dérogation « Livré sans confirmation » : toujours « rien_a_deroger » (toutes les pièces sont confirmées)', r.ok === false && r.erreur === 'rien_a_deroger', r);
+  r = await rpc('collab', 'public.drop_tampon_corriger($1, $2)', [pW2.id, 'motif de test']);
+  test('collaboratrice : « admin_requis »', r.ok === false && r.erreur === 'admin_requis', r);
+  r = await rpc('admin', 'public.drop_tampon_corriger($1, $2)', [pW2.id, 'abc']);
+  test('motif trop court : « motif_requis », rien changé', r.ok === false && r.erreur === 'motif_requis'
+    && String((await un(P, 'select fournisseur_id from public.commande_pieces where id = $1', [pW2.id])).fournisseur_id) === String(F1), r);
+  const jW0 = await nb("public.drop_journal where cmd_id = '#T31W2'");
+  r = await rpc('admin', 'public.drop_tampon_corriger($1, $2)', [pW2.id, 'lot vide après la livraison, vérifié au dépôt']);
+  const pW2a = await un(P, 'select provenance, origine, fournisseur_id, livraison from public.commande_pieces where id = $1', [pW2.id]);
+  const cW2 = await un(P, 'select cout_ht, source, lot_id from public.pieces_couts where piece_id = $1', [pW2.id]);
+  const jW2 = await un(P, "select * from public.drop_journal where cmd_id = '#T31W2' order by id desc limit 1");
+  test('dérogation motivée de l\'administrateur (unité tampon du camion, lot épuisé après confirmation) : acceptée, coût FIGÉ au prix de revient (6), pièce toujours « camion », origine dépôt, livrée, plus rattachée au lot',
+    r.ok === true && r.derogation === 'tampon_camion_epuise' && Number(r.cout_ht) === 6 && r.source === 'revient'
+    && pW2a.provenance === 'camion' && pW2a.origine === 'depot' && pW2a.fournisseur_id === null && pW2a.livraison === 'livree'
+    && Number(cW2.cout_ht) === 6 && cW2.source === 'revient' && cW2.lot_id === null, { r, pW2a, cW2 });
+  test('… journalisée (« derogation_tampon_camion_epuise » : motif, fournisseur du lot, unité du camion, explication du coût) et alerte « stock tampon épuisé » de la commande vue',
+    (await nb("public.drop_journal where cmd_id = '#T31W2'")) > jW0 && JSON.stringify(jW2).includes('derogation_tampon_camion_epuise')
+    && JSON.stringify(jW2).includes('lot vide après la livraison') && JSON.stringify(jW2).includes(String(gW1.id)) && JSON.stringify(jW2).includes('prix de revient')
+    && (await nb("public.drop_alertes where type = 'tampon_epuise' and cle = 'cmd:#T31W2' and vue_at is null")) === 0, jW2);
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#T31W2']);
+  test('… la déduction passe ensuite : unité sortie du stock du dépôt (pz-td −1), aucune sortie de lot, lot toujours à 0, coût inchangé (revient)',
+    r.ok === true && (await stock('pz-td')) === sTd - 1 && (await nb('public.tampon_sorties where piece_id = $1', [pW2.id])) === 0
+    && Number((await un(P, "select sum(quantite_restante)::int as n from public.stock_tampon_lots where produit_id = 'pz-td'")).n) === 0
+    && Number((await un(P, 'select cout_ht from public.pieces_couts where piece_id = $1', [pW2.id])).cout_ht) === 6, r);
+  const jW3 = await nb("public.drop_journal where cmd_id = '#T31W2'");
+  r = await rpc('admin', 'public.drop_tampon_corriger($1, $2)', [pW2.id, 'deuxième essai de dérogation']);
+  test('… rejouée : refusée (la pièce n\'est plus rattachée au lot : « pas_une_piece_tampon_livree »), aucune nouvelle ligne au journal, coût inchangé (jamais deux fois)',
+    r.ok === false && r.erreur === 'pas_une_piece_tampon_livree' && (await nb("public.drop_journal where cmd_id = '#T31W2'")) === jW3
+    && (await nb('public.pieces_couts where piece_id = $1', [pW2.id])) === 1, r);
+  // seulement pour CE refus : lot encore disponible → refus « lot_disponible », rien changé
+  await q(P, "insert into public.produits (id, nom, cat, prix, stock) values ('pz-te', 'Oreiller fictif V', 'Oreiller', 30, 5)");
+  await q(P, "insert into public.produits_revient (produit_id, prix_revient_ht) values ('pz-te', 6)");
+  r = (await un('admin', ENTREE, ['cle-entree-z32', F1, AUJ, 'cb', null, JSON.stringify([{ produit_id: 'pz-te', qte: 1, prix_ht: 4 }])])).r;
+  const gV1 = await garder('#T32V1', 'pz-te');
+  await cmd('#T32V2', { lignes: [{ produitId: 'pz-te', nom: 'Oreiller fictif', qte: 1 }], prix: 40 });
+  const pV2 = (await rpc('livreur', 'public.drop_pieces($1)', ['#T32V2'])).pieces[0];
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pV2.id, 'camion', gV1.id]);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#T32V2', JSON.stringify([{ id: pV2.id, livree: true }])]);
+  test('unité tampon du camion confirmée, lot encore disponible', r.ok, r);
+  r = await rpc('admin', 'public.drop_tampon_corriger($1, $2)', [pV2.id, 'essai sans lot épuisé']);
+  test('… dérogation demandée alors que le lot couvre la pièce : refus « lot_disponible », rien changé (fournisseur du lot gardé, aucun coût figé)',
+    r.ok === false && r.erreur === 'lot_disponible'
+    && String((await un(P, 'select fournisseur_id from public.commande_pieces where id = $1', [pV2.id])).fournisseur_id) === String(F1)
+    && (await nb('public.pieces_couts where piece_id = $1', [pV2.id])) === 0, r);
+  // jamais pour une pièce du camion qui ne vient pas du stock tampon
+  const pDep = await un(P, "select id from public.commande_pieces where provenance = 'camion' and fournisseur_id is null and cmd_id <> '#T31W2' limit 1");
+  if (pDep) {
+    r = await rpc('admin', 'public.drop_tampon_corriger($1, $2)', [pDep.id, 'pièce du camion venue du dépôt']);
+    test('pièce du camion venue du dépôt (hors stock tampon) : « pas_une_piece_tampon_livree »', r.ok === false && r.erreur === 'pas_une_piece_tampon_livree', r);
+  }
+
   }
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');

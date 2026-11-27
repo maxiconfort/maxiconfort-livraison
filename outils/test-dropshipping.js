@@ -591,6 +591,45 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
   }
 
   {
+    // v7.5.210 (revue native P2 sur a1d9e57) : unité du camion venue du stock tampon, confirmée livrée, lot épuisé APRÈS la
+    // confirmation (déduction refusée « stock_tampon_epuise ») : bouton de dérogation motivée dans la fiche commande (admin)
+    const PT = (champs) => Object.assign({ id: 71, libelle: 'Oreiller fictif', provenance: 'camion', origine: 'depot', fournisseur: 'Fournisseur fictif', livraison: 'livree', fige: false, cout_ht: 4 }, champs || {});
+    const marge = (statut, pieces) => ({ ok: true, statut, vente_ht: 30, vente_ht_commande: 30, cout_ht: 4, marge_ht: 26, pieces });
+    let rep = marge('livré', [PT(), PT({ id: 72, fournisseur: null }), PT({ id: 73, fige: true }), PT({ id: 74, provenance: 'tampon' })]);
+    let repCorr = { ok: true, piece: 71, cout_ht: 6, derogation: 'tampon_camion_epuise', source: 'revient' };
+    const { bac, els } = nouveauBac({ role: 'admin', reponse: (url) => ({ status: 200, json: /drop_marge_commande/.test(url) ? rep : /drop_tampon_corriger/.test(url) ? repCorr : { ok: true } }) });
+    bac.dropActif = true; bac.currentCmdId = '#D7';
+    test('pièce visée (pure) : seulement camion + origine dépôt + fournisseur du lot + livrée + coût pas figé',
+      bac.dropPieceTamponCamionBloquee(PT()) === true && bac.dropPieceTamponCamionBloquee(PT({ fournisseur: null })) === false && bac.dropPieceTamponCamionBloquee(PT({ fige: true })) === false
+      && bac.dropPieceTamponCamionBloquee(PT({ livraison: null })) === false && bac.dropPieceTamponCamionBloquee(PT({ provenance: 'tampon' })) === false && bac.dropPieceTamponCamionBloquee(PT({ origine: 'achat' })) === false);
+    await bac.dropFicheCommande('#D7');
+    const h = els['drop-fiche'].innerHTML;
+    test('fiche commande « livré » : bouton de dérogation pour la SEULE pièce visée (71), pas pour les autres', /dropTamponCamionDeroger\('#D7',71\)/.test(h) && !/dropTamponCamionDeroger\('#D7',7[234]\)/.test(h) && /Lot épuisé : sortir du stock du dépôt au prix de revient \(motif\)/.test(h), h.slice(-600));
+    rep = marge('en_cours', [PT()]); els['drop-fiche'].innerHTML = '';
+    await bac.dropFicheCommande('#D7');
+    test('… commande pas encore « livré » : aucun bouton (rien n\'a pu être refusé)', !/dropTamponCamionDeroger/.test(els['drop-fiche'].innerHTML));
+    bac._prompt = 'abc';
+    await bac.dropTamponCamionDeroger('#D7', 71);
+    test('dérogation : motif de moins de 5 caractères refusé, rien envoyé', !bac._envois.some((e) => /drop_tampon_corriger/.test(e.url)) && bac._toasts.some((t) => /Motif obligatoire/.test(t[0])));
+    bac._prompt = null;
+    await bac.dropTamponCamionDeroger('#D7', 71);
+    test('dérogation : annulée (prompt fermé), rien envoyé', !bac._envois.some((e) => /drop_tampon_corriger/.test(e.url)));
+    bac._prompt = 'Lot vide après la livraison, vérifié au dépôt';
+    await bac.dropTamponCamionDeroger('#D7', 71);
+    const e = bac._envois.find((x) => /rpc\/drop_tampon_corriger/.test(x.url));
+    test('dérogation : envoyée à drop_tampon_corriger avec la pièce et le motif ; coût figé annoncé (6 € HT, prix de revient)',
+      e && e.body.p_piece_id === 71 && e.body.p_motif === 'Lot vide après la livraison, vérifié au dépôt'
+      && bac._toasts.some((t) => /Dérogation enregistrée \(journalisée\) : coût figé 6.*HT \(prix de revient\)/.test(t[0])), bac._toasts.slice(-1));
+    repCorr = { ok: false, erreur: 'lot_disponible' };
+    await bac.dropTamponCamionDeroger('#D7', 71);
+    test('refus « lot_disponible » de la base : message clair (aucune dérogation nécessaire)', bac._toasts.some((t) => /couvre encore cette pièce/.test(t[0])), bac._toasts.slice(-1));
+    const { bac: bL } = nouveauBac({ role: 'livreur' });
+    bL._prompt = 'motif suffisant';
+    await bL.dropTamponCamionDeroger('#D7', 71);
+    test('livreur : aucune dérogation possible (rien envoyé)', !bL._envois.some((x) => /drop_tampon_corriger/.test(x.url)));
+  }
+
+  {
     // v7.5.206 (avis chatgpt-review sur efe0409, point 2) : COHÉRENCE DES VERSIONS — CACHE_VERSION du service worker, version
     // annoncée en tête du service worker (1re ligne « // v7.5.X - ») et version documentée dans CLAUDE.md (ligne « Version de
     // l'appli à mettre en ligne », titre de la section Dropshipping, ordre de mise en ligne) doivent être la MÊME.

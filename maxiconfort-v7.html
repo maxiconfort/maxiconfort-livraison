@@ -6016,7 +6016,11 @@ var DROP_ERREURS = {
   prix_ht_superieur_ttc: 'Le prix HT d\'une ligne dépasse son prix TTC', quantite_invalide: 'Quantité invalide (1 à 10 000)', prix_invalide: 'Prix invalide',
   // v7.5.205
   achat_au_camion: 'Pièce achetée passée dans le stock du camion : déclarez-la « Déjà dans le camion »',
-  decoupage_requis: 'Commande jamais contrôlée pièce par pièce : ouvrez le chargement, ou dérogation du bureau'
+  decoupage_requis: 'Commande jamais contrôlée pièce par pièce : ouvrez le chargement, ou dérogation du bureau',
+  // v7.5.210
+  lot_disponible: 'Le lot du stock tampon couvre encore cette pièce : aucune dérogation nécessaire',
+  pas_une_piece_tampon_livree: 'Pièce non concernée (ni stock tampon, ni livrée)', deja_sortie: 'Stock déjà retiré pour cette pièce',
+  admin_requis: 'Réservé à l\'administrateur'
 };
 function dropMessageErreur(corps) { var e = corps && corps.erreur; return DROP_ERREURS[e] || ('Refus de la base' + (e ? ' (' + e + ')' : '')); }
 
@@ -6592,9 +6596,17 @@ async function dropFicheCommande(cmdId) {
   div.id = 'drop-fiche';
   // v7.5.201 (réserve n° 1) : la base refuse « livré » tant qu'une pièce n'est pas confirmée ; exception de l'administrateur
   var aConf = (r.corps.pieces || []).some(function(p) { return p && p.id && !p.livraison; });
+  // v7.5.210 (revue native P2 sur a1d9e57) : unité du camion venue du stock tampon, confirmée livrée, coût pas encore figé,
+  // commande « livré » : la déduction a pu être refusée « stock_tampon_epuise » (lot épuisé APRÈS la confirmation). Issue :
+  // la dérogation motivée de l'administrateur (base : drop_tampon_corriger, refusée « lot_disponible » si le lot couvre la pièce).
+  var aTc = livEstLivre(r.corps.statut) ? (r.corps.pieces || []).filter(dropPieceTamponCamionBloquee) : [];
   div.innerHTML = '<div class="card" style="margin-top:12px"><div class="card-t">📦 Provenance des pièces et marge</div>' + dropPiecesAdminHtml(r.corps) +
     (aConf ? '<div style="margin-top:8px;font-size:12px;color:var(--t2)">Pièces non confirmées : la base refuse « Livré ». ' +
-      '<button class="btn btn-sm" onclick="dropDeroger(\'' + dropEchap(cmdId) + '\')">🔓 Autoriser « Livré » sans confirmation (motif)</button></div>' : '') + '</div>';
+      '<button class="btn btn-sm" onclick="dropDeroger(\'' + dropEchap(cmdId) + '\')">🔓 Autoriser « Livré » sans confirmation (motif)</button></div>' : '') +
+    aTc.map(function(p) {
+      return '<div style="margin-top:8px;font-size:12px;color:var(--t2)">' + dropEchap(p.libelle) + ' : unité du camion venue du stock tampon. Si son lot est épuisé, la base refuse de retirer le stock. ' +
+        '<button class="btn btn-sm" onclick="dropTamponCamionDeroger(\'' + dropEchap(cmdId) + '\',' + (parseInt(p.id, 10) || 0) + ')">🔓 Lot épuisé : sortir du stock du dépôt au prix de revient (motif)</button></div>';
+    }).join('') + '</div>';
   if (!div.parentNode) body.appendChild(div);
 }
 async function dropDeroger(cmdId) {
@@ -6607,6 +6619,23 @@ async function dropDeroger(cmdId) {
   if (r.httpOk && r.corps && r.corps.ok) {
     if (dropPieces[cmdId]) { dropPieces[cmdId].derogation = true; dropSauver(); }
     toast('✅ Dérogation enregistrée (journalisée) : la commande peut passer « Livré »', 'ok');
+    dropFicheCommande(cmdId);
+  } else toast('⛔ ' + dropMessageErreur(r.corps), 'err');
+}
+// v7.5.210 : pièce « Déjà dans le camion » dont l'unité vient du stock tampon (origine dépôt + fournisseur du lot), livrée, coût pas figé
+function dropPieceTamponCamionBloquee(p) {
+  return !!(p && p.id && p.provenance === 'camion' && p.origine === 'depot' && p.fournisseur && p.livraison === 'livree' && !p.fige);
+}
+async function dropTamponCamionDeroger(cmdId, pieceId) {
+  if (role !== 'admin' || !pieceId) return;
+  var motif = prompt('Motif (obligatoire, 5 caractères au moins) : lot du stock tampon épuisé après la livraison. L\'unité sortira du stock du dépôt, coût figé au prix de revient BMS (journalisé).');
+  if (motif == null) return;
+  if (String(motif).trim().length < 5) { toast('Motif obligatoire (5 caractères au moins)', 'err'); return; }
+  var r = await dropRpc('drop_tampon_corriger', { p_piece_id: pieceId, p_motif: String(motif).trim() });
+  if (r.reseau) { toast('📵 Pas de réseau : dérogation non enregistrée', 'err'); return; }
+  if (r.httpOk && r.corps && r.corps.ok) {
+    // la déduction refusée reste dans la file du téléphone du livreur et repasse à sa prochaine relève
+    toast('✅ Dérogation enregistrée (journalisée) : coût figé ' + (r.corps.cout_ht != null ? dropEur(r.corps.cout_ht) + ' HT (prix de revient)' : 'inconnu (pas de prix de revient)') + ' ; le stock sera retiré du dépôt à la déduction', 'ok');
     dropFicheCommande(cmdId);
   } else toast('⛔ ' + dropMessageErreur(r.corps), 'err');
 }

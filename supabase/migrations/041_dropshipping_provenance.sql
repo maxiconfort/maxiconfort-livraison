@@ -109,7 +109,9 @@
 --   * stock du camion réservé et consommé PAR UNITÉ (ligne de plusieurs unités découpée à la déclaration).
 --   * COMMANDE CONCERNÉE (interne.l041_concernee) jamais découpée : « livré » et déduction refusés, sauf dérogation.
 --   * stock tampon épuisé entre la déclaration et la livraison : confirmation / déduction refusées, correction tracée
---     (drop_tampon_corriger).
+--     (drop_tampon_corriger). v7.5.210 : aussi pour une unité du camion venue du stock tampon, confirmée livrée, dont le lot
+--     s'est épuisé après la confirmation (dérogation motivée, coût figé au prix de revient, journal
+--     « derogation_tampon_camion_epuise » ; bouton dans la fiche commande de l'administrateur).
 --
 -- v7.5.206 (avis chatgpt-review sur efe0409 et cfbf0fa, revue native P2 sur cfbf0fa) :
 --   * COMMANDE CONCERNÉE : les commandes déjà LIVRÉES à l'activation sont relevées une seule fois (drop_livrees_avant_activation)
@@ -1760,11 +1762,45 @@ begin
   perform pg_advisory_xact_lock(hashtext('l040|' || p.cmd_id));
   select id, stock_deduit into c from public.commandes where id = p.cmd_id for update;
   select * into p from public.commande_pieces where id = p_piece_id for update;
-  if p.provenance is distinct from 'tampon' or coalesce(p.livraison, '') <> 'livree' then
+  -- v7.5.210 (revue native P2 sur a1d9e57) : AUSSI une pièce « Déjà dans le camion » dont l'unité vient du stock tampon
+  -- (interne.l041_du_tampon : provenance camion, origine dépôt, fournisseur du lot), CONFIRMÉE livrée, quand son lot s'est
+  -- épuisé APRÈS la confirmation (la déduction refuse alors « stock_tampon_epuise » et aucune autre issue n'existait :
+  -- dérogation « rien_a_deroger », pièces toutes confirmées). Voir le cas camion ci-dessous.
+  if coalesce(p.livraison, '') <> 'livree'
+     or (p.provenance is distinct from 'tampon' and not (p.provenance = 'camion' and interne.l041_du_tampon(p.provenance, p.origine, p.fournisseur_id))) then
     return json_build_object('ok', false, 'erreur', 'pas_une_piece_tampon_livree'); end if;
   if coalesce(c.stock_deduit, false) or exists (select 1 from public.tampon_sorties ts where ts.piece_id = p.id and ts.cycle = p.cycle) then
     return json_build_object('ok', false, 'erreur', 'deja_sortie'); end if;
   select prix_revient_ht into v_rev from public.produits_revient where produit_id = p.produit_id;
+  if p.provenance = 'camion' then
+    -- DÉROGATION MOTIVÉE, réservée au refus « stock_tampon_epuise » : acceptée SEULEMENT si le lot de ce produit chez ce
+    -- fournisseur ne couvre plus les pièces de la commande qui l'attendent (même contrôle que la déduction ; sinon
+    -- « lot_disponible », la déduction sortira l'unité de son lot au prix réel). L'unité, livrée, reste une pièce
+    -- « Déjà dans le camion » d'origine dépôt mais n'est plus rattachée au lot (fournisseur effacé) : à la déduction elle
+    -- sort du stock du dépôt comme toute unité du camion venue du dépôt. Coût FIGÉ au prix de revient BMS (comme la
+    -- correction « Dépôt — stock BMS » d'une pièce « stock tampon ») : le lot n'a plus d'unité, son prix d'achat a déjà été
+    -- compté pour les pièces qui l'ont vidé ; ce coût est journalisé avec le motif et l'explication.
+    perform 1 from public.stock_tampon_lots l where l.produit_id = p.produit_id and l.fournisseur_id = p.fournisseur_id order by l.id for update;
+    if coalesce((select sum(l.quantite_restante) from public.stock_tampon_lots l
+                  where l.produit_id = p.produit_id and l.fournisseur_id = p.fournisseur_id), 0)
+       >= (select count(*) from public.commande_pieces q
+            where q.cmd_id = p.cmd_id and q.produit_id is not distinct from p.produit_id and q.fournisseur_id = p.fournisseur_id
+              and interne.l041_du_tampon(q.provenance, q.origine, q.fournisseur_id) and coalesce(q.livraison, 'livree') = 'livree'
+              and not exists (select 1 from public.tampon_sorties ts where ts.piece_id = q.id and ts.cycle = q.cycle)) then
+      return json_build_object('ok', false, 'erreur', 'lot_disponible'); end if;
+    update public.commande_pieces set fournisseur_id = null where id = p.id;
+    insert into public.pieces_couts (piece_id, cycle, cmd_id, cout_ht, source)
+    values (p.id, p.cycle, p.cmd_id, v_rev, case when v_rev is null then 'inconnu' else 'revient' end) on conflict (piece_id, cycle) do nothing;
+    perform interne.l041_journal('derogation_tampon_camion_epuise', p.cmd_id, p.id, null, v_rev,
+      jsonb_build_object('motif', v_motif, 'fournisseur_id', p.fournisseur_id, 'stock_camion_id', p.stock_camion_id, 'cycle', p.cycle,
+        'cout', case when v_rev is null then 'inconnu' else 'revient' end,
+        'explication', 'lot du stock tampon épuisé après la confirmation : unité du camion sortie du stock du dépôt, coût figé au prix de revient BMS'));
+    perform interne.l041_alerte('tampon_epuise', 'derog-camion:' || p.id || ':' || p.cycle, p.cmd_id, p.id, null,
+      'Dérogation : ' || p.libelle || ' (' || p.cmd_id || ') unité du camion venue du stock tampon, lot épuisé — sortie du stock du dépôt au prix de revient — motif : ' || v_motif, null);
+    update public.drop_alertes set vue_par = interne.l041_acteur(), vue_at = now() where type = 'tampon_epuise' and cle = 'cmd:' || p.cmd_id and vue_at is null;
+    return json_build_object('ok', true, 'piece', p.id, 'cout_ht', v_rev, 'derogation', 'tampon_camion_epuise',
+      'source', case when v_rev is null then 'inconnu' else 'revient' end);
+  end if;
   update public.commande_pieces set provenance = 'depot', origine = 'depot', fournisseur_id = null where id = p.id;
   insert into public.pieces_couts (piece_id, cycle, cmd_id, cout_ht, source)
   values (p.id, p.cycle, p.cmd_id, v_rev, case when v_rev is null then 'inconnu' else 'revient' end) on conflict (piece_id, cycle) do nothing;
