@@ -432,7 +432,7 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     try { bac.validerSig(); } catch (e) { erreur = e; }
     for (let k = 0; k < 10; k++) await new Promise(r => setImmediate(r));
     test('vraie demande, base injoignable : validerSig ne lève pas', erreur === null, erreur && erreur.message);
-    test('vraie demande : commande enregistrée « livré » d\'abord, puis UNE demande à la base, aucune 2e sauvegarde de commande', ordre[0] === 'commande:livré' && ordre.filter(x => x === 'rpc:coupure').length === 1 && nCmd === 1, ordre);
+    test('vraie demande : commande enregistrée « livré » d\'abord, puis UNE demande à la base, aucune 2e sauvegarde de commande', ordre.indexOf('commande:livré') > -1 && ordre.indexOf('commande:livré') < ordre.indexOf('rpc:coupure') && ordre.filter(x => x === 'rpc:coupure').length === 1 && nCmd === 1, ordre); // v7.5.202 : « livré » après la confirmation des pièces (rien à confirmer ici), toujours avant la déduction
     test('vraie demande en échec : gardée en file (deduction|#T10), stock_deduit faux, stock local NON touché (5)', bac.offlineQueue.some(i => i.type === 'deduction' && i.data.id === '#T10') && !bac.commandes[0].stockDeduit && bac.produits[0].stock === 5 && bac.commandes[0].statut === 'livré', bac.offlineQueue.map(i => i.type));
   }
   await new Promise(r => setTimeout(r, 20));
@@ -1485,7 +1485,7 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
   test('setLvSt et chgStatut : déduction demandée APRÈS l\'enregistrement du « livré »', /var _pLv = sbSaveCommande\(cmd\);[^\n]*\n\s*if \(st === 'livré'\) stkDemanderDeduction\(cmd, _pLv\);/.test(html) && /var _pSc = sbSaveCommande\(c\);[^\n]*\n\s*if \(st === 'livré'\) stkDemanderDeduction\(c, _pSc\);/.test(html));
   const sw = fs.readFileSync(path.join(__dirname, '..', 'service-worker.js'), 'utf8');
   test('CACHE_VERSION augmenté (v7-5-197 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-(19[7-9]|[2-9]\d\d)'/.test(sw));
-  test('validerSig garde la demande de déduction et le « livré » AVANT l\'envoi (stkDeductionPoser, offlineQueueAdd, puis sbSaveCommande)', /stkDeductionPoser\(_cmdLivre\);[\s\S]{0,200}offlineQueueAdd\('commande', _cmdLivre\);[\s\S]{0,200}_pLivre = sbSaveCommande\(_cmdLivre\)/.test(CODE_SIG));
+  test('validerSig garde la demande de déduction et le « livré » AVANT l\'envoi (stkDeductionPoser, offlineQueueAdd, puis sbSaveCommande)', /stkDeductionPoser\(_cmdLivre\);[\s\S]{0,200}offlineQueueAdd\('commande', _cmdLivre\);[\s\S]{0,1400}_pLivre = sbSaveCommande\(_cmdLivre\)/.test(CODE_SIG)); // v7.5.202 : envoi après la confirmation des pièces
   test('reprise des demandes au chargement et à la relève (stkReprendreDeductions)', /stkReprendreDeductions\(true\)/.test(html) && /stkReprendreDeductions\(false\)/.test(html));
   // v7.5.197 : la mécanique supprimée n'existe plus dans l'application (déduction calculée sur le téléphone)
   const code = html.split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');

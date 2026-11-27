@@ -278,27 +278,28 @@ grant select, insert, update, delete on storage.objects to anon;
   console.log('\n5. 2e PARE-FEU : ENLÈVEMENT CHEZ LE FOURNISSEUR (« Enlevé et payé »)');
   r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pS1.id, 10, 'especes', null]);
   test('pièce « Dépôt » : pas un enlèvement', r.ok === false && r.erreur === 'pas_un_enlevement');
-  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 165, 'especes', 'autre/C1/t.jpg']);
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 198, 'especes', 'autre/C1/t.jpg']);
   test('chemin de ticket d\'un autre dossier : refusé, rien enregistré', r.ok === false && r.erreur === 'chemin_ticket_invalide' && (await nb("public.depenses where id like 'drop-%'")) === 0);
-  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 165, 'chèque', null]);
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 198, 'chèque', null]);
   test('mode inconnu : refusé', r.ok === false && r.erreur === 'mode_invalide');
   // point de caisse validé (038b) : refus de la base, RIEN n'est enregistré
   // v7.5.201 (fusion pile 24-28, 038b v7.5.195) : la validation porte ce sur quoi le montant attendu a été calculé
   const ctrlT1 = await un(P, "select interne.l038b_depenses_especes('T-1') as d, interne.l038b_arrets_caisse((select t.stops::jsonb from public.tournees t where t.id = 'T-1')) as a");
   await q('admin', "insert into public.caisse_remises (key_remise, livreur, periode, validee, par, controle_depenses, controle_arrets) values ('t_T-1', 'Livreur-A', $1, true, 'admin', $2, $3)",
     [AUJ, ctrlT1.d, JSON.stringify(ctrlT1.a)]);
-  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 165, 'especes', 'livreur-a/C1/ticket-1.jpg']);
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 198, 'especes', 'livreur-a/C1/ticket-1.jpg']);
   test('point de caisse de la tournée déjà validé (038b) : refusé, ni achat payé ni dépense', r.ok === false && r.erreur === 'point_caisse_valide'
     && (await un(P, "select statut from public.achats_fournisseur where piece_id = $1 and statut <> 'annule'", [pM.id])).statut === 'prevu' && (await nb("public.depenses where id like 'drop-%'")) === 0, r);
   await q('admin', "delete from public.caisse_remises where key_remise = 't_T-1'");
-  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 165, 'especes', 'livreur-a/C1/ticket-1.jpg']);
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 198, 'especes', 'livreur-a/C1/ticket-1.jpg']);
   const ach = await un(P, "select * from public.achats_fournisseur where piece_id = $1 and statut = 'paye'", [pM.id]);
   const dep = await un(P, 'select * from public.depenses where id = $1', ['drop-' + (ach && ach.id)]);
-  test('payé 165 € HT en espèces : achat PAYÉ, écart +5 renvoyé', r.ok && r.ecart === 5 && ach && Number(ach.montant_paye_ht) === 165 && ach.mode === 'especes', r);
-  test('dépense « Espèces » de la tournée créée (déduite de la caisse du livreur, PR 24)', dep && dep.mode_paie === 'Espèces' && Number(dep.montant) === 165 && dep.tournee_id === 'T-1' && dep.livreur === 'Livreur-A' && dep.date_depense === AUJ && dep.cat === 'Achat fournisseur', dep);
-  test('écart payé / prévu → alerte administrateur (+5)', (await nb("public.drop_alertes where type = 'ecart_prix' and montant = 5")) === 1);
+  test('CAISSE TTC, MARGE HT : payé 198 € TTC en espèces (prévu 160 HT = 192 TTC attendus) → coût HT 165 (198 ÷ 1,2), TTC 198 gardé à part, écart TTC +6', r.ok && r.ecart === 6 && r.ttc_attendu === 192
+    && ach && Number(ach.montant_paye_ht) === 165 && Number(ach.montant_paye_ttc) === 198 && Number(ach.tva_pct) === 20 && ach.mode === 'especes', r);
+  test('dépense « Espèces » de la tournée = TTC PAYÉ 198 (déduit de ce que le livreur remet, PR 24)', dep && dep.mode_paie === 'Espèces' && Number(dep.montant) === 198 && dep.tournee_id === 'T-1' && dep.livreur === 'Livreur-A' && dep.date_depense === AUJ && dep.cat === 'Achat fournisseur', dep);
+  test('écart TTC payé / TTC attendu → alerte administrateur (+6, message en TTC)', (await nb("public.drop_alertes where type = 'ecart_prix' and montant = 6 and message like '%198.00 € TTC au lieu de 192.00 € TTC%'")) === 1);
   test('ticket fourni : pas d\'alerte « ticket manquant »', (await nb("public.drop_alertes where type = 'ticket_manquant'")) === 0);
-  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 165, 'especes', 'livreur-a/C1/ticket-1.jpg']);
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pM.id, 198, 'especes', 'livreur-a/C1/ticket-1.jpg']);
   test('rejeu (réponse perdue) : « deja », aucune 2e dépense', r.ok && r.deja === true && (await nb("public.depenses where id like 'drop-%'")) === 1);
   r = await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pM.id, 'depot']);
   test('achat payé : la provenance ne peut plus changer', r.ok === false && r.erreur === 'achat_deja_paye');
@@ -347,15 +348,25 @@ grant select, insert, update, delete on storage.objects to anon;
   await q(P, "update public.commandes set statut = 'livré' where id = '#C2'");
   const s140b = await stock('pm140');
   r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#C2']);
-  test('livré SANS confirmation des pièces : pièce Dépôt retirée + alerte « livré sans confirmation »', r.ok && (await stock('pm140')) === s140b - 1
-    && (await nb("public.drop_alertes where type = 'livre_sans_confirmation' and cmd_id = '#C2'")) === 1);
+  test('v7.5.201 : « livré » posé hors appli SANS confirmation des pièces : la déduction ATTEND (pieces_non_confirmees), rien retiré, alerte', r.ok === false && r.erreur === 'pieces_non_confirmees'
+    && (await stock('pm140')) === s140b && (await nb("public.drop_alertes where type = 'livre_sans_confirmation' and cmd_id = '#C2'")) === 1
+    && !(await un(P, "select stock_deduit from public.commandes where id = '#C2'")).stock_deduit, r);
+  r = await rpc('livreur', 'public.drop_livre_sans_confirmation($1, $2)', ['#C2', 'client a tout pris']);
+  test('dérogation : refusée au livreur', r.ok === false && r.erreur === 'admin_requis');
+  r = await rpc('admin', 'public.drop_livre_sans_confirmation($1, $2)', ['#C2', 'ok']);
+  test('dérogation : motif de moins de 5 caractères refusé', r.ok === false && r.erreur === 'motif_requis');
+  r = await rpc('admin', 'public.drop_livre_sans_confirmation($1, $2)', ['#C2', 'Pièces vues livrées au téléphone']);
+  test('dérogation de l\'administrateur (motif) : journalisée', r.ok && r.cycle === 1 && (await nb("public.drop_journal where action = 'derogation_livre' and cmd_id = '#C2' and acteur = 'admin'")) === 1);
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#C2']);
+  test('après dérogation : pièce Dépôt retirée (comportement d\'avant) + alerte', r.ok && (await stock('pm140')) === s140b - 1
+    && (await nb("public.drop_alertes where type = 'livre_sans_confirmation' and cmd_id = '#C2'")) >= 1, r);
 
   // =========================================================================================================================
   console.log('\n8. PIÈCE ACHETÉE NON LIVRÉE → STOCK DU CAMION, REPRISE LE LENDEMAIN SANS NOUVEL ACHAT');
   // sommier 2 de #C1 : non livré mais venu du DÉPÔT → pas de stock camion créé ; on fabrique le cas « acheté non livré » avec #C3
-  await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [p3.id, 160, 'cb', null]);
-  test('payé en CB sans photo : dépense « CB » à part (non déduite des espèces) + alerte « ticket manquant »',
-    (await un(P, "select mode_paie from public.depenses where comment like 'Dropshipping #C3%'")).mode_paie === 'CB' && (await nb("public.drop_alertes where type = 'ticket_manquant'")) === 1);
+  await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [p3.id, 192, 'cb', null]);
+  test('payé 192 TTC en CB sans photo : dépense « CB » à part de 192 (non déduite des espèces) + alerte « ticket manquant »',
+    (await un(P, "select mode_paie from public.depenses where comment like 'Dropshipping #C3%'")).mode_paie === 'CB' && Number((await un(P, "select montant from public.depenses where comment like 'Dropshipping #C3%'")).montant) === 192 && (await nb("public.drop_alertes where type = 'ticket_manquant'")) === 1);
   r = await rpc('livreur', 'public.drop_ticket_ajouter($1, $2)', [p3.id, 'livreur-a/C3/ticket-2.jpg']);
   test('photo envoyée après coup : rattachée, alerte « ticket manquant » marquée vue', r.ok && (await nb("public.drop_alertes where type = 'ticket_manquant' and vue_at is null")) === 0);
   r = await rpc('livreur', 'public.drop_commande_non_livree($1)', ['#C3']);
@@ -451,19 +462,19 @@ grant select, insert, update, delete on storage.objects to anon;
   const sTamp = await stock('ps90');
   const nMvt = await nb("public.stock_operations where nature = 'mouvement'");
   const ENTREE = 'select public.drop_tampon_entree($1, $2, $3::date, $4, $5, $6::jsonb) as r';
-  r = (await un('livreur', ENTREE, ['cle-entree-1', F2, AUJ, 'especes', null, JSON.stringify([{ produit_id: 'ps90', qte: 2, prix_ht: 30 }])])).r;
+  r = (await un('livreur', ENTREE, ['cle-entree-1', F2, AUJ, 'especes', null, JSON.stringify([{ produit_id: 'ps90', qte: 2, prix_ttc: 36 }])])).r;
   test('livreur : pas d\'entrée de stock tampon', r.ok === false && r.erreur === 'admin_requis');
-  r = (await un('collab', ENTREE, ['cle-entree-1', F2, AUJ, 'especes', null, JSON.stringify([{ produit_id: 'ps90', qte: 2, prix_ht: 30 }])])).r;
+  r = (await un('collab', ENTREE, ['cle-entree-1', F2, AUJ, 'especes', null, JSON.stringify([{ produit_id: 'ps90', qte: 2, prix_ttc: 36 }])])).r;
   test('collaboratrice : pas d\'entrée de stock tampon', r.ok === false);
-  r = (await un('admin', ENTREE, ['cle-entree-x', F2, AUJ, 'especes', null, JSON.stringify([{ produit_id: 'ps90', qte: 2, prix_ht: 30 }, { produit_id: 'ps90', qte: 1, prix_ht: 'abc' }])])).r;
+  r = (await un('admin', ENTREE, ['cle-entree-x', F2, AUJ, 'especes', null, JSON.stringify([{ produit_id: 'ps90', qte: 2, prix_ttc: 36 }, { produit_id: 'ps90', qte: 1, prix_ttc: 'abc' }])])).r;
   test('prix invalide sur une ligne : refusé, RIEN d\'écrit (ni lot ni stock)', r.ok === false && r.erreur === 'prix_invalide' && (await stock('ps90')) === sTamp && (await nb('public.stock_tampon_lots')) === 0);
   const ilYa40 = (await un(P, "select to_char(current_date - 40, 'YYYY-MM-DD') as d")).d;
-  r = (await un('admin', ENTREE, ['cle-entree-1', F2, ilYa40, 'especes', 'tampon/cle-entree-1/facture.jpg', JSON.stringify([{ produit_id: 'ps90', qte: 2, prix_ht: 30 }])])).r;
-  test('entrée 1 (il y a 40 jours) : lot de 2 sommiers à 30 € HT, stock du dépôt +2 PAR mouvement_stock_produit (040)', r.ok && r.total_ht === 60
+  r = (await un('admin', ENTREE, ['cle-entree-1', F2, ilYa40, 'especes', 'tampon/cle-entree-1/facture.jpg', JSON.stringify([{ produit_id: 'ps90', qte: 2, prix_ttc: 36 }])])).r;
+  test('entrée 1 (il y a 40 jours) : facture 2 × 36 € TTC = 72 TTC payés, lot au coût HT 30 (36 ÷ 1,2), stock du dépôt +2 PAR mouvement_stock_produit (040)', r.ok && r.total_ht === 60 && r.total_ttc === 72 && r.lots[0].prix_ht === 30
     && (await stock('ps90')) === sTamp + 2 && (await nb("public.stock_operations where nature = 'mouvement'")) === nMvt + 1, r);
-  r = (await un('admin', ENTREE, ['cle-entree-1', F2, ilYa40, 'especes', 'tampon/cle-entree-1/facture.jpg', JSON.stringify([{ produit_id: 'ps90', qte: 2, prix_ht: 30 }])])).r;
+  r = (await un('admin', ENTREE, ['cle-entree-1', F2, ilYa40, 'especes', 'tampon/cle-entree-1/facture.jpg', JSON.stringify([{ produit_id: 'ps90', qte: 2, prix_ttc: 36 }])])).r;
   test('rejeu de la même entrée : « deja », aucun lot ni stock de plus', r.ok && r.deja === true && (await stock('ps90')) === sTamp + 2 && (await nb('public.stock_tampon_lots')) === 1);
-  r = (await un('admin', ENTREE, ['cle-entree-2', F2, AUJ, 'cb', null, JSON.stringify([{ produit_id: 'ps90', qte: 3, prix_ht: 35 }])])).r;
+  r = (await un('admin', ENTREE, ['cle-entree-2', F2, AUJ, 'cb', null, JSON.stringify([{ produit_id: 'ps90', qte: 3, prix_ttc: 42 }])])).r;
   test('entrée 2 (aujourd\'hui) : 3 sommiers à 35 € HT', r.ok && (await stock('ps90')) === sTamp + 5);
   test('lots et entrées : invisibles au livreur et à la collaboratrice', (await q('livreur', 'select id from public.stock_tampon_lots')).length === 0 && (await q('collab', 'select id from public.stock_tampon_entrees')).length === 0);
   r = await rpc('admin', 'public.drop_tampon_etat()', []);
@@ -491,10 +502,146 @@ grant select, insert, update, delete on storage.objects to anon;
   r = await rpc('admin', 'public.drop_marge_commande($1)', ['#T1']);
   test('marge : vente 360 TTC = 300 HT − coût réel des lots 95 = 205', r.ok && r.cout_ht === 95 && r.marge_ht === 205 && r.cout_estime === false, r);
   test('sortie de lot : ni modification ni suppression', /ajout seul/.test(await echec(P, 'delete from public.tampon_sorties') || ''));
-  r = (await un('admin', ENTREE, ['cle-entree-3', F2, ilYa40, 'virement', null, JSON.stringify([{ produit_id: 'pm140', qte: 1, prix_ht: 80 }])])).r;
+  r = (await un('admin', ENTREE, ['cle-entree-3', F2, ilYa40, 'virement', null, JSON.stringify([{ produit_id: 'pm140', qte: 1, prix_ttc: 96 }])])).r;
   r = await rpc('admin', 'public.drop_controler()', []);
   test('lot qui dort depuis plus de 30 jours (réglage) → alerte avec sa valeur', r.ok && r.jours_tampon === 30 && r.alertes.some(a => a.type === 'tampon_ancien' && Number(a.montant) === 80), r.alertes);
   test('journal : entrée de stock tampon (montant, lots)', (await nb("public.drop_journal where action = 'tampon_entree' and montant = 105")) === 1);
+
+
+  // =========================================================================================================================
+  // v7.5.201 — réserves de la revue Codex sur 53c7b59 et décision de Borhen corrigée (caisse TTC, marge HT)
+  console.log('\n13. v7.5.201 : LA BASE REFUSE « LIVRÉ » TANT QU\'UNE PIÈCE N\'EST PAS CONFIRMÉE (sauf dérogation de l\'administrateur)');
+  await cmd('#L1', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360 });
+  const pL1 = (await rpc('livreur', 'public.drop_pieces($1)', ['#L1'])).pieces[0];
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pL1.id, 'depot']);
+  let m = await echec('livreur', "update public.commandes set statut = 'livré' where id = '#L1'");
+  test('livreur : « livré » refusé tant que la pièce n\'est pas confirmée (PIECES_NON_CONFIRMEES)', !!m && /PIECES_NON_CONFIRMEES/.test(m), m);
+  m = await echec('livreur', "insert into public.commandes (id, client, livreur, statut, date_livraison) values ('#L1', 'Client fictif', 'Livreur-A', 'livré', $1) on conflict (id) do update set statut = excluded.statut", [AUJ]);
+  test('même refus par un upsert (POST merge-duplicates de l\'appli)', !!m && /PIECES_NON_CONFIRMEES/.test(m), m);
+  m = await echec('admin', "update public.commandes set statut = 'livré' where id = '#L1'");
+  test('administrateur : refusé lui aussi sans dérogation', !!m && /PIECES_NON_CONFIRMEES/.test(m), m);
+  test('statut inchangé en base', (await un(P, "select statut from public.commandes where id = '#L1'")).statut === 'en-route');
+  await cmd('#L2', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360 });
+  test('compatibilité : commande NON découpée par le module (aucune pièce) → « livré » accepté', (await echec('livreur', "update public.commandes set statut = 'livré' where id = '#L2'")) === null);
+  test('compatibilité : création directe « livré » (bureau) sans pièces → acceptée', (await echec('admin', "insert into public.commandes (id, client, statut, date_livraison) values ('#L3', 'Client fictif', 'livré', $1)", [AUJ])) === null);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#L1', JSON.stringify([{ id: pL1.id, livree: true }])]);
+  test('après la confirmation des pièces : « livré » accepté', r.ok && (await echec('livreur', "update public.commandes set statut = 'livré' where id = '#L1'")) === null, r);
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#L1']);
+  test('déduction après confirmation : acceptée', r.ok && r.mode === 'pieces', r);
+  await cmd('#L4', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360 });
+  const pL4 = (await rpc('livreur', 'public.drop_pieces($1)', ['#L4'])).pieces[0];
+  r = await rpc('admin', 'public.drop_livre_sans_confirmation($1, $2)', ['#L4', 'Livré par le bureau, pièces contrôlées']);
+  test('dérogation motivée de l\'administrateur → « livré » accepté (pièce jamais déclarée)', r.ok && (await echec('admin', "update public.commandes set statut = 'livré' where id = '#L4'")) === null, r);
+  r = await rpc('admin', 'public.drop_livre_sans_confirmation($1, $2)', ['#L4', 'Livré par le bureau, pièces contrôlées']);
+  test('dérogation rejouée : « deja »', r.ok && r.deja === true);
+  test('dérogation : ajout seul', /ajout seul/.test(await echec(P, 'delete from public.drop_derogations') || ''));
+  test('dérogations : invisibles au livreur et à la collaboratrice', (await q('livreur', 'select id from public.drop_derogations')).length === 0 && (await q('collab', 'select id from public.drop_derogations')).length === 0);
+  void pL4;
+
+  console.log('\n14. v7.5.201 : DÉCOUPAGE PÉRIMÉ → CONFIRMATION REFUSÉE PAR LA BASE');
+  await cmd('#P1', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360 });
+  const pP1 = (await rpc('livreur', 'public.drop_pieces($1)', ['#P1'])).pieces[0];
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pP1.id, 'depot']);
+  await q(P, "update public.commandes set lignes = $1::jsonb where id = '#P1'", [JSON.stringify([{ produitId: 'pm140', qte: 2 }])]);
+  test('lignes changées après déclaration : « périmé »', (await rpc('livreur', 'public.drop_pieces($1)', ['#P1'])).perime === true);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#P1', JSON.stringify([{ id: pP1.id, livree: true }])]);
+  test('confirmation d\'un découpage périmé : REFUSÉE (decoupage_perime), rien de confirmé (appareil au cache ancien compris)', r.ok === false && r.erreur === 'decoupage_perime'
+    && (await un(P, 'select livraison from public.commande_pieces where id = $1', [pP1.id])).livraison === null, r);
+  test('et « livré » reste refusé', /PIECES_NON_CONFIRMEES/.test(await echec('livreur', "update public.commandes set statut = 'livré' where id = '#P1'") || ''));
+  await rpc('admin', 'public.drop_reinitialiser_pieces($1)', ['#P1']);
+  r = await rpc('livreur', 'public.drop_pieces($1)', ['#P1']);
+  test('après réinitialisation par l\'administrateur : 2 pièces neuves, non périmées', r.ok && r.perime === false && r.pieces.length === 2);
+
+  console.log('\n15. v7.5.201 : CAISSE TTC, MARGE HT (enlèvement)');
+  await cmd('#V1', { lignes: [{ produitId: 'pm180', qte: 1 }], prix: 480 });
+  const pV1 = (await rpc('livreur', 'public.drop_pieces($1)', ['#V1'])).pieces[0];
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pV1.id, 'fournisseur', F1]);
+  test('le livreur voit le TTC attendu (160 HT → 192 TTC) et le taux de TVA', r.ok && r.piece.achat.prix_prevu_ttc === 192 && r.piece.tva_pct === 20 && r.piece.fournisseurs[0].prix_prevu_ttc === 192, r.piece && r.piece.achat);
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4, $5)', [pV1.id, 192, 'especes', null, 193]);
+  test('HT de la facture supérieur au TTC : refusé, rien enregistré', r.ok === false && r.erreur === 'montant_ht_invalide' && (await nb("public.depenses where comment like 'Dropshipping #V1%'")) === 0);
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4, $5)', [pV1.id, 192, 'especes', null, 159.5]);
+  const aV1 = await un(P, "select * from public.achats_fournisseur where cmd_id = '#V1' and statut = 'paye'");
+  test('HT de la facture SAISI (159,50) : coût HT = 159,50 (pas 160), TTC payé 192, écart TTC 0 (pas d\'alerte)', r.ok && r.ecart === 0 && Number(aV1.montant_paye_ht) === 159.5 && Number(aV1.montant_paye_ttc) === 192
+    && (await nb("public.drop_alertes where type = 'ecart_prix' and cmd_id = '#V1'")) === 0, r);
+  test('caisse : dépense espèces = 192 TTC (ce qui sort réellement de la poche du livreur)', Number((await un(P, "select montant from public.depenses where comment like 'Dropshipping #V1%'")).montant) === 192);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#V1', JSON.stringify([{ id: pV1.id, livree: true }])]);
+  await q('livreur', "update public.commandes set statut = 'livré' where id = '#V1'");
+  r = await rpc('admin', 'public.drop_marge_commande($1)', ['#V1']);
+  test('marge en HT : vente 480 TTC = 400 HT − coût HT 159,50 = 240,50', r.ok && r.cout_ht === 159.5 && r.marge_ht === 240.5 && r.pieces[0].montant_paye_ttc === 192, r);
+  await q('admin', "update public.parametres set valeur = '10' where cle = 'drop_tva_pct'");
+  await cmd('#V2', { lignes: [{ produitId: 'pm180', qte: 1 }], prix: 440 });
+  const pV2 = (await rpc('livreur', 'public.drop_pieces($1)', ['#V2'])).pieces[0];
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pV2.id, 'fournisseur', F1]);
+  test('TVA du réglage (10 %) : TTC attendu 176', r.ok && r.piece.achat.prix_prevu_ttc === 176);
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pV2.id, 187, 'cb', null]);
+  test('TVA 10 % : 187 TTC payés → coût HT 170 (187 ÷ 1,1), écart TTC +11 signalé', r.ok && r.montant_paye_ht === 170 && r.ecart === 11
+    && (await nb("public.drop_alertes where type = 'ecart_prix' and cmd_id = '#V2' and montant = 11")) === 1, r);
+  await q('admin', "update public.parametres set valeur = '20' where cle = 'drop_tva_pct'");
+
+  console.log('\n16. v7.5.201 : IDEMPOTENCE DE LA DÉCLARATION « STOCK TAMPON » (le fournisseur compte)');
+  r = (await un('admin', ENTREE, ['cle-entree-f1', F1, AUJ, 'especes', null, JSON.stringify([{ produit_id: 'ps90', qte: 1, prix_ttc: 30, prix_ht: 25 }])])).r;
+  test('entrée tampon chez F1 avec HT de facture saisi : lot au coût HT 25 (pas 30 ÷ 1,2), facture 30 TTC', r.ok && r.lots[0].prix_ht === 25 && r.total_ttc === 30, r);
+  await cmd('#D1', { lignes: [{ produitId: 'ps90', qte: 1 }], prix: 144 });
+  const pD1 = (await rpc('livreur', 'public.drop_pieces($1)', ['#D1'])).pieces[0];
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pD1.id, 'tampon', F2]);
+  test('stock tampon F2 déclaré', r.ok && r.piece.fournisseur_id === F2);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pD1.id, 'tampon', F1]);
+  test('puis stock tampon F1 : PAS « deja » — fournisseur changé (revue Codex P2)', r.ok && r.deja === false && r.piece.fournisseur_id === F1, r);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pD1.id, 'tampon', F1]);
+  test('la même (tampon F1) rejouée : « deja »', r.ok && r.deja === true);
+  r = (await un('admin', ENTREE, ['cle-entree-f1', F2, AUJ, 'especes', null, JSON.stringify([{ produit_id: 'ps90', qte: 1, prix_ttc: 30 }])])).r;
+  test('même clé d\'entrée avec un autre fournisseur : refusée (cle_deja_utilisee), rien écrit', r.ok === false && r.erreur === 'cle_deja_utilisee');
+  r = (await un('admin', ENTREE, ['cle-entree-q', F1, AUJ, 'especes', null, JSON.stringify([{ produit_id: 'ps90', qte: 10001, prix_ttc: 30 }])])).r;
+  test('quantité au-delà de 10 000 : refus explicite (quantite_invalide)', r.ok === false && r.erreur === 'quantite_invalide');
+
+  console.log('\n17. v7.5.201 : ANNULATION (recrédit → lot tampon d\'origine) PUIS RELIVRAISON (nouveau cycle)');
+  const lotsAv = (await q(P, "select id, quantite_restante as n from public.stock_tampon_lots where produit_id = 'ps90' and fournisseur_id = $1 order by id", [F2])).map(x => x.n);
+  const sT1 = await stock('ps90');
+  m = await echec('admin', "update public.commandes set statut = 'annulé' where id = '#T1'");
+  test('#T1 (3 pièces tampon livrées) annulée par l\'administrateur', m === null, m);
+  r = await rpc('admin', 'public.recrediter_stock_livraison($1, false)', ['#T1']);
+  const lotsAp = (await q(P, "select quantite_restante as n from public.stock_tampon_lots where produit_id = 'ps90' and fournisseur_id = $1 order by id", [F2])).map(x => x.n);
+  test('recrédit : stock du dépôt +3 (040) ET chaque pièce rendue à SON lot (2 au lot à 30, 1 au lot à 35)', r.ok && (await stock('ps90')) === sT1 + 3
+    && lotsAp[0] === lotsAv[0] + 2 && lotsAp[1] === lotsAv[1] + 1 && r.lots_tampon_restaures.length === 3, { r, lotsAv, lotsAp });
+  test('retours tracés (ajout seul), pièces passées au cycle 2, confirmation à refaire',
+    (await nb("public.tampon_retours where cmd_id = '#T1'")) === 3 && /ajout seul/.test(await echec(P, 'delete from public.tampon_retours') || '')
+    && (await nb("public.commande_pieces where cmd_id = '#T1' and cycle = 2 and livraison is null")) === 3);
+  r = await rpc('admin', 'public.recrediter_stock_livraison($1, false)', ['#T1']);
+  test('recrédit rejoué : « deja », aucun lot rendu deux fois', r.ok && r.deja === true && (await nb("public.tampon_retours where cmd_id = '#T1'")) === 3
+    && JSON.stringify((await q(P, "select quantite_restante as n from public.stock_tampon_lots where produit_id = 'ps90' and fournisseur_id = $1 order by id", [F2])).map(x => x.n)) === JSON.stringify(lotsAp));
+  test('relivraison : « livré » refusé tant que les pièces du nouveau cycle ne sont pas confirmées', /PIECES_NON_CONFIRMEES/.test(await echec('livreur', "update public.commandes set statut = 'livré' where id = '#T1'") || ''));
+  const ptT1 = (await rpc('livreur', 'public.drop_pieces($1)', ['#T1'])).pieces;
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#T1', JSON.stringify(ptT1.map(x => ({ id: x.id, livree: true })))]);
+  test('relivraison : confirmation du cycle 2 acceptée', r.ok && r.deja === false, r);
+  await q('livreur', "update public.commandes set statut = 'livré' where id = '#T1'");
+  const sT2 = await stock('ps90');
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#T1']);
+  const cT2 = await q(P, "select cycle, cout_ht::float8 as c from public.pieces_couts where cmd_id = '#T1' order by cycle, piece_id");
+  test('relivraison : nouvelles sorties des lots (cycle 2), stock −3, coûts du cycle 2 refigés', r.ok && r.deja === false && r.lots_tampon.length === 3 && (await stock('ps90')) === sT2 - 3
+    && (await nb("public.tampon_sorties where cmd_id = '#T1' and cycle = 2")) === 3 && cT2.filter(x => x.cycle === 2).length === 3, { r, cT2 });
+  r = await rpc('admin', 'public.drop_marge_commande($1)', ['#T1']);
+  test('marge de la relivraison : coût du SEUL cycle en cours (95), pas le cumul des deux cycles (190)', r.ok && r.cout_ht === 95 && r.cout_estime === false, r);
+  test('lots de nouveau écoulés comme après la 1re livraison', JSON.stringify((await q(P, "select quantite_restante as n from public.stock_tampon_lots where produit_id = 'ps90' and fournisseur_id = $1 order by id", [F2])).map(x => x.n)) === JSON.stringify(lotsAv));
+
+  console.log('\n18. v7.5.201 : BORNES EXPLICITES (plus de limite silencieuse)');
+  await cmd('#B1', { lignes: [{ produitId: 'pm140', qte: 51 }], prix: 0 });
+  r = await rpc('livreur', 'public.drop_pieces($1)', ['#B1']);
+  test('51 unités sur une ligne : refus explicite (quantite_hors_borne, max 50), aucune pièce créée', r.ok === false && r.erreur === 'quantite_hors_borne' && r.detail.raison === 'qte_ligne' && r.detail.max === 50
+    && (await nb("public.commande_pieces where cmd_id = '#B1'")) === 0, r);
+  await cmd('#B2', { lignes: [{ produitId: 'pm140', qte: 50 }], prix: 0 });
+  r = await rpc('livreur', 'public.drop_pieces($1)', ['#B2']);
+  test('50 unités : traitées INTÉGRALEMENT (50 pièces)', r.ok && r.pieces.length === 50, r.erreur);
+  await q(P, "insert into public.produits (id, nom, cat, prix, stock, composants) values ('pe-lot', 'Lot fictif', 'Ensemble', 10, 0, '[{\"id\":\"ps90\",\"qte\":21}]')");
+  await cmd('#B3', { lignes: [{ produitId: 'pe-lot', qte: 1 }], prix: 0 });
+  r = await rpc('livreur', 'public.drop_pieces($1)', ['#B3']);
+  test('composant × 21 dans un ensemble : refus explicite (max 20)', r.ok === false && r.erreur === 'quantite_hors_borne' && r.detail.raison === 'qte_composant' && r.detail.max === 20, r);
+  await cmd('#B4', { lignes: [{ produitId: 'pm140', qte: 50 }, { produitId: 'pm140', qte: 50 }, { produitId: 'pm140', qte: 50 }, { produitId: 'pm140', qte: 50 }, { produitId: 'pm140', qte: 1 }], prix: 0 });
+  r = await rpc('livreur', 'public.drop_pieces($1)', ['#B4']);
+  test('201 pièces au total : refus explicite (max 200)', r.ok === false && r.erreur === 'quantite_hors_borne' && r.detail.raison === 'pieces', r);
+  test('le découpage interne échoue au lieu de tronquer s\'il est appelé hors bornes', /quantite_hors_borne/.test(await echec(P, "select count(*) from interne.l041_decomposer('[{\"produitId\":\"pm140\",\"qte\":60}]'::jsonb, null, null)") || ''));
+  await q(P, "update public.commandes set statut = 'livré' where id = '#B1'");
+  r = await rpc('admin', 'public.drop_marge_commande($1)', ['#B1']);
+  test('marge d\'une commande hors bornes (sans pièces) : coût signalé inconnu, jamais estimé sur une quantité tronquée', r.ok && r.cout_inconnu === 1 && r.cout_ht === 0, r);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

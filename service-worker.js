@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.202 - Dropshipping (revue Codex sur 53c7b59) : CAISSE TTC / MARGE HT (decision de Borhen corrigee), livre refuse par la base tant que les pieces ne sont pas confirmees (derogation admin motivee), deduction apres le succes de la confirmation, decoupage perime refuse, module garde hors ligne, entree de stock tampon rejouee avec la meme cle, recredit vers le lot d origine et cycles de relivraison, bornes explicites (27/11/2026)
 // v7.5.201 - Fusion de Commandes filtres (62f910d, PR 24 a 28 corrigees) et de la derniere correction de la PR 29 (8dde6a9, v7.5.199) dans le dropshipping (27/11/2026)
 // v7.5.200 - Fusion de la PR 29 (v7.5.198 : recredit et mouvements manuels du stock par la base, migration 040 revisee) dans le dropshipping (v7.5.199, migration 041 : deduction limitee aux pieces Depot posee sur la 040 revisee) + STOCK TAMPON dropshipping (achats d avance en lots au prix HT reel, premier entre premier sorti) + libelle Depot - stock BMS (27/11/2026)
 // v7.5.199 - Dropshipping encadre et provenance de chaque piece (migration 041) : 3 pare-feu du livreur (chargement Depot / fournisseur / camion, enlevement paye avec photo du ticket, livraison piece par piece), stock du camion, page admin Dropshipping (bilan du jour, alertes, fournisseurs, prix HT, references activees) ; inclut la fusion de la PR 29 v7.5.197 dans Commandes filtres (refus definitif de la base garde dans la file corrigee) (27/11/2026)
@@ -64,7 +65,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-201';
+const CACHE_VERSION = 'maxiconfort-v7-5-202';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

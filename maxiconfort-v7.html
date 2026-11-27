@@ -3832,7 +3832,10 @@ async function stkDeductionEnvoyer(id, cmdV) {
 function stkDemanderDeduction(cmd, pAvant) {
   if (!cmd || !cmd.id || cmd.stockDeduit) return Promise.resolve('deja');
   try { stkDeductionPoser(cmd); } catch(e) { console.warn('[stock] demande de déduction :', e && e.message); }
-  return Promise.resolve(pAvant).catch(function() {}).then(function() { return stkDeductionEnvoyer(cmd.id, cmd); })
+  return Promise.resolve(pAvant).catch(function() {}).then(function() {
+      // v7.5.201 (revue Codex P1) : demande gardée en file, envoyée seulement après le SUCCÈS de la confirmation des pièces
+      if (typeof dropDeductionPermise === 'function' && !dropDeductionPermise(cmd.id)) return 'reessayer';
+      return stkDeductionEnvoyer(cmd.id, cmd); })
     .catch(function(e) { console.warn('[stock] déduction :', e && e.message); return 'reessayer'; });
 }
 // reprise (chargement, relève) des demandes restées en file : toujours RENVOYÉES à la base, même si la commande est déjà
@@ -3854,6 +3857,8 @@ function stkReprendreDeductions(force) {
     if (typeof _livEnCours !== 'undefined' && _livEnCours[id]) return; // validerSig l'envoie lui-même
     // le « livré » de la commande attend encore dans la file : le rejeu de la file l'enverra d'abord, puis la demande
     if (offlineQueue.some(function(x) { return oqCle(x) === 'commande|' + id; })) return;
+    // v7.5.201 (revue Codex P1) : jamais avant le SUCCÈS de la confirmation des pièces
+    if (typeof dropDeductionPermise === 'function' && !dropDeductionPermise(id)) return;
     if (!force && Number(_dedProchain[id]) > now) return;
     p.push(stkDeductionEnvoyer(id, c));
   });
@@ -4102,6 +4107,8 @@ async function offlineQueueFlush() {
         if (_cleC && (remaining.concat(offlineQueue)).some(function(x) { return oqCle(x) === _cleC; })) { remaining.push(item); continue; }
         // v7.5.199 : la confirmation des pièces (drop_confirmer_livraison) passe AVANT la déduction (seules les pièces « Dépôt » livrées sont retirées)
         if (item.data && (remaining.concat(offlineQueue)).some(function(x) { return oqCle(x) === 'drop|conf:' + item.data.id; })) { remaining.push(item); continue; }
+        // v7.5.201 (revue Codex P1) : la déduction ne part qu'après le SUCCÈS de la confirmation (refusée : elle attend)
+        if (item.data && typeof dropDeductionPermise === 'function' && !dropDeductionPermise(item.data.id)) { remaining.push(item); continue; }
         var _rd = (item.data && item.data.id) ? await stkDeductionEnvoyer(item.data.id, null) : 'abandon';
         if (_rd === 'reessayer') remaining.push(item); else if (_rd === 'ok' || _rd === 'deja') flushed++;
         continue;
@@ -4127,6 +4134,9 @@ async function offlineQueueFlush() {
       // toujours un PATCH du stock, même rejoué par une session admin / collab.
       var _rOrig = (item.type === 'produit') ? (item.role || _rc) : null;
       if (item.type === 'produit' && _rc === 'livreur' && _rOrig !== 'livreur') { remaining.push(item); continue; }
+      // v7.5.201 (réserve n° 1) : un « livré » attend que la confirmation de ses pièces soit acceptée (la base le refuserait)
+      if (item.type === 'commande' && item.data && (item.data.statut === 'livré' || item.data.statut === 'livre')
+          && (remaining.concat(offlineQueue)).some(function(x) { return oqCle(x) === 'drop|conf:' + item.data.id; })) { remaining.push(item); continue; }
       var _ctx = { ts: Number(item.ts) || 0, role: item.role }; // v7.5.195 : contexte transmis en paramètre
       try {
         if (item.type === 'commande') { var _rq = await sbSaveCommande(item.data, { ts: _ctx.ts, role: _ctx.role, depuisFile: true }); if (_rq && _rq.definitif) { refuses++; continue; } } // v7.5.135 : refus définitif retiré de la file ; erreur passagère levée (gardée)
@@ -5714,8 +5724,10 @@ try {
 // Le livreur est le DERNIER PARE-FEU, trois points de contrôle par pièce :
 //   1. CHARGEMENT (écran « CHARGEMENT OBLIGATOIRE ») : Dépôt — stock BMS / Dépôt — stock tampon (fournisseur X) /
 //      À prendre chez le fournisseur / Déjà dans le camion ;
-//   2. ENLÈVEMENT : un arrêt « Enlèvement » apparaît dans la tournée JUSTE AVANT le client (adresse du fournisseur, pièce, prix
-//      prévu HT) ; « Enlevé et payé » : montant HT, Espèces ou CB, photo du ticket ;
+//   2. ENLÈVEMENT : un arrêt « Enlèvement » apparaît dans la tournée JUSTE AVANT le client (adresse du fournisseur, pièce, TTC
+//      attendu) ; « Enlevé et payé » : montant TTC payé (HT de la facture facultatif), Espèces ou CB, photo du ticket ;
+//      v7.5.201 — DÉCISION DE BORHEN CORRIGÉE (27/11 ~00h55) : CAISSE TTC, MARGE HT (la caisse du livreur compte le TTC
+//      payé ; la marge, le coût des pièces et le bilan du jour comptent le HT) ;
 //   3. LIVRAISON : pièce par pièce « Livrée » / « Pas livrée » ; « Livré » BLOQUÉ tant qu'une pièce n'a pas sa provenance.
 // STOCK TAMPON DROPSHIPPING (exigence de Borhen du 27/11) : achats d'avance chez un fournisseur, rangés au dépôt en LOTS au
 // prix d'achat réel HT (entrée par l'administrateur, page Dropshipping) ; une pièce « stock tampon » sort de son lot (premier
@@ -5732,11 +5744,20 @@ function dropProvLib(prov, nomF) {
 }
 var DROP_MONTANT_MAX = 5000;
 var dropActif = null;          // null = pas encore vérifié ; true = migration 041 présente ; false = absente
-var dropPieces = {};           // cmdId -> { pieces: [...], perime: bool, at: ms }
+// v7.5.201 (revue Codex, réserve n° 2) : l'état actif du module est GARDÉ sur l'appareil (dernière réponse de la base) :
+// sans réseau au démarrage, le module reste considéré actif et la livraison d'une commande dont les pièces ne peuvent pas
+// être contrôlées est BLOQUÉE (message clair) au lieu de tout laisser passer. Seule une réponse « fonction absente » de la
+// base l'efface.
+var dropActifCache = false;
+try { dropActifCache = localStorage.getItem('mx_drop_actif') === '041'; } catch(e) {}
+function dropModuleActif() { return dropActif === true || (dropActif === null && dropActifCache === true); }
+var dropPieces = {};           // cmdId -> { pieces: [...], perime: bool, tva: n, derogation: bool, refus: code, at: ms }
 var dropConfirm = {};          // cmdId -> { <pièce>: true|false } (choix du livreur à la livraison, avant envoi)
+var dropConfEtat = {};         // v7.5.201 : cmdId -> 'ok' | { refus: message } (résultat de la confirmation des pièces)
 try { dropPieces = JSON.parse(localStorage.getItem('mx_drop_pieces') || '{}') || {}; } catch(e) { dropPieces = {}; }
 try { dropConfirm = JSON.parse(localStorage.getItem('mx_drop_confirm') || '{}') || {}; } catch(e) { dropConfirm = {}; }
-function dropSauver() { try { localStorage.setItem('mx_drop_pieces', JSON.stringify(dropPieces)); localStorage.setItem('mx_drop_confirm', JSON.stringify(dropConfirm)); } catch(e) {} }
+try { dropConfEtat = JSON.parse(localStorage.getItem('mx_drop_conf_etat') || '{}') || {}; } catch(e) { dropConfEtat = {}; }
+function dropSauver() { try { localStorage.setItem('mx_drop_pieces', JSON.stringify(dropPieces)); localStorage.setItem('mx_drop_confirm', JSON.stringify(dropConfirm)); localStorage.setItem('mx_drop_conf_etat', JSON.stringify(dropConfEtat)); } catch(e) {} }
 function dropEchap(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 // encre lisible sur un fond de couleur (habillage style D : jamais de blanc fixe)
 var DROP_ENCRE = { 'var(--green)': 'var(--sur-vert)', 'var(--orange)': 'var(--sur-orange)', 'var(--blue)': 'var(--sur-bleu)', 'var(--red)': 'var(--sur-rouge)' };
@@ -5745,13 +5766,38 @@ function dropEur(n) { return (typeof paiEur === 'function') ? paiEur(n) : (Math.
 
 // ── Fonctions PURES (outils/test-dropshipping.js) ──
 // montant saisi (virgule acceptée) : > 0 et <= DROP_MONTANT_MAX, arrondi au centime
-function dropMontant(txt) {
+function dropMontant(txt, lib) {
   var m = parseFloat(String(txt == null ? '' : txt).replace(/\s/g, '').replace(',', '.'));
-  if (isNaN(m) || m <= 0) return { ok: false, erreur: 'Entrez le montant payé HT' };
+  if (isNaN(m) || m <= 0) return { ok: false, erreur: 'Entrez ' + (lib || 'le montant payé TTC') };
   if (m > DROP_MONTANT_MAX) return { ok: false, erreur: 'Montant trop élevé (' + DROP_MONTANT_MAX + ' € au plus)' };
   return { ok: true, montant: Math.round(m * 100) / 100 };
 }
 function dropEcart(prevu, paye) { return Math.round(((parseFloat(paye) || 0) - (parseFloat(prevu) || 0)) * 100) / 100; }
+// v7.5.201 — DÉCISION DE BORHEN CORRIGÉE (27/11 ~00h55) : « caisse TTC, marge HT ». Le fournisseur facture toujours TTC :
+// le livreur paie et saisit le TTC ; le coût HT (marge) = HT de la facture s'il est saisi, sinon TTC ÷ (1 + TVA). Mêmes
+// arrondis que la base (interne.l041_ttc / interne.l041_ht).
+function dropTva(t) { var v = parseFloat(t); return (isNaN(v) || v < 0 || v > 100) ? 20 : v; }
+function dropTtc(ht, tva) { return Math.round((parseFloat(ht) || 0) * (1 + dropTva(tva) / 100) * 100) / 100; }
+function dropHtDeTtc(ttc, tva) { return Math.round((parseFloat(ttc) || 0) / (1 + dropTva(tva) / 100) * 100) / 100; }
+// v7.5.201 : livraison possible ? (pièces de la base, état du module, réseau) — '' ou la raison du blocage. Pure.
+//   e = dropPieces[cmd] (ou undefined), actif = module actif (ou supposé actif hors ligne), ranou = livrée par nos livreurs
+function dropRaisonLivraison(e, confirm, actif, ranou) {
+  if (!actif || !ranou) return '';
+  if (!e) return 'Pièces pas encore contrôlées (pas de réseau, ou pièces en cours de lecture) : reconnectez-vous puis réessayez — sinon le bureau peut valider la livraison';
+  if (e.derogation) return '';   // dérogation motivée de l'administrateur (base : drop_livre_sans_confirmation)
+  if (e.refus === 'quantite_hors_borne') return 'Commande trop grande pour le contrôle pièce par pièce (50 par ligne, 20 par composant, 200 pièces) : livraison à valider par le bureau';
+  if (e.refus) return 'Pièces refusées par la base (' + e.refus + ') : voir le bureau';
+  if (e.perime) return 'Commande modifiée après le chargement (découpage périmé) : le bureau doit réinitialiser les pièces avant la livraison';
+  return dropRaisonBlocage(e.pieces || [], confirm);
+}
+// v7.5.201 (revue Codex P1) : la déduction du stock ne part qu'APRÈS le SUCCÈS de la confirmation des pièces. Pure.
+//   e = dropPieces[cmd], confEnFile = confirmation encore dans la file, etat = dropConfEtat[cmd]
+function dropDeductionPermiseDe(e, confEnFile, etat, actif) {
+  if (confEnFile) return false;                              // confirmation pas encore acceptée par la base
+  if (etat && etat.refus) return false;                      // confirmation refusée : rien à déduire tant que ce n'est pas réglé
+  if (etat === 'ok' || !actif || !e || e.derogation) return true;
+  return !(e.pieces || []).some(function(p) { return p && !p.livraison; });   // pièces connues non confirmées : on attend
+}
 // chemin du ticket : <livreur en minuscules>/<commande sans #>/<fichier> (même règle que la base, interne.l041_chemin_ticket_ok)
 function dropCheminTicket(livreur, cmdId, pieceId, ts) {
   var l = String(livreur || '').toLowerCase().replace(/[^a-z0-9._-]/g, '-');
@@ -5805,21 +5851,28 @@ async function dropRpc(nom, params) {
 async function dropVerifier() {
   if (dropActif === true) return true;
   var r = await dropRpc('drop_version', {});
-  if (r.absente) dropActif = false;
-  else if (r.httpOk && r.corps === '041') dropActif = true;
+  if (r.absente) { dropActif = false; dropActifCache = false; try { localStorage.removeItem('mx_drop_actif'); } catch(e) {} }
+  else if (r.httpOk && r.corps === '041') { dropActif = true; dropActifCache = true; try { localStorage.setItem('mx_drop_actif', '041'); } catch(e) {} }
   return dropActif === true;
 }
 async function dropChargerPieces(cmdId) {
   if (!cmdId || dropActif !== true) return null;
   var r = await dropRpc('drop_pieces', { p_cmd_id: cmdId });
   if (r.httpOk && r.corps && r.corps.ok) {
-    dropPieces[cmdId] = { pieces: r.corps.pieces || [], perime: !!r.corps.perime, at: Date.now() };
+    dropPieces[cmdId] = { pieces: r.corps.pieces || [], perime: !!r.corps.perime, tva: r.corps.tva_pct, derogation: !!r.corps.derogation, at: Date.now() };
+    dropSauver();
+    return dropPieces[cmdId];
+  }
+  // v7.5.201 : refus explicite de la base (ex. quantite_hors_borne) gardé : la livraison reste bloquée avec la raison
+  if (r.httpOk && r.corps && r.corps.ok === false && r.corps.erreur && r.corps.erreur !== 'session_requise' && r.corps.erreur !== 'commande_introuvable') {
+    dropPieces[cmdId] = { pieces: [], refus: r.corps.erreur, at: Date.now() };
     dropSauver();
     return dropPieces[cmdId];
   }
   return null;
 }
-function dropPiecesDe(cmdId) { return (dropActif === true && dropPieces[cmdId]) ? (dropPieces[cmdId].pieces || []) : []; }
+function dropPiecesDe(cmdId) { return (dropModuleActif() && dropPieces[cmdId]) ? (dropPieces[cmdId].pieces || []) : []; }
+function dropTvaDe(cmdId) { return dropTva(dropPieces[cmdId] && dropPieces[cmdId].tva); }
 // pièces de toutes les commandes RANOU d'une tournée (une à la fois), puis nouvel affichage
 var _dropChargementEnCours = {};
 async function dropChargerTournee(t, apres, force) {
@@ -5864,7 +5917,15 @@ var DROP_ERREURS = {
   provenance_manquante: 'Provenance manquante pour une pièce',
   pieces_incompletes: 'Indiquez chaque pièce (livrée ou pas)',
   session_requise: 'Session expirée : reconnectez-vous', commande_introuvable: 'Commande introuvable', piece_introuvable: 'Pièce introuvable',
-  stock_tampon_vide: 'Plus de stock tampon de ce fournisseur pour cette pièce'
+  stock_tampon_vide: 'Plus de stock tampon de ce fournisseur pour cette pièce',
+  // v7.5.201
+  decoupage_perime: 'Commande modifiée après le chargement : le bureau doit réinitialiser les pièces',
+  quantite_hors_borne: 'Quantité trop grande pour le contrôle pièce par pièce (50 par ligne, 20 par composant, 200 pièces)',
+  pieces_non_confirmees: 'Pièces non confirmées : indiquez chaque pièce (livrée ou pas)',
+  montant_ht_invalide: 'Montant HT de la facture invalide (il doit être inférieur ou égal au TTC payé)',
+  montant_invalide: 'Montant TTC payé invalide', cle_deja_utilisee: 'Entrée déjà enregistrée avec d\'autres données : vérifiez la page',
+  motif_requis: 'Motif obligatoire (5 caractères au moins)', rien_a_deroger: 'Toutes les pièces sont déjà confirmées',
+  prix_ht_superieur_ttc: 'Le prix HT d\'une ligne dépasse son prix TTC', quantite_invalide: 'Quantité invalide (1 à 10 000)', prix_invalide: 'Prix invalide'
 };
 function dropMessageErreur(corps) { var e = corps && corps.erreur; return DROP_ERREURS[e] || ('Refus de la base' + (e ? ' (' + e + ')' : '')); }
 
@@ -5905,13 +5966,26 @@ async function dropEnvoyer(data) {
   var r = await dropRpc(data.fn, data.params || {});
   if (r.reseau || r.absente || (!r.httpOk && (typeof httpTemporaire !== 'function' || httpTemporaire(r.statut)))) return 'reessayer';
   try { offlineQueue = offlineQueue.filter(function(it) { return !(it && it.type === 'drop' && it.data && it.data.id === data.id); }); oqEcrire(); } catch(e) {}
+  var estConf = data.fn === 'drop_confirmer_livraison' && data.cmdId;
   if (r.httpOk && r.corps && r.corps.ok) {
     if (data.fn === 'drop_enlever_payer' && r.corps.depense) dropDepenseLocale(r.corps.depense);
+    if (estConf) { dropConfEtat[data.cmdId] = 'ok'; dropSauver(); }   // v7.5.201 : la déduction peut partir
     if (data.cmdId) { try { await dropChargerPieces(data.cmdId); } catch(e) {} }
     return 'ok';
   }
-  try { notifAjout('err', 'commande', '⛔ Dropshipping refusé par la base' + (data.cmdId ? ' — ' + data.cmdId : ''), dropMessageErreur(r.corps), 'Voir', 'livreur'); } catch(e) {}
+  // v7.5.201 : confirmation REFUSÉE : la déduction et le « livré » attendent (la base refuse « livré » sans pièces confirmées)
+  if (estConf) { dropConfEtat[data.cmdId] = { refus: dropMessageErreur(r.corps) }; dropSauver(); }
+  try { notifAjout(estConf ? 'urgent' : 'err', 'commande', '⛔ ' + (estConf ? 'Livraison NON enregistrée (pièces refusées)' : 'Dropshipping refusé par la base') + (data.cmdId ? ' — ' + data.cmdId : ''),
+    dropMessageErreur(r.corps) + (estConf ? ' — corrigez les pièces puis revalidez « Livré », ou demandez au bureau une dérogation.' : ''), 'Voir', 'livreur'); } catch(e) {}
   return 'refus';
+}
+// v7.5.201 (revue Codex P1) : la déduction du stock d'une commande ne part qu'après le SUCCÈS de la confirmation de ses pièces
+function dropConfEnFile(cmdId) {
+  try { return offlineQueue.some(function(x) { return oqCle(x) === 'drop|conf:' + cmdId; }); } catch(e) { return false; }
+}
+function dropDeductionPermise(cmdId) {
+  if (!cmdId) return true;
+  return dropDeductionPermiseDe(dropPieces[cmdId], dropConfEnFile(cmdId), dropConfEtat[cmdId], dropModuleActif());
 }
 function dropDepenseLocale(d) {
   if (!d || !d.id || typeof depenses === 'undefined') return;
@@ -5932,15 +6006,24 @@ function dropLigneOk(cmdId, idx) {
   var ps = dropPiecesDe(cmdId);
   return ps.length ? dropLigneChargee(ps, idx, !!(ch && ch.charge)) : !!(ch && ch.charge);
 }
+var _dropLectureLancee = {};
 function dropBloqueLivre(cmdId) {
-  if (dropActif !== true || !cmdId) return '';
-  return dropRaisonBlocage(dropPiecesDe(cmdId), dropConfirm[cmdId]);
+  if (!dropModuleActif() || !cmdId) return '';
+  // v7.5.201 : commande livrée par nos livreurs (pas GLS) ; pièces jamais lues (hors ligne) ou découpage périmé = BLOQUÉ
+  var c = (typeof commandes !== 'undefined') ? commandes.find(function(x) { return x && x.id === cmdId; }) : null;
+  var ranou = !c || String(c.transporteur || 'RANOU').toUpperCase() === 'RANOU';
+  // pièces jamais lues sur cet appareil : lecture lancée tout de suite (réseau présent), « Livré » possible au clic suivant
+  if (ranou && !dropPieces[cmdId] && !(Date.now() - (_dropLectureLancee[cmdId] || 0) < 30000)) { _dropLectureLancee[cmdId] = Date.now(); try { dropVerifier().then(function(a) { if (a) return dropChargerPieces(cmdId).then(function() { dropRafraichir(); }); }).catch(function() {}); } catch(e) {} }
+  return dropRaisonLivraison(dropPieces[cmdId], dropConfirm[cmdId], true, ranou);
 }
+// v7.5.202 : pièces de la commande à confirmer à la base avant le « livré » ?
+function dropAConfirmer(cmdId) { return dropPiecesDe(cmdId).some(function(p) { return p && !p.livraison; }); }
 function dropApresLivre(cmdId) {
   var ps = dropPiecesDe(cmdId);
   if (!ps.length || !ps.some(function(p) { return !p.livraison; })) return Promise.resolve('rien');
+  delete dropConfEtat[cmdId]; dropSauver();   // v7.5.201 : nouveau cycle de confirmation (relivraison comprise)
   var liste = dropListeConfirmation(ps, dropConfirm[cmdId]);
-  var pr = dropPoser('conf:' + cmdId, 'drop_confirmer_livraison', { p_cmd_id: cmdId, p_pieces: liste });
+  var pr = dropPoser('conf:' + cmdId, 'drop_confirmer_livraison', { p_cmd_id: cmdId, p_pieces: liste }, cmdId);
   return Promise.resolve(pr).catch(function() { return 'reessayer'; });
 }
 function dropApresNonLivre(cmdId) {
@@ -5961,12 +6044,18 @@ function dropOuvrirEnlevement(cmdId, pieceId) {
   fond = document.createElement('div');
   fond.id = 'drop-enl-modal';
   fond.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9995;display:flex;align-items:center;justify-content:center;padding:14px';
-  var prevu = p.achat ? p.achat.prix_prevu_ht : '';
+  // v7.5.201 (caisse TTC, marge HT) : prix prévu HT (saisi par l'administrateur) → TTC attendu affiché ; le livreur saisit
+  // le TTC réellement payé (c'est ce qui sort de sa caisse) ; le HT de la facture est facultatif
+  var prevu = p.achat ? p.achat.prix_prevu_ht : '', tva = dropTva(p.tva_pct != null ? p.tva_pct : dropTvaDe(cmdId));
+  var attendu = (p.achat && p.achat.prix_prevu_ttc != null) ? p.achat.prix_prevu_ttc : dropTtc(prevu, tva);
+  _dropEnl.tva = tva; _dropEnl.attendu = attendu;
   fond.innerHTML = '<div style="background:var(--card);border-radius:16px;padding:18px;max-width:420px;width:100%;max-height:92vh;overflow:auto">' +
     '<div style="font-size:18px;font-weight:900;margin-bottom:4px">🏭 Enlevé et payé</div>' +
-    '<div style="font-size:14px;color:var(--t2);margin-bottom:12px">' + dropEchap(p.libelle) + ' · chez ' + dropEchap(p.fournisseur ? p.fournisseur.nom : '?') + '<br>Prix prévu : <strong>' + dropEur(prevu) + ' HT</strong></div>' +
-    '<label style="font-size:13px;font-weight:700">Montant payé HT</label>' +
-    '<input id="drop-enl-montant" type="text" inputmode="decimal" value="' + dropEchap(prevu) + '" style="width:100%;padding:14px;font-size:22px;font-weight:800;text-align:center;border:2px solid var(--brd2);border-radius:12px;background:var(--bg);color:var(--text);box-sizing:border-box;margin:6px 0 12px">' +
+    '<div style="font-size:14px;color:var(--t2);margin-bottom:12px">' + dropEchap(p.libelle) + ' · chez ' + dropEchap(p.fournisseur ? p.fournisseur.nom : '?') + '<br>À payer : <strong>' + dropEur(attendu) + ' TTC</strong> <small>(' + dropEur(prevu) + ' HT + TVA ' + tva + ' %)</small></div>' +
+    '<label style="font-size:13px;font-weight:700">Montant payé TTC (celui du ticket)</label>' +
+    '<input id="drop-enl-montant" type="text" inputmode="decimal" value="' + dropEchap(attendu) + '" style="width:100%;padding:14px;font-size:22px;font-weight:800;text-align:center;border:2px solid var(--brd2);border-radius:12px;background:var(--bg);color:var(--text);box-sizing:border-box;margin:6px 0 8px">' +
+    '<label style="font-size:12px;font-weight:700;color:var(--t2)">HT écrit sur la facture (facultatif)</label>' +
+    '<input id="drop-enl-ht" type="text" inputmode="decimal" placeholder="sinon calculé : TTC ÷ ' + (1 + tva / 100) + '" style="width:100%;padding:10px;font-size:15px;text-align:center;border:1px solid var(--brd2);border-radius:10px;background:var(--bg);color:var(--text);box-sizing:border-box;margin:4px 0 12px">' +
     '<div style="display:flex;gap:10px;margin-bottom:12px">' +
       '<button type="button" id="drop-enl-esp" onclick="dropEnlMode(\'especes\')" style="flex:1;padding:16px;border-radius:12px;border:2px solid var(--brd2);background:transparent;color:var(--text);font-size:16px;font-weight:800;font-family:var(--font)">💶 Espèces</button>' +
       '<button type="button" id="drop-enl-cb" onclick="dropEnlMode(\'cb\')" style="flex:1;padding:16px;border-radius:12px;border:2px solid var(--brd2);background:transparent;color:var(--text);font-size:16px;font-weight:800;font-family:var(--font)">💳 CB</button>' +
@@ -6014,8 +6103,14 @@ async function dropEnvoyerPhoto(chemin, blob) {
 async function dropValiderEnlevement() {
   if (!_dropEnl) return;
   var msg = document.getElementById('drop-enl-msg'), btn = document.getElementById('drop-enl-ok');
-  var m = dropMontant((document.getElementById('drop-enl-montant') || {}).value);
+  var m = dropMontant((document.getElementById('drop-enl-montant') || {}).value, 'le montant payé TTC');
   if (!m.ok) { if (msg) msg.textContent = m.erreur; return; }
+  var htTxt = String((document.getElementById('drop-enl-ht') || {}).value || '').trim(), mht = null;
+  if (htTxt) {
+    var h = dropMontant(htTxt, 'le HT de la facture');
+    if (!h.ok || h.montant > m.montant) { if (msg) msg.textContent = 'HT de la facture invalide (au plus le TTC payé)'; return; }
+    mht = h.montant;
+  }
   if (!_dropEnl.mode) { if (msg) msg.textContent = 'Choisissez Espèces ou CB'; return; }
   if (!_dropEnl.photo) { if (msg) msg.textContent = 'Prenez la photo du ticket'; return; }
   var e = _dropEnl; if (btn) { btn.disabled = true; btn.textContent = 'Envoi…'; }
@@ -6023,10 +6118,10 @@ async function dropValiderEnlevement() {
   var chemin = dropCheminTicket(cmd.livreur || livNom || '', e.cmdId, e.piece.id);
   var photoOk = await dropEnvoyerPhoto(chemin, e.photo);
   if (!photoOk) toast('⚠️ Photo du ticket non envoyée : le bureau est prévenu (ticket à garder)', 'info');
-  var res = await dropPoser('enl:' + e.piece.id, 'drop_enlever_payer', { p_piece_id: e.piece.id, p_montant_ht: m.montant, p_mode: e.mode, p_ticket_path: photoOk ? chemin : null }, e.cmdId);
+  var res = await dropPoser('enl:' + e.piece.id, 'drop_enlever_payer', { p_piece_id: e.piece.id, p_montant_ttc: m.montant, p_mode: e.mode, p_ticket_path: photoOk ? chemin : null, p_montant_ht: mht }, e.cmdId);
   dropFermerEnlevement();
-  var ec = dropEcart(e.piece.achat && e.piece.achat.prix_prevu_ht, m.montant);
-  if (res === 'ok') toast('✅ Enlevé et payé : ' + dropEur(m.montant) + ' HT (' + (e.mode === 'cb' ? 'CB' : 'espèces') + ')' + (ec ? ' — écart ' + (ec > 0 ? '+' : '') + dropEur(ec) + ' signalé au bureau' : ''), 'ok');
+  var ec = dropEcart(e.attendu, m.montant);   // TTC payé − TTC attendu (comme la base)
+  if (res === 'ok') toast('✅ Enlevé et payé : ' + dropEur(m.montant) + ' TTC (' + (e.mode === 'cb' ? 'CB' : 'espèces') + ')' + (ec ? ' — écart ' + (ec > 0 ? '+' : '') + dropEur(ec) + ' signalé au bureau' : ''), 'ok');
   else if (res === 'reessayer') toast('📵 Enregistré sur le téléphone : envoyé dès le retour du réseau', 'info');
   dropRafraichir();
 }
@@ -6037,7 +6132,7 @@ function dropBtn(lib, actif, attrs, couleur) {
 }
 // écran de chargement : trois gros boutons par pièce
 function dropSasLigneHtml(cmd, ligneIdx) {
-  if (dropActif !== true || !cmd) return '';
+  if (!dropModuleActif() || !cmd) return '';
   var ps = dropPiecesDe(cmd.id).filter(function(p) { return p.ligne_idx === ligneIdx; });
   if (!ps.length) return '';
   return ps.map(function(p) {
@@ -6051,7 +6146,7 @@ function dropSasLigneHtml(cmd, ligneIdx) {
       html += dropBtn('📦 Dépôt — stock tampon<br><small>' + dropEchap(t.nom) + ' · ' + t.restant + ' en stock</small>', p.provenance === 'tampon' && p.fournisseur_id === t.fournisseur_id, base + 'data-prov="tampon" data-f="' + t.fournisseur_id + '"', 'var(--green)');
     });
     (p.drop_actif ? (p.fournisseurs || []).slice(0, 3) : []).forEach(function(f) {
-      html += dropBtn('🏭 À prendre chez ' + dropEchap(f.nom) + '<br><small>' + dropEur(f.prix_prevu_ht) + ' HT</small>', p.provenance === 'fournisseur' && p.fournisseur_id === f.id, base + 'data-prov="fournisseur" data-f="' + f.id + '"', 'var(--orange)');
+      html += dropBtn('🏭 À prendre chez ' + dropEchap(f.nom) + '<br><small>' + dropEur(f.prix_prevu_ttc != null ? f.prix_prevu_ttc : dropTtc(f.prix_prevu_ht, p.tva_pct)) + ' TTC</small>', p.provenance === 'fournisseur' && p.fournisseur_id === f.id, base + 'data-prov="fournisseur" data-f="' + f.id + '"', 'var(--orange)');
     });
     var sc = (p.camion || [])[0];
     if (sc || p.provenance === 'camion') html += dropBtn('🚚 Déjà dans le camion', p.provenance === 'camion', base + 'data-prov="camion" data-sc="' + dropEchap(p.provenance === 'camion' ? p.stock_camion_id : sc.id) + '"', 'var(--blue)');
@@ -6060,7 +6155,7 @@ function dropSasLigneHtml(cmd, ligneIdx) {
 }
 // arrêt « Enlèvement » affiché JUSTE AVANT le client concerné
 function dropEnlevementHtml(t, s, i) {
-  if (dropActif !== true || !s || !s.cmdId || (s.statut === 'livré')) return '';
+  if (!dropModuleActif() || !s || !s.cmdId || (s.statut === 'livré')) return '';
   var enl = dropEnlevements(dropPiecesDe(s.cmdId));
   if (!enl.length) return '';
   return enl.map(function(p) {
@@ -6069,8 +6164,8 @@ function dropEnlevementHtml(t, s, i) {
       '<div style="font-size:12px;font-weight:800;color:var(--orange);text-transform:uppercase">🏭 Enlèvement avant l\'arrêt ' + (i + 1) + ' (' + dropEchap(s.client) + ')</div>' +
       '<div style="font-size:16px;font-weight:900;margin:4px 0">' + dropEchap(f.nom || 'Fournisseur') + '</div>' +
       '<div style="font-size:13px;color:var(--t2)">' + dropEchap(f.adresse || '') + '</div>' +
-      '<div style="font-size:14px;margin:8px 0"><strong>' + dropEchap(p.libelle) + '</strong> · prévu <strong>' + dropEur(a.prix_prevu_ht) + ' HT</strong></div>' +
-      (paye ? '<div style="font-weight:800;color:var(--gd)">✅ Enlevé et payé : ' + dropEur(a.montant_paye_ht) + ' HT (' + (a.mode === 'cb' ? 'CB' : 'espèces') + ')' + (a.ticket ? '' : ' — ⚠️ photo du ticket manquante') + '</div>'
+      '<div style="font-size:14px;margin:8px 0"><strong>' + dropEchap(p.libelle) + '</strong> · à payer <strong>' + dropEur(a.prix_prevu_ttc != null ? a.prix_prevu_ttc : dropTtc(a.prix_prevu_ht, p.tva_pct)) + ' TTC</strong> <small>(' + dropEur(a.prix_prevu_ht) + ' HT)</small></div>' +
+      (paye ? '<div style="font-weight:800;color:var(--gd)">✅ Enlevé et payé : ' + dropEur(a.montant_paye_ttc != null ? a.montant_paye_ttc : a.montant_paye_ht) + ' TTC (' + (a.mode === 'cb' ? 'CB' : 'espèces') + ')' + (a.ticket ? '' : ' — ⚠️ photo du ticket manquante') + '</div>'
             : '<div style="display:flex;gap:8px"><a href="https://waze.com/ul?q=' + encodeURIComponent(f.adresse || '') + '" target="_blank" style="flex:1;padding:14px;border-radius:12px;background:#1FCECA;color:#000;font-weight:900;text-align:center;text-decoration:none">Waze</a>' +
               '<button type="button" onclick="dropOuvrirEnlevement(\'' + dropEchap(s.cmdId) + '\',' + p.id + ')" style="flex:2;padding:14px;border-radius:12px;border:none;background:var(--green);color:var(--sur-vert);font-size:16px;font-weight:900;font-family:var(--font)">✅ Enlevé et payé</button></div>') +
       '</div>';
@@ -6078,10 +6173,12 @@ function dropEnlevementHtml(t, s, i) {
 }
 // livraison chez le client : deux boutons par pièce
 function dropLivraisonHtml(t, s, i) {
-  if (dropActif !== true || !s || !s.cmdId || s.statut === 'livré') return '';
-  var ps = dropPiecesDe(s.cmdId); if (!ps.length) return '';
+  if (!dropModuleActif() || !s || !s.cmdId || s.statut === 'livré') return '';
+  var ps = dropPiecesDe(s.cmdId);
+  // v7.5.201 : pièces non contrôlables (hors ligne, refus, découpage périmé) : la raison est affichée sur l'arrêt
+  if (!ps.length) { var r0 = dropBloqueLivre(s.cmdId); return r0 ? '<div style="margin:10px 0;padding:10px;border:2px solid var(--red);border-radius:12px;font-size:13px;font-weight:800;color:var(--red)">🔒 ' + dropEchap(r0) + '</div>' : ''; }
   var cf = dropConfirm[s.cmdId] || {};
-  var raison = dropRaisonBlocage(ps, cf);
+  var raison = dropBloqueLivre(s.cmdId);
   return '<div style="margin:10px 0;padding:10px;border:2px solid ' + (raison ? 'var(--orange)' : 'var(--green)') + ';border-radius:12px">' +
     '<div style="font-size:13px;font-weight:800;margin-bottom:6px">📦 Pièces livrées chez le client</div>' +
     ps.map(function(p) {
@@ -6182,7 +6279,7 @@ function dropPageRendre() {
     }).join('') + '</div>';
   h += '<div class="card"><div class="card-t">⚙️ Réglages</div>' +
     [['drop_camion_alerte_jours', 'Alerte : pièce achetée dans le camion depuis plus de (jours)'], ['drop_tampon_alerte_jours', 'Alerte : lot du stock tampon non écoulé depuis plus de (jours)'], ['drop_gls_cout_commande_ht', 'Coût GLS HT par commande (vide = non renseigné)'],
-     ['drop_charges_fixes_jour_ht', 'Charges fixes du jour HT (vide = non comptées)'], ['drop_tva_pct', 'TVA (%) pour passer les ventes en HT']].map(function(r) {
+     ['drop_charges_fixes_jour_ht', 'Charges fixes du jour HT (vide = non comptées)'], ['drop_tva_pct', 'TVA (%) : ventes passées en HT, TTC attendu chez le fournisseur, coût HT des achats']].map(function(r) {
       return '<div style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:13px"><span style="flex:1">' + r[1] + '</span><input id="drop-rg-' + r[0] + '" value="' + dropEchap(rg[r[0]] || '') + '" inputmode="decimal" style="width:90px;padding:6px;border-radius:6px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)"></div>';
     }).join('') + '<button class="btn btn-p" style="margin-top:8px" onclick="dropSauverReglages()">Enregistrer les réglages</button></div>';
   el.innerHTML = h;
@@ -6200,9 +6297,9 @@ async function dropActiver(produitId, actif) {
 }
 async function dropAjouterPrix(produitId) {
   var f = parseInt((document.getElementById('drop-pf-' + produitId) || {}).value, 10);
-  var m = dropMontant((document.getElementById('drop-pp-' + produitId) || {}).value);
+  var m = dropMontant((document.getElementById('drop-pp-' + produitId) || {}).value, 'le prix d\'achat HT');
   if (!f) { toast('Choisissez le fournisseur', 'err'); return; }
-  if (!m.ok) { toast(m.erreur.replace('payé ', ''), 'err'); return; }
+  if (!m.ok) { toast(m.erreur, 'err'); return; }
   var ex = dropAdm.prix.find(function(x) { return x.produit_id === produitId && x.fournisseur_id === f; });
   var okE = ex ? await dropEcrire('fournisseur_prix', { prix_achat_ht: m.montant, actif: true }, 'id=eq.' + ex.id)
                : await dropEcrire('fournisseur_prix', { produit_id: produitId, fournisseur_id: f, prix_achat_ht: m.montant });
@@ -6220,38 +6317,65 @@ async function dropSauverReglages() {
   if (tout) { toast('✅ Réglages enregistrés', 'ok'); dropPageInit(); }
 }
 // ── STOCK TAMPON DROPSHIPPING (administrateur) : entrée d'un achat d'avance, stock restant par fournisseur et sa valeur ──
-var dropTamponLignes = [{ produit_id: '', qte: '', prix: '' }];
+var dropTamponLignes = [{ produit_id: '', qte: '', prix: '', ht: '' }];
 var _dropTamponPhoto = null, _dropTamponEnvoi = false;
-// lignes saisies → lignes envoyées (pure) : produit, quantité entière ≥ 1, prix HT > 0 ; sinon l'erreur de la 1re ligne fausse
-function dropTamponPreparer(lignes) {
+// v7.5.201 (caisse TTC, marge HT) : la facture du fournisseur est TTC. Lignes saisies → lignes envoyées (pure) : produit,
+// quantité entière 1 à 10 000, prix PAYÉ TTC par pièce > 0, HT de la facture facultatif (≤ TTC) ; sinon l'erreur de la
+// 1re ligne fausse. Le coût HT d'un lot (marge) = HT saisi, sinon TTC ÷ (1 + TVA) — calculé par la base.
+function dropTamponPreparer(lignes, tva) {
   var ok = [], vues = 0;
   for (var k = 0; k < (lignes || []).length; k++) {
     var l = lignes[k] || {};
-    if (!l.produit_id && !String(l.qte || '').trim() && !String(l.prix || '').trim()) continue;   // ligne vide : ignorée
+    if (!l.produit_id && !String(l.qte || '').trim() && !String(l.prix || '').trim() && !String(l.ht || '').trim()) continue;   // ligne vide : ignorée
     vues++;
     if (!l.produit_id) return { ok: false, erreur: 'Ligne ' + (k + 1) + ' : choisissez la pièce' };
     var q = parseInt(String(l.qte || '').trim(), 10);
-    if (!/^\d+$/.test(String(l.qte || '').trim()) || q < 1 || q > 10000) return { ok: false, erreur: 'Ligne ' + (k + 1) + ' : quantité invalide' };
+    if (!/^\d+$/.test(String(l.qte || '').trim()) || q < 1 || q > 10000) return { ok: false, erreur: 'Ligne ' + (k + 1) + ' : quantité invalide (1 à 10 000)' };
     var m = dropMontant(l.prix);
-    if (!m.ok) return { ok: false, erreur: 'Ligne ' + (k + 1) + ' : prix d\'achat HT par pièce invalide' };
-    ok.push({ produit_id: l.produit_id, qte: q, prix_ht: m.montant });
+    if (!m.ok) return { ok: false, erreur: 'Ligne ' + (k + 1) + ' : prix payé TTC par pièce invalide' };
+    var ligne = { produit_id: l.produit_id, qte: q, prix_ttc: m.montant };
+    if (String(l.ht || '').trim()) {
+      var h = dropMontant(l.ht);
+      if (!h.ok || h.montant > m.montant) return { ok: false, erreur: 'Ligne ' + (k + 1) + ' : HT de la facture invalide (au plus le TTC)' };
+      ligne.prix_ht = h.montant;
+    }
+    ok.push(ligne);
   }
   if (!vues) return { ok: false, erreur: 'Ajoutez au moins une pièce' };
-  return { ok: true, lignes: ok, total: Math.round(ok.reduce(function(t, l) { return t + l.qte * l.prix_ht; }, 0) * 100) / 100 };
+  var tTtc = Math.round(ok.reduce(function(t, l) { return t + l.qte * l.prix_ttc; }, 0) * 100) / 100;
+  var tHt = Math.round(ok.reduce(function(t, l) { return t + l.qte * (l.prix_ht != null ? l.prix_ht : dropHtDeTtc(l.prix_ttc, tva)); }, 0) * 100) / 100;
+  return { ok: true, lignes: ok, total_ttc: tTtc, total_ht: tHt, total: tHt };
+}
+// v7.5.201 (revue Codex P1) : entrée dont le résultat est INDÉTERMINÉ (réseau coupé, réponse perdue, erreur du serveur) :
+// la clé et les paramètres sont GARDÉS sur l'appareil ; « Vérifier / renvoyer » rejoue la MÊME clé (la base répond « deja »
+// si l'entrée existe : jamais de lots en double) ; aucune nouvelle entrée tant qu'elle n'est pas tranchée.
+var DROP_TAMPON_ATTENTE = 'mx_drop_tampon_attente';
+function dropTamponAttenteLire() { try { var v = JSON.parse(localStorage.getItem(DROP_TAMPON_ATTENTE) || 'null'); return (v && v.params && v.params.p_cle) ? v : null; } catch(e) { return null; } }
+function dropTamponAttenteEcrire(v) { try { if (v) localStorage.setItem(DROP_TAMPON_ATTENTE, JSON.stringify(v)); else localStorage.removeItem(DROP_TAMPON_ATTENTE); return true; } catch(e) { return false; } }
+// résultat d'un envoi (pure) : 'ok' | 'refus' (la base a répondu non : rien d'enregistré) | 'indetermine'
+function dropTamponIssue(r) {
+  if (!r || r.reseau || r.absente) return 'indetermine';
+  if (r.httpOk && r.corps && r.corps.ok === true) return 'ok';
+  if (r.httpOk && r.corps && r.corps.ok === false && r.corps.erreur) return 'refus';
+  return 'indetermine';   // 5xx, réponse illisible : l'entrée a pu être enregistrée
 }
 function dropTamponHtml(A) {
-  var t = A.tampon, aujourd = A.date || '';
+  var t = A.tampon, aujourd = A.date || '', att = dropTamponAttenteLire();
   var prods = (typeof produits !== 'undefined' ? produits : []).filter(function(p) { return p && p.id && !(p.composants && p.composants.length); })
     .sort(function(a, b) { return String(a.nom || '').localeCompare(String(b.nom || '')); });
   var h = '<div class="card" style="margin-bottom:14px"><div class="card-t">📦 Stock tampon dropshipping (acheté d\'avance, au dépôt)</div>';
   if (t && t.fournisseurs && t.fournisseurs.length) {
-    h += '<div style="font-size:13px;margin-bottom:8px">Valeur totale : <strong>' + dropEur(t.valeur_totale_ht) + ' HT</strong></div>' + t.fournisseurs.map(function(f) {
+    h += '<div style="font-size:13px;margin-bottom:8px">Valeur totale : <strong>' + dropEur(t.valeur_totale_ht) + ' HT</strong> (coût)</div>' + t.fournisseurs.map(function(f) {
       return '<div style="padding:6px 0;border-top:1px solid var(--brd);font-size:13px"><strong>' + dropEchap(f.nom) + '</strong> — ' + f.restant + ' pièce' + (f.restant > 1 ? 's' : '') + ' · ' + dropEur(f.valeur_ht) + ' HT' +
         '<div style="font-size:12px;color:var(--t2)">' + (f.lots || []).map(function(l) { return dropEchap(l.produit || l.produit_id) + ' : ' + l.restant + '/' + l.initial + ' à ' + dropEur(l.prix_ht) + ' HT (' + l.jours + ' j)'; }).join(' · ') + '</div></div>';
     }).join('');
   } else h += '<div style="font-size:13px;color:var(--t3)">Aucun stock tampon.</div>';
+  if (att) {
+    h += '<div style="margin-top:10px;padding:10px;border:2px solid var(--orange);border-radius:10px;font-size:13px"><strong>⏳ Entrée en attente de vérification</strong> (' + dropEchap(att.resume || att.params.p_cle) + ', ' + new Date(att.at || Date.now()).toLocaleString('fr-FR') + ') : ' +
+      'le résultat n\'est pas connu. <button class="btn btn-sm btn-p" onclick="dropTamponRejouer()">Vérifier / renvoyer (même clé, sans doublon)</button></div>';
+  }
   var inp = 'padding:6px;border-radius:6px;border:1px solid var(--brd2);background:var(--bg);color:var(--text)';
-  h += '<div style="margin-top:12px;padding-top:10px;border-top:2px solid var(--brd)"><div style="font-weight:800;margin-bottom:6px">+ Entrée de stock tampon (prix HT réels)</div>' +
+  h += '<div style="margin-top:12px;padding-top:10px;border-top:2px solid var(--brd)"><div style="font-weight:800;margin-bottom:6px">+ Entrée de stock tampon (facture TTC payée ; coût HT calculé)</div>' +
     '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px"><select id="drop-t-f" style="' + inp + '"><option value="">Fournisseur…</option>' +
     A.fournisseurs.filter(function(f) { return f.actif; }).map(function(f) { return '<option value="' + f.id + '">' + dropEchap(f.nom) + '</option>'; }).join('') + '</select>' +
     '<input id="drop-t-date" type="date" value="' + dropEchap(aujourd) + '" style="' + inp + '">' +
@@ -6261,34 +6385,58 @@ function dropTamponHtml(A) {
       return '<div style="display:flex;gap:6px;margin-bottom:4px"><select onchange="dropTamponLignes[' + k + '].produit_id=this.value" style="flex:2;' + inp + '"><option value="">Pièce…</option>' +
         prods.map(function(p) { return '<option value="' + dropEchap(p.id) + '"' + (p.id === l.produit_id ? ' selected' : '') + '>' + dropEchap(p.nom) + '</option>'; }).join('') + '</select>' +
         '<input placeholder="Qté" inputmode="numeric" value="' + dropEchap(l.qte) + '" oninput="dropTamponLignes[' + k + '].qte=this.value" style="width:60px;' + inp + '">' +
-        '<input placeholder="Prix HT / pièce" inputmode="decimal" value="' + dropEchap(l.prix) + '" oninput="dropTamponLignes[' + k + '].prix=this.value" style="width:110px;' + inp + '"></div>';
+        '<input placeholder="Payé TTC / pièce" inputmode="decimal" value="' + dropEchap(l.prix) + '" oninput="dropTamponLignes[' + k + '].prix=this.value" style="width:120px;' + inp + '">' +
+        '<input placeholder="HT facture (facult.)" inputmode="decimal" value="' + dropEchap(l.ht || '') + '" oninput="dropTamponLignes[' + k + '].ht=this.value" style="width:120px;' + inp + '"></div>';
     }).join('') +
-    '<div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-sm" onclick="dropTamponLignes.push({produit_id:\'\',qte:\'\',prix:\'\'});dropPageRendre()">+ Pièce</button>' +
-    '<button class="btn btn-p" onclick="dropTamponEnregistrer()">Enregistrer l\'entrée</button></div></div></div>';
+    '<div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-sm" onclick="dropTamponLignes.push({produit_id:\'\',qte:\'\',prix:\'\',ht:\'\'});dropPageRendre()">+ Pièce</button>' +
+    '<button class="btn btn-p" onclick="dropTamponEnregistrer()"' + (att ? ' disabled title="Vérifiez d\'abord l\'entrée en attente"' : '') + '>Enregistrer l\'entrée</button></div></div></div>';
   return h;
+}
+// envoi (1er envoi ou rejeu) d'une entrée gardée sur l'appareil ; l'attente n'est effacée que sur une réponse certaine
+async function dropTamponEnvoyer(att) {
+  var r = await dropRpc('drop_tampon_entree', att.params);
+  var issue = dropTamponIssue(r);
+  if (issue === 'ok') {
+    dropTamponAttenteEcrire(null);
+    toast((r.corps.deja ? '✅ Entrée déjà enregistrée (vérifiée, aucun doublon) : ' : '✅ Stock tampon enregistré : ') + dropEur(r.corps.total_ttc != null ? r.corps.total_ttc : '') + ' TTC payés · coût ' + dropEur(r.corps.total_ht) + ' HT', 'ok');
+    (r.corps.lots || []).forEach(function(l) { var p = (typeof produits !== 'undefined') && produits.find(function(x) { return x.id === l.produit_id; }); if (p && l.stock_apres != null) p.stock = parseInt(l.stock_apres, 10) || p.stock; });
+    return 'ok';
+  }
+  if (issue === 'refus') { dropTamponAttenteEcrire(null); toast('⛔ Entrée refusée (rien d\'enregistré) : ' + dropMessageErreur(r.corps), 'err'); return 'refus'; }
+  toast('⏳ Résultat inconnu (' + (r && r.reseau ? 'pas de réseau' : 'réponse du serveur illisible') + ') : entrée GARDÉE, à vérifier avec « Vérifier / renvoyer » (même clé, sans doublon)', 'info');
+  return 'indetermine';
 }
 async function dropTamponEnregistrer() {
   if (_dropTamponEnvoi) return;
+  if (dropTamponAttenteLire()) { toast('Une entrée précédente attend sa vérification : « Vérifier / renvoyer » d\'abord', 'err'); return; }
   var fid = parseInt((document.getElementById('drop-t-f') || {}).value, 10), date = (document.getElementById('drop-t-date') || {}).value, mode = (document.getElementById('drop-t-mode') || {}).value;
   if (!fid) { toast('Choisissez le fournisseur', 'err'); return; }
   if (!date) { toast('Date d\'achat obligatoire', 'err'); return; }
   if (!mode) { toast('Mode de paiement obligatoire', 'err'); return; }
-  var pr = dropTamponPreparer(dropTamponLignes);
+  var tva = dropTva((dropAdm.reglages || {}).drop_tva_pct);
+  var pr = dropTamponPreparer(dropTamponLignes, tva);
   if (!pr.ok) { toast(pr.erreur, 'err'); return; }
-  if (!confirm('Entrée de stock tampon : ' + pr.lignes.reduce(function(t, l) { return t + l.qte; }, 0) + ' pièce(s), ' + dropEur(pr.total) + ' HT.\nLe stock du dépôt sera augmenté. Confirmer ?')) return;
+  var nbP = pr.lignes.reduce(function(t, l) { return t + l.qte; }, 0);
+  if (!confirm('Entrée de stock tampon : ' + nbP + ' pièce(s), facture ' + dropEur(pr.total_ttc) + ' TTC payés (coût ≈ ' + dropEur(pr.total_ht) + ' HT).\nLe stock du dépôt sera augmenté. Confirmer ?')) return;
   _dropTamponEnvoi = true;
   try {
     var cle = 'tp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8), chemin = null;
     if (_dropTamponPhoto) { var c0 = 'tampon/' + cle + '/facture.jpg'; if (await dropEnvoyerPhoto(c0, _dropTamponPhoto)) chemin = c0; else toast('⚠️ Photo non envoyée : entrée enregistrée sans photo', 'info'); }
-    var r = await dropRpc('drop_tampon_entree', { p_cle: cle, p_fournisseur_id: fid, p_date: date, p_mode: mode, p_ticket_path: chemin, p_lignes: pr.lignes });
-    if (r.reseau) { toast('📵 Pas de réseau : entrée NON enregistrée', 'err'); return; }
-    if (r.httpOk && r.corps && r.corps.ok) {
-      toast('✅ Stock tampon enregistré : ' + dropEur(r.corps.total_ht) + ' HT', 'ok');
-      (r.corps.lots || []).forEach(function(l) { var p = (typeof produits !== 'undefined') && produits.find(function(x) { return x.id === l.produit_id; }); if (p && l.stock_apres != null) p.stock = parseInt(l.stock_apres, 10) || p.stock; });
-      dropTamponLignes = [{ produit_id: '', qte: '', prix: '' }]; _dropTamponPhoto = null;
-      dropPageInit();
-    } else toast('⛔ ' + dropMessageErreur(r.corps), 'err');
+    var att = { params: { p_cle: cle, p_fournisseur_id: fid, p_date: date, p_mode: mode, p_ticket_path: chemin, p_lignes: pr.lignes },
+                resume: nbP + ' pièce(s), ' + dropEur(pr.total_ttc) + ' TTC', at: Date.now() };
+    // la clé et les paramètres sont gardés AVANT l'envoi : une coupure pendant l'envoi ne crée jamais une 2e entrée
+    if (!dropTamponAttenteEcrire(att)) { toast('Stockage de l\'appareil indisponible : entrée non envoyée (risque de doublon)', 'err'); return; }
+    var issue = await dropTamponEnvoyer(att);
+    if (issue === 'ok') { dropTamponLignes = [{ produit_id: '', qte: '', prix: '', ht: '' }]; _dropTamponPhoto = null; }
+    dropPageInit();
   } finally { _dropTamponEnvoi = false; }
+}
+async function dropTamponRejouer() {
+  if (_dropTamponEnvoi) return;
+  var att = dropTamponAttenteLire(); if (!att) { dropPageInit(); return; }
+  _dropTamponEnvoi = true;
+  try { var issue = await dropTamponEnvoyer(att); if (issue === 'ok') { dropTamponLignes = [{ produit_id: '', qte: '', prix: '', ht: '' }]; _dropTamponPhoto = null; } dropPageInit(); }
+  finally { _dropTamponEnvoi = false; }
 }
 // fiche commande et détail de tournée (admin) : provenance, fournisseur, prix payé, mode, photo du ticket, heure, marge
 function dropPiecesAdminHtml(m) {
@@ -6296,7 +6444,7 @@ function dropPiecesAdminHtml(m) {
   return '<div style="font-size:12px;margin-top:6px">' + (m.pieces || []).map(function(p) {
     return '<div style="padding:4px 0;border-top:1px solid var(--brd)"><strong>' + dropEchap(p.libelle) + '</strong> — ' + (p.provenance ? dropEchap(dropProvLib(p.provenance, p.fournisseur)) : '<span style="color:var(--orange)">provenance non déclarée</span>') +
       (p.source === 'tampon' ? ' · lot du stock tampon' : '') +
-      (p.montant_paye_ht != null ? ' · payé <strong>' + dropEur(p.montant_paye_ht) + ' HT</strong> (' + (p.mode === 'cb' ? 'CB' : 'espèces') + ', prévu ' + dropEur(p.prix_prevu_ht) + ')' : (p.prix_prevu_ht != null ? ' · prévu ' + dropEur(p.prix_prevu_ht) + ' HT' : '')) +
+      (p.montant_paye_ht != null ? ' · payé <strong>' + dropEur(p.montant_paye_ttc != null ? p.montant_paye_ttc : p.montant_paye_ht) + ' TTC</strong> (caisse, ' + (p.mode === 'cb' ? 'CB' : 'espèces') + ') · coût <strong>' + dropEur(p.montant_paye_ht) + ' HT</strong> (prévu ' + dropEur(p.prix_prevu_ht) + ' HT)' : (p.prix_prevu_ht != null ? ' · prévu ' + dropEur(p.prix_prevu_ht) + ' HT' : '')) +
       (p.paye_at ? ' · ' + new Date(p.paye_at).toLocaleString('fr-FR') : '') +
       (p.ticket_path ? ' · <a href="#" onclick="dropVoirTicket(\'' + dropEchap(p.ticket_path) + '\');return false">🧾 ticket</a>' : (p.provenance === 'fournisseur' && p.montant_paye_ht != null ? ' · ⚠️ pas de photo' : '')) +
       (p.livraison ? ' · ' + (p.livraison === 'livree' ? '✅ livrée' : '✖ non livrée') : '') +
@@ -6310,8 +6458,25 @@ async function dropFicheCommande(cmdId) {
   if (!body || typeof currentCmdId === 'undefined' || currentCmdId !== cmdId || !r.httpOk || !r.corps || !r.corps.ok) return;
   var div = document.getElementById('drop-fiche') || document.createElement('div');
   div.id = 'drop-fiche';
-  div.innerHTML = '<div class="card" style="margin-top:12px"><div class="card-t">📦 Provenance des pièces et marge</div>' + dropPiecesAdminHtml(r.corps) + '</div>';
+  // v7.5.201 (réserve n° 1) : la base refuse « livré » tant qu'une pièce n'est pas confirmée ; exception de l'administrateur
+  var aConf = (r.corps.pieces || []).some(function(p) { return p && p.id && !p.livraison; });
+  div.innerHTML = '<div class="card" style="margin-top:12px"><div class="card-t">📦 Provenance des pièces et marge</div>' + dropPiecesAdminHtml(r.corps) +
+    (aConf ? '<div style="margin-top:8px;font-size:12px;color:var(--t2)">Pièces non confirmées : la base refuse « Livré ». ' +
+      '<button class="btn btn-sm" onclick="dropDeroger(\'' + dropEchap(cmdId) + '\')">🔓 Autoriser « Livré » sans confirmation (motif)</button></div>' : '') + '</div>';
   if (!div.parentNode) body.appendChild(div);
+}
+async function dropDeroger(cmdId) {
+  if (role !== 'admin') return;
+  var motif = prompt('Motif (obligatoire, 5 caractères au moins) : pourquoi « Livré » sans confirmation des pièces ?');
+  if (motif == null) return;
+  if (String(motif).trim().length < 5) { toast('Motif obligatoire (5 caractères au moins)', 'err'); return; }
+  var r = await dropRpc('drop_livre_sans_confirmation', { p_cmd_id: cmdId, p_motif: String(motif).trim() });
+  if (r.reseau) { toast('📵 Pas de réseau : dérogation non enregistrée', 'err'); return; }
+  if (r.httpOk && r.corps && r.corps.ok) {
+    if (dropPieces[cmdId]) { dropPieces[cmdId].derogation = true; dropSauver(); }
+    toast('✅ Dérogation enregistrée (journalisée) : la commande peut passer « Livré »', 'ok');
+    dropFicheCommande(cmdId);
+  } else toast('⛔ ' + dropMessageErreur(r.corps), 'err');
 }
 async function dropTourneeDetail(t) {
   if (role !== 'admin' || !t || !(await dropVerifier())) return;
@@ -14943,16 +15108,33 @@ function validerSig(){
     // l'enregistrement) et (2) le « livré » avec son encaissement (retiré dès que l'envoi réussit, rejoué sinon) : ni
     // le « livré » ni l'encaissement ni la déduction ne dépendent d'un envoi qui aboutit.
     // v7.5.199 : confirmation des pièces livrées envoyée à la base (gardée en file), la déduction l'attend
-    var _pDrop = null; try { _pDrop = (typeof dropApresLivre === 'function') ? dropApresLivre(_cmdLivre.id) : null; } catch(e) { console.warn('[drop] confirmation :', e && e.message); }
+    var _aConf = false; try { _aConf = (typeof dropAConfirmer === 'function') && dropAConfirmer(_cmdLivre.id); } catch(e) {}
+    var _pDrop = null; try { _pDrop = (_aConf && typeof dropApresLivre === 'function') ? dropApresLivre(_cmdLivre.id) : null; } catch(e) { console.warn('[drop] confirmation :', e && e.message); }
     try { stkDeductionPoser(_cmdLivre); } catch(e) { console.warn('[stock] demande de déduction :', e && e.message); }
     try { offlineQueueAdd('commande', _cmdLivre); } catch(e) { console.warn('[livré] enregistrement préventif :', e && e.message); }
-    try { _pLivre = sbSaveCommande(_cmdLivre); } catch(e) { console.warn('[livré] enregistrement :', e && e.message); } // ✅ Sync commande Supabase → Realtime admin
-    // v7.5.192 : la déduction est RENVOYÉE dans la chaîne (exception ou promesse rejetée → même .catch final) :
-    // aucun rejet de promesse ne remonte sans être traité.
-    Promise.resolve(_pLivre)
+    // v7.5.202 (revue Codex P1 et réserve n° 1) : ORDRE OBLIGATOIRE — 1) confirmation des pièces ; 2) SEULEMENT si elle a
+    // réussi (ou s'il n'y a rien à confirmer : envoi immédiat, comme avant), le « livré » (la base refuse « livré » tant
+    // qu'une pièce n'est pas confirmée) ; 3) puis la déduction. Confirmation à réessayer ou refusée : le « livré » et la
+    // déduction restent dans la file (rejoués après la confirmation, jamais avant).
+    if (!_aConf) { try { _pLivre = sbSaveCommande(_cmdLivre); } catch(e) { console.warn('[livré] enregistrement :', e && e.message); } } // ✅ Sync commande Supabase → Realtime admin
+    var _rDrop = null;
+    var _dropOk = function() { return _rDrop == null || _rDrop === 'ok' || _rDrop === 'rien'; };
+    Promise.resolve(_aConf ? _pDrop : 'rien').catch(function() { return 'reessayer'; })
+      .then(function(rd) {
+        _rDrop = rd;
+        if (!_dropOk()) return null;
+        if (_aConf) { try { _pLivre = sbSaveCommande(_cmdLivre); } catch(e) { console.warn('[livré] enregistrement :', e && e.message); } } // après la confirmation réussie
+        return _pLivre;
+      })
       .catch(function(e) { console.warn('[livré] enregistrement :', e && e.message); })
-      .then(function() { return _pDrop; }).catch(function() {}) // v7.5.199 : pièces confirmées d'abord
-      .then(function() { return stkDemanderDeduction(_cmdLivre); }) // v7.5.197 : la base déduit, une seule fois
+      .then(function() {
+        if (!_dropOk()) {
+          if (_rDrop === 'reessayer') toast('📵 Pièces gardées sur le téléphone : la livraison est envoyée dès que leur confirmation passe', 'info');
+          return null;
+        }
+        if (typeof dropDeductionPermise === 'function' && !dropDeductionPermise(_cmdLivre.id)) return null; // attend la confirmation
+        return stkDemanderDeduction(_cmdLivre); // v7.5.197 : la base déduit, une seule fois
+      })
       .catch(function(e) { console.warn('[stock] déduction à la livraison :', e && e.message); })
       .then(function() {
         livFin(_cmdLivre.id);
