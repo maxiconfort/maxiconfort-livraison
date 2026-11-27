@@ -15,6 +15,7 @@
 --        grant execute on function public.recrediter_stock_livraison(text, boolean) to anon;
 --        drop trigger if exists commandes_livre_garde on public.commandes;
 --        drop trigger if exists commandes_annulee_pieces on public.commandes;
+--        drop trigger if exists commandes_supprimee_pieces on public.commandes;
 --        drop trigger if exists stock_camion_garde_041 on public.stock_camion;
 --   2) drop function if exists public.drop_version(), public.drop_pieces(text), public.drop_declarer(bigint, text, bigint, text),
 --        public.drop_enlever_payer(bigint, numeric, text, text, numeric), public.drop_ticket_ajouter(bigint, text),
@@ -118,6 +119,8 @@
 --     pièces « pas livrées » remises à zéro). Un rejeu (déjà réconcilié) ne refait rien.
 --   * COMMANDE ANNULÉE AVANT SA LIVRAISON (déclencheur commandes_annulee_pieces, toutes voies) : pièces déclarées libérées comme
 --     pour un report (achat payé → stock du camion).
+--   * v7.5.208 : COMMANDE SUPPRIMÉE AVANT SA LIVRAISON (déclencheur commandes_supprimee_pieces, avant la suppression, toutes
+--     voies) : même libération.
 --
 -- v7.5.207 (revue native P2 sur c22dacd, toujours présente sur 6775bbc) :
 --   * LIGNES DU CHARGEMENT RÉCONCILIÉES À LA LIVRAISON (interne.l041_reconcilier_chargement, appelée par drop_confirmer_livraison) :
@@ -1374,6 +1377,26 @@ revoke all on function interne.l041_annulee_pieces() from public, anon, authenti
 drop trigger if exists commandes_annulee_pieces on public.commandes;
 create trigger commandes_annulee_pieces after update of statut on public.commandes
   for each row execute function interne.l041_annulee_pieces();
+
+-- v7.5.208 (revue native P2 sur 8905a30) : commande SUPPRIMÉE avant sa livraison (fiche commande, bureau, ancienne version
+-- de l'appli : simple DELETE, quelle que soit la voie) : AVANT la suppression, dans la même transaction, ses pièces
+-- déclarées et non livrées sont libérées comme pour une annulation (achat payé → stock du camion, rattaché à son achat ;
+-- achat prévu annulé ; unité « Déjà dans le camion » réservée → libérée ; déclaration remise à zéro). Un achat payé ne
+-- reste jamais attaché à une commande inexistante. Commande livrée : la suppression passe par le recrédit
+-- (recrediter_stock_livraison, p_suppression), qui fait ce travail lui-même.
+create or replace function interne.l041_supprimee_pieces() returns trigger
+language plpgsql security definer set search_path = public, interne, pg_catalog as $$
+begin
+  if coalesce(old.statut, '') not in ('livré', 'livre')
+     and exists (select 1 from public.commande_pieces q where q.cmd_id = old.id and q.livraison is null and q.provenance is not null) then
+    perform interne.l041_liberer_non_livrees(old.id, 'commande_supprimee_non_livree');
+  end if;
+  return old;
+end $$;
+revoke all on function interne.l041_supprimee_pieces() from public, anon, authenticated;
+drop trigger if exists commandes_supprimee_pieces on public.commandes;
+create trigger commandes_supprimee_pieces before delete on public.commandes
+  for each row execute function interne.l041_supprimee_pieces();
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 -- 7. Déduction du stock : seulement les pièces d'origine « Dépôt » (s'appuie sur la 040 révisée, sans la recopier)

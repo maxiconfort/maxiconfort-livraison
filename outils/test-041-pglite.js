@@ -1150,6 +1150,53 @@ grant select, insert, update, delete on storage.objects to anon;
   test('unité gardée déjà réservée par une autre commande : non touchée par la relivraison « Dépôt » (elle reste à l\'autre commande)',
     r.ok && !!uG4 && (await un(P, 'select status, utilise_par_piece from public.stock_camion where id = $1', [uG4])).status === 'en_camion', { r, uG4 });
 
+  // =========================================================================================================================
+  {   // sections 29 et 30 : variables locales au bloc
+  console.log('\n29. v7.5.208 (revue native P2 sur 8905a30) : COMMANDE SUPPRIMÉE AVANT SA LIVRAISON → achats et réservations libérés');
+  await q('admin', "insert into public.fournisseur_prix (produit_id, fournisseur_id, prix_achat_ht) values ('py140', $1, 100), ('py90', $1, 40)", [F1]);
+  await q('admin', "insert into public.drop_produits (produit_id, actif) values ('py140', true), ('py90', true) on conflict (produit_id) do update set actif = true");
+  await cmd('#US1', { lignes: [{ produitId: 'py140', nom: 'Matelas fictif Y', qte: 1 }], prix: 360 });
+  const pS1 = (await rpc('livreur', 'public.drop_pieces($1)', ['#US1'])).pieces[0];
+  await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pS1.id, 'fournisseur', F1]);
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pS1.id, 120, 'cb', null]);
+  const aS1 = (await un(P, 'select achat_id from public.commande_pieces where id = $1', [pS1.id])).achat_id;
+  test('« Enlevé et payé » avant la livraison', r.ok && aS1 > 0, r);
+  e = await echec('admin', "delete from public.commandes where id = '#US1'");
+  test('le bureau SUPPRIME la commande (simple DELETE) : l\'achat payé n\'est plus attaché à la pièce, il est dans le STOCK DU CAMION (rattaché à l\'achat), tracé',
+    e === null && (await nb("public.commandes where id = '#US1'")) === 0
+    && (await un(P, 'select achat_id, provenance from public.commande_pieces where id = $1', [pS1.id])).achat_id === null
+    && (await nb("public.stock_camion where achat_id = $1 and status = 'en_camion'", [aS1])) === 1
+    && (await un(P, 'select statut from public.achats_fournisseur where id = $1', [aS1])).statut === 'paye'
+    && (await nb("public.drop_journal where action = 'commande_supprimee_non_livree' and cmd_id = '#US1'")) === 1, e);
+  // réservation « Déjà dans le camion » et achat prévu : libérés par la suppression
+  const uS2 = (await un(P, "select id from public.stock_camion where achat_id = $1", [aS1])).id;
+  await q(P, "update public.stock_camion set charge_at = now() - interval '1 day' where id = $1", [uS2]);
+  await cmd('#US2', { lignes: [{ produitId: 'py140', nom: 'Matelas fictif Y', qte: 1 }, { produitId: 'py90', nom: 'Sommier fictif Y', qte: 1 }], prix: 500 });
+  const pS2 = (await rpc('livreur', 'public.drop_pieces($1)', ['#US2'])).pieces;
+  const mS2 = pS2.find((p) => p.produit_id === 'py140'), sS2 = pS2.find((p) => p.produit_id === 'py90');
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [mS2.id, 'camion', uS2]);
+  test('« Déjà dans le camion » : l\'article acheté est réservé à la pièce de #US2', r.ok && (await un(P, 'select utilise_par_piece from public.stock_camion where id = $1', [uS2])).utilise_par_piece !== null, r);
+  await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [sS2.id, 'fournisseur', F1]);
+  const aS2 = (await un(P, 'select achat_id from public.commande_pieces where id = $1', [sS2.id])).achat_id;
+  e = await echec('collab', "delete from public.commandes where id = '#US2'");
+  test('suppression par la collaboratrice : réservation LIBÉRÉE (article disponible), achat prévu ANNULÉ, déclarations remises à zéro',
+    e === null && (await un(P, 'select utilise_par_piece, status from public.stock_camion where id = $1', [uS2])).utilise_par_piece === null
+    && (await un(P, 'select statut from public.achats_fournisseur where id = $1', [aS2])).statut === 'annule'
+    && (await nb('public.commande_pieces where cmd_id = $1 and provenance is not null', ['#US2'])) === 0, e);
+  // commande LIVRÉE supprimée par le recrédit (p_suppression) : supprimée par la fonction, stock rendu, pièces rouvertes
+  await cmd('#US3', { lignes: [{ produitId: 'py90', nom: 'Sommier fictif Y', qte: 1 }], prix: 140 });
+  const pS3 = (await rpc('livreur', 'public.drop_pieces($1)', ['#US3'])).pieces[0];
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pS3.id, 'depot']);
+  await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#US3', JSON.stringify([{ id: pS3.id, livree: true }])]);
+  await q('livreur', "update public.commandes set statut = 'livré' where id = '#US3'");
+  const s90 = await stock('py90');
+  await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#US3']);
+  r = await rpc('admin', 'public.recrediter_stock_livraison($1, true)', ['#US3']);
+  test('commande LIVRÉE, recrédit p_suppression : commande supprimée par la fonction, stock rendu (py90 revenu à ' + s90 + '), pièces rouvertes',
+    r.ok && (await nb("public.commandes where id = '#US3'")) === 0 && (await stock('py90')) === s90
+    && (await un(P, 'select livraison from public.commande_pieces where id = $1', [pS3.id])).livraison === null, r);
+  }
+
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error('ERREUR DU BANC :', e); process.exit(1); });
