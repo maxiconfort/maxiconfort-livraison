@@ -6043,6 +6043,8 @@ function dropDeclarerClic(btn) {
   dropDeclarer(btn.dataset.cmd, parseInt(btn.dataset.piece, 10), btn.dataset.prov, btn.dataset.f ? parseInt(btn.dataset.f, 10) : null, btn.dataset.sc || null);
 }
 
+// v7.5.209 : avis « chargement pas encore enregistré » déjà montré (une fois par commande, jusqu'au succès)
+var _dropAvisChargement = {};
 // file d'attente : confirmations, enlèvements payés et « non livrée » sont rejoués sans double effet (fonctions idempotentes)
 function dropPoser(cle, fn, params, cmdId) {
   var data = { id: cle, fn: fn, params: params, cmdId: cmdId || (params && params.p_cmd_id) || null };
@@ -6054,8 +6056,22 @@ async function dropEnvoyer(data) {
   // v7.5.208 (règle des 10 retours, question d) : les lignes du chargement de la commande encore « à envoyer » (téléphone
   // hors ligne au chargement) partent AVANT la confirmation : la base les réconcilie (unités « pas livrées » gardées) au lieu
   // de les recevoir après coup (elles seraient alors fermées « livre » par la base, sans unité gardée)
+  // v7.5.209 (revue native P2 sur 3fefbc9) : la confirmation ne part que si TOUTES les lignes du chargement de la commande
+  // sont réellement enregistrées en base. Sinon (envoi refusé ou réseau) : confirmation GARDÉE en file, ligne locale GARDÉE
+  // (dernière trace des articles non livrés encore dans le véhicule), livreur prévenu ; réessai automatique.
   if (data.fn === 'drop_confirmer_livraison' && data.cmdId && typeof scEnvoyerChargement === 'function') {
-    try { await scEnvoyerChargement(data.cmdId); } catch(e) {}
+    var chg = null;
+    try { chg = await scEnvoyerChargement(data.cmdId); } catch(e) { chg = null; }
+    if (!chg || chg.restantes > 0) {
+      var cleAv = 'chargement|' + data.cmdId;
+      if (!_dropAvisChargement[cleAv]) {
+        _dropAvisChargement[cleAv] = true;
+        try { toast('📵 Chargement de ' + data.cmdId + ' pas encore enregistré : confirmation de livraison en attente, réessai automatique', 'err'); } catch(e) {}
+        try { notifAjout('warn', 'commande', 'Livraison en attente — ' + data.cmdId, 'Une ligne du chargement de cette commande n\'est pas encore enregistrée en base (réseau ou refus). La confirmation des pièces attend qu\'elle le soit et sera renvoyée automatiquement ; la ligne reste sur le téléphone.', 'Voir', 'livreur'); } catch(e) {}
+      }
+      return 'reessayer';
+    }
+    delete _dropAvisChargement['chargement|' + data.cmdId];
   }
   var r = await dropRpc(data.fn, data.params || {});
   if (r.reseau || r.absente || (!r.httpOk && (typeof httpTemporaire !== 'function' || httpTemporaire(r.statut)))) return 'reessayer';
@@ -6819,11 +6835,21 @@ async function scEnvoyer(entry) {
 }
 
 // v7.5.208 : envoi des lignes du chargement d'UNE commande encore « à envoyer » (même uuid : jamais de doublon)
+// v7.5.209 (revue native P2 sur 3fefbc9) : le résultat de CHAQUE envoi est vérifié ; renvoie { envoyees, echecs, restantes }
+// où « restantes » = lignes du chargement de la commande PAS encore enregistrées en base (encore « à envoyer ») — la
+// confirmation des pièces ne part qu'à restantes = 0 (une ancienne ligne locale « sc_… » est reprise avec un uuid et
+// « à envoyer » par scReprendreAnciennes, elle est alors comptée)
 async function scEnvoyerChargement(cmdId) {
   var l = (stockCamion || []).filter(function(s) { return s && s.a_envoyer && scEstUuid(s.id) && s.source_cmd_id === cmdId; });
-  for (var i = 0; i < l.length; i++) { await scEnvoyer(l[i]); }
+  var echecs = 0;
+  for (var i = 0; i < l.length; i++) {
+    var okE = false;
+    try { okE = (await scEnvoyer(l[i])) === true; } catch(e) { okE = false; }
+    if (!okE) echecs++;
+  }
   if (l.length) { try { localStorage.setItem('mx_stock_camion', JSON.stringify(stockCamion)); } catch(e) {} }
-  return l.length;
+  var restantes = scLignesChargement(stockCamion, cmdId).filter(function(s) { return !!s.a_envoyer; }).length;
+  return { envoyees: l.length - echecs, echecs: echecs, restantes: restantes };
 }
 
 // Charger stock camion depuis Supabase
@@ -6835,6 +6861,9 @@ async function sbLoadStockCamion() {
     // v7.5.207 : ligne « à envoyer » d'une commande déjà livrée = jamais envoyée (article chez le client), retirée de l'appareil
     var _tri = scAEnvoyer(stockCamion, function(id) {
       var c = (typeof commandes !== 'undefined' && Array.isArray(commandes)) ? commandes.find(function(x) { return x && x.id === id; }) : null;
+      // v7.5.209 (revue native P2 sur 3fefbc9) : confirmation des pièces encore EN FILE (elle attend justement ces lignes) :
+      // la ligne est gardée et envoyée, jamais retirée — la base la réconcilie à la confirmation
+      try { if (typeof dropConfEnFile === 'function' && dropConfEnFile(id)) return false; } catch(e) {}
       return !!c && (c.statut === 'livré' || c.statut === 'livre');
     });
     if (_tri.retirer.length) { stockCamion = _tri.garder; try { localStorage.setItem('mx_stock_camion', JSON.stringify(stockCamion)); } catch(e) {} }

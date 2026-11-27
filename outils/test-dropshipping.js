@@ -559,7 +559,35 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     test('texte v7.5.208 : toggleChargement et l\'annulation de livraison passent l\'indice de la ligne ; la confirmation envoie d\'abord les lignes du chargement « à envoyer » de la commande',
       /ajouterStockCamion\(livreurCible, produitLib, qte, cmdId, t \? t\.id : null, parUser, ligneIdx\)/.test(html)
       && /ajouterStockCamion\(t\.livreur, produitLib, qte, cmd\.id, t\.id, 'admin', li\)/.test(html)
-      && /data\.fn === 'drop_confirmer_livraison'[\s\S]{0,200}scEnvoyerChargement\(data\.cmdId\)[\s\S]{0,80}var r = await dropRpc\(data\.fn/.test(html));
+      && /data\.fn === 'drop_confirmer_livraison'[\s\S]{0,200}scEnvoyerChargement\(data\.cmdId\)[\s\S]{0,1200}var r = await dropRpc\(data\.fn/.test(html));
+
+    // v7.5.209 (revue native P2 sur 3fefbc9) : une ligne du chargement « à envoyer » dont l'enregistrement ÉCHOUE retient la
+    // confirmation (gardée en file), la ligne locale est gardée, le livreur est prévenu ; le réessai réussi confirme et retire
+    let postOk = false;
+    b = bacSc((url, opt, env) => {
+      if (/stock_camion/.test(url) && env.method === 'POST') return postOk ? { status: 201, json: [Object.assign({}, env.body)] } : { status: 500, json: { message: 'refus fictif' } };
+      if (/rpc\/drop_confirmer_livraison/.test(url)) return { status: 200, json: { ok: true } };
+      if (/stock_camion\?status=eq\.en_camion/.test(url)) return { status: 200, json: [L(cV8, '#V8')] };   // la base : seule la ligne de #V8 reste au camion
+      return { status: 200, json: [] };
+    });
+    const cP = b.scUuid(), cV8 = b.scUuid();
+    b.stockCamion = [L(cP, '#V9', { a_envoyer: true }), L(cV8, '#V8', { a_envoyer: true })];
+    let rC = await b.dropPoser('conf:#V9', 'drop_confirmer_livraison', { p_cmd_id: '#V9' }, '#V9');
+    test('v7.5.209 : ligne du chargement pas enregistrée (POST refusé) : confirmation NON envoyée (« reessayer »), gardée en file, ligne locale gardée « à envoyer », livreur prévenu',
+      rC === 'reessayer' && !b._envois.some((x) => /rpc\/drop_confirmer_livraison/.test(x.url)) && b.dropConfEnFile('#V9')
+      && b.stockCamion.some((s) => s.id === cP && s.a_envoyer) && b._toasts.some((x) => /pas encore enregistré/.test(x[0]))
+      && b._notifs.some((x) => /^Livraison en attente — #V9/.test(x[2])), { rC, envois: b._envois.map((x) => x.method + ' ' + x.url), toasts: b._toasts });
+    const nAvis = b._notifs.length;
+    rC = await b.dropEnvoyer({ id: 'conf:#V9', fn: 'drop_confirmer_livraison', params: { p_cmd_id: '#V9' }, cmdId: '#V9' });
+    test('v7.5.209 : 2e échec : toujours « reessayer », pas de 2e alerte', rC === 'reessayer' && b._notifs.length === nAvis && !b._envois.some((x) => /rpc\/drop_confirmer_livraison/.test(x.url)));
+    test('v7.5.209 : la ligne d\'une confirmation encore en file n\'est jamais retirée comme « commande livrée » au rechargement du camion',
+      /dropConfEnFile\(id\)\) return false;[\s\S]{0,120}c\.statut === 'livré'/.test(html));
+    postOk = true;
+    rC = await b.dropEnvoyer({ id: 'conf:#V9', fn: 'drop_confirmer_livraison', params: { p_cmd_id: '#V9' }, cmdId: '#V9' });
+    test('v7.5.209 : ligne enfin enregistrée : la confirmation part APRÈS elle, file vidée, ligne du chargement retirée de l\'appareil (réconciliée par la base) ; l\'autre commande intacte',
+      rC === 'ok' && !b.dropConfEnFile('#V9') && !b.stockCamion.some((s) => s.id === cP) && b.stockCamion.some((s) => s.source_cmd_id === '#V8')
+      && (() => { const iR = b._envois.findIndex((x) => /rpc\/drop_confirmer_livraison/.test(x.url)); let iP = -1; b._envois.forEach((x, k) => { if (x.method === 'POST' && /stock_camion/.test(x.url) && x.body && x.body.id === cP) iP = k; }); return iR > -1 && iP > -1 && iP < iR; })(),
+      { rC, file: b.dropConfEnFile('#V9'), sc: b.stockCamion.map((s) => s.source_cmd_id + ':' + (s.id === cP)) });
   }
 
   {
