@@ -7500,6 +7500,11 @@ function tdbCouleur(c) { var s = String(c == null ? '' : c).trim(); return /^#[0
 function tdbEur(n) { var v = Math.round((parseFloat(n) || 0) * 100) / 100; return v.toLocaleString('fr-FR', { minimumFractionDigits: (v % 1 ? 2 : 0), maximumFractionDigits: 2 }) + ' €'; }
 /** Période choisie → bornes AAAA-MM-JJ (heure de l'appareil, jamais UTC) de la période en cours ENTIÈRE (du → au) et de la
  *  période précédente À DATE ÉGALE (pdu → pau : même nombre de jours écoulés). Jour : même jour de la semaine précédente. */
+/** Nombre de jours de [du, au] (dates AAAA-MM-JJ, bornes comprises ; calcul en UTC : aucun effet des changements d'heure). */
+function tdbNbJours(du, au) {
+  var j = function (x) { var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(x || '')); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : NaN; };
+  return Math.round((j(au) - j(du)) / 864e5) + 1;
+}
 function tdbPeriodes(mode, maintenant) {
   var n = new Date(maintenant || Date.now()), a = new Date(n.getFullYear(), n.getMonth(), n.getDate()), r;
   if (mode === 'semaine') {
@@ -7522,6 +7527,12 @@ function tdbPeriodes(mode, maintenant) {
   // v7.5.139 (revue Codex de 8705c41) : les COMPARAISONS de la période en cours s'arrêtent à aujourd'hui (cau), comme la
   // période précédente (pau) ; « au » (fin de période) ne sert plus qu'aux livraisons prévues et au « restant à livrer ».
   r.mode = mode; r.aujourdhui = tdbJ(a); r.cau = r.aujourdhui;
+  // v7.5.199 (revue chatgpt-review PR 27 sur 7ef4374, point 1) : DURÉES COMPARÉES. Le 29, 30 ou 31 mars, le mois en cours (29 à 31 jours)
+  // était comparé à février entier (28 jours) sans le dire ; de même le 29 février face au 28 février de l'année d'avant. La durée des
+  // deux périodes comparées (jours, bornes comprises) est désormais calculée ; si elle diffère, le libellé le dit EXPLICITEMENT
+  // (« durées différentes : 31 j contre 28 j »). Jour et semaine sont toujours à durée égale.
+  r.joursCours = tdbNbJours(r.du, r.cau); r.joursPrec = tdbNbJours(r.pdu, r.pau); r.dureesEgales = r.joursCours === r.joursPrec;
+  if (!r.dureesEgales) r.vs += ' — durées différentes : ' + r.joursCours + ' j contre ' + r.joursPrec + ' j';
   r.date = TDB_JOURS[a.getDay()].charAt(0).toUpperCase() + TDB_JOURS[a.getDay()].slice(1) + ' ' + tdbCourt(r.aujourdhui);
   r.moisDu = tdbJ(new Date(a.getFullYear(), a.getMonth(), 1)); r.moisAu = tdbJ(new Date(a.getFullYear(), a.getMonth() + 1, 0));
   return r;
@@ -7733,12 +7744,12 @@ function tdbLocalComplet() {
 // STRICTEMENT SUPÉRIEUR au dernier reçu (ordre id croissant, &id=gt.<dernier>, comparaison faite par la base dans le même ordre que le
 // tri) : une ligne présente du début à la fin est lue exactement une fois. Une page qui renverrait un identifiant déjà lu (filtre ignoré)
 // arrête la lecture avec une erreur (jamais de doublon ni de boucle).
-async function tdbLire(filtre) {
+async function tdbLire(filtre, cols) {
   var out = [], vus = {}, dernier = null;
   for (var page = 0; ; page++) {
     if (page >= TDB_PAGES_MAX) throw new Error('plus de ' + TDB_PAGES_MAX.toLocaleString('fr-FR') + ' pages (' + out.length.toLocaleString('fr-FR') + ' commandes lues) sur la période : lecture arrêtée, chiffres non calculés');
     var apres = dernier == null ? '' : '&id=gt.' + encodeURIComponent(dernier);
-    var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + TDB_COLS + filtre + apres + '&order=id.asc&limit=' + TDB_PAGE, {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + (cols || TDB_COLS) + filtre + apres + '&order=id.asc&limit=' + TDB_PAGE, {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     var rows = await r.json(); if (!Array.isArray(rows)) throw new Error('réponse inattendue');
@@ -7756,30 +7767,36 @@ async function tdbLire(filtre) {
 // v7.5.199 (revue Codex PR 27 sur cbf3170) : CONTRÔLE DE COHÉRENCE après la lecture paginée. La pagination par clé lit une fois chaque
 // commande présente du début à la fin, mais une commande insérée AVANT le curseur pendant la lecture est omise, et une commande
 // supprimée (ou sortie de la période) APRÈS avoir été lue reste comptée. Sans événement temps réel reçu, ce résultat était affiché
-// comme complet pendant 60 s. Désormais, une fois toutes les pages lues, la base est relue en UNE requête pour le même filtre :
-// nombre exact de commandes (en-tête Content-Range, « Prefer: count=exact ») et date de mise à jour la plus récente (updated_at). Si
-// l'un des deux diffère de ce qui a été lu, la base a changé pendant la lecture : elle est relue (TDB_ESSAIS_COHERENCE fois au plus),
-// puis, si elle change encore, erreur affichée (« chiffres non calculés »), jamais de chiffres présentés comme complets.
+// comme complet pendant 60 s.
+// v7.5.199 (revue chatgpt-review PR 27 sur 9fbea59, et revue native P2) : le contrôle par « nombre exact + updated_at le plus récent »
+// ne suffisait pas — A lue, A modifiée, puis B modifiée avant la lecture de sa page : même nombre, et le maximum lu (celui de B) est
+// aussi celui renvoyé par le contrôle ; l'ancienne valeur de A était acceptée. Désormais, une fois TOUTES les pages lues, les commandes
+// du même filtre sont relues EN ENTIER mais légèrement (identifiant + updated_at seulement, mêmes pages par clé) et comparées LIGNE PAR
+// LIGNE au jeu lu : même ensemble d'identifiants et même updated_at pour chacun. Toute différence (commande ajoutée, retirée, sortie du
+// filtre ou modifiée depuis sa lecture, à n'importe quelle page) = la base a changé pendant la lecture : relecture complète
+// (TDB_ESSAIS_COHERENCE fois au plus), puis erreur affichée (« chiffres non calculés »). Le contrôle commence après la dernière page
+// lue : chaque ligne acceptée est inchangée entre sa lecture et ce moment, donc le jeu accepté est celui de la base à cet instant.
+// Sans migration. Limite : une modification qui ne change pas updated_at n'est pas vue (l'appli et les fonctions de paiement le posent).
 var TDB_ESSAIS_COHERENCE = 3;
-function tdbMajMax(rows) {
-  var m = ''; (rows || []).forEach(function (c) { var u = c && c.updated_at ? String(c.updated_at) : ''; if (u && (!m || Date.parse(u) > Date.parse(m))) m = u; });
-  return m;
-}
 async function tdbControler(filtre) {
-  var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=id,updated_at' + filtre + '&order=updated_at.desc.nullslast,id.desc&limit=1', {
-    headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'count=exact' } });
-  if (!r.ok) throw new Error('contrôle de cohérence : HTTP ' + r.status);
-  var cr = r.headers && typeof r.headers.get === 'function' ? r.headers.get('content-range') : null;
-  var m = /\/(\d+)\s*$/.exec(String(cr || ''));
-  if (!m) throw new Error('contrôle de cohérence illisible (nombre de commandes absent) : chiffres non calculés');
-  var rows = await r.json(); if (!Array.isArray(rows)) throw new Error('contrôle de cohérence : réponse inattendue');
-  return { n: parseInt(m[1], 10), maj: rows.length && rows[0] && rows[0].updated_at ? String(rows[0].updated_at) : '' };
+  return tdbLire(filtre, 'id,updated_at'); // lecture seule, même filtre, mêmes pages par clé (garde-fous de tdbLire compris)
 }
 function tdbMemeMaj(a, b) { return (!a && !b) || (!!a && !!b && Date.parse(a) === Date.parse(b)); }
+// Jeu lu et relecture légère identiques ligne par ligne ? Renvoie '' si oui, sinon la première différence (texte court).
+function tdbDifference(rows, ctrl) {
+  var lus = {}; (rows || []).forEach(function (c) { lus[String(c.id)] = c; });
+  if ((ctrl || []).length !== (rows || []).length) return 'nombre de commandes ' + (rows || []).length + ' lu, ' + (ctrl || []).length + ' au contrôle';
+  for (var i = 0; i < ctrl.length; i++) {
+    var k = ctrl[i] && ctrl[i].id != null ? String(ctrl[i].id) : null, c = k != null ? lus[k] : null;
+    if (!c) return 'commande ' + k + ' absente de la lecture';
+    if (!tdbMemeMaj(c.updated_at ? String(c.updated_at) : '', ctrl[i].updated_at ? String(ctrl[i].updated_at) : '')) return 'commande ' + k + ' modifiée depuis sa lecture';
+  }
+  return '';
+}
 async function tdbLireCoherent(filtre) {
   for (var essai = 1; essai <= TDB_ESSAIS_COHERENCE; essai++) {
-    var rows = await tdbLire(filtre), c = await tdbControler(filtre);
-    if (c.n === rows.length && tdbMemeMaj(c.maj, tdbMajMax(rows))) return rows;
+    var rows = await tdbLire(filtre), ctrl = await tdbControler(filtre);
+    if (!tdbDifference(rows, ctrl)) return rows;
   }
   throw new Error('commandes modifiées pendant chaque lecture (' + TDB_ESSAIS_COHERENCE + ' essais) : chiffres non calculés');
 }

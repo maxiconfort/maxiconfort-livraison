@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
-// v7.5.199 - Tableau de bord + menus (revue Codex PR 27 sur cbf3170) : controle de coherence apres la lecture paginee (nombre exact + derniere mise a jour, relecture si la base a change), chiffres dates « lus a HH:MM » ; fusion de la PR 26 (v7.5.198 : tentative de reception gardee sur l'appareil) (27/11/2026)
+// v7.5.199 - Tableau de bord + menus (revue Codex PR 27 sur cbf3170) : controle de coherence apres la lecture paginee (relecture legere id + updated_at comparee ligne par ligne, relecture si la base a change), durees differentes des periodes comparees signalees, chiffres dates « lus a HH:MM » ; fusion de la PR 26 (v7.5.198 : tentative de reception gardee sur l'appareil) (27/11/2026)
 // v7.5.198 - Arrivage (revue Codex PR 26 sur cf60684 et 992a943) : tentative de reception gardee sur l'appareil avant l'envoi, restauree au rechargement, verification imposee avant tout nouvel envoi (27/11/2026)
 // v7.5.197 - Arrivage : fusion de la PR 25 (v7.5.196, PR 24 v7.5.195 incluse : validation de la remise recontrolee par la base, arrets figes) (27/11/2026)
 // v7.5.196 - Habillage style D : fusion de la PR 24 (v7.5.195, derniere correction ciblee : validation recontrolee par la base, arrets figes) (27/11/2026)

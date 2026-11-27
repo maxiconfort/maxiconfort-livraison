@@ -25,6 +25,17 @@ test('semaine commencée un lundi : 1 jour comparé à 1 jour', egal(P('semaine'
 test('semaine : dimanche (fin de semaine) comparé à la semaine entière', egal(P('semaine', D(2026, 11, 29)), ['2026-11-23', '2026-11-29', '2026-11-16', '2026-11-22']));
 test('mois : novembre entier vs 1 → 25 octobre', egal(P('mois', mer), ['2026-11-01', '2026-11-30', '2026-10-01', '2026-10-25']));
 test('mois : 31 mars vs février entier (28 jours)', egal(P('mois', D(2026, 3, 31)), ['2026-03-01', '2026-03-31', '2026-02-01', '2026-02-28']));
+// v7.5.199 (revue chatgpt-review PR 27 sur 7ef4374, point 1) : 31 jours face à 28 = durées DIFFÉRENTES, signalées explicitement
+{ const r = bac.tdbPeriodes('mois', D(2026, 3, 31));
+  test('mois, 31 mars : durées comparées calculées (31 j contre 28 j), différence SIGNALÉE dans le libellé',
+    r.joursCours === 31 && r.joursPrec === 28 && r.dureesEgales === false && r.vs === 'vs février (1 → 28) — durées différentes : 31 j contre 28 j', [r.joursCours, r.joursPrec, r.vs]); }
+test('mois, 29 et 30 mars : « 29 j contre 28 j », « 30 j contre 28 j »', bac.tdbPeriodes('mois', D(2026, 3, 29)).vs.endsWith('durées différentes : 29 j contre 28 j') && bac.tdbPeriodes('mois', D(2026, 3, 30)).vs.endsWith('durées différentes : 30 j contre 28 j'));
+test('mois, 28 mars : 28 j contre 28 j, durées égales, AUCUNE mention', (() => { const r = bac.tdbPeriodes('mois', D(2026, 3, 28)); return r.dureesEgales === true && r.joursCours === 28 && r.vs === 'vs février (1 → 28)'; })());
+test('mois, 31 mai vs 30 avril : « 31 j contre 30 j » ; 25 novembre : durées égales, libellé inchangé',
+  bac.tdbPeriodes('mois', D(2026, 5, 31)).vs.endsWith('durées différentes : 31 j contre 30 j') && bac.tdbPeriodes('mois', mer).dureesEgales === true && bac.tdbPeriodes('mois', mer).vs === 'vs octobre (1 → 25)');
+test('année, 29 février 2028 : 60 j contre 59 j signalé ; jour et semaine toujours à durée égale',
+  bac.tdbPeriodes('annee', D(2028, 2, 29)).vs.endsWith('durées différentes : 60 j contre 59 j') && ['jour', 'semaine'].every((m) => [D(2026, 3, 31), mer, D(2026, 11, 29), D(2026, 3, 29)].every((t) => bac.tdbPeriodes(m, t).dureesEgales === true)));
+test('nombre de jours : bornes comprises, calcul indépendant des changements d’heure (29 mars 2026)', bac.tdbNbJours('2026-03-01', '2026-03-31') === 31 && bac.tdbNbJours('2026-03-29', '2026-03-30') === 2 && bac.tdbNbJours('2026-10-25', '2026-10-25') === 1);
 test('mois : janvier comparé à décembre de l’année d’avant', egal(P('mois', D(2027, 1, 10)), ['2027-01-01', '2027-01-31', '2026-12-01', '2026-12-10']));
 test('année : 2026 vs 2025 jusqu’au 25 novembre', egal(P('annee', mer), ['2026-01-01', '2026-12-31', '2025-01-01', '2025-11-25']));
 test('année : 29 février comparé au 28 février', egal(P('annee', D(2028, 2, 29)), ['2028-01-01', '2028-12-31', '2027-01-01', '2027-02-28']));
@@ -150,7 +161,7 @@ test('bloc « Paiements — mois » retiré du tableau de bord (et sa fonction, 
 test('admin : carte Encaissé cliquable → page Encaissements', /tdb-carte tdb-lien" role="link"[^>]*onclick="tdbAller\('finance'\)"[^>]*><div class="tdb-carte-l">Encaissé/.test(hA), hA.match(/.{80}Encaissé.{20}/));
 test('collab : aucune carte vers Encaissements', !hC.includes("tdbAller('finance')"));
 test('Commandes récentes : colonne Montant pour l’admin seulement', /var A = role === 'admin'[\s\S]*?\(A \? '<th>Montant<\/th>' : ''\)/.test(fonction('function tdbRecentes() {')));
-test('lecture de la base : SELECT seulement, limitée à la période, par pages de 1 000 (clé : id croissant, après le dernier reçu)', (() => { const f = tranche('async function tdbLire(filtre) {', '// v7.5.199 (revue Codex PR 27 sur cbf3170) : CONTRÔLE DE COHÉRENCE'); return f.includes("'&id=gt.' + encodeURIComponent(dernier)") && f.includes("'&order=id.asc&limit=' + TDB_PAGE") && /var TDB_PAGE = 1000;/.test(html) && !/Range|offset/.test(f) && !/method|POST|PATCH|DELETE/.test(f) && f.includes("'/rest/v1/commandes?select='"); })());
+test('lecture de la base : SELECT seulement, limitée à la période, par pages de 1 000 (clé : id croissant, après le dernier reçu)', (() => { const f = tranche('async function tdbLire(filtre, cols) {', '// v7.5.199 (revue Codex PR 27 sur cbf3170) : CONTRÔLE DE COHÉRENCE'); return f.includes("'&id=gt.' + encodeURIComponent(dernier)") && f.includes("'&order=id.asc&limit=' + TDB_PAGE") && /var TDB_PAGE = 1000;/.test(html) && !/Range|offset/.test(f) && !/method|POST|PATCH|DELETE/.test(f) && f.includes("'/rest/v1/commandes?select='"); })());
 test('aucune écriture dans le bloc TDB', !/sbSave|rpcPin|method:\s*'(POST|PATCH|DELETE)'|localStorage\.setItem|\.insert\(|\.update\(/.test(tranche('// TDB-DEBUT', '// TDB-FIN')));
 
 console.log('\n6. MENUS');
@@ -328,7 +339,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
     test('au-delà de 30 pages : la lecture continue jusqu’à la dernière (31 005 lignes, 32 pages + page vide de fin)', tout.length === 31005 && pages === 33 && new Set(tout.map((r) => r.id)).size === 31005, [tout.length, pages]);
     test('pagination par clé : 1re page sans filtre d’identifiant, suivantes après le DERNIER identifiant reçu (encodé), ordre id croissant, aucune plage « Range »',
       !/id=gt\./.test(urls[0]) && urls[1].includes('&id=gt.' + encodeURIComponent(idDe(999)) + '&order=id.asc&limit=1000') && urls.every((u) => u.includes('&order=id.asc&limit=1000'))
-      && !/Range|offset=/.test(tranche('async function tdbLire(filtre) {', '// v7.5.199 (revue Codex PR 27 sur cbf3170) : CONTRÔLE DE COHÉRENCE')), urls.slice(0, 2));
+      && !/Range|offset=/.test(tranche('async function tdbLire(filtre, cols) {', '// v7.5.199 (revue Codex PR 27 sur cbf3170) : CONTRÔLE DE COHÉRENCE')), urls.slice(0, 2));
     // base qui plafonne chaque réponse SOUS 1 000 lignes (réglage max-rows)
     b6.plafond = 300; pages = 0; urls.length = 0;
     const tout300 = await b6.tdbLire('');
@@ -748,13 +759,13 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
         fetch: (url, o) => {
           x.requetes++; if (x.pendant) x.pendant(x.requetes, x);
           const tri = x.base.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-          if (url.includes('select=id,updated_at')) { // contrôle : nombre exact + updated_at le plus récent
-            x.controles.push({ url, prefer: o && o.headers && o.headers.Prefer });
-            const rec = tri.slice().sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0];
-            const n = x.sansTotal ? null : tri.length;
-            return Promise.resolve({ ok: true, headers: { get: (h) => (h.toLowerCase() === 'content-range' && n != null ? (n ? '0-0/' : '*/') + n : null) }, json: async () => (rec ? [{ id: rec.id, updated_at: rec.updated_at }] : []) });
-          }
           const m = /[?&]id=gt\.([^&]*)/.exec(url), apres = m ? decodeURIComponent(m[1]) : null;
+          if (url.includes('select=id,updated_at')) { // v7.5.199 : contrôle = relecture LÉGÈRE complète (id + updated_at), mêmes pages par clé
+            x.pagesControle = (x.pagesControle || 0) + 1; x.urlsControle = (x.urlsControle || []).concat([{ url, methode: (o && o.method) || 'GET', prefer: o && o.headers && o.headers.Prefer }]);
+            if (apres == null) x.controles.push({ url, prefer: o && o.headers && o.headers.Prefer });
+            const rowsC = tri.filter((c) => apres == null || c.id > apres).slice(0, x.plafond).map((c) => ({ id: c.id, updated_at: c.updated_at }));
+            return Promise.resolve({ ok: true, json: async () => rowsC });
+          }
           const rows = tri.filter((c) => apres == null || c.id > apres).slice(0, x.plafond).map((c) => Object.assign({}, c));
           return Promise.resolve({ ok: true, json: async () => rows });
         } }, plus || {});
@@ -767,8 +778,8 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
     let x = fabrique(cinq());
     x.pendant = (n, b) => { if (n === 2) b.base.push(cmd('C00', T1)); };
     let lu = await x.tdbLireCoherent('');
-    test('insertion avant le curseur pendant la lecture : détectée par le contrôle (nombre exact), base relue, la commande insérée est comptée',
-      ids(lu) === 'C00,C01,C02,C03,C04,C05' && x.controles.length === 2 && x.controles.every((c) => c.prefer === 'count=exact'), [ids(lu), x.controles.length]);
+    test('insertion avant le curseur pendant la lecture : détectée par la relecture légère (ligne en plus), base relue, la commande insérée est comptée',
+      ids(lu) === 'C00,C01,C02,C03,C04,C05' && x.controles.length === 2, [ids(lu), x.controles.length]);
     // b) suppression APRÈS lecture : la ligne lue n'est plus dans la base -> détectée, plus comptée
     x = fabrique(cinq()); x.pendant = (n, b) => { if (n === 3) b.base = b.base.filter((c) => c.id !== 'C01'); };
     lu = await x.tdbLireCoherent('');
@@ -783,11 +794,31 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
     test('commande déjà lue modifiée pendant la lecture : détectée, relue avec la nouvelle valeur', lu.find((r) => r.id === 'C01').prix === 999 && x.controles.length === 2, lu.find((r) => r.id === 'C01'));
     // e) base stable : une seule lecture + un contrôle (pas de relecture inutile)
     x = fabrique(cinq()); lu = await x.tdbLireCoherent('');
-    test('base stable : une lecture et UN contrôle, aucune relecture', ids(lu) === 'C01,C02,C03,C04,C05' && x.controles.length === 1 && x.requetes === 5, [x.controles.length, x.requetes]);
-    // f) nombre exact illisible (en-tête absent) : erreur, jamais de chiffres présentés comme complets
-    x = fabrique(cinq()); x.sansTotal = true; let err = '';
-    try { await x.tdbLireCoherent(''); } catch (e) { err = e.message; }
-    test('contrôle illisible (nombre de commandes absent) : erreur « chiffres non calculés »', /contrôle de cohérence illisible/.test(err) && /chiffres non calculés/.test(err), err);
+    test('base stable : une lecture et UN contrôle (4 pages + 4 pages légères), aucune relecture', ids(lu) === 'C01,C02,C03,C04,C05' && x.controles.length === 1 && x.requetes === 8 && x.pagesControle === 4, [x.controles.length, x.requetes, x.pagesControle]);
+    // f) revue chatgpt-review sur 9fbea59 + revue native P2 : CAS EXACT — une ligne par page ; après la lecture de A, A est modifiée,
+    // puis B est modifiée AVANT la lecture de sa page. Même nombre, et le maximum updated_at lu (celui de B) est aussi celui de la base :
+    // l'ancien contrôle (nombre exact + maximum) acceptait l'ancienne valeur de A. La relecture ligne par ligne la détecte.
+    x = fabrique([cmd('C01', T0, 100), cmd('C02', T0, 200), cmd('C03', T0, 300)]); x.plafond = 1;
+    let ancien = null;
+    x.pendant = (n, b) => { if (n === 2) { b.base = b.base.map((c) => (c.id === 'C01' ? cmd('C01', T1, 999) : c.id === 'C02' ? cmd('C02', T2, 222) : c)); } };
+    const lu1 = await x.tdbLire(''); // lecture paginée seule, pour établir le cas
+    const maxLu = lu1.map((r) => r.updated_at).sort().pop(), maxBase = x.base.map((r) => r.updated_at).sort().pop();
+    ancien = lu1.length === x.base.length && maxLu === maxBase;
+    test('cas exact reproduit : A lue avec l’ANCIENNE valeur, B lue modifiée ; même nombre et même maximum updated_at (l’ancien contrôle aurait accepté)',
+      ancien === true && lu1.find((r) => r.id === 'C01').prix === 100 && lu1.find((r) => r.id === 'C02').prix === 222 && maxLu === T2, { lu1, maxLu, maxBase });
+    test('… la comparaison ligne par ligne voit la différence (« commande C01 modifiée depuis sa lecture »)',
+      x.tdbDifference(lu1, x.base.map((c) => ({ id: c.id, updated_at: c.updated_at }))) === 'commande C01 modifiée depuis sa lecture');
+    x = fabrique([cmd('C01', T0, 100), cmd('C02', T0, 200), cmd('C03', T0, 300)]); x.plafond = 1;
+    x.pendant = (n, b) => { if (n === 2) { b.base = b.base.map((c) => (c.id === 'C01' ? cmd('C01', T1, 999) : c.id === 'C02' ? cmd('C02', T2, 222) : c)); } };
+    lu = await x.tdbLireCoherent('');
+    test('… lecture contrôlée : différence détectée, base relue, chiffres acceptés = NOUVELLES valeurs de A et de B (jamais l’ancienne de A)',
+      lu.find((r) => r.id === 'C01').prix === 999 && lu.find((r) => r.id === 'C02').prix === 222 && x.controles.length === 2, [lu.map((r) => r.id + ':' + r.prix), x.controles.length]);
+    // f bis) comparaison : même ensemble dans un autre ordre = identique ; ligne en plus, en moins, remplacée ou updated_at différent = différence
+    const L3 = [cmd('C01'), cmd('C02'), cmd('C03')], lg = (r) => r.map((c) => ({ id: c.id, updated_at: c.updated_at }));
+    test('comparaison ligne par ligne : ordre indifférent ; ligne en plus / en moins / remplacée / modifiée = différence',
+      x.tdbDifference(L3, lg(L3).reverse()) === '' && /nombre de commandes 3 lu, 4 au contrôle/.test(x.tdbDifference(L3, lg(L3.concat([cmd('C04')]))))
+      && /nombre de commandes 3 lu, 2 au contrôle/.test(x.tdbDifference(L3, lg(L3.slice(1)))) && x.tdbDifference(L3, lg([cmd('C01'), cmd('C02'), cmd('C09')])) === 'commande C09 absente de la lecture'
+      && x.tdbDifference(L3, lg([cmd('C01'), cmd('C02', T1), cmd('C03')])) === 'commande C02 modifiée depuis sa lecture');
     // g) AFFICHAGE, synchronisation perdue (aucun temps réel) : base modifiée pendant la lecture -> chiffres de la lecture COHÉRENTE, datés
     minuteurs.length = 0; el.innerHTML = '';
     x = fabrique(cinq()); x.pendant = (n, b) => { if (n === 2) b.base.push(cmd('C00', T1)); };
@@ -811,8 +842,11 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
       /Chiffres lus dans la base à \d\d:\d\d\./.test(el.innerHTML) && !/indisponible/.test(el.innerHTML), el.innerHTML.slice(-300));
     // j) code : le contrôle est une LECTURE (GET), même filtre, nombre exact demandé
     const fc = tranche('async function tdbControler(filtre) {', 'function tdbMemeMaj');
-    test('code : contrôle en lecture seule (aucune écriture), même filtre, « Prefer: count=exact », date de mise à jour la plus récente',
-      !/method|POST|PATCH|DELETE/.test(fc) && fc.includes("'/rest/v1/commandes?select=id,updated_at' + filtre") && fc.includes("'Prefer': 'count=exact'") && fc.includes('order=updated_at.desc.nullslast'));
+    test('code : contrôle = relecture LÉGÈRE complète en lecture seule (tdbLire, même filtre, id + updated_at), comparée ligne par ligne (tdbDifference)',
+      !/method|POST|PATCH|DELETE/.test(fc) && fc.includes("return tdbLire(filtre, 'id,updated_at');") && !/count=exact|nullslast|tdbMajMax/.test(tranche('// TDB-DEBUT', '// TDB-FIN').slice(tranche('// TDB-DEBUT', '// TDB-FIN').indexOf('var TDB_ESSAIS_COHERENCE')))
+      && tranche('async function tdbLireCoherent(filtre) {', '/** Clé d').includes('if (!tdbDifference(rows, ctrl)) return rows;') && !!(tranche('async function tdbLireCoherent(filtre) {', '/** Clé d')));
+    { const y = fabrique(cinq()); await y.tdbLireCoherent('&statut=neq.annul%C3%A9');
+      test('… toutes les pages du contrôle : GET, même filtre, sans « Prefer », pagination par clé', y.urlsControle.length === 4 && y.urlsControle.every((u) => u.methode === 'GET' && !u.prefer && u.url.includes('select=id,updated_at&statut=neq.annul%C3%A9') && u.url.includes('&order=id.asc')) && y.urlsControle.slice(1).every((u) => /&id=gt./.test(u.url)), y.urlsControle); }
     test('code : les trois lectures du tableau passent par la lecture contrôlée', (tranche('async function tdbCharger(P, cle) {', 'function tdbAller').match(/tdbLireCoherent\(/g) || []).length === 3);
   }
   console.log('\n8. MISE EN LIGNE');
