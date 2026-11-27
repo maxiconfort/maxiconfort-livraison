@@ -1220,7 +1220,7 @@ revoke all on function interne.l041_reconcilier_chargement(text, text) from publ
 create or replace function public.drop_confirmer_livraison(p_cmd_id text, p_pieces jsonb) returns json
 language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
 declare c record; p record; e jsonb; v_liv boolean; v_n integer; v_cout record; v_camion uuid; v_res jsonb := '[]'::jsonb; g record;
-  v_charg jsonb;
+  v_charg jsonb; v_gardees uuid[];
 begin
   if public.session_role() is null or public.session_role() not in ('admin', 'livreur') then
     return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
@@ -1294,6 +1294,15 @@ begin
       end if;
       if p.provenance = 'camion' then
         update public.stock_camion set status = 'livre', retour_at = now(), retour_par = interne.l041_acteur() where id = p.stock_camion_id;
+      elsif p.provenance in ('depot', 'tampon') then
+        -- v7.5.208 (revue native P2 sur 8905a30) : unité du dépôt GARDÉE dans le camion au cycle précédent pour CETTE pièce
+        -- (livraison partielle, puis annulation de la livraison et relivraison déclarée « Dépôt » ou « stock tampon ») :
+        -- l'article livré est cette unité — elle est fermée « livre » dans la même transaction, jamais proposée « Déjà dans
+        -- le camion » le lendemain. Une unité déjà réservée par une autre pièce n'est pas touchée (elle est à cette autre
+        -- commande ; l'article livré ici vient alors réellement du dépôt).
+        with u as (update public.stock_camion set status = 'livre', retour_at = now(), retour_par = interne.l041_acteur()
+                    where piece_id = p.id and achat_id is null and status = 'en_camion' and utilise_par_piece is null returning id)
+        select array_agg(id) into v_gardees from u;
       end if;
       update public.commande_pieces set livraison = 'livree', livraison_par = interne.l041_acteur(), livraison_at = now() where id = p.id;
     else
@@ -1303,8 +1312,9 @@ begin
       update public.stock_camion set utilise_par_piece = null where utilise_par_piece = p.id;
       update public.commande_pieces set livraison = 'non_livree', livraison_par = interne.l041_acteur(), livraison_at = now() where id = p.id;
     end if;
-    v_res := v_res || jsonb_build_array(jsonb_build_object('id', p.id, 'livree', v_liv, 'vers_camion', v_camion));
-    v_camion := null;
+    v_res := v_res || jsonb_build_array(jsonb_build_object('id', p.id, 'livree', v_liv, 'vers_camion', v_camion)
+                      || case when v_gardees is not null then jsonb_build_object('unite_gardee_fermee', to_jsonb(v_gardees)) else '{}'::jsonb end);
+    v_camion := null; v_gardees := null;
   end loop;
   -- v7.5.207 : lignes du chargement de la commande réconciliées avec les pièces livrées (voir interne.l041_reconcilier_chargement)
   v_charg := interne.l041_reconcilier_chargement(c.id, c.livreur);

@@ -1107,6 +1107,49 @@ grant select, insert, update, delete on storage.objects to anon;
     /create or replace function interne\.l041_reconcilier_chargement[\s\S]*?r\.ligne_idx[\s\S]*?v_cap := least[\s\S]*?end \$\$;/.test(sql041)
     && /sc\.scinde_de is null and not coalesce\(sc\.reservee_une_fois, false\)/.test(sql041));
 
+  // =========================================================================================================================
+  console.log('\n28. v7.5.208 (revue native P2 sur 8905a30) : UNITÉ DU DÉPÔT GARDÉE AU CYCLE PRÉCÉDENT, PUIS ANNULATION ET RELIVRAISON « Dépôt »');
+  await cmd('#UG1', { lignes: [{ produitId: 'py140', nom: 'Matelas fictif Y', qte: 1 }, { produitId: 'py90', nom: 'Sommier fictif Y', qte: 1 }], prix: 500 });
+  const pG1 = (await rpc('livreur', 'public.drop_pieces($1)', ['#UG1'])).pieces;
+  await ins('#UG1', 'Matelas fictif Y', 1, 0); await ins('#UG1', 'Sommier fictif Y', 1, 1);
+  for (const p of pG1) await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [p.id, 'depot']);
+  const mG1 = pG1.find((p) => p.produit_id === 'py140'), sG1 = pG1.find((p) => p.produit_id === 'py90');
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#UG1', JSON.stringify([{ id: mG1.id, livree: true }, { id: sG1.id, livree: false }])]);
+  const uG1 = await un(P, "select * from public.stock_camion where piece_id = $1 and status = 'en_camion'", [sG1.id]);
+  test('cycle 1 : livraison partielle, le sommier « pas livré » garde SON unité dans le camion', r.ok && !!uG1, r);
+  await q('livreur', "update public.commandes set statut = 'livré' where id = '#UG1'");
+  await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#UG1']);
+  await q('admin', "update public.commandes set statut = 'en-attente' where id = '#UG1'");   // le bureau annule la livraison
+  r = await rpc('admin', 'public.recrediter_stock_livraison($1, false)', ['#UG1']);
+  test('annulation de la livraison : recrédit ok, nouveau cycle, l\'unité gardée est encore dans le camion', r.ok
+    && (await un(P, 'select status from public.stock_camion where id = $1', [uG1.id])).status === 'en_camion', r);
+  for (const p of pG1) await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [p.id, 'depot']);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#UG1', JSON.stringify(pG1.map((p) => ({ id: p.id, livree: true })))]);
+  test('relivraison déclarée « Dépôt » : l\'unité gardée pour CETTE pièce est FERMÉE « livre » dans la même transaction (tracée dans la réponse)',
+    r.ok && (await un(P, 'select status from public.stock_camion where id = $1', [uG1.id])).status === 'livre'
+    && r.pieces.some((x) => String(x.id) === String(sG1.id) && (x.unite_gardee_fermee || []).map(String).includes(String(uG1.id))), r);
+  await q(P, "update public.stock_camion set charge_at = now() - interval '1 day' where source_cmd_id = '#UG1'");
+  await cmd('#UG2', { lignes: [{ produitId: 'py90', nom: 'Sommier fictif Y', qte: 1 }], prix: 140 });
+  const pG2 = (await rpc('livreur', 'public.drop_pieces($1)', ['#UG2'])).pieces[0];
+  test('… le lendemain, l\'article livré n\'est PAS proposé « Déjà dans le camion » à une autre commande',
+    !(pG2.camion || []).some((x) => String(x.id) === String(uG1.id)), pG2.camion);
+  // unité gardée déjà RÉSERVÉE par une autre pièce : elle reste à cette autre commande
+  await cmd('#UG3', { lignes: [{ produitId: 'py90', nom: 'Sommier fictif Y', qte: 1 }], prix: 140 });
+  const pG3 = (await rpc('livreur', 'public.drop_pieces($1)', ['#UG3'])).pieces[0];
+  await ins('#UG3', 'Sommier fictif Y', 1, 0);
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pG3.id, 'depot']);
+  await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#UG3', JSON.stringify([{ id: pG3.id, livree: false }])]);
+  const uG3 = await un(P, "select * from public.stock_camion where piece_id = $1 and status = 'en_camion'", [pG3.id]);
+  await q(P, "update public.stock_camion set charge_at = now() - interval '1 day' where id = $1", [uG3.id]);
+  await cmd('#UG4', { lignes: [{ produitId: 'py90', nom: 'Sommier fictif Y', qte: 1 }], prix: 140 });
+  const pG4 = (await rpc('livreur', 'public.drop_pieces($1)', ['#UG4'])).pieces[0];
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pG4.id, 'camion', uG3.id]);
+  const uG4 = r.piece && r.piece.stock_camion_id;
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pG3.id, 'depot']);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#UG3', JSON.stringify([{ id: pG3.id, livree: true }])]);
+  test('unité gardée déjà réservée par une autre commande : non touchée par la relivraison « Dépôt » (elle reste à l\'autre commande)',
+    r.ok && !!uG4 && (await un(P, 'select status, utilise_par_piece from public.stock_camion where id = $1', [uG4])).status === 'en_camion', { r, uG4 });
+
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error('ERREUR DU BANC :', e); process.exit(1); });
