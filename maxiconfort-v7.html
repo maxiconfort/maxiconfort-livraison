@@ -5050,6 +5050,49 @@ function arrAVerifierDe(id) {
   if (id == null || !ARR_ETAT.aVerifier) return null;
   return Object.prototype.hasOwnProperty.call(ARR_ETAT.aVerifier, String(id)) ? ARR_ETAT.aVerifier[String(id)] : null;
 }
+// v7.5.198 (revue Codex PR 26 sur cf60684 et 992a943) : la TENTATIVE d'un envoi est gardée SUR L'APPAREIL (localStorage, par arrivage)
+// AVANT l'envoi, et retirée seulement après une réponse définitive (validée ou refusée) ou une relecture qui conclut (abandon confirmé
+// par la base, ou réception constatée). Avant : uniquement en mémoire (ARR_ETAT) -> une page rechargée ou fermée pendant un envoi
+// retardé perdait l'identifiant, et une nouvelle validation était proposée alors que l'ancienne requête pouvait encore arriver.
+// Au chargement, chaque tentative gardée remet l'arrivage « à vérifier » : aucun nouvel envoi avant « Vérifier dans la base ».
+var ARR_CLE_TENTATIVES = 'mx_arr_tentatives';
+var ARR_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function arrLireTentatives() {
+  var brut = null; try { brut = localStorage.getItem(ARR_CLE_TENTATIVES); } catch(e) { return {}; }
+  var m = null; try { m = JSON.parse(brut || '{}'); } catch(e) { m = null; }
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return {};
+  var r = {}; Object.keys(m).forEach(function(k) { var t = m[k]; if (t && typeof t === 'object' && t.id != null && String(t.id) === k && ARR_UUID.test(String(t.tentative || ''))) r[k] = t; });
+  return r;
+}
+// Écrit puis RELIT : true seulement si la tentative est bien gardée (sinon l'appelant n'envoie rien).
+function arrGarderTentative(a, tentative) {
+  if (!a || !ARR_UUID.test(String(tentative || ''))) return false;
+  try {
+    var m = arrLireTentatives(); m[String(a.id)] = { id: a.id, ref: a.reference_interne || '', tentative: String(tentative), depuis: new Date().toISOString() };
+    localStorage.setItem(ARR_CLE_TENTATIVES, JSON.stringify(m));
+    var v = arrLireTentatives()[String(a.id)]; return !!v && v.tentative === String(tentative);
+  } catch(e) { return false; }
+}
+// Retire la tentative gardée de CET arrivage, seulement si c'est bien celle-ci (une plus récente n'est jamais effacée).
+function arrOublierTentative(id, tentative) {
+  try {
+    var m = arrLireTentatives(), k = String(id);
+    if (m[k] && (!tentative || m[k].tentative === String(tentative))) { delete m[k]; localStorage.setItem(ARR_CLE_TENTATIVES, JSON.stringify(m)); }
+  } catch(e) {}
+}
+// Au chargement : chaque tentative gardée d'un arrivage EN ATTENTE redevient « à vérifier » (même identifiant pour la relecture).
+// Arrivage déjà reçu ou annulé : la base refuse toute requête retardée (« arrivage_deja_traite ») -> tentative oubliée.
+// Renvoie le nombre d'arrivages remis « à vérifier ».
+function arrRestaurerTentatives(arrivages) {
+  var m = arrLireTentatives(), n = 0;
+  Object.keys(m).forEach(function(k) {
+    var a = (arrivages || []).find(function(x) { return String(x.id) === k; });
+    if (a && !arrPeutValider(a)) { arrOublierTentative(k, m[k].tentative); return; }
+    var dejaV = arrAVerifierDe(k);
+    if (!dejaV || !dejaV.tentative) { ARR_ETAT.aVerifier[k] = { id: a ? a.id : m[k].id, ref: (a && a.reference_interne) || m[k].ref || '', tentative: m[k].tentative, restauree: true }; n++; }
+  });
+  return n;
+}
 function arrEntetes() { return { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }; }
 // v7.5.150 (revue Codex PR 26 sur fd751b8, P2) : revients lus EN ENTIER, par pages, ordre stable (produit_id) — avant, une seule
 // requête plafonnée par la base (1 000 lignes) pouvait en perdre. Échec de lecture : revients VIDÉS (jamais d'anciennes valeurs
@@ -5138,6 +5181,7 @@ async function arrCharger() {
     if (!rs[0].ok || !rs[1].ok) { ARR_ETAT.erreur = 'Lecture impossible (HTTP ' + (rs[0].status || 200) + ' / ' + (rs[1].status || 200) + ') — la migration 039 est-elle appliquée ?'; return; }
     ARR_ETAT.arrivages = rs[0].rows;
     ARR_ETAT.lignes = rs[1].rows;
+    ARR_ETAT.restaurees = arrRestaurerTentatives(ARR_ETAT.arrivages); // v7.5.198 : envois restés sans réponse avant un rechargement
     // v7.5.150 : revients complets (par pages) ; échec = erreur affichée, jamais un aperçu calculé sur des revients absents
     if (!(await arrChargerRevients())) { ARR_ETAT.erreur = 'Prix de revient illisibles pour l\'instant — réessayez (aucun aperçu affiché)'; return; }
     // stock et revient actuels des produits des arrivages EN ATTENTE, lus explicitement (aperçu et empreinte)
@@ -5155,6 +5199,7 @@ async function arrInit() {
   el.innerHTML = '<div style="padding:18px;color:var(--t3)">Chargement des arrivages…</div>';
   await arrCharger();
   arrRendre();
+  if (ARR_ETAT.restaurees) toast('Un envoi de réception est resté sans réponse avant le rechargement de la page : touchez « Vérifier dans la base » avant toute nouvelle validation', 'err');
 }
 function arrLignesDe(id) { return ARR_ETAT.lignes.filter(function(l) { return l.arrivage_id === id; }).sort(function(a, b) { return a.id - b.id; }); }
 function arrProduit(id) { return produits.find(function(p) { return p.id === id; }); }
@@ -5343,6 +5388,7 @@ async function arrVerifierReception(a, tentative) {
     arrRendre(); return 'indeterminee';
   }
   delete ARR_ETAT.aVerifier[String(a.id)]; // seul CET arrivage est conclu ; les autres restent à vérifier
+  arrOublierTentative(a.id, tentative); // v7.5.198 : conclusion de la base (abandon confirmé ou réception constatée)
   if (concl === 'deja_validee') {
     a.statut = 'recu'; if (rel.recu_le) a.recu_le = rel.recu_le; ARR_ETAT.envoi = false;
     toast('Réception déjà validée (vérifié dans la base : validée par un autre envoi ; celui-ci est annulé et n\'a rien ajouté)', 'ok');
@@ -5434,6 +5480,8 @@ async function arrValiderEnvoi(a, ls, saisies, vue) {
   }
   var j = null, http = 0, sansReponse = false;
   var tentative = arrNouvelleTentative(); // v7.5.191 : identifiant de CET envoi (jamais réutilisé)
+  // v7.5.198 : tentative gardée sur l'appareil AVANT l'envoi ; si elle ne peut pas l'être, rien n'est envoyé
+  if (!arrGarderTentative(a, tentative)) { ARR_ETAT.envoi = false; toast('Réception NON validée : cet appareil ne peut pas garder la trace de l\'envoi (stockage du navigateur indisponible) — rien n\'a été envoyé', 'err'); arrMajControle(); return; }
   try {
     var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/valider_reception_arrivage', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()),
       body: JSON.stringify(arrCorpsValidation(a.id, ls, saisies, vue.empreinte, tentative)) });
@@ -5444,6 +5492,7 @@ async function arrValiderEnvoi(a, ls, saisies, vue) {
   // INDÉTERMINÉ, statut et mouvements relus dans la base, et seulement ensuite « validée » ou « non validée ».
   var issue = arrIssueValidation(sansReponse, http, j);
   if (issue === 'indeterminee') { await arrVerifierReception(a, tentative); return; }
+  arrOublierTentative(a.id, tentative); // v7.5.198 : réponse DÉFINITIVE (validée ou refusée) : plus rien à vérifier pour cet envoi
   if (issue !== 'validee') {
     ARR_ETAT.envoi = false;
     var msg = (j && (j.erreur || j.message)) || ('HTTP ' + http);
@@ -6227,7 +6276,7 @@ function dropBilanHtml(b) {
   if (!b) return '<div class="card">Bilan indisponible.</div>';
   var carte = function(lib, val, coul, note) { return '<div class="card" style="flex:1 1 160px"><div class="card-t">' + lib + '</div><div style="font-size:24px;font-weight:900;color:' + (coul || 'var(--text)') + '">' + val + '</div>' + (note ? '<div style="font-size:11px;color:var(--t3);margin-top:4px">' + note + '</div>' : '') + '</div>'; };
   var h = '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px">' +
-    carte('Ventes livrées HT', dropEur(b.ventes_ht), null, b.commandes + ' commande' + (b.commandes > 1 ? 's' : '')) +
+    carte('Ventes livrées HT', dropEur(b.ventes_ht), null, b.commandes + ' commande' + (b.commandes > 1 ? 's' : '') + (b.livraisons_partielles ? ' · ' + b.livraisons_partielles + ' livraison(s) partielle(s) : ' + dropEur(b.ventes_non_reconnues_ht) + ' HT non reconnus (pièces pas livrées)' : '')) +
     carte('Coût des produits', dropEur(b.cout_produits_ht), null, (b.pieces_cout_inconnu ? b.pieces_cout_inconnu + ' pièce(s) sans coût connu · ' : '') + (b.commandes_cout_estime ? b.commandes_cout_estime + ' estimée(s) au revient' : 'coûts figés')) +
     carte('GLS', dropEur(b.gls_ht), null, b.commandes_gls_non_renseigne ? b.commandes_gls_non_renseigne + ' commande(s) GLS : coût non renseigné (Réglages ci-dessous)' : '') +
     carte('Résultat', dropEur(b.resultat_ht), b.resultat_ht >= 0 ? 'var(--green)' : 'var(--red)', b.resultat_net_ht != null ? 'Après charges fixes (' + dropEur(b.charges_fixes_ht) + ') : ' + dropEur(b.resultat_net_ht) : 'Sans les charges fixes') + '</div>';
@@ -6449,7 +6498,7 @@ function dropPiecesAdminHtml(m) {
       (p.ticket_path ? ' · <a href="#" onclick="dropVoirTicket(\'' + dropEchap(p.ticket_path) + '\');return false">🧾 ticket</a>' : (p.provenance === 'fournisseur' && p.montant_paye_ht != null ? ' · ⚠️ pas de photo' : '')) +
       (p.livraison ? ' · ' + (p.livraison === 'livree' ? '✅ livrée' : '✖ non livrée') : '') +
       ' · coût ' + (p.cout_ht != null ? dropEur(p.cout_ht) : '?') + (p.fige ? '' : ' (estimé)') + '</div>';
-  }).join('') + '<div style="padding-top:6px;font-weight:800">Vente ' + dropEur(m.vente_ht) + ' HT − coût ' + dropEur(m.cout_ht) + (m.gls_ht != null ? ' − GLS ' + dropEur(m.gls_ht) : '') + ' = marge ' + dropEur(m.marge_ht) + ' HT' + (m.cout_inconnu ? ' (' + m.cout_inconnu + ' pièce(s) sans coût connu)' : '') + '</div></div>';
+  }).join('') + (m.livraison_partielle ? '<div style="padding-top:6px;font-size:12px;color:var(--orange)">Livraison partielle : ' + m.pieces_livrees + '/' + m.pieces_total + ' pièces livrées — vente reconnue ' + dropEur(m.vente_ht) + ' HT sur ' + dropEur(m.vente_ht_commande) + ' HT</div>' : '') + '<div style="padding-top:6px;font-weight:800">Vente ' + dropEur(m.vente_ht) + ' HT − coût ' + dropEur(m.cout_ht) + (m.gls_ht != null ? ' − GLS ' + dropEur(m.gls_ht) : '') + ' = marge ' + dropEur(m.marge_ht) + ' HT' + (m.cout_inconnu ? ' (' + m.cout_inconnu + ' pièce(s) sans coût connu)' : '') + '</div></div>';
 }
 async function dropFicheCommande(cmdId) {
   if (role !== 'admin' || !(await dropVerifier())) return;
@@ -9203,7 +9252,7 @@ function tdbHtml(e) {
 }
 
 // ── Données et affichage ──
-var TDB_COLS = 'id,prix,date_commande,date_livraison,statut,stpaie,montant_enc,origine,adresse,livreur';
+var TDB_COLS = 'id,prix,date_commande,date_livraison,statut,stpaie,montant_enc,origine,adresse,livreur,updated_at'; // v7.5.199 : updated_at (contrôle de cohérence)
 // v7.5.151 (revue Codex PR 27 sur a46f8aa) : lectures suivies PAR PÉRIODE — vols[clé] = numéro de la lecture EN COURS pour cette
 // période (plus une seule « enCours » globale) ; cache[clé] = lecture réussie d'une période qui n'était plus affichée à son arrivée.
 var TDB_ETAT = { cle: '', lignes: null, at: 0, vols: {}, cache: {}, erreur: '', revientsDemandes: false, revientsGen: 0, revientsVol: false, gen: 0, req: 0, echecs: 0, reessaiA: 0 };
@@ -9243,6 +9292,13 @@ function tdbProgrammerExpiration(ms) {
  *  et une insertion (temps réel, relève) pouvait faire atteindre le total à une liste à laquelle manquait une ancienne commande. On exige
  *  la PREUVE posée par sbLoadAll (cmdChargementComplet : liste lue en entier, total donné par la MÊME réponse), retirée dès qu'un
  *  chargement est incertain (nouveau chargement en cours, lecture en échec ou incomplète). */
+// v7.5.199 (revue Codex PR 27 sur cbf3170) : chiffres lus PAR PÉRIODE = toujours datés (« lus dans la base à HH:MM »). Sans temps réel
+// garanti (non connecté, ou perte de synchronisation), la mention le dit : une modification faite depuis n'est vue qu'à la relecture.
+function tdbNoteLecture(t) {
+  var d = new Date(t), hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  var direct = typeof cmdSynchroGarantieDepuis === 'function' && cmdSynchroGarantieDepuis(t);
+  return 'Chiffres lus dans la base à ' + hm + (direct ? '' : ' (synchronisation en direct indisponible : modifications depuis cette heure non prises en compte, nouvelle lecture chaque minute)') + '.';
+}
 function tdbLocalComplet() {
   return Array.isArray(commandes) && commandes.length > 0 && typeof cmdChargementComplet !== 'undefined' && cmdChargementComplet === true;
 }
@@ -9274,6 +9330,36 @@ async function tdbLire(filtre) {
   }
   return out;
 }
+// v7.5.199 (revue Codex PR 27 sur cbf3170) : CONTRÔLE DE COHÉRENCE après la lecture paginée. La pagination par clé lit une fois chaque
+// commande présente du début à la fin, mais une commande insérée AVANT le curseur pendant la lecture est omise, et une commande
+// supprimée (ou sortie de la période) APRÈS avoir été lue reste comptée. Sans événement temps réel reçu, ce résultat était affiché
+// comme complet pendant 60 s. Désormais, une fois toutes les pages lues, la base est relue en UNE requête pour le même filtre :
+// nombre exact de commandes (en-tête Content-Range, « Prefer: count=exact ») et date de mise à jour la plus récente (updated_at). Si
+// l'un des deux diffère de ce qui a été lu, la base a changé pendant la lecture : elle est relue (TDB_ESSAIS_COHERENCE fois au plus),
+// puis, si elle change encore, erreur affichée (« chiffres non calculés »), jamais de chiffres présentés comme complets.
+var TDB_ESSAIS_COHERENCE = 3;
+function tdbMajMax(rows) {
+  var m = ''; (rows || []).forEach(function (c) { var u = c && c.updated_at ? String(c.updated_at) : ''; if (u && (!m || Date.parse(u) > Date.parse(m))) m = u; });
+  return m;
+}
+async function tdbControler(filtre) {
+  var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=id,updated_at' + filtre + '&order=updated_at.desc.nullslast,id.desc&limit=1', {
+    headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'count=exact' } });
+  if (!r.ok) throw new Error('contrôle de cohérence : HTTP ' + r.status);
+  var cr = r.headers && typeof r.headers.get === 'function' ? r.headers.get('content-range') : null;
+  var m = /\/(\d+)\s*$/.exec(String(cr || ''));
+  if (!m) throw new Error('contrôle de cohérence illisible (nombre de commandes absent) : chiffres non calculés');
+  var rows = await r.json(); if (!Array.isArray(rows)) throw new Error('contrôle de cohérence : réponse inattendue');
+  return { n: parseInt(m[1], 10), maj: rows.length && rows[0] && rows[0].updated_at ? String(rows[0].updated_at) : '' };
+}
+function tdbMemeMaj(a, b) { return (!a && !b) || (!!a && !!b && Date.parse(a) === Date.parse(b)); }
+async function tdbLireCoherent(filtre) {
+  for (var essai = 1; essai <= TDB_ESSAIS_COHERENCE; essai++) {
+    var rows = await tdbLire(filtre), c = await tdbControler(filtre);
+    if (c.n === rows.length && tdbMemeMaj(c.maj, tdbMajMax(rows))) return rows;
+  }
+  throw new Error('commandes modifiées pendant chaque lecture (' + TDB_ESSAIS_COHERENCE + ' essais) : chiffres non calculés');
+}
 /** Clé d'une période (mode + bornes) et clé de la période AFFICHÉE (sélecteur Jour / Semaine / Mois / Année). */
 function tdbCleDe(mode, P) { return mode + ':' + P.du + ':' + P.pdu + ':' + P.pau; }
 function tdbCleAffichee() { var sel = document.getElementById('dash-periode'), mode = (sel && sel.value) || 'jour'; return tdbCleDe(mode, tdbPeriodes(mode)); }
@@ -9287,8 +9373,8 @@ async function tdbCharger(P, cle) {
   var gen = TDB_ETAT.gen, req = ++TDB_ETAT.req, lignes = null, erreur = ''; TDB_ETAT.vols[cle] = req;
   var per = function (du, au) { return '&statut=neq.annul%C3%A9&or=(and(date_livraison.gte.' + du + ',date_livraison.lte.' + au + '),and(date_commande.gte.' + du + ',date_commande.lte.' + au + '))'; };
   try {
-    var lots = await Promise.all([tdbLire(per(P.du, P.au)), tdbLire(per(P.pdu, P.pau)),
-      P.mode === 'mois' ? Promise.resolve([]) : tdbLire('&statut=eq.livr%C3%A9&date_livraison=gte.' + P.moisDu + '&date_livraison=lte.' + P.moisAu)]);
+    var lots = await Promise.all([tdbLireCoherent(per(P.du, P.au)), tdbLireCoherent(per(P.pdu, P.pau)),
+      P.mode === 'mois' ? Promise.resolve([]) : tdbLireCoherent('&statut=eq.livr%C3%A9&date_livraison=gte.' + P.moisDu + '&date_livraison=lte.' + P.moisAu)]);
     var vu = {}; lignes = [];
     lots.forEach(function (l) { l.forEach(function (c) { if (!vu[c.id]) { vu[c.id] = 1; lignes.push(tdbLigne(c)); } }); });
   } catch (e) { lignes = null; erreur = String(e && e.message || e); }
@@ -9298,7 +9384,7 @@ async function tdbCharger(P, cle) {
     return;
   }
   delete TDB_ETAT.cache[cle];
-  TDB_ETAT.lignes = lignes; TDB_ETAT.erreur = erreur;
+  TDB_ETAT.lignes = lignes; TDB_ETAT.erreur = erreur; TDB_ETAT.luA = erreur ? 0 : Date.now();
   TDB_ETAT.cle = cle;
   // une commande a changé pendant la lecture : résultat affiché mais aussitôt périmé (relu au prochain affichage)
   TDB_ETAT.at = gen === TDB_ETAT.gen ? Date.now() : 0;
@@ -9329,14 +9415,14 @@ function tdbRendre() {
     var c0 = TDB_ETAT.cache[cle];
     if (c0 && TDB_ETAT.cle !== cle) {
       delete TDB_ETAT.cache[cle];
-      if (c0.gen === TDB_ETAT.gen && Date.now() - c0.at < TDB_DUREE) { TDB_ETAT.cle = cle; TDB_ETAT.lignes = c0.lignes; TDB_ETAT.at = c0.at; TDB_ETAT.erreur = ''; TDB_ETAT.echecs = 0; TDB_ETAT.reessaiA = 0; }
+      if (c0.gen === TDB_ETAT.gen && Date.now() - c0.at < TDB_DUREE) { TDB_ETAT.cle = cle; TDB_ETAT.lignes = c0.lignes; TDB_ETAT.at = c0.at; TDB_ETAT.luA = c0.at; TDB_ETAT.erreur = ''; TDB_ETAT.echecs = 0; TDB_ETAT.reessaiA = 0; }
     }
     var frais = TDB_ETAT.cle === cle && Date.now() - TDB_ETAT.at < TDB_DUREE;
     var echec = TDB_ETAT.cle === cle && !!TDB_ETAT.erreur, patiente = echec && Date.now() < TDB_ETAT.reessaiA;
     if (!frais && !patiente && !TDB_ETAT.vols[cle]) tdbCharger(P, cle);
     else if (frais) tdbProgrammerExpiration(TDB_ETAT.at + TDB_DUREE - Date.now());
     if (patiente) tdbProgrammerExpiration(TDB_ETAT.reessaiA - Date.now()); // nouvelle tentative différée (tableau affiché)
-    if (TDB_ETAT.cle === cle && TDB_ETAT.lignes) lignes = TDB_ETAT.lignes;
+    if (TDB_ETAT.cle === cle && TDB_ETAT.lignes) { lignes = TDB_ETAT.lignes; if (TDB_ETAT.luA) note = tdbNoteLecture(TDB_ETAT.luA); }
     else if (echec) { // v7.5.149 : l'avertissement RESTE affiché, même pendant la nouvelle tentative
       lignes = locales(); reessayer = true;
       var quand = new Date(TDB_ETAT.reessaiA), hm = String(quand.getHours()).padStart(2, '0') + ':' + String(quand.getMinutes()).padStart(2, '0');
@@ -9793,6 +9879,9 @@ var cmdfEtat = null;
 // Tant qu'elle est posée, toute écriture des réglages (tri, panneau « Filtres », date de prise / livraison) garde CETTE période dans
 // localStorage : la période vidée à l'écran pour JARVIS n'est jamais enregistrée. Seul un choix EXPLICITE de période (Du / Au,
 // « Effacer ») la remplace. Au prochain chargement de la page, la période mémorisée revient d'elle-même.
+// v7.5.200 (revue Codex PR 28 sur 62f910d et c825409) : le CHAMP de date (prise / livraison) fait partie du choix de période ; il est
+// mis de côté AVEC les bornes ({ du, au, champ }). Avant, « Date de prise / Date de livraison » touché pendant la vue JARVIS enregistrait
+// le nouveau champ avec les anciennes bornes : au rechargement, les mêmes bornes filtraient sur une AUTRE date.
 var cmdfPeriodeMemo = null;
 function cmdfDateOk(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s); }
 // Réglages relus (ou reçus) → toujours un état valide ; toute valeur inattendue retombe sur le défaut.
@@ -9813,7 +9902,7 @@ function cmdfLire() { try { var s = localStorage.getItem(CMDF_CLE); return cmdfN
 // Réglages à enregistrer : ceux de l'écran, sauf la période mise de côté pour JARVIS (cmdfPeriodeMemo), remise telle quelle.
 function cmdfAEnregistrer(e) {
   var n = cmdfNormaliser(e);
-  if (cmdfPeriodeMemo) { n.du = cmdfPeriodeMemo.du; n.au = cmdfPeriodeMemo.au; n = cmdfNormaliser(n); }
+  if (cmdfPeriodeMemo) { n.du = cmdfPeriodeMemo.du; n.au = cmdfPeriodeMemo.au; n.champ = cmdfPeriodeMemo.champ; n = cmdfNormaliser(n); }
   return n;
 }
 function cmdfEcrire(e) { try { localStorage.setItem(CMDF_CLE, JSON.stringify(cmdfAEnregistrer(e))); } catch (x) {} }
@@ -9919,7 +10008,7 @@ function cmdfEffacerPeriode() { var e = cmdfEtatCourant(); e.du = ''; e.au = '';
 // un clic ultérieur sur le tri ou sur « Filtres » l'enregistre donc intacte. Plusieurs vues JARVIS d'affilée gardent la première.
 function cmdfViderPeriode() {
   var e = cmdfEtatCourant();
-  if (!cmdfPeriodeMemo) cmdfPeriodeMemo = { du: e.du, au: e.au };
+  if (!cmdfPeriodeMemo) cmdfPeriodeMemo = { du: e.du, au: e.au, champ: e.champ }; // v7.5.200 : le champ de date avec les bornes
   e.du = ''; e.au = '';
 }
 // CMDF-FIN

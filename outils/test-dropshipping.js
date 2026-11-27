@@ -384,6 +384,15 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
   }
   test('caisse HT/TTC (décision de Borhen corrigée) : l\'enlèvement envoie p_montant_ttc (TTC payé), jamais l\'ancien p_montant_ht seul', /p_montant_ttc: m\.montant/.test(CODE_DROP) && /p_montant_ht: mht/.test(CODE_DROP));
 
+  {
+    // avis chatgpt-review n° 3 sur 77441b6 : livraison partielle — vente reconnue = pièces livrées seulement (calcul par la base)
+    const { bac } = nouveauBac({ role: 'admin' });
+    const f = bac.dropPiecesAdminHtml({ ok: true, vente_ht_commande: 600, vente_ht: 487.5, vente_non_reconnue_ht: 112.5, livraison_partielle: true, pieces_livrees: 2, pieces_total: 3, cout_ht: 205, marge_ht: 282.5, pieces: [] });
+    test('fiche : livraison partielle signalée, vente RECONNUE (487,50 sur 600) et marge sur les seules pièces livrées', /Livraison partielle : 2\/3 pièces livrées — vente reconnue 487,50 € HT sur 600 € HT/.test(f) && /marge 282,50 € HT/.test(f), f);
+    const b = bac.dropBilanHtml({ ventes_ht: 2187.5, ventes_non_reconnues_ht: 112.5, livraisons_partielles: 1, cout_produits_ht: 765, gls_ht: 0, resultat_ht: 1422.5, commandes: 5, detail: [] });
+    test('bilan : ventes non reconnues des livraisons partielles affichées', /1 livraison\(s\) partielle\(s\) : 112,50 € HT non reconnus/.test(b));
+  }
+
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error('ERREUR DU BANC :', e); process.exit(1); });

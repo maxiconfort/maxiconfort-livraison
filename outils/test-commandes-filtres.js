@@ -204,10 +204,33 @@ console.log('\n6. VUE JARVIS (#jarvis=commandes…) : la période mémorisée ne
   const y = nouveauBac({ commandes: CMDS, stock: { mx_cmd_filtres_v1: x.stock.mx_cmd_filtres_v1 } });
   y.bac.cmdAppliquerFiltres();
   test('rechargement après la vue JARVIS : période RESTAURÉE et appliquée (#3 seule), bouton « Période » allumé', y.dernier().join() === '#3' && y.el('cmdf-btn-periode').classList.contains('on') && y.el('cmdf-btn-periode').textContent !== 'Période', y.dernier());
-  // date de prise / livraison changée pendant la vue JARVIS : le champ change, la période mémorisée reste
+  // date de prise / livraison changée pendant la vue JARVIS : la période mémorisée reste ENTIÈRE (bornes ET champ de date)
+  // v7.5.200 (revue Codex PR 28 sur 62f910d et c825409) : avant, le nouveau champ était enregistré avec les anciennes bornes
   const z = nouveauBac({ commandes: CMDS, stock: { mx_cmd_filtres_v1: MEMO } });
-  z.bac.cmdAppliquerFiltres(); z.bac.cmdfViderPeriode(); z.bac.cmdfChamp('prise');
-  test('vue JARVIS puis « Date de prise » : champ enregistré, période mémorisée INTACTE', lu(z).champ === 'prise' && lu(z).du === '2026-11-25' && lu(z).au === '2026-11-26', z.stock.mx_cmd_filtres_v1);
+  z.bac.cmdAppliquerFiltres();
+  const avantJarvis = z.dernier().join();
+  z.bac.cmdfViderPeriode(); z.bac.cmdfChamp('prise');
+  test('vue JARVIS puis « Date de prise » : période mémorisée INTACTE, champ compris (25/11 → 26/11 sur la date de livraison)', lu(z).champ === 'livraison' && lu(z).du === '2026-11-25' && lu(z).au === '2026-11-26', z.stock.mx_cmd_filtres_v1);
+  z.bac.cmdfTrierPar('livraison'); z.bac.cmdfBasculer('filtres');
+  test('… puis tri et « Filtres » : préférences enregistrées, champ mémorisé toujours « livraison »', lu(z).champ === 'livraison' && lu(z).tri === 'livraison' && lu(z).ouvert === true && lu(z).du === '2026-11-25', z.stock.mx_cmd_filtres_v1);
+  { // rechargement de la page après ce changement de champ : le choix de période revient À L'IDENTIQUE
+    const y2 = nouveauBac({ commandes: CMDS, stock: { mx_cmd_filtres_v1: z.stock.mx_cmd_filtres_v1 } });
+    y2.bac.cmdAppliquerFiltres();
+    const e2 = y2.bac.cmdfEtatCourant();
+    test('rechargement après « Date de prise » dans la vue JARVIS : même choix de période (bornes ET date de livraison), même liste qu’avant la vue (#3)',
+      e2.du === '2026-11-25' && e2.au === '2026-11-26' && e2.champ === 'livraison' && avantJarvis === '#3' && y2.dernier().join() === avantJarvis, { e2, liste: y2.dernier(), avantJarvis });
+    // sans la correction, les mêmes bornes sur la date de PRISE auraient donné une autre liste (#4) : le test couvre bien le défaut
+    const y3 = nouveauBac({ commandes: CMDS, stock: { mx_cmd_filtres_v1: JSON.stringify({ du: '2026-11-25', au: '2026-11-26', champ: 'prise' }) } });
+    y3.bac.cmdAppliquerFiltres();
+    test('(mêmes bornes sur la date de prise : autre liste, #4 — preuve que le champ compte)', y3.dernier().join() === '#4', y3.dernier());
+  }
+  { // choix EXPLICITE d'une période dans la vue JARVIS, après avoir changé le champ : bornes et champ de l'écran mémorisés
+    const q = nouveauBac({ commandes: CMDS, stock: { mx_cmd_filtres_v1: MEMO } });
+    q.bac.cmdAppliquerFiltres(); q.bac.cmdfViderPeriode(); q.bac.cmdfChamp('prise');
+    q.el('cmdf-du').value = '2026-11-25'; q.el('cmdf-au').value = '2026-11-26'; q.bac.cmdfPeriodeChange();
+    const q2 = nouveauBac({ commandes: CMDS, stock: { mx_cmd_filtres_v1: q.stock.mx_cmd_filtres_v1 } }); q2.bac.cmdAppliquerFiltres();
+    test('période choisie à la main après « Date de prise » : bornes ET « prise » mémorisés, restaurés au rechargement (#4)', lu(q).champ === 'prise' && q2.bac.cmdfEtatCourant().champ === 'prise' && q2.dernier().join() === '#4', [q.stock.mx_cmd_filtres_v1, q2.dernier()]);
+  }
   // choix EXPLICITE d'une période après la vue JARVIS : c'est lui qui est mémorisé (et gardé par les clics suivants)
   z.el('cmdf-du').value = '2026-11-01'; z.el('cmdf-au').value = ''; z.bac.cmdfPeriodeChange(); z.bac.cmdfTrierPar('prise');
   test('période choisie à la main après la vue JARVIS : nouvelle période mémorisée (depuis 01/11), gardée après un tri', lu(z).du === '2026-11-01' && lu(z).au === '' && lu(z).tri === 'prise', z.stock.mx_cmd_filtres_v1);

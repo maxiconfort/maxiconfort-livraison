@@ -129,5 +129,5 @@ test('v7.5.128 : plus aucun caractère invisible « retour arrière » dans l’
   b.document.querySelector = avantQ; b.document.getElementById = avantG; delete b.ROLES;
 }
 console.log('\n3. MISE EN LIGNE');
-test('CACHE_VERSION augmentée (v7-5-128 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-(12[89]|1[3-9]\d|[2-9]\d\d)'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
+test('CACHE_VERSION augmentée (v7-5-128 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-(1(2[89]|[3-9]\d)|[2-9]\d\d)'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);

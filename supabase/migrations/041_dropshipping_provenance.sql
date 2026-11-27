@@ -1275,6 +1275,7 @@ language plpgsql stable security definer set search_path = public, interne, pg_c
 declare c record; v_tva numeric := coalesce(interne.l041_reglage('drop_tva_pct'), 20); v_gls numeric := interne.l041_reglage('drop_gls_cout_commande_ht');
   v_pieces jsonb := '[]'::jsonb; p record; v_cout record; v_total numeric := 0; v_inconnu integer := 0; v_estime boolean := false;
   v_c numeric; v_s text; v_fige boolean; d record; v_rev numeric; v_gls_c numeric; v_hb jsonb;
+  v_poids_tot numeric := 0; v_poids_liv numeric := 0; v_w numeric; v_n_tot integer := 0; v_n_liv integer := 0; v_vente_ht numeric; v_reconnue numeric;
 begin
   select id, prix, statut, transporteur, date_livraison into c from public.commandes where id = p_cmd_id;
   if not found then return null; end if;
@@ -1289,7 +1290,12 @@ begin
       v_fige := p.source_fige is not null;
       if v_fige then v_c := p.cout_fige; v_s := p.source_fige;
       else select * into v_cout from interne.l041_cout_piece(p.id); v_c := v_cout.cout; v_s := v_cout.source; end if;
+      -- v7.5.203 (avis chatgpt-review n° 3 sur 77441b6) : LIVRAISON PARTIELLE — part du prix de chaque pièce au prorata du prix
+      -- catalogue de son produit (parts égales si aucun prix connu) ; une pièce « pas livrée » n'est comptée ni en vente ni en coût
+      v_w := coalesce((select x.prix from public.produits x where x.id = p.produit_id and x.prix > 0), 0);
+      v_poids_tot := v_poids_tot + v_w; v_n_tot := v_n_tot + 1;
       if coalesce(p.livraison, 'livree') = 'livree' then
+        v_poids_liv := v_poids_liv + v_w; v_n_liv := v_n_liv + 1;
         if v_c is null then v_inconnu := v_inconnu + 1; else v_total := v_total + v_c; end if;
         if not v_fige then v_estime := true; end if;
       end if;
@@ -1319,11 +1325,18 @@ begin
     end if;
   end if;
   v_gls_c := case when upper(coalesce(c.transporteur, '')) = 'GLS' then v_gls end;
+  v_vente_ht := interne.l041_ht(c.prix, v_tva);
+  -- vente RECONNUE = part des pièces effectivement livrées (toute la vente si la commande n'est pas découpée en pièces)
+  v_reconnue := case when v_n_tot = 0 then v_vente_ht
+                     when v_poids_tot > 0 then round(v_vente_ht * v_poids_liv / v_poids_tot, 2)
+                     else round(v_vente_ht * v_n_liv / v_n_tot, 2) end;
   return jsonb_build_object('cmd_id', c.id, 'statut', c.statut, 'date_livraison', c.date_livraison, 'transporteur', c.transporteur,
-    'vente_ttc', coalesce(c.prix, 0), 'vente_ht', interne.l041_ht(c.prix, v_tva), 'cout_ht', round(v_total, 2),
+    'vente_ttc', coalesce(c.prix, 0), 'vente_ht_commande', v_vente_ht, 'vente_ht', v_reconnue,
+    'vente_non_reconnue_ht', round(v_vente_ht - v_reconnue, 2), 'livraison_partielle', v_n_liv < v_n_tot,
+    'pieces_livrees', v_n_liv, 'pieces_total', v_n_tot, 'cout_ht', round(v_total, 2),
     'cout_inconnu', v_inconnu, 'cout_estime', v_estime,
     'gls_ht', v_gls_c, 'gls_non_renseigne', upper(coalesce(c.transporteur, '')) = 'GLS' and v_gls is null,
-    'marge_ht', round(interne.l041_ht(c.prix, v_tva) - v_total - coalesce(v_gls_c, 0), 2), 'pieces', v_pieces);
+    'marge_ht', round(v_reconnue - v_total - coalesce(v_gls_c, 0), 2), 'pieces', v_pieces);
 end $$;
 revoke all on function interne.l041_marge(text) from public, anon, authenticated;
 
@@ -1340,13 +1353,16 @@ create or replace function public.drop_bilan_jour(p_date text) returns json
 language plpgsql stable security definer set search_path = public, interne, pg_catalog as $$
 declare v_cmds jsonb := '[]'::jsonb; m jsonb; r record; v_ventes numeric := 0; v_cout numeric := 0; v_gls numeric := 0;
   v_inconnu integer := 0; v_gls_nr integer := 0; v_estimes integer := 0; v_fixes numeric := interne.l041_reglage('drop_charges_fixes_jour_ht');
+  v_non_rec numeric := 0; v_partielles integer := 0;
   v_resultat numeric;
 begin
   if public.session_role() is distinct from 'admin' then return json_build_object('ok', false, 'erreur', 'admin_requis'); end if;
   if p_date is null or p_date !~ '^\d{4}-\d{2}-\d{2}$' then return json_build_object('ok', false, 'erreur', 'date_invalide'); end if;
   for r in select id from public.commandes where date_livraison = p_date and statut in ('livré', 'livre') and id not like '#TEST%' order by id loop
     m := interne.l041_marge(r.id);
-    v_ventes := v_ventes + (m ->> 'vente_ht')::numeric;
+    v_ventes := v_ventes + (m ->> 'vente_ht')::numeric;   -- v7.5.203 : vente RECONNUE (pièces livrées)
+    v_non_rec := v_non_rec + coalesce((m ->> 'vente_non_reconnue_ht')::numeric, 0);
+    if coalesce((m ->> 'livraison_partielle')::boolean, false) then v_partielles := v_partielles + 1; end if;
     v_cout := v_cout + (m ->> 'cout_ht')::numeric;
     v_gls := v_gls + coalesce((m ->> 'gls_ht')::numeric, 0);
     v_inconnu := v_inconnu + (m ->> 'cout_inconnu')::integer;
@@ -1361,6 +1377,7 @@ begin
     'ventes_ht', round(v_ventes, 2), 'cout_produits_ht', round(v_cout, 2), 'gls_ht', round(v_gls, 2), 'resultat_ht', v_resultat,
     'charges_fixes_ht', v_fixes, 'resultat_net_ht', case when v_fixes is not null then round(v_resultat - v_fixes, 2) end,
     'pieces_cout_inconnu', v_inconnu, 'commandes_gls_non_renseigne', v_gls_nr, 'commandes_cout_estime', v_estimes,
+    'ventes_non_reconnues_ht', round(v_non_rec, 2), 'livraisons_partielles', v_partielles,
     'detail', v_cmds::json);
 end $$;
 

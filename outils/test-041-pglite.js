@@ -411,21 +411,25 @@ grant select, insert, update, delete on storage.objects to anon;
   r = await rpc('admin', 'public.drop_alerte_vue($1)', [al.id]);
   test('alerte marquée vue : ne revient plus dans la liste', r.ok && !(await rpc('admin', 'public.drop_controler()', [])).alertes.some(a => a.id === al.id));
   r = await rpc('admin', 'public.drop_marge_commande($1)', ['#C1']);
-  test('marge #C1 : vente 720 TTC = 600 HT, coût 165 + 40 = 205, marge 395 ; pièces avec fournisseur, prix payé, mode, ticket',
-    r.ok && r.vente_ht === 600 && r.cout_ht === 205 && r.marge_ht === 395 && r.cout_estime === false
+  // v7.5.203 (avis chatgpt-review n° 3 sur 77441b6) : LIVRAISON PARTIELLE — #C1 = matelas 180 (prix catalogue 400) livré, sommier 90
+  // (120) livré, sommier 90 (120) PAS livré : vente reconnue = 600 HT × (400 + 120) / 640 = 487,50 ; le sommier non livré n'est compté
+  // ni en vente ni en coût
+  test('marge #C1 (livraison PARTIELLE) : vente de la commande 600 HT, RECONNUE 487,50 (pièces livrées seulement), 112,50 non reconnus ; coût 165 + 40 = 205 ; marge 282,50 ; pièces avec fournisseur, prix payé, mode, ticket',
+    r.ok && r.vente_ht_commande === 600 && r.vente_ht === 487.5 && r.vente_non_reconnue_ht === 112.5 && r.livraison_partielle === true && r.pieces_livrees === 2 && r.pieces_total === 3
+    && r.cout_ht === 205 && r.marge_ht === 282.5 && r.cout_estime === false
     && r.pieces.some(p => p.fournisseur === 'Fournisseur fictif 1' && p.montant_paye_ht === 165 && p.mode === 'especes' && p.ticket_path === 'livreur-a/C1/ticket-1.jpg'), r);
   test('marge : refusée au livreur', (await rpc('livreur', 'public.drop_marge_commande($1)', ['#C1'])).ok === false);
   await cmd('#G1', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360, transporteur: 'GLS', statut: 'livré', livreur: '' });
   r = await rpc('admin', 'public.drop_bilan_jour($1)', [AUJ]);
-  // livrées du jour : #C1 (600 HT, 205), #C2 (500 HT, 1 pièce dépôt NON confirmée → coût estimé 100), #C4 (500 HT, 2 × 100
+  // livrées du jour : #C1 (487,50 HT reconnus sur 600 : livraison partielle, 205), #C2 (500 HT, 1 pièce dépôt NON confirmée → coût estimé 100), #C4 (500 HT, 2 × 100
   // estimé), #C5 (400 HT, 160), #G1 (300 HT, 100 estimé, GLS non renseigné)
-  test('bilan : ventes livrées HT = 2 300, coût des produits = 765, GLS non renseigné (1 commande), résultat = 1 535, charges fixes vides',
-    r.ok && r.commandes === 5 && r.ventes_ht === 2300 && r.cout_produits_ht === 765 && r.gls_ht === 0 && r.commandes_gls_non_renseigne === 1
-    && r.resultat_ht === 1535 && r.charges_fixes_ht === null && r.resultat_net_ht === null, r);
+  test('bilan : ventes RECONNUES HT = 2 187,50 (112,50 non reconnus, 1 livraison partielle), coût des produits = 765, GLS non renseigné (1 commande), résultat = 1 422,50, charges fixes vides',
+    r.ok && r.commandes === 5 && r.ventes_ht === 2187.5 && r.ventes_non_reconnues_ht === 112.5 && r.livraisons_partielles === 1 && r.cout_produits_ht === 765 && r.gls_ht === 0 && r.commandes_gls_non_renseigne === 1
+    && r.resultat_ht === 1422.5 && r.charges_fixes_ht === null && r.resultat_net_ht === null, r);
   await q('admin', "update public.parametres set valeur = '12,5' where cle = 'drop_gls_cout_commande_ht'");
   await q('admin', "update public.parametres set valeur = '200' where cle = 'drop_charges_fixes_jour_ht'");
   r = await rpc('admin', 'public.drop_bilan_jour($1)', [AUJ]);
-  test('réglages GLS 12,5 € HT / commande et charges fixes 200 : résultat 1 522,50, net 1 322,50', r.gls_ht === 12.5 && r.resultat_ht === 1522.5 && r.resultat_net_ht === 1322.5, r);
+  test('réglages GLS 12,5 € HT / commande et charges fixes 200 : résultat 1 410, net 1 210', r.gls_ht === 12.5 && r.resultat_ht === 1410 && r.resultat_net_ht === 1210, r);
   test('bilan : refusé au livreur et à la collaboratrice', (await rpc('livreur', 'public.drop_bilan_jour($1)', [AUJ])).ok === false && (await rpc('collab', 'public.drop_bilan_jour($1)', [AUJ])).ok === false);
   test('collaboratrice : aucun coût lisible (pieces_couts)', (await q('collab', 'select * from public.pieces_couts')).length === 0);
 

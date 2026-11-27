@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.203 - Fusion de Commandes filtres (ae4fcc5, v7.5.200 : tentative de reception gardee, controle de coherence du tableau de bord, champ de date garde avec la periode) dans le dropshipping (27/11/2026)
 // v7.5.202 - Dropshipping (revue Codex sur 53c7b59) : CAISSE TTC / MARGE HT (decision de Borhen corrigee), livre refuse par la base tant que les pieces ne sont pas confirmees (derogation admin motivee), deduction apres le succes de la confirmation, decoupage perime refuse, module garde hors ligne, entree de stock tampon rejouee avec la meme cle, recredit vers le lot d origine et cycles de relivraison, bornes explicites (27/11/2026)
 // v7.5.201 - Fusion de Commandes filtres (62f910d, PR 24 a 28 corrigees) et de la derniere correction de la PR 29 (8dde6a9, v7.5.199) dans le dropshipping (27/11/2026)
 // v7.5.200 - Fusion de la PR 29 (v7.5.198 : recredit et mouvements manuels du stock par la base, migration 040 revisee) dans le dropshipping (v7.5.199, migration 041 : deduction limitee aux pieces Depot posee sur la 040 revisee) + STOCK TAMPON dropshipping (achats d avance en lots au prix HT reel, premier entre premier sorti) + libelle Depot - stock BMS (27/11/2026)
@@ -13,6 +14,9 @@
 // v7.5.193 - Livre protege des releves perimees, rejeu par date et role d'origine, nouveaux ecarts controles, purge apres recapitulatif (26/11/2026)
 // v7.5.192 - File : erreurs temporaires rejouees, fiches admin conservees, recapitulatif durable, controle admin par lecture en base (26/11/2026)
 // v7.5.191 - Livreur : le « livre » remonte de nouveau (file d'attente sans boucle, stock du livreur par PATCH) (26/11/2026)
+//   [pile 24-28] v7.5.200 - Commandes, filtres de dates (revue Codex PR 28 sur 62f910d et c825409) : champ de date (prise / livraison) mis de cote AVEC les bornes pendant une vue JARVIS ; fusion de la PR 27 (v7.5.199 : controle de coherence du tableau de bord ; PR 26 v7.5.198 incluse : tentative de reception gardee sur l'appareil) (27/11/2026)
+//   [pile 24-28] v7.5.199 - Tableau de bord + menus (revue Codex PR 27 sur cbf3170) : controle de coherence apres la lecture paginee (nombre exact + derniere mise a jour, relecture si la base a change), chiffres dates « lus a HH:MM » ; fusion de la PR 26 (v7.5.198 : tentative de reception gardee sur l'appareil) (27/11/2026)
+//   [pile 24-28] v7.5.198 - Arrivage (revue Codex PR 26 sur cf60684 et 992a943) : tentative de reception gardee sur l'appareil avant l'envoi, restauree au rechargement, verification imposee avant tout nouvel envoi (27/11/2026)
 //   [pile 24-28] v7.5.199 - Commandes, filtres de dates : fusion de la PR 27 (v7.5.198 ; PR 26, PR 25 et PR 24 v7.5.195 incluses : validation de la remise recontrolee par la base, arrets figes) (27/11/2026)
 //   [pile 24-28] v7.5.198 - Tableau de bord + menus : fusion de la PR 26 (v7.5.197 ; PR 25 v7.5.196 et PR 24 v7.5.195 incluses : validation de la remise recontrolee par la base, arrets figes) (27/11/2026)
 //   [pile 24-28] v7.5.197 - Arrivage : fusion de la PR 25 (v7.5.196, PR 24 v7.5.195 incluse : validation de la remise recontrolee par la base, arrets figes) (27/11/2026)
@@ -65,7 +69,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-202';
+const CACHE_VERSION = 'maxiconfort-v7-5-203';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
