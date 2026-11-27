@@ -1195,6 +1195,39 @@ grant select, insert, update, delete on storage.objects to anon;
   test('commande LIVRÉE, recrédit p_suppression : commande supprimée par la fonction, stock rendu (py90 revenu à ' + s90 + '), pièces rouvertes',
     r.ok && (await nb("public.commandes where id = '#US3'")) === 0 && (await stock('py90')) === s90
     && (await un(P, 'select livraison from public.commande_pieces where id = $1', [pS3.id])).livraison === null, r);
+
+  // =========================================================================================================================
+  console.log('\n30. v7.5.208 (revue native P2 sur 8905a30) : RETOUR AU DÉPÔT D\'UNE UNITÉ ACHETÉE → stock du dépôt + lot au coût payé');
+  const s140R = await stock('py140');
+  const nLots = await nb("public.stock_tampon_lots where produit_id = 'py140'");
+  e = await echec('livreur', "update public.stock_camion set status = 'retourne_depot', retour_at = now(), retour_par = 'Livreur-A' where id = $1", [uS2]);
+  const lotR = await un(P, "select l.*, e.cle from public.stock_tampon_lots l join public.stock_tampon_entrees e on e.id = l.entree_id where e.cle = $1", ['retour_achat:' + aS1]);
+  const achR = await un(P, 'select montant_paye_ht, fournisseur_id from public.achats_fournisseur where id = $1', [aS1]);
+  test('« Retour dépôt » (PATCH de l\'appli) d\'un article acheté : stock du dépôt +1, lot d\'UNE unité au coût PAYÉ HT, fournisseur de l\'achat, opération et journal',
+    e === null && (await stock('py140')) === s140R + 1 && !!lotR && lotR.quantite_restante === 1
+    && Number(lotR.prix_achat_ht) === Number(achR.montant_paye_ht) && String(lotR.fournisseur_id) === String(achR.fournisseur_id)
+    && (await nb('public.stock_operations where cle = $1', ['tampon:retour_achat:' + aS1 + ':' + lotR.id])) === 1
+    && (await nb("public.drop_journal where action = 'retour_depot_achat' and achat_id = $1", [aS1])) === 1, { e, lotR, achR });
+  e = await echec('livreur', "update public.stock_camion set status = 'retourne_depot', retour_par = 'Livreur-A' where id = $1", [uS2]);
+  test('rejoué (2e envoi du même retour) : rien de plus (stock, lots inchangés)', e === null && (await stock('py140')) === s140R + 1
+    && (await nb("public.stock_tampon_lots where produit_id = 'py140'")) === nLots + 1, e);
+  // la prochaine livraison « stock tampon » sort de CE lot, au coût payé
+  await cmd('#US4', { lignes: [{ produitId: 'py140', nom: 'Matelas fictif Y', qte: 1 }], prix: 360 });
+  const pS4 = (await rpc('livreur', 'public.drop_pieces($1)', ['#US4'])).pieces[0];
+  await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pS4.id, 'tampon', achR.fournisseur_id]);
+  await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#US4', JSON.stringify([{ id: pS4.id, livree: true }])]);
+  await q('livreur', "update public.commandes set statut = 'livré' where id = '#US4'");
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#US4']);
+  test('livraison suivante « stock tampon » : sortie de CE lot, coût = prix payé (pas le revient BMS)', r.ok
+    && Number((await un(P, 'select cout_ht from public.pieces_couts where piece_id = $1', [pS4.id])).cout_ht) === Number(achR.montant_paye_ht)
+    && (await un(P, 'select quantite_restante from public.stock_tampon_lots where id = $1', [lotR.id])).quantite_restante === 0, r);
+  // une ligne du chargement (sans achat) retournée au dépôt : rien n'entre au stock (elle n'en est jamais sortie)
+  await cmd('#US5', { lignes: [{ produitId: 'py140', nom: 'Matelas fictif Y', qte: 1 }], prix: 360 });
+  const uOrd = (await ins('#US5', 'Matelas fictif Y', 1, 0)).id;
+  const s140O = await stock('py140');
+  e = await echec('livreur', "update public.stock_camion set status = 'retourne_depot' where id = $1", [uOrd]);
+  test('ligne ordinaire du chargement retournée au dépôt : stock du dépôt inchangé', e === null && (await stock('py140')) === s140O, e);
+
   }
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');

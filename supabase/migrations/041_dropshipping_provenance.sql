@@ -17,6 +17,7 @@
 --        drop trigger if exists commandes_annulee_pieces on public.commandes;
 --        drop trigger if exists commandes_supprimee_pieces on public.commandes;
 --        drop trigger if exists stock_camion_garde_041 on public.stock_camion;
+--        drop trigger if exists stock_camion_retour_achat_041 on public.stock_camion;
 --   2) drop function if exists public.drop_version(), public.drop_pieces(text), public.drop_declarer(bigint, text, bigint, text),
 --        public.drop_enlever_payer(bigint, numeric, text, text, numeric), public.drop_ticket_ajouter(bigint, text),
 --        public.drop_livre_sans_confirmation(text, text),
@@ -120,7 +121,8 @@
 --   * COMMANDE ANNULÉE AVANT SA LIVRAISON (déclencheur commandes_annulee_pieces, toutes voies) : pièces déclarées libérées comme
 --     pour un report (achat payé → stock du camion).
 --   * v7.5.208 : COMMANDE SUPPRIMÉE AVANT SA LIVRAISON (déclencheur commandes_supprimee_pieces, avant la suppression, toutes
---     voies) : même libération.
+--     voies) : même libération ; UNITÉ ACHETÉE RETOURNÉE AU DÉPÔT (déclencheur stock_camion_retour_achat_041) : entre dans le
+--     stock du dépôt comme un lot du stock tampon au coût réellement payé, une seule fois par achat.
 --
 -- v7.5.207 (revue native P2 sur c22dacd, toujours présente sur 6775bbc) :
 --   * LIGNES DU CHARGEMENT RÉCONCILIÉES À LA LIVRAISON (interne.l041_reconcilier_chargement, appelée par drop_confirmer_livraison) :
@@ -749,6 +751,57 @@ revoke all on function interne.l041_stock_camion_garde() from public, anon, auth
 drop trigger if exists stock_camion_garde_041 on public.stock_camion;
 create trigger stock_camion_garde_041 before insert or update on public.stock_camion
   for each row execute function interne.l041_stock_camion_garde();
+
+-- v7.5.208 (revue native P2 sur 8905a30) : RETOUR AU DÉPÔT D'UNE UNITÉ ACHETÉE. Les boutons « Retour dépôt » et « Vider le
+-- camion » de l'appli passent la ligne du camion à « retourne_depot ». Pour une unité ACHETÉE chez un fournisseur (achat
+-- payé, jamais entrée au stock du dépôt), ce passage fait, dans la MÊME transaction que la mise à jour (déclencheur, toutes
+-- voies, ancienne appli comprise) et UNE SEULE FOIS par achat (clé « retour_achat:<achat> » de stock_tampon_entrees ; une
+-- ligne sortie ne revient jamais « en_camion », garde ci-dessus) :
+--   * une entrée du STOCK TAMPON au coût RÉELLEMENT PAYÉ (HT et TTC de l'achat, fournisseur de l'achat) et un lot d'une unité ;
+--   * le stock du dépôt + 1 (écriture marquée l040.fonction, opération « mouvement » journalisée dans stock_operations) ;
+--   * une ligne au journal du dropshipping.
+-- L'article retourné est donc disponible au dépôt et sa prochaine livraison « stock tampon » sort de SON lot au coût payé,
+-- jamais au revient BMS. Unité sans produit connu : rien n'entre au stock, retour tracé au journal (à corriger à la main).
+create or replace function interne.l041_retour_achat_depot() returns trigger
+language plpgsql security definer set search_path = public, interne, pg_catalog as $$
+declare a record; pr record; v_e bigint; v_lot bigint; v_av integer; v_op bigint; v_cle text; v_prec text;
+begin
+  if new.achat_id is null or coalesce(old.status, '') <> 'en_camion' or new.status is distinct from 'retourne_depot' then return null; end if;
+  select * into a from public.achats_fournisseur where id = new.achat_id;
+  if not found or a.statut <> 'paye' then return null; end if;
+  v_cle := 'retour_achat:' || a.id;
+  if exists (select 1 from public.stock_tampon_entrees where cle = v_cle) then return null; end if;   -- déjà fait (rejeu)
+  select id, nom, stock into pr from public.produits where id = new.produit_id for update;
+  if not found then
+    perform interne.l041_journal('retour_depot_achat_sans_produit', new.source_cmd_id, new.piece_id, a.id, a.montant_paye_ht,
+      jsonb_build_object('stock_camion_id', new.id, 'libelle', new.produit_libelle));
+    return null;
+  end if;
+  insert into public.stock_tampon_entrees (cle, fournisseur_id, date_achat, mode, ticket_path, total_ht, total_ttc, tva_pct, acteur)
+  values (v_cle, a.fournisseur_id, coalesce(a.paye_at::date, current_date), coalesce(a.mode, 'autre'), a.ticket_path,
+          a.montant_paye_ht, a.montant_paye_ttc, a.tva_pct, interne.l041_acteur())
+  on conflict (cle) do nothing returning id into v_e;
+  if v_e is null then return null; end if;
+  insert into public.stock_tampon_lots (entree_id, fournisseur_id, produit_id, date_achat, prix_achat_ht, quantite_initiale, quantite_restante)
+  values (v_e, a.fournisseur_id, pr.id, coalesce(a.paye_at::date, current_date), a.montant_paye_ht, 1, 1) returning id into v_lot;
+  v_av := coalesce(pr.stock, 0);
+  v_prec := coalesce(current_setting('l040.fonction', true), '');
+  perform set_config('l040.fonction', '1', true);
+  update public.produits set stock = v_av + 1, updated_at = now() where id = pr.id;
+  perform set_config('l040.fonction', v_prec, true);
+  insert into public.stock_operations (nature, produit_id, cle, resultat, acteur)
+  values ('mouvement', pr.id, 'tampon:' || v_cle || ':' || v_lot,
+          jsonb_build_object('produit_id', pr.id, 'nom', pr.nom, 'type', 'entree', 'qte', 1, 'delta', 1, 'stock_avant', v_av,
+                             'stock_apres', v_av + 1, 'motif', 'Retour au dépôt d''une unité achetée (achat ' || a.id || ', lot ' || v_lot || ')'),
+          interne.l041_acteur()) returning id into v_op;
+  perform interne.l041_journal('retour_depot_achat', new.source_cmd_id, new.piece_id, a.id, a.montant_paye_ht,
+    jsonb_build_object('stock_camion_id', new.id, 'entree_id', v_e, 'lot_id', v_lot, 'operation_id', v_op, 'stock_apres', v_av + 1));
+  return null;
+end $$;
+revoke all on function interne.l041_retour_achat_depot() from public, anon, authenticated;
+drop trigger if exists stock_camion_retour_achat_041 on public.stock_camion;
+create trigger stock_camion_retour_achat_041 after update of status on public.stock_camion
+  for each row execute function interne.l041_retour_achat_depot();
 
 -- coût d'une pièce : Dépôt = prix de revient (039) ; Fournisseur = prix payé HT ; Camion = achat d'origine, sinon revient
 create or replace function interne.l041_cout_piece(p_piece bigint, out cout numeric, out source text, out achat bigint)
