@@ -6114,6 +6114,13 @@ function dropApresLivre(cmdId) {
   var pr = dropPoser('conf:' + cmdId, 'drop_confirmer_livraison', { p_cmd_id: cmdId, p_pieces: liste }, cmdId);
   return Promise.resolve(pr).catch(function() { return 'reessayer'; });
 }
+// v7.5.206 (revue native P2 sur cfbf0fa) : issue SANS livraison (reporté, absent, annulé) d'une commande pas encore livrée :
+// les pièces déclarées sont libérées (achat payé → stock du camion). Une annulation APRÈS livraison passe par le recrédit. Pure.
+function dropIssueSansLivraison(nouveau, ancien) {
+  var n = String(nouveau || ''), a = String(ancien || '');
+  if (a === 'livré' || a === 'livre') return false;
+  return n === 'reporté' || n === 'reporte' || n === 'absent' || n === 'annulé' || n === 'annule';
+}
 function dropApresNonLivre(cmdId) {
   var ps = dropPiecesDe(cmdId);
   if (!ps.some(function(p) { return p.provenance && !p.livraison; })) return Promise.resolve('rien');
@@ -6601,17 +6608,83 @@ try {
   if (_scSaved) stockCamion = JSON.parse(_scSaved);
 } catch(e) { stockCamion = []; }
 
+// v7.5.206 (avis chatgpt-review sur cfbf0fa, point 1) : stock_camion.id est un UUID dans la vraie base (défaut
+// gen_random_uuid()). Jusqu'à la v7.5.205, ajouterStockCamion envoyait un identifiant texte « sc_… » : la base REFUSAIT
+// l'insertion (table vide en production), le stock du camion n'existait que sur le téléphone. Désormais : identifiant uuid v4
+// valide créé par l'appli (utilisable tout de suite, hors ligne compris), insertion vérifiée et relue (return=representation),
+// ligne non enregistrée gardée « à envoyer » et renvoyée au chargement suivant (même uuid : jamais de doublon) ; les anciennes
+// lignes locales « sc_… » (jamais enregistrées) ne sont jamais envoyées à la base.
+function scUuid() {
+  try { if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID(); } catch(e) {}
+  var o = [];
+  try { if (typeof crypto !== 'undefined' && crypto && crypto.getRandomValues) { var a = new Uint8Array(16); crypto.getRandomValues(a); o = Array.prototype.slice.call(a); } } catch(e) { o = []; }
+  if (o.length !== 16) { o = []; for (var i = 0; i < 16; i++) o.push(Math.floor(Math.random() * 256)); }
+  o[6] = (o[6] & 0x0f) | 0x40; o[8] = (o[8] & 0x3f) | 0x80;   // version 4, variante RFC 4122
+  var h = o.map(function(b) { return (b < 16 ? '0' : '') + b.toString(16); }).join('');
+  return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
+}
+function scEstUuid(id) { return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id || '')); }
+// ligne envoyée à la table stock_camion (colonnes RÉELLES uniquement ; livreur et produit_libelle NOT NULL). Pure.
+function scEntreeCamion(livreur, produitLib, qte, cmdId, tourneeId, parUser, id, quand) {
+  return {
+    id: id || scUuid(),
+    livreur: String(livreur || ''),
+    produit_libelle: String(produitLib || ''),
+    quantite: Math.max(1, parseInt(qte, 10) || 1),
+    source_cmd_id: cmdId || null,
+    source_tournee_id: tourneeId || null,
+    charge_at: quand || new Date().toISOString(),
+    charge_par: parUser || 'inconnu',
+    status: 'en_camion'
+  };
+}
+// corps de l'envoi : la ligne locale SANS ses marques locales (a_envoyer…). Pure.
+function scCorpsEnvoi(entry) {
+  return scEntreeCamion(entry.livreur, entry.produit_libelle, entry.quantite, entry.source_cmd_id, entry.source_tournee_id, entry.charge_par, entry.id, entry.charge_at);
+}
+// après la lecture de la base : lignes de la base + lignes locales pas encore enregistrées (uuid valide). Pure.
+function scFusionner(base, local) {
+  var res = (base || []).slice();
+  (local || []).forEach(function(s) {
+    if (s && s.a_envoyer && scEstUuid(s.id) && s.status === 'en_camion' && !res.some(function(b) { return b && b.id === s.id; })) res.push(s);
+  });
+  return res;
+}
+async function scEnvoyer(entry) {
+  if (!entry || !scEstUuid(entry.id)) return false;
+  if (typeof SUPABASE_URL === 'undefined' || !SUPABASE_URL) return false;
+  try {
+    var resp = await fetch(SUPABASE_URL + '/rest/v1/stock_camion?on_conflict=id', {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Content-Type': 'application/json', 'Prefer': 'return=representation,resolution=ignore-duplicates'
+      },
+      body: JSON.stringify(scCorpsEnvoi(entry))
+    });
+    if (!resp.ok) { console.warn('[stockCamion] enregistrement refusé HTTP', resp.status); return false; }
+    var rows = null; try { rows = await resp.json(); } catch(e) { rows = null; }
+    var lu = Array.isArray(rows) && rows[0] && rows[0].id ? rows[0].id : entry.id;   // déjà présente (renvoi) : même uuid
+    if (scEstUuid(lu)) entry.id = lu;
+    delete entry.a_envoyer;
+    return true;
+  } catch(e) { console.warn('[stockCamion] enregistrement :', e && e.message); return false; }
+}
+
 // Charger stock camion depuis Supabase
 async function sbLoadStockCamion() {
   try {
     if (typeof SUPABASE_URL === 'undefined' || !SUPABASE_URL) return;
+    // v7.5.206 : lignes locales pas encore enregistrées → renvoyées d'abord (même uuid)
+    var enAttente = stockCamion.filter(function(s) { return s && s.a_envoyer && scEstUuid(s.id); });
+    for (var i = 0; i < enAttente.length; i++) { await scEnvoyer(enAttente[i]); }
     var resp = await fetch(SUPABASE_URL + '/rest/v1/stock_camion?status=eq.en_camion&order=charge_at.desc', {
       headers: {'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY}
     });
     if (!resp.ok) { console.warn('sbLoadStockCamion HTTP', resp.status); return; }
     var data = await resp.json();
-    if (data) {
-      stockCamion = data;
+    if (Array.isArray(data)) {
+      stockCamion = scFusionner(data, stockCamion);
       try { localStorage.setItem('mx_stock_camion', JSON.stringify(stockCamion)); } catch(e) {}
     }
   } catch(e) { console.warn('sbLoadStockCamion:', e.message); }
@@ -6619,32 +6692,17 @@ async function sbLoadStockCamion() {
 
 // Ajouter un produit au stock camion (lors du chargement)
 async function ajouterStockCamion(livreur, produitLib, qte, cmdId, tourneeId, parUser) {
-  var entry = {
-    id: 'sc_' + Date.now() + '_' + Math.random().toString(36).slice(2,8),
-    livreur: livreur,
-    produit_libelle: produitLib,
-    quantite: qte || 1,
-    source_cmd_id: cmdId,
-    source_tournee_id: tourneeId,
-    charge_at: new Date().toISOString(),
-    charge_par: parUser || 'inconnu',
-    status: 'en_camion'
-  };
+  var entry = scEntreeCamion(livreur, produitLib, qte, cmdId, tourneeId, parUser);
+  entry.a_envoyer = true;   // retiré dès que la base a accepté la ligne
   stockCamion.push(entry);
   try { localStorage.setItem('mx_stock_camion', JSON.stringify(stockCamion)); } catch(e) {}
-  // Sauvegarde Supabase
+  // Sauvegarde Supabase (v7.5.206 : réponse vérifiée, identifiant relu)
   try {
     if (typeof SUPABASE_URL !== 'undefined' && SUPABASE_URL) {
-      await fetch(SUPABASE_URL + '/rest/v1/stock_camion', {
-        method: 'POST',
-        headers: {
-          'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
-          'Content-Type': 'application/json', 'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify(entry)
-      });
+      var okEnv = await scEnvoyer(entry);
+      try { localStorage.setItem('mx_stock_camion', JSON.stringify(stockCamion)); } catch(e) {}
       // Log mouvement
-      await logMouvementStock('chargement', produitLib, qte || 1, 'depot', 'camion_' + livreur, cmdId, tourneeId, livreur, parUser);
+      if (okEnv) await logMouvementStock('chargement', produitLib, qte || 1, 'depot', 'camion_' + livreur, cmdId, tourneeId, livreur, parUser);
     }
   } catch(e) { console.warn('[stockCamion] sb save fail:', e); }
   return entry.id;
@@ -6655,6 +6713,9 @@ async function retirerStockCamion(stockId, raison, parUser) {
   var idx = stockCamion.findIndex(function(s){ return s.id === stockId; });
   if (idx === -1) return false;
   var entry = stockCamion[idx];
+  // v7.5.206 : ancienne ligne « sc_… » = jamais dans la base (la table refuse ce type) ; une ligne « à envoyer » est tout de
+  // même mise à jour (sa création a pu passer sans que la réponse arrive : 0 ligne touchée sinon, sans effet)
+  var jamaisEnregistree = !scEstUuid(stockId);
   var newStatus = (raison === 'livre') ? 'livre' : 'retourne_depot';
   // Mettre à jour le statut localement (on garde l'historique)
   stockCamion[idx].status = newStatus;
@@ -6665,8 +6726,8 @@ async function retirerStockCamion(stockId, raison, parUser) {
   try { localStorage.setItem('mx_stock_camion', JSON.stringify(stockCamion)); } catch(e) {}
   // Sync Supabase
   try {
-    if (typeof SUPABASE_URL !== 'undefined' && SUPABASE_URL) {
-      await fetch(SUPABASE_URL + '/rest/v1/stock_camion?id=eq.' + stockId, {
+    if (!jamaisEnregistree && typeof SUPABASE_URL !== 'undefined' && SUPABASE_URL) {
+      var respR = await fetch(SUPABASE_URL + '/rest/v1/stock_camion?id=eq.' + encodeURIComponent(stockId), {
         method: 'PATCH',
         headers: {
           'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
@@ -6678,6 +6739,7 @@ async function retirerStockCamion(stockId, raison, parUser) {
           retour_par: parUser || 'inconnu'
         })
       });
+      if (!respR.ok) console.warn('[stockCamion] retrait refusé HTTP', respR.status);
       // Log mouvement
       var typeMvt = (raison === 'livre') ? 'livraison' : 'retour_depot';
       var dest = (raison === 'livre') ? 'livre_client' : 'depot';
@@ -12020,6 +12082,11 @@ function chgStatut(id, st, _annOk) {
   var _pSc = sbSaveCommande(c); // Sync Supabase
   if (st === 'livré') stkDemanderDeduction(c, _pSc); // v7.5.197 : après l'enregistrement du « livré »
   if (_recredit) stkReCrediterStock(id, { avant: _pSc }); // v7.5.198 : après l'enregistrement du nouveau statut
+  // v7.5.206 (revue native P2 sur cfbf0fa) : annulée / reportée AVANT sa livraison depuis la fiche commande : pièces déclarées
+  // libérées comme pour un arrêt reporté (administrateur ; la collaboratrice n'a pas ce droit, la base le fait à l'annulation)
+  if (role === 'admin' && typeof dropIssueSansLivraison === 'function' && dropIssueSansLivraison(st, ancienStatut) && typeof dropApresNonLivre === 'function') {
+    try { Promise.resolve(_pSc).catch(function() {}).then(function() { return dropApresNonLivre(id); }).catch(function() {}); } catch(e) {}
+  }
   closePanel(); ouvrirCmd(id);
   toast('Statut mis à jour : ' + st, 'ok');
 }
@@ -14769,7 +14836,9 @@ function setLvSt(tid, idx, st, _annOk) {
   // v7.5.199 (dropshipping) : « Livré » BLOQUÉ tant qu'une pièce n'a pas sa provenance, qu'un enlèvement n'est pas payé ou que les pièces
   // ne sont pas confirmées ; reporté / absent : les pièces achetées partent dans le stock du camion (base, rejouable)
   if (st === 'livré' && s && s.statut !== 'livré' && typeof dropBloqueLivre === 'function') { var _dropB = dropBloqueLivre(s.cmdId); if (_dropB) { toast('🔒 ' + _dropB, 'err'); return; } }
-  if ((st === 'reporté' || st === 'absent') && s && s.cmdId && typeof dropApresNonLivre === 'function') { try { dropApresNonLivre(s.cmdId); } catch(e) {} }
+  // v7.5.206 (revue native P2 sur cfbf0fa) : un arrêt ANNULÉ avant sa livraison est une issue sans livraison comme les autres
+  // (achat « Enlevé et payé » → stock du camion) — la base le fait aussi d'elle-même (déclencheur commandes_annulee_pieces)
+  if ((typeof dropIssueSansLivraison === 'function' ? dropIssueSansLivraison(st, s && s.statut) : (st === 'reporté' || st === 'absent')) && s && s.cmdId && typeof dropApresNonLivre === 'function') { try { dropApresNonLivre(s.cmdId); } catch(e) {} }
   // v7.1.6 : Plus de popup d'alerte chargement ici (remplacé par le SAS bloquant à l'ouverture)
   // Marquer l'horodatage du changement de statut (pour détection 1er client du jour)
   if (s) s.heureStatut = new Date().toISOString();

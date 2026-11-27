@@ -172,6 +172,12 @@ grant select, insert, update, delete on storage.objects to anon;
     let err = null; try { await db.exec(lireMigration(m)); } catch (e) { err = e.message; }
     test('migration en service ' + m + ' appliquée telle quelle', err === null, err);
   }
+  // v7.5.206 (avis chatgpt-review sur efe0409, point 1) : commandes EXISTANT AVANT la mise en ligne (créées il y a 10 jours) :
+  // #AV1 déjà livrée, #AV2 confiée à un livreur et pas encore livrée, #AV3 déjà livrée (sera annulée puis relivrée)
+  await db.query(`insert into public.commandes (id, client, lignes, prix, livreur, transporteur, statut, date_livraison, created_at) values
+    ('#AV1', 'Client fictif', '[]'::jsonb, 100, 'Livreur-A', 'RANOU', 'livré', to_char(current_date, 'YYYY-MM-DD'), now() - interval '10 days'),
+    ('#AV2', 'Client fictif', '[]'::jsonb, 100, 'Livreur-A', 'RANOU', 'en-route', to_char(current_date, 'YYYY-MM-DD'), now() - interval '10 days'),
+    ('#AV3', 'Client fictif', '[]'::jsonb, 100, 'Livreur-A', 'RANOU', 'livré', to_char(current_date, 'YYYY-MM-DD'), now() - interval '10 days')`);
   let arret = false;
   for (const m of ['038b_depenses_verrou_caisse_validee.sql', '039_arrivages_prix_revient.sql', '040_deduction_stock_serveur.sql', '041_dropshipping_provenance.sql']) {
     let err = null; try { await db.exec(lireMigration(m)); } catch (e) { err = e.message; }
@@ -299,6 +305,68 @@ grant select, insert, update, delete on storage.objects to anon;
   await cmd('#I6', [{ produitId: 'ps90', qte: 1 }], 144, { transporteur: 'GLS' });
   test('commande GLS jamais découpée : « livré » accepté, déduction de la 040', (await echec('livreur', "update public.commandes set statut = 'livré' where id = '#I6'")) === null
     && (await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#I6'])).ok === true);
+
+  console.log('\n9. v7.5.206 (avis sur efe0409, pt 1) : COMMANDES ANTÉRIEURES À LA MISE EN LIGNE');
+  const avant = (await q(P, 'select cmd_id from public.drop_livrees_avant_activation order by cmd_id')).map((x) => x.cmd_id);
+  test('relevé fait à la 1re application : les commandes DÉJÀ LIVRÉES (#AV1, #AV3), pas celle encore en route (#AV2)', JSON.stringify(avant) === '["#AV1","#AV3"]', avant);
+  test('#AV2 (créée avant la mise en ligne, pas encore livrée, confiée à un livreur) : « livré » REFUSÉ sans découpage (DECOUPAGE_REQUIS)',
+    /DECOUPAGE_REQUIS/.test(await echec('livreur', "update public.commandes set statut = 'livré' where id = '#AV2'") || ''));
+  r = await rpc('admin', 'public.drop_livre_sans_confirmation($1, $2)', ['#AV2', 'Ancienne commande vérifiée au bureau']);
+  test('… dérogation de l\'administrateur (journalisée) puis « livré » accepté', r.ok && r.cycle === 1 && (await echec('livreur', "update public.commandes set statut = 'livré' where id = '#AV2'")) === null, r);
+  await q('admin', "update public.commandes set statut = 'annulé' where id = '#AV3'");
+  test('#AV3 (déjà livrée à la mise en ligne) annulée puis relivrée : jamais bloquée', (await echec('livreur', "update public.commandes set statut = 'livré' where id = '#AV3'")) === null);
+
+  console.log('\n10. v7.5.206 (avis sur cfbf0fa, pt 1) : STOCK DU CAMION ENREGISTRÉ PAR L\'APPLI (code réel de maxiconfort-v7.html) DANS LA TABLE AUX TYPES RÉELS');
+  const html = fs.readFileSync(path.join(racine, 'maxiconfort-v7.html'), 'utf8').replace(/\r\n/g, '\n');
+  const iSc = html.indexOf('function scUuid()'), jSc = html.indexOf('// corps de l\'envoi', iSc);
+  const vm = require('vm'), bac = { crypto: require('crypto').webcrypto, Uint8Array, Math, Date, String, Array, parseInt };
+  vm.createContext(bac); vm.runInContext(html.slice(iSc, jSc), bac);
+  const ligneAppli = bac.scEntreeCamion('Livreur-A', 'Sommier fictif 90', 1, '#AVANT2', 'T-I1', 'Livreur-A');
+  let eIns = null, scApp = null;
+  try { scApp = await un('livreur', 'insert into public.stock_camion select * from json_populate_record(null::public.stock_camion, $1::json) returning id, status', [JSON.stringify(ligneAppli)]); } catch (e) { eIns = e.message; }
+  test('enregistrement : la ligne construite par l\'appli (uuid v4) est ACCEPTÉE par la table réelle (session du livreur, politique relevée)', eIns === null && scApp && scApp.id === ligneAppli.id && scApp.status === 'en_camion', eIns || scApp);
+  test('reprise : relue par l\'appli (status=eq.en_camion) avec le même uuid', (await q('livreur', "select id from public.stock_camion where status = 'en_camion' and id = $1", [ligneAppli.id])).length === 1);
+  let eDbl = null; try { await q('livreur', 'insert into public.stock_camion select * from json_populate_record(null::public.stock_camion, $1::json) on conflict (id) do nothing', [JSON.stringify(ligneAppli)]); } catch (e) { eDbl = e.message; }
+  test('renvoi de la même ligne (on_conflict=id, ignore-duplicates) : aucun doublon', eDbl === null && (await nb('public.stock_camion where id = $1', [ligneAppli.id])) === 1, eDbl);
+  await cmd('#I7', [{ produitId: 'ps90', qte: 1 }], 144);
+  const pI7 = (await rpc('livreur', 'public.drop_pieces($1)', ['#I7'])).pieces[0];
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pI7.id, 'camion', ligneAppli.id]);
+  test('« Déjà dans le camion » avec la ligne créée par l\'appli : acceptée par la base', r.ok && r.piece.stock_camion_id === ligneAppli.id, r);
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pI7.id, 'depot']);
+  test('retrait par l\'appli (PATCH id=eq.<uuid>) : statut « retourne_depot » écrit', (await echec('livreur', "update public.stock_camion set status = 'retourne_depot', retour_at = now(), retour_par = 'Livreur-A' where id = $1", [ligneAppli.id])) === null
+    && (await un(P, 'select status from public.stock_camion where id = $1', [ligneAppli.id])).status === 'retourne_depot');
+
+  console.log('\n11. v7.5.206 (revue native P2) : ANNULATION AVANT LIVRAISON (achat payé → camion) ; LIVRAISON CONFIRMÉE JAMAIS DÉDUITE PUIS ANNULÉE');
+  await cmd('#I8', [{ produitId: 'pm180', qte: 1 }], 480);
+  await q(P, "insert into public.tournees (id, livreur, date_tournee, statut, stops) values ('T-I2', 'Livreur-A', $1, 'en cours', $2::jsonb)", [AUJ, JSON.stringify([{ cmdId: '#I8', client: 'Client fictif' }, { cmdId: '#I9', client: 'Client fictif' }])]);   // tournée dont la caisse n'est pas validée
+  const pI8 = (await rpc('livreur', 'public.drop_pieces($1)', ['#I8'])).pieces[0];
+  await rpc('livreur', 'public.drop_declarer($1, $2, $3, null)', [pI8.id, 'fournisseur', F1]);
+  r = await rpc('livreur', 'public.drop_enlever_payer($1, $2, $3, $4)', [pI8.id, 192, 'cb', null]);
+  const aI8 = (await un(P, 'select achat_id from public.commande_pieces where id = $1', [pI8.id])).achat_id;
+  await q('livreur', "update public.commandes set statut = 'annulé' where id = '#I8'");
+  const scI8 = await un(P, 'select id, livreur, status from public.stock_camion where achat_id = $1', [aI8]);
+  test('arrêt annulé après « Enlevé et payé » : l\'achat payé passe au STOCK DU CAMION (uuid, livreur renseigné), pièce libérée', r.ok && scI8 && /^[0-9a-f-]{36}$/.test(scI8.id)
+    && scI8.livreur === 'Livreur-A' && scI8.status === 'en_camion' && (await un(P, 'select achat_id from public.commande_pieces where id = $1', [pI8.id])).achat_id === null, { r, scI8 });
+  await cmd('#I9', [{ produitId: 'pm180', qte: 1 }], 480);
+  const pI9 = (await rpc('livreur', 'public.drop_pieces($1)', ['#I9'])).pieces[0];
+  const dI9 = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [pI9.id, 'camion', scI8.id]);
+  const cI9 = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#I9', JSON.stringify([{ id: pI9.id, livree: true }])]);
+  if (!cI9 || !cI9.ok) console.log('  (diagnostic #I9)', JSON.stringify({ dI9, cI9 }));
+  await q('livreur', "update public.commandes set statut = 'livré' where id = '#I9'");
+  const uI9 = (await un(P, 'select stock_camion_id as u from public.commande_pieces where id = $1', [pI9.id])).u;
+  const avI9 = await un(P, 'select status from public.stock_camion where id = $1', [uI9]);
+  await q('admin', "update public.commandes set statut = 'annulé' where id = '#I9'");
+  r = await rpc('admin', 'public.recrediter_stock_livraison($1, false)', ['#I9']);
+  test('confirmée (unité du camion « livre ») mais JAMAIS déduite, puis annulée : pièces rouvertes, unité revenue « en_camion »', avI9.status === 'livre' && r.ok && r.pieces_rouvertes_sans_deduction === true
+    && (await un(P, 'select status from public.stock_camion where id = $1', [uI9])).status === 'en_camion'
+    && (await un(P, 'select cycle, livraison from public.commande_pieces where id = $1', [pI9.id])).livraison === null, { avI9, r });
+
+  console.log('\n12. REJEU FINAL DE LA 041 : le relevé des commandes livrées à l\'activation n\'est JAMAIS complété');
+  await db.exec('set role l41i_postgres');
+  let eFin = null; try { await db.exec(lireMigration('041_dropshipping_provenance.sql')); } catch (e) { eFin = e.message; }
+  await db.exec('reset role');
+  const apres = (await q(P, 'select cmd_id from public.drop_livrees_avant_activation order by cmd_id')).map((x) => x.cmd_id);
+  test('041 rejouée en fin de parcours (commandes livrées depuis : #I2, #I6, #AV2…) : relevé inchangé (#AV1, #AV3)', eFin === null && JSON.stringify(apres) === '["#AV1","#AV3"]', eFin || apres);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

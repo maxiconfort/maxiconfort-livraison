@@ -278,7 +278,7 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
   const setLv = extraireFonction('function setLvSt(tid, idx, st, _annOk)');
   const sig = extraireFonction('function validerSig()');
   test('setLvSt : « Livré » bloqué par dropBloqueLivre AVANT la fenêtre de signature', setLv.indexOf('dropBloqueLivre(s.cmdId)') > -1 && setLv.indexOf('dropBloqueLivre') < setLv.indexOf("if(st==='livré'){"));
-  test('setLvSt : reporté / absent → dropApresNonLivre', /\(st === 'reporté' \|\| st === 'absent'\)[^\n]*dropApresNonLivre\(s\.cmdId\)/.test(setLv));
+  test('setLvSt : reporté / absent (et annulé, v7.5.206) → dropApresNonLivre', /dropIssueSansLivraison\(st, s && s\.statut\)[^\n]*dropApresNonLivre\(s\.cmdId\)/.test(setLv));
   test('validerSig (v7.5.202) : pièces revérifiées ; pièces à confirmer : confirmation → « livré » (seulement si elle a réussi) → déduction (seulement si permise) ; rien à confirmer : « livré » immédiat comme avant',
     sig.indexOf('dropBloqueLivre(s.cmdId)') > -1 && sig.indexOf('dropApresLivre(_cmdLivre.id)') < sig.indexOf('stkDeductionPoser(_cmdLivre)')
     && /Promise\.resolve\(_aConf \? _pDrop : 'rien'\)[\s\S]{0,200}if \(!_dropOk\(\)\) return null;\s*if \(_aConf\) \{ try \{ _pLivre = sbSaveCommande\(_cmdLivre\)/.test(sig)
@@ -410,6 +410,98 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     test('fiche : livraison partielle signalée, vente RECONNUE (487,50 sur 600) et marge sur les seules pièces livrées', /Livraison partielle : 2\/3 pièces livrées — vente reconnue 487,50 € HT sur 600 € HT/.test(f) && /marge 282,50 € HT/.test(f), f);
     const b = bac.dropBilanHtml({ ventes_ht: 2187.5, ventes_non_reconnues_ht: 112.5, livraisons_partielles: 1, cout_produits_ht: 765, gls_ht: 0, resultat_ht: 1422.5, commandes: 5, detail: [] });
     test('bilan : ventes non reconnues des livraisons partielles affichées', /1 livraison\(s\) partielle\(s\) : 112,50 € HT non reconnus/.test(b));
+  }
+
+  {
+    // v7.5.206 (revue native P2 sur cfbf0fa) : annulation d'un arrêt / d'une commande pas encore livrée = issue sans livraison
+    const { bac } = nouveauBac();
+    test('issue sans livraison : reporté, absent ET annulé (pas encore livrée) ; jamais après « livré » (recrédit) ni pour « livré »',
+      bac.dropIssueSansLivraison('annulé', 'en-route') && bac.dropIssueSansLivraison('reporté', 'arrivé') && bac.dropIssueSansLivraison('absent', 'en-attente')
+      && !bac.dropIssueSansLivraison('annulé', 'livré') && !bac.dropIssueSansLivraison('livré', 'en-route') && !bac.dropIssueSansLivraison('en-route', 'en-attente'));
+    const setLv = extraireFonction('function setLvSt(tid, idx, st, _annOk)');
+    test('setLvSt : un arrêt ANNULÉ (après la fenêtre du motif) appelle dropApresNonLivre comme reporté / absent', /dropIssueSansLivraison\(st, s && s\.statut\)[^\n]*dropApresNonLivre\(s\.cmdId\)/.test(setLv)
+      && setLv.indexOf('dropIssueSansLivraison') > setLv.indexOf('annDemanderMotif'));
+    const chg = extraireFonction('function chgStatut(id, st, _annOk)');
+    test('chgStatut (fiche commande, administrateur) : annulée / reportée avant livraison → dropApresNonLivre après l\'enregistrement du statut',
+      /role === 'admin'[^\n]*dropIssueSansLivraison\(st, ancienStatut\)/.test(chg) && /Promise\.resolve\(_pSc\)[^\n]*dropApresNonLivre\(id\)/.test(chg));
+  }
+
+  {
+    // v7.5.206 (avis chatgpt-review sur cfbf0fa, point 1) : stock du camion — identifiant UUID (la vraie table refuse « sc_… »)
+    const CODE_SC = extraireBloc('// v7.5.206 (avis chatgpt-review sur cfbf0fa, point 1)', '// Enregistrer un mouvement dans la table audit');
+    const UUID4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    const entetes = [];
+    const bacSc = (reponse, avecCrypto) => {
+      const { bac } = nouveauBac({ role: 'admin', reponse: (url, opt, env) => { entetes.push(opt.headers || {}); return reponse(url, opt, env); } });
+      bac.stockCamion = []; bac.logMouvementStock = async () => { bac._mvts = (bac._mvts || 0) + 1; };
+      bac.crypto = avecCrypto === false ? undefined : require('crypto').webcrypto; bac.Uint8Array = Uint8Array;
+      vm.runInContext(CODE_SC, bac);
+      return bac;
+    };
+    let b = bacSc(() => ({ status: 200, json: [] }));
+    const ids = [b.scUuid(), b.scUuid()];
+    const bSans = bacSc(() => ({ status: 200, json: [] }), false);
+    test('scUuid : uuid v4 valide (crypto.randomUUID), différent à chaque appel ; repli sans crypto valide aussi', UUID4.test(ids[0]) && ids[0] !== ids[1] && UUID4.test(bSans.scUuid()), ids);
+    test('scEstUuid : refuse l\'ancien identifiant « sc_… »', b.scEstUuid(ids[0]) && !b.scEstUuid('sc_1700000000_abcdef') && !b.scEstUuid(''));
+    entetes.length = 0;
+    b = bacSc((url, opt, env) => (/stock_camion/.test(url) && env.method === 'POST') ? { status: 201, json: [Object.assign({ created_at: 'x' }, env.body)] } : { status: 201, json: [] });
+    const id1 = await b.ajouterStockCamion('LIVREUR-TEST', 'Sommier fictif 90', 2, '#S1', 'T-S', 'admin');
+    const post = b._envois.find((x) => /stock_camion/.test(x.url) && x.method === 'POST');
+    test('enregistrement : identifiant uuid v4, colonnes réelles seulement (aucune marque locale envoyée), livreur et libellé renseignés', post && UUID4.test(post.body.id) && post.body.id === id1
+      && !('a_envoyer' in post.body) && post.body.livreur === 'LIVREUR-TEST' && post.body.produit_libelle === 'Sommier fictif 90' && post.body.quantite === 2 && post.body.status === 'en_camion', post);
+    test('… ligne RELUE (Prefer return=representation), marquée enregistrée, mouvement journalisé une fois', /return=representation/.test(entetes[0] && entetes[0].Prefer || '')
+      && b.stockCamion.length === 1 && !b.stockCamion[0].a_envoyer && b._mvts === 1, entetes[0]);
+    // échec : ligne gardée « à envoyer », renvoyée au chargement suivant avec le MÊME uuid, puis reprise depuis la base
+    let refus = true; const base = [];
+    b = bacSc((url, opt, env) => {
+      if (/stock_camion/.test(url) && env.method === 'POST') { if (refus) return { status: 503, json: { message: 'indisponible' } }; base.push(env.body); return { status: 201, json: [env.body] }; }
+      if (/stock_camion\?status=eq\.en_camion/.test(url)) return { status: 200, json: base.slice() };
+      return { status: 204 };
+    });
+    const id2 = await b.ajouterStockCamion('LIVREUR-TEST', 'Matelas fictif 140', 1, '#S2', null, 'admin');
+    test('base indisponible : ligne gardée « à envoyer » sur l\'appareil, aucun mouvement journalisé', b.stockCamion.length === 1 && b.stockCamion[0].a_envoyer === true && !b._mvts);
+    refus = false;
+    await b.sbLoadStockCamion();
+    const posts = b._envois.filter((x) => /stock_camion/.test(x.url) && x.method === 'POST');
+    test('reprise : renvoyée avec le MÊME uuid (on_conflict=id, ignore-duplicates : jamais de doublon), puis lue depuis la base', posts.length === 2 && posts[1].body.id === id2
+      && /on_conflict=id/.test(posts[1].url) && b.stockCamion.length === 1 && b.stockCamion[0].id === id2 && !b.stockCamion[0].a_envoyer, posts.map((p) => p.body && p.body.id));
+    refus = true;
+    b.stockCamion.push(b.scEntreeCamion('LIVREUR-TEST', 'Oreiller fictif', 1, '#S3', null, 'admin')); b.stockCamion[1].a_envoyer = true;
+    await b.sbLoadStockCamion();
+    test('lecture alors que l\'envoi échoue encore : la ligne « à envoyer » reste sur l\'appareil (fusion avec la base)', b.stockCamion.length === 2 && b.stockCamion.some((s) => s.source_cmd_id === '#S3' && s.a_envoyer));
+    b._envois.length = 0;
+    await b.retirerStockCamion(id2, 'livre', 'admin');
+    const patch = b._envois.find((x) => x.method === 'PATCH');
+    test('retrait : PATCH sur l\'uuid (id=eq.<uuid>), statut « livre »', patch && patch.url.indexOf('stock_camion?id=eq.' + id2) > 0 && patch.body.status === 'livre', patch);
+    b.stockCamion.push({ id: 'sc_1700000000_abcdef', livreur: 'LIVREUR-TEST', produit_libelle: 'Ancienne ligne', quantite: 1, status: 'en_camion' });
+    b._envois.length = 0;
+    const rLeg = await b.retirerStockCamion('sc_1700000000_abcdef', 'retour_depot', 'admin');
+    test('ancienne ligne locale « sc_… » (jamais dans la base) : retirée de l\'appareil, AUCUN appel à la base', rLeg === true && b._envois.length === 0 && !b.stockCamion.some((s) => s.id === 'sc_1700000000_abcdef'));
+    test('ancienne ligne « sc_… » jamais renvoyée à la base au chargement', b.scFusionner([], [{ id: 'sc_1', a_envoyer: true, status: 'en_camion' }]).length === 0);
+    test('plus aucun identifiant « sc_ » fabriqué dans l\'appli', !/'sc_' \+ Date\.now\(\)/.test(html));
+  }
+
+  {
+    // v7.5.206 (avis chatgpt-review sur efe0409, point 2) : COHÉRENCE DES VERSIONS — CACHE_VERSION du service worker, version
+    // annoncée en tête du service worker (1re ligne « // v7.5.X - ») et version documentée dans CLAUDE.md (ligne « Version de
+    // l'appli à mettre en ligne », titre de la section Dropshipping, ordre de mise en ligne) doivent être la MÊME.
+    const sw = fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8');
+    const doc = fs.readFileSync(path.join(racine, 'CLAUDE.md'), 'utf8');
+    const mCache = sw.match(/const CACHE_VERSION = 'maxiconfort-v(\d+)-(\d+)-(\d+)';/);
+    const vCache = mCache ? mCache.slice(1).join('.') : null;
+    const mEnTete = sw.match(/^\/\/ v(\d+\.\d+\.\d+) - /m);
+    const vEnTete = mEnTete ? mEnTete[1] : null;
+    const mDoc = doc.match(/Version de l'appli à mettre en ligne : v(\d+\.\d+\.\d+) \(CACHE_VERSION `maxiconfort-v(\d+)-(\d+)-(\d+)`\)/);
+    const vDoc = mDoc ? mDoc[1] : null, vDocCache = mDoc ? mDoc.slice(2).join('.') : null;
+    const mTitre = doc.match(/## Dropshipping et provenance \(v\d+\.\d+\.\d+ → v(\d+\.\d+\.\d+)/);
+    const mOrdre = doc.match(/ORDRE DE MISE EN LIGNE \(obligatoire\)\*\* : [^\n]*PUIS l'appli \*\*v(\d+\.\d+\.\d+)\*\*/);
+    const toutes = { cache: vCache, enTete: vEnTete, doc: vDoc, docCache: vDocCache, titre: mTitre && mTitre[1], ordre: mOrdre && mOrdre[1] };
+    test('cohérence des versions : CACHE_VERSION = en-tête du service worker = CLAUDE.md (ligne de version, son CACHE_VERSION, titre Dropshipping, ordre de mise en ligne)',
+      !!vCache && Object.values(toutes).every((v) => v === vCache), toutes);
+    test('la version annoncée en tête du service worker est la plus récente de son historique', (() => {
+      const vs = [...sw.matchAll(/^\/\/ v(\d+)\.(\d+)\.(\d+)[a-z]? - /gm)].map((m) => [+m[1], +m[2], +m[3]]);
+      return vs.length > 0 && vs.every((v) => (v[0] * 1e6 + v[1] * 1e3 + v[2]) <= (vs[0][0] * 1e6 + vs[0][1] * 1e3 + vs[0][2]));
+    })());
   }
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
