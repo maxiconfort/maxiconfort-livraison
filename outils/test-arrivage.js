@@ -1364,9 +1364,41 @@ function nouveauBac(opts) {
       const st6 = new Map(), H = nouveauBac({ stockage: st6 });
       H.bac.arrGarderTentative(arrivage('en_attente'), tC); H.bac.arrOublierTentative(7, tA);
       test('effacement ciblé : seule la tentative indiquée est retirée (une plus récente reste gardée)', !!lire(st6)['7'] && lire(st6)['7'].tentative === tC, lire(st6));
+      // R7 (revue chatgpt-review sur 2a4db2f) : la base VALIDE, puis une erreur INATTENDUE survient APRÈS l'envoi (avant la lecture de
+      // l'issue). Avant : « Réception NON validée » et bouton libéré, sans état « à vérifier » en mémoire. Maintenant : INDÉTERMINÉ.
+      const st7 = new Map();
+      const I = bacPerdu(() => ({ ok: true, status: 200, corps: { ok: true, total_recu: 70 } }), { statut: 'recu', historique: HIST, mouvements: MVT }, { stockage: st7 });
+      const issueOrig = I.bac.arrIssueValidation;
+      I.bac.arrIssueValidation = () => { throw new Error('panne après envoi'); };
+      await I.bac.arrValider();
+      const tI = I.appels.find(a => a.url.includes('/rpc/valider_reception_arrivage')).body.p_tentative, vI = I.bac.arrAVerifierDe(7);
+      test('erreur inattendue APRÈS l\'envoi : JAMAIS « NON validée », message « INDÉTERMINÉ … touchez « Vérifier dans la base » »',
+        I.nbRpc() === 1 && !I.toasts.some(t => /NON validée/.test(t.m)) && I.toasts.some(t => /INDÉTERMINÉ : erreur inattendue après l'envoi de la réception \(panne après envoi\)/.test(t.m)), I.toasts);
+      test('… arrivage « à vérifier » EN MÉMOIRE avec la MÊME tentative, tentative toujours gardée sur l\'appareil',
+        !!vI && vI.tentative === tI && I.bac.ARR_UUID.test(tI) && !!lire(st7)['7'] && lire(st7)['7'].tentative === tI, { vI, st: lire(st7) });
+      test('… verrou levé mais Valider BLOQUÉ (« vérifiez dans la base ») et « Vérifier dans la base » visible',
+        I.bac.ARR_ETAT.envoi === false && I.elts['arr-btn-valider'].disabled === true && /vérifiez dans la base/.test(I.elts['arr-btn-valider'].textContent) && I.elts['arr-btn-verifier'].style.display === '', I.elts['arr-btn-valider']);
+      await I.bac.arrValider();
+      test('… nouveau clic sur Valider : refusé, AUCUN second envoi', I.nbRpc() === 1 && I.toasts.some(t => /vérifiez d'abord dans la base/.test(t.m)));
+      I.bac.arrIssueValidation = issueOrig; await I.bac.arrVerifierClic();
+      const relI = I.appels.filter(a => a.url.includes('/rpc/statut_reception_arrivage'));
+      test('… « Vérifier dans la base » relit avec la MÊME tentative -> « Réception validée (vérifié dans la base) », plus rien à vérifier ni gardé',
+        relI.length === 1 && relI[0].body.p_tentative === tI && I.toasts.some(t => t.t === 'ok' && /Réception validée \(vérifié dans la base/.test(t.m)) && !I.bac.arrAVerifierDe(7) && !lire(st7)['7'] && I.nbRpc() === 1, I.toasts);
+      // R8. erreur inattendue APRÈS une réponse DÉFINITIVE « validée » : on ne dit jamais « NON validée », rien « à vérifier »
+      const J = bacPerdu(() => ({ ok: true, status: 200, corps: { ok: true, total_recu: 70 } }), { statut: 'recu', historique: HIST, mouvements: MVT }, { stockage: new Map() });
+      J.bac.arrCharger = async () => { throw new Error('panne au rechargement'); };
+      await J.bac.arrValider();
+      test('erreur inattendue après une réponse « validée » : « validée par la base … actualisez », jamais « NON validée », rien à vérifier',
+        J.toasts.some(t => /Réception validée par la base, mais erreur inattendue ensuite \(panne au rechargement\)/.test(t.m)) && !J.toasts.some(t => /NON validée/.test(t.m)) && !J.bac.arrAVerifierDe(7) && J.bac.ARR_ETAT.envoi === false, J.toasts);
+      // R9. erreur inattendue AVANT l'envoi : « NON validée … rien n'a été envoyé », rien à vérifier
+      const K = bacPerdu(() => ({ ok: true, status: 200, corps: { ok: true, total_recu: 70 } }), { statut: 'en_attente' }, { stockage: new Map() });
+      K.bac.arrNouvelleTentative = () => { throw new Error('panne avant envoi'); };
+      await K.bac.arrValider();
+      test('erreur inattendue AVANT l\'envoi : « NON validée … rien n\'a été envoyé », aucun envoi, rien à vérifier',
+        K.nbRpc() === 0 && K.toasts.some(t => /NON validée : erreur inattendue \(panne avant envoi\) — rien n'a été envoyé/.test(t.m)) && !K.bac.arrAVerifierDe(7), K.toasts);
     }
     // code : plus de « pas de connexion » transformé en « Réception NON validée »
-    const env = extraireFonction('async function arrValiderEnvoi(a, ls, saisies, vue)');
+    const env = extraireFonction('async function arrValiderEnvoi(a, ls, saisies, vue, suivi)');
     test('code : une coupure après l\'envoi n\'est plus traduite en « NON validée » (plus de j = { ok: false, erreur: \'pas de connexion\' })', !/j = \{ ok: false, erreur: 'pas de connexion' \}/.test(env) && /arrIssueValidation\(sansReponse, http, j\)/.test(env) && /if \(issue === 'indeterminee'\) \{ await arrVerifierReception\(a, tentative\); return; \}/.test(env));
   }
 
