@@ -13,7 +13,12 @@
 // Cahier des charges : maxiconfort-brain/conception/JARVIS-LIVRAISON-AUTORISATION-TOTALE.md
 // ════════════════════════════════════════════════════════════════════
 
+import { idsNonVendables, lireCatalogueComplet, nomNormalise } from './produits-vendables.ts';
+
 export const VERSION = 'v2';
+// v2.18 (25/11/2026, arrivage de matelas) : produit NON VENDABLE (prix de vente à définir, migration 039 : colonnes vendable /
+//   prix_vente_defini, ou ensemble dont un composant l'est) — jamais rapproché d'un nom dicté, refusé dans une nouvelle commande.
+//   LECTURE seulement (catalogueDepuisBase) ; la base refuse aussi ces lignes (déclencheur commandes_produit_vendable_garde).
 // v2.12 (11/11/2026, vidéo 21:21 « tous ceux qui sont absents aujourd'hui, tu les mets pour demain ») : déplacer une commande au
 //   statut « absent » (posé par le livreur sur l'arrêt de sa tournée) vers une AUTRE date la passe à « reporté » — sinon elle gardait
 //   « absent » dans la liste des commandes alors qu'elle est replanifiée, et serait relue le lendemain comme une absente du jour.
@@ -438,8 +443,30 @@ export function prochainNumero(ids: string[]): string {
   return '#' + (max + 1);
 }
 
-export type CatalogueProduit = { id: string; nom: string; prix: number; actif?: boolean; ancienne_offre?: boolean };
+export type CatalogueProduit = { id: string; nom: string; prix: number; actif?: boolean; ancienne_offre?: boolean; non_vendable?: boolean; ref?: string };
 export type Catalogue = Map<string, CatalogueProduit>;
+/** v2.18 — catalogue lu dans la table produits (select *). Avant la migration 039 les colonnes vendable / prix_vente_defini n'existent pas :
+ *  tout reste vendable. Un ensemble dont un composant est non vendable l'est aussi (un niveau, comme l'appli). Pure. */
+export function catalogueDepuisBase(rows: Record<string, any>[]): Catalogue {
+  const nonVendables = idsNonVendables(rows); // règle commune (_shared/produits-vendables.ts), ensembles compris
+  const m: Catalogue = new Map();
+  for (const r of rows || []) {
+    const nv = nonVendables.has(String(r.id));
+    m.set(String(r.id), { id: String(r.id), nom: String(r.nom || ''), prix: Number(r.prix) || 0, actif: r.actif !== false, ancienne_offre: !!r.ancienne_offre, ...(nv ? { non_vendable: true } : {}), ...(r.reference_interne ? { ref: String(r.reference_interne) } : {}) });
+  }
+  return m;
+}
+/** v2.19 (26/11/2026, revue Codex PR 26 sur 66def07) — catalogue COMPLET de JARVIS : produits lus PAR PAGES (jamais une seule requête
+ *  plafonnée par la base), composants manquants lus par identifiants (lireCatalogueComplet, règle commune avec whatsapp-receive), puis
+ *  catalogueDepuisBase. Sans cela, un composant non vendable situé au-delà de la 1re page laissait son ensemble « vendable ». Toute erreur
+ *  de lecture LÈVE une exception (jamais un catalogue partiel). Lecteurs injectés : testable sans base. */
+export async function catalogueJarvis(
+  lirePage: (debut: number, fin: number) => Promise<Record<string, any>[]>,
+  lireParIds: (ids: string[]) => Promise<Record<string, any>[]>,
+  taillePage = 1000,
+): Promise<Catalogue> {
+  return catalogueDepuisBase(await lireCatalogueComplet(lirePage, lireParIds, taillePage));
+}
 /** Lignes de commande prêtes à enregistrer : prix du catalogue quand le produit est connu (par identifiant ou nom exact), 0 sinon (à régler par
  *  modifier_prix). Une ancienne offre est refusée (règle du 09/10). Renvoie { lignes, erreur }. */
 /** v2.8 (10/11/2026, « go produit catalogue ») — mots d'un nom de produit : sans accent ni casse ; dimensions « 140 x 190 », « 140×190 »,
@@ -466,7 +493,7 @@ export function produitProche(dit: string, catalogue: Catalogue, sansEpaisseur =
   const present = (m: string, n: Set<string>) => n.has(m) || (/^\d{2,3}$/.test(m) && Number(m) >= 80 && [...n].some((x) => x.startsWith(m + 'x')));
   const cands: { p: CatalogueProduit; mots: string[]; surplus: number }[] = [];
   for (const p of catalogue.values()) {
-    if (p.actif === false || p.ancienne_offre) continue;
+    if (p.actif === false || p.ancienne_offre || p.non_vendable) continue; // v2.18 : non vendable jamais proposé
     const mots = motsProduit(p.nom); const n = new Set(mots);
     // relecture (majeur) : un « lit » peut aussi être un pack lit ou un ensemble lit → ils entrent dans la liste au lieu d'un choix
     const f2 = familleDe(mots); if (fam && f2 !== fam && !(fam === 'lit' && (f2 === 'pack' || f2 === 'ensemble') && n.has('lit'))) continue;
@@ -490,6 +517,17 @@ export function lignesCommande(lignes: Ligne[], catalogue: Catalogue): { lignes:
     const nom = texte(l.produit, 120);
     let p = l.produitId ? catalogue.get(String(l.produitId)) : undefined;
     if (!p) for (const x of catalogue.values()) if (x.nom.toLowerCase() === nom.toLowerCase()) { p = x; break; }
+    // v2.19 (revue Codex PR 26 sur 66def07) : nom d'un produit NON VENDABLE à la casse, aux accents ou aux espaces près = ce produit
+    // (refusé ci-dessous), jamais une ligne « hors catalogue » à son nom (la base la refuserait aussi : interne.l039_lignes_identifiees).
+    // v2.20 (revue Codex sur 4ec0313) : identifiant d'un produit + nom d'un AUTRE produit, NON VENDABLE → ligne contradictoire refusée.
+    // v2.21 (revue Codex PR 26 sur 17f631a) : une seule concordance ne suffit plus — même si l'identifiant et le nom désignent un produit
+    // VENDABLE, la ligne est rapportée au produit NON VENDABLE que son texte désigne par son NOM ou sa RÉFÉRENCE interne (le texte dicté
+    // est la seule donnée de la ligne ; même règle que interne.l039_ligne_identifiee et venProduitDeLigne) ; le produit de l'identifiant
+    // n'est gardé que s'il est lui-même non vendable et désigné (déjà refusé), ou si aucun produit non vendable n'est désigné.
+    const designe = (x: CatalogueProduit) => !!nomNormalise(nom) && (nomNormalise(x.nom) === nomNormalise(nom) || (!!x.ref && nomNormalise(x.ref) === nomNormalise(nom)));
+    if (!(p && p.non_vendable && designe(p))) {
+      for (const x of catalogue.values()) if (x.non_vendable && designe(x)) { p = x; break; }
+    }
     let rapproche = false;
     if (!p) { // v2.8 : nom pas exact → produit le plus proche, ou question si plusieurs le sont autant
       const r = produitProche(nom, catalogue);
@@ -498,12 +536,54 @@ export function lignesCommande(lignes: Ligne[], catalogue: Catalogue): { lignes:
     }
     if (p && p.ancienne_offre) return { lignes: [], erreur: `« ${p.nom} » est une ancienne offre : plus vendue` };
     if (p && p.actif === false) return { lignes: [], erreur: `« ${p.nom} » n'est plus au catalogue` };
+    if (p && p.non_vendable) return { lignes: [], erreur: `« ${p.nom} » n'est pas encore vendable (prix de vente à définir)` }; // v2.18
     const pu = p ? Number(p.prix) || 0 : (typeof l.prixUnit === 'number' && l.prixUnit >= 0 ? l.prixUnit : 0);
     const q = Number(l.qte) || 1;
     out.push({ produitId: p ? p.id : null, produit: p ? p.nom : nom, qte: q, prixUnit: pu, prixBrut: pu * q, remiseLigne: 0, remiseVal: 0, remiseType: 'pct', sousTotal: pu * q });
     if (rapproche && p) rapproches.push({ dit: nom, produit: p.nom }); // dit dans l'aperçu, jamais enregistré dans la commande
   }
   return { lignes: out, erreur: null, ...(rapproches.length ? { rapproches } : {}) };
+}
+
+/** v2.22 (revue Codex PR 26 sur cf58971) — commande SANS LIGNES (SAV : lignes NULL ; lignes vides ou d'un autre format) : son PRODUIT
+ *  PRINCIPAL (colonne produit) est contrôlé comme une ligne. Nom ou référence interne d'un produit NON VENDABLE (normalisés, même règle
+ *  que interne.l039_lignes_effectives + l039_designe et venLignesEffectives) → ce produit (refusé) ; sinon null. Lignes présentes
+ *  (tableau non vide) : null, elles sont contrôlées ligne par ligne (lignesCommande, base). Pure. */
+export function produitPrincipalNonVendable(lignes: unknown, produit: unknown, catalogue: Catalogue): CatalogueProduit | null {
+  if (Array.isArray(lignes) && lignes.length) return null;
+  const n = nomNormalise(produit); if (!n) return null;
+  for (const x of catalogue.values()) if (x.non_vendable && (nomNormalise(x.nom) === n || (!!x.ref && nomNormalise(x.ref) === n))) return x;
+  return null;
+}
+
+/** v2.23 (revue Codex PR 26 sur 40f0bd6) — produit NON VENDABLE contenu dans une commande : ligne dont le produitId désigne un produit
+ *  non vendable, ou dont le nom (« produit », « nom ») ou la référence (« reference », « sku », « _ugs », ou le nom) désigne un produit
+ *  non vendable (normalisés, même règle que interne.l039_lignes_identifiees et venProduitDeLigne) ; commande sans lignes : son produit
+ *  principal (produitPrincipalNonVendable). Le premier trouvé, sinon null. Pure. */
+export function produitNonVendableDeCommande(lignes: unknown, produit: unknown, catalogue: Catalogue): CatalogueProduit | null {
+  if (!(Array.isArray(lignes) && lignes.length)) return produitPrincipalNonVendable(lignes, produit, catalogue);
+  for (const l of lignes as Record<string, unknown>[]) {
+    if (!l || typeof l !== 'object') continue;
+    const parId = catalogue.get(String(l.produitId ?? ''));
+    if (parId && parId.non_vendable) return parId;
+    const noms = [l.produit, l.nom].map(nomNormalise).filter(Boolean);
+    const refs = [l.reference, l.sku, l._ugs, l.produit].map(nomNormalise).filter(Boolean);
+    for (const x of catalogue.values()) {
+      if (!x.non_vendable) continue;
+      const n = nomNormalise(x.nom), r = x.ref ? nomNormalise(x.ref) : '';
+      if ((n && noms.includes(n)) || (r && refs.includes(r))) return x;
+    }
+  }
+  return null;
+}
+/** v2.23 (revue Codex PR 26 sur 40f0bd6) — la remise GLOBALE change-t-elle ? Mêmes règles que interne.l039_remise_signature : valeur et
+ *  montant au centime (absents = 0), type absent ou vide = 'pct'. Un champ absent de la modification garde sa valeur actuelle. Pure. */
+export function remiseGlobaleModifiee(c: Record<string, unknown>, apres: Record<string, unknown>): boolean {
+  const cent = (v: unknown) => { const n = Number(v); return v === null || v === undefined || v === '' || !isFinite(n) ? 0 : Math.round(Math.abs(n) * 100 + 1e-7) / 100 * Math.sign(n); };
+  const type = (v: unknown) => String(v ?? '').trim() || 'pct';
+  const de = (o: Record<string, unknown>, k: string) => (k in apres ? apres[k] : o[k]);
+  return cent(de(c, 'remise_globale_val')) !== cent(c.remise_globale_val) || type(de(c, 'remise_globale_type')) !== type(c.remise_globale_type)
+    || cent(de(c, 'remise_globale')) !== cent(c.remise_globale);
 }
 
 /** Nouvelle commande (mêmes colonnes que sbSaveCommande de l'appli). Paiement à la livraison par défaut : Espèces / Non payé. */

@@ -31,9 +31,10 @@
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { VERSION, alerteCorrectionStock, apercuCommande, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
-  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, variantesTel, resumeCredits, lignesCommande, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_COMPTES, STATUTS_COMPTES_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
+import { VERSION, alerteCorrectionStock, apercuCommande, catalogueJarvis, avantLitige, champsAnnulation, champsLitige, champsModification, champsPlanification, champsPrix, construireCommande, construireSav,
+  controlerCommande, controlerDemande, critereClient, origineCanonique, egal, initiales, rechercheApprochee, entreeStock, estimerStock, ficheCommande, lienFacture, coordonneesDepuis, nomConcorde, resumeSuivi, resumeSms, variantesTel, resumeCredits, lignesCommande, produitPrincipalNonVendable, produitNonVendableDeCommande, remiseGlobaleModifiee, mouvementCamion, niveauDe, prochainNumero, telMasque, STATUTS_COMPTES, STATUTS_COMPTES_OUVERTS, STATUTS_TERMINES, type Catalogue, type Demande } from '../_shared/jarvis-action-logique.ts';
 import { lireCompteSmsOVH } from '../_shared/ovh-sms.ts';
+import { nomNormalise } from '../_shared/produits-vendables.ts';
 import { envoyerAvecReservation, echecCertain, phraseIndetermine } from '../_shared/sms-prevenir.ts';
 import { actionFactureSms, FOURNISSEUR_USAGE } from '../_shared/jarvis-facture-sms.ts';
 
@@ -73,11 +74,18 @@ function resumeGls(j: any) {
   return { colis: Array.isArray(unites) ? unites.length : null, poids: Array.isArray(unites) ? unites.map((u: any) => Number(u?.Weight ?? u?.weight) || null) : null,
     suivis: Array.isArray(j?.parcels) ? j.parcels.map((x: any) => x?.trackId || x?.parcelNumber).filter(Boolean) : j?.trackId ? [j.trackId] : [] };
 }
-async function catalogue(): Promise<Catalogue> {
-  const { data } = await sb.from('produits').select('id, nom, prix, actif, ancienne_offre');
-  const m: Catalogue = new Map(); for (const p of data || []) m.set(String(p.id), { id: String(p.id), nom: String(p.nom || ''), prix: Number(p.prix) || 0, actif: p.actif !== false, ancienne_offre: !!p.ancienne_offre });
-  return m;
+async function catalogue(): Promise<Catalogue | null> {
+  // v2.18 : select * (lecture seule) pour lire vendable / prix_vente_defini / composants, présents seulement après la migration 039
+  // v2.19 (revue Codex PR 26 sur 66def07) : plus de lecture unique plafonnée — catalogue COMPLET par pages (ordre stable par id) +
+  // composants manquants par identifiants (catalogueJarvis / lireCatalogueComplet). Lecture impossible = null (502), jamais partiel.
+  try {
+    return await catalogueJarvis(
+      async (debut, fin) => { const { data, error } = await sb.from('produits').select('*').order('id').range(debut, fin); if (error) throw error; return (data as any[]) || []; },
+      async (ids) => { const { data, error } = await sb.from('produits').select('*').in('id', ids); if (error) throw error; return (data as any[]) || []; },
+    );
+  } catch (e) { console.error('catalogue : lecture impossible', e); return null; }
 }
+const catalogueIllisible = () => rep(502, { ok: false, erreur: 'catalogue illisible pour l’instant (rien n’a été fait)' });
 const ecritureRefusee = (e: unknown) => rep(502, { ok: false, erreur: 'écriture refusée par la base' + (e && (e as any).code ? ' (' + (e as any).code + ')' : '') });
 
 Deno.serve(async (req: Request) => {
@@ -219,7 +227,7 @@ Deno.serve(async (req: Request) => {
         par_statut, ouvertes, total: toutes, ...(montant !== null ? { montant_hors_annulees: montant, montant_partiel } : {}) });
     }
     if (d.action === 'lire_stock') {
-      const cat = await catalogue(); const voulu = d.produit ? String(d.produit).toLowerCase() : '';
+      const cat = await catalogue(); if (!cat) return catalogueIllisible(); const voulu = d.produit ? String(d.produit).toLowerCase() : '';
       const produits = [...cat.values()].filter((p) => p.actif && !p.ancienne_offre && (!voulu || p.id.toLowerCase() === voulu || p.nom.toLowerCase().includes(voulu)));
       if (!produits.length) return rep(404, { ok: false, erreur: 'produit inconnu au catalogue' });
       const { data: cpt } = await sb.from('stock_comptage').select('id, fin').eq('statut', 'valide').order('fin', { ascending: false }).limit(1).maybeSingle();
@@ -261,6 +269,12 @@ Deno.serve(async (req: Request) => {
     }
     if (d.action === 'modifier_commande') {
       const m = champsModification(d, c!);
+      // v2.22 (revue Codex PR 26 sur cf58971) : commande sans lignes dont le produit principal CHANGE vers un produit non vendable
+      if (m.apres.produit !== undefined && nomNormalise(m.apres.produit) !== nomNormalise(c!.produit)) {
+        const catM = await catalogue(); if (!catM) return catalogueIllisible();
+        const nvM = produitPrincipalNonVendable(m.apres.lignes !== undefined ? m.apres.lignes : c!.lignes, m.apres.produit, catM);
+        if (nvM) return rep(422, { ok: false, erreur: `« ${nvM.nom} » n'est pas encore vendable (prix de vente à définir)` });
+      }
       const visible = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'updated_at').map(([k, v]) => [k, k === 'tel' ? telMasque(String(v)) : k === 'adresse' ? String(v).replace(/^.*?(\b\d{5}\b)/, '… $1') : k === 'client' ? '(nom)' : v]));
       if (!confirme) return rep(200, { ...base, avant: visible(m.avant), apres: visible(m.apres), avertissements: m.avertissements });
       const { error } = await sb.from('commandes').update(m.apres).eq('id', d.cmdId); if (error) return ecritureRefusee(error);
@@ -268,6 +282,13 @@ Deno.serve(async (req: Request) => {
     }
     if (d.action === 'modifier_prix') {
       const p = champsPrix(d, c!); const avant = Number(c!.prix) || 0;
+      // v2.23 (revue Codex PR 26 sur 40f0bd6) : modifier_prix efface la remise globale ; elle est FIGÉE si la commande contient un produit
+      // non vendable (la base refuse aussi : commandes_produit_vendable_garde) → refus clair, avant tout aperçu
+      if (remiseGlobaleModifiee(c!, p)) {
+        const catP = await catalogue(); if (!catP) return catalogueIllisible();
+        const nvP = produitNonVendableDeCommande(c!.lignes, c!.produit, catP);
+        if (nvP) return rep(422, { ok: false, erreur: `« ${nvP.nom} » n'est pas encore vendable (prix de vente à définir) : la remise globale de cette commande est figée, modifier_prix l'effacerait (passer par l'appli, administrateur)` });
+      }
       if (!confirme) return rep(200, { ...base, avant, apres: d.prix, motif: d.motif });
       const { error } = await sb.from('commandes').update(p).eq('id', d.cmdId); if (error) return ecritureRefusee(error);
       const { data: v } = await sb.from('commandes').select('prix').eq('id', d.cmdId).maybeSingle();
@@ -315,7 +336,11 @@ Deno.serve(async (req: Request) => {
     if (d.action === 'envoyer_facture_sms') return actionFactureSms(c!, confirme, base, { interne, rep, cle: SECRET_JARVIS, consommer: consommerUsageFacture }, d.autorisation);
     if (d.action === 'sav') {
       const sav = construireSav(d, c!);
-      const visible = { id: sav.id, produit: sav.produit, origine: sav.origine, date_livraison: sav.date_livraison, instr: sav.instr };
+      // v2.22 (revue Codex PR 26 sur cf58971) : SAV sans lignes = produit à livrer contrôlé comme une ligne (la base le refuse aussi)
+      const catS = await catalogue(); if (!catS) return catalogueIllisible();
+      const nvS = produitPrincipalNonVendable(sav.lignes, sav.produit, catS);
+      if (nvS) return rep(422, { ok: false, erreur: `« ${nvS.nom} » n'est pas encore vendable (prix de vente à définir)` });
+      const visible ={ id: sav.id, produit: sav.produit, origine: sav.origine, date_livraison: sav.date_livraison, instr: sav.instr };
       if (!confirme) return rep(200, { ...base, sav: visible });
       const { data: existe } = await sb.from('commandes').select('id').eq('id', sav.id).maybeSingle();
       if (existe) return rep(409, { ok: false, erreur: 'numéro de SAV déjà pris : recommence dans une seconde' });
@@ -336,7 +361,7 @@ Deno.serve(async (req: Request) => {
         reprise = { statut_source: String((src as any).statut || ''), ...(d.nom_annonce ? { nom_concorde: nomConcorde(String(d.nom_annonce), co.champs.client) } : {}) }; // relecture : dit, jamais le nom
         Object.assign(d, co.champs);
       }
-      const cat = await catalogue(); const l = lignesCommande(d.lignes!, cat); if (l.erreur) return rep(422, { ok: false, erreur: l.erreur });
+      const cat = await catalogue(); if (!cat) return catalogueIllisible(); const l = lignesCommande(d.lignes!, cat); if (l.erreur) return rep(422, { ok: false, erreur: l.erreur });
       const { data: ids } = await sb.from('commandes').select('id').like('id', '#%').order('created_at', { ascending: false }).limit(300);
       let id = prochainNumero((ids || []).map((x: any) => String(x.id)));
       const cmd = construireCommande(d, id, l.lignes);

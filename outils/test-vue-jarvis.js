@@ -2,7 +2,7 @@
 // Extrait le vrai bloc JVUE de maxiconfort-v7.html et l'exécute dans un bac à sable (aucune connexion, aucune donnée réelle).
 const fs = require('fs'), path = require('path'), vm = require('vm');
 const racine = path.join(__dirname, '..');
-const html = fs.readFileSync(path.join(racine, 'maxiconfort-v7.html'), 'utf8');
+const html = fs.readFileSync(path.join(racine, 'maxiconfort-v7.html'), 'utf8').replace(/\r\n/g, '\n'); // copie de travail Windows (fins de ligne CRLF)
 let ok = 0, ko = 0;
 const test = (nom, cond, det) => { if (cond) { ok++; console.log('  OK    ' + nom); } else { ko++; console.log('  ÉCHEC ' + nom + (det ? ' — ' + JSON.stringify(det).slice(0, 200) : '')); } };
 const i = html.indexOf('// JVUE-DEBUT'), j = html.indexOf('// JVUE-FIN');
@@ -90,6 +90,44 @@ test('aucune écriture dans le bloc', !/sbSave|rpcPin|fetch\(|sessionEcrire|loca
 }
 test('v7.5.128 : enregistrer l’ordre — une fois par tournée en 2 min, seulement sur l’ordre déjà calculé de CETTE tournée', /Date\.now\(\) - deja < 120000/.test(html) && /optimTourneeId === lo\[0\]\.id && typeof optimStops/.test(html) && /optimCalculeFini === lo\[0\]\.id/.test(html) && /optimCalculeFini = optimTourneeId;/.test(html) && /async function optimCharger\(\) \{\n  optimCalculeFini = null;/.test(html) && !/optimLancer\(\)/.test(html.slice(html.indexOf('// JVUE-DEBUT'), html.indexOf('// JVUE-FIN'))));
 test('v7.5.128 : plus aucun caractère invisible « retour arrière » dans l’appli (code postal de l’optimiseur)', !/\x08/.test(html) && /a\.match\(\/\\b\(75\|77/.test(html));
+{ // v7.5.137 (menus allégés) : Santé société n'est plus dans le menu, mais reste joignable par l'ancre pour l'administrateur
+  console.log('\n2 ter. PAGES RANGÉES DANS « PLUS » OU HORS MENU (v7.5.137)');
+  const k = html.indexOf('const ROLES = {'), fin = html.indexOf('\nfunction buildUI', k);
+  const br = { commandes: [] }; vm.createContext(br); vm.runInContext(html.slice(k, fin).replace('const ROLES', 'var ROLES'), br);
+  b.ROLES = br.ROLES;
+  test('page:sante : admin → Santé ouverte (hors menu)', JSON.stringify(lancer('#jarvis=page:sante', 'admin', [{ id: '#1' }])) === JSON.stringify(['fermer', 'goTo:sante']));
+  test('page:sante : collab → rien (pas son menu)', JSON.stringify(lancer('#jarvis=page:sante', 'collab', [{ id: '#1' }])) === JSON.stringify(['fermer']));
+  test('page:gps : collab → rien (réservée à l’admin)', JSON.stringify(lancer('#jarvis=page:gps', 'collab', [{ id: '#1' }])) === JSON.stringify(['fermer']));
+  const pagesDe = (r) => (br.ROLES[r].nav || []).concat(br.ROLES[r].plus || []).filter((n) => n.p).map((n) => n.p).concat(br.ROLES[r].cachees || []);
+  test('toutes les pages acceptées par l’ancre restent joignables par l’admin', b.JVUE_PAGES.every((x) => pagesDe('admin').includes(x)), b.JVUE_PAGES.filter((x) => !pagesDe('admin').includes(x)));
+  test('collab : ses pages d’avant toujours dans son menu ou « Plus »', ['dashboard', 'commandes', 'tournees', 'suivi', 'notifs', 'optim', 'stock'].every((x) => pagesDe('collab').includes(x)));
+  test('les entrées de « Plus » sont de vrais .ni[data-p] (trouvés par l’ancre même repliés)', /function navItemHtml\(n\) \{[\s\S]*?'<div class="ni" data-p="' \+ n\.p/.test(html));
+  // rubrique dans « Plus » : le sélecteur trouve l'entrée → ouverte comme avant
+  const avant = b.document.querySelector; b.document.querySelector = (q) => (q === '.ni[data-p="suivi"]' ? { id: 'nav-suivi' } : null);
+  test('page:suivi (rangée dans « Plus ») : ouverte', JSON.stringify(lancer('#jarvis=page:suivi', 'admin', [{ id: '#1' }])) === JSON.stringify(['fermer', 'goTo:suivi']));
+  b.document.querySelector = avant; delete b.ROLES;
+}
+{ // v7.5.139 (revue Codex de 8705c41) : page:zones ouvre l'ONGLET Zones de la page Encaissements (vrais navVers + showFinTab)
+  console.log('\n2 quater. ANCRE page:zones → ONGLET ZONES DES ENCAISSEMENTS (v7.5.139)');
+  const fn = (e) => { const k = html.indexOf(e); return html.slice(k, html.indexOf('\n}\n', k) + 2); };
+  const k = html.indexOf('const ROLES = {'), fin = html.indexOf('\nfunction buildUI', k);
+  const br = { commandes: [] }; vm.createContext(br); vm.runInContext(html.slice(k, fin).replace('const ROLES', 'var ROLES'), br);
+  b.ROLES = br.ROLES;
+  const els = {}, el = (id) => (els[id] = els[id] || { id, style: { display: 'x' }, textContent: '', classList: { actifs: {}, toggle(c, v) { this.actifs[c] = !!v; } } });
+  const avantQ = b.document.querySelector, avantG = b.document.getElementById; let zonesDessinees = 0, rent = 0;
+  b.renderZoneStats = () => { zonesDessinees++; }; b.renderRentabiliteTournees = () => { rent++; };
+  vm.runInContext(fn('function navVers(p, el) {') + fn('function showFinTab(tab, el) {'), b);
+  test('page:zones acceptée par l’ancre', JSON.stringify(L('#jarvis=page:zones')) === JSON.stringify({ vue: 'page', page: 'zones' }));
+  b.document.getElementById = el; b.document.querySelector = (q) => (q === '.ni[data-p="zones"]' ? { id: 'nav-zones' } : null);
+  const a1 = lancer('#jarvis=page:zones', 'admin', [{ id: '#1' }]);
+  test('admin : page Encaissements ouverte (jamais goTo(\'zones\'), qui n’existe pas)', JSON.stringify(a1) === JSON.stringify(['fermer', 'goTo:finance']), a1);
+  test('admin : onglet Zones affiché, Encaissements et Rentabilité masqués', els['fin-section-zones'].style.display === '' && els['fin-section-enc'].style.display === 'none' && els['fin-section-rent'].style.display === 'none', Object.keys(els).map((x) => [x, els[x].style.display]));
+  test('admin : bouton d’onglet Zones actif, zones dessinées, titre « Zones »', els['fin-tab-zones'].classList.actifs.active === true && els['fin-tab-enc'].classList.actifs.active === false && zonesDessinees === 1 && rent === 0 && els['page-title'].textContent === 'Zones');
+  b.document.querySelector = () => null; zonesDessinees = 0; Object.keys(els).forEach((x) => delete els[x]);
+  const a2 = lancer('#jarvis=page:zones', 'collab', [{ id: '#1' }]);
+  test('collab (pas d’entrée Zones) : rien n’est ouvert', JSON.stringify(a2) === JSON.stringify(['fermer']) && zonesDessinees === 0 && !els['fin-section-zones'], a2);
+  b.document.querySelector = avantQ; b.document.getElementById = avantG; delete b.ROLES;
+}
 console.log('\n3. MISE EN LIGNE');
-test('CACHE_VERSION augmentée (v7-5-128)', /CACHE_VERSION = 'maxiconfort-v7-5-128'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
+test('CACHE_VERSION augmentée (v7-5-128 ou plus)', /CACHE_VERSION = 'maxiconfort-v7-5-(1(2[89]|[3-9]\d)|[2-9]\d\d)'/.test(fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8')));
 console.log('\n' + ok + ' OK, ' + ko + ' échec(s)'); process.exit(ko ? 1 : 0);

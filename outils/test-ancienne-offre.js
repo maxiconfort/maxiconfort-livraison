@@ -1,7 +1,7 @@
 // Banc de test « ANCIENNE OFFRE — NE PLUS UTILISER » (v7.5.118, 09/10/2026).
 // Usage : node outils/test-ancienne-offre.js
 // Il EXTRAIT le vrai code de maxiconfort-v7.html (bloc AO-DEBUT … AO-FIN, buildProduitOptions, recalcTotal, getLignesData,
-// stkTrouverProduit, sbLoadProduits, sbSaveProduit) et l'exécute dans un bac à sable : aucune connexion à la base, aucune donnée
+// sbLoadProduits, sbSaveProduit) et l'exécute dans un bac à sable : aucune connexion à la base, aucune donnée
 // réelle. `fetch` est remplacé par un faux qui capture les envois ou rend un faux catalogue.
 const fs = require('fs'), path = require('path'), vm = require('vm');
 const html = fs.readFileSync(path.join(__dirname, '..', 'maxiconfort-v7.html'), 'utf8');
@@ -33,10 +33,15 @@ function nouveauBac(lignes) { const envois = [], memoire = {}, champs = { 'f-rem
     document: { getElementById: id => champs[id] || null, querySelectorAll: s => s === '#lignes-produits > div' ? (lignes || []) : [], querySelector: () => null },
     localStorage: { setItem(k, v) { memoire[k] = v; }, getItem(k) { return memoire[k] || null; } },
     fetch: async (url, opt) => { envois.push({ url, methode: (opt && opt.method) || 'GET', body: opt && opt.body ? JSON.parse(opt.body) : null }); return { ok: true, text: async () => '', json: async () => bac._reponse || [] }; },
-    stkRender() { bac._rendus++; }, sbSaveEchec() { bac._echecs++; }, _rendus: 0, _echecs: 0, _reponse: null };
+    stkRender() { bac._rendus++; }, sbSaveEchec() { bac._echecs++; }, oqSucces() {}, // v7.5.196 / v7.5.197 : file hors sujet ici
+    stkProduit(id) { return (bac.produits || []).find(p => p.id === id) || null; }, oqStockAncienSignaler() {}, // v7.5.198
+    _rendus: 0, _echecs: 0, _reponse: null };
   vm.createContext(bac);
   vm.runInContext(extraireBloc('// AO-DEBUT', '// AO-FIN'), bac);
-  for (const f of ['function buildProduitOptions()', 'function recalcTotal()', 'function getLignesData()', 'function stkTrouverProduit(produitId, nomProduit)', 'async function sbLoadProduits()', 'async function sbSaveProduit(p)']) vm.runInContext(extraireFonction(f), bac);
+  vm.runInContext(extraireBloc('// ARR-DEBUT', '// ARR-FIN'), bac); // v7.5.136 : buildProduitOptions écarte aussi les produits non vendables
+  // v7.5.192 : sbSaveProduit s'appuie sur les fonctions de refus et de fiches refusées définies juste avant elle
+  vm.runInContext(extraireFonction('function oqRoleCourant()') + '\n' + extraireBloc('// v7.5.191 : refus de la base sur un produit', 'async function sbSaveProduit(p'), bac);
+  for (const f of ['function buildProduitOptions()', 'function recalcTotal()', 'function getLignesData()', 'async function sbLoadProduits()', 'async function sbSaveProduit(p']) vm.runInContext(extraireFonction(f), bac);
   return { bac, envois, memoire, champs }; }
 let ok = 0, ko = 0; const test = (nom, cond, det) => { if (cond) { ok++; console.log('  OK   ' + nom); } else { ko++; console.log('  ÉCHEC ' + nom + (det !== undefined ? ' — ' + JSON.stringify(det) : '')); } };
 
@@ -68,6 +73,83 @@ let ok = 0, ko = 0; const test = (nom, cond, det) => { if (cond) { ok++; console
   test('produit hors catalogue (commande du site) : comportement inchangé', l[0].produitId === '_custom_Produit du site' && l[0].produit === 'Produit du site' && l[0].prixUnit === 193.23 && l[0].qte === 2, l[0]);
   B = nouveauBac([ligne(null, 1)]); test('ligne sans produit choisi : ignorée, comme avant', B.bac.getLignesData().length === 0);
 
+  console.log('\n3 bis. COMMANDE IMPORTÉE (3 × 19,90) DONT LE PRODUIT EST DEVENU NON VENDABLE : SIMPLE CHANGEMENT D\'ADRESSE (v7.5.152, P2 Codex PR 26)');
+  {
+    // ligne telle que tiktok-sync l'enregistre (prixBrut et sousTotal arrondis au centime), valeurs FICTIVES
+    const NV = { id: 'pr-taie-nv', nom: 'Taie Fictive NV', cat: 'Linge', prix: 19.9, vendable: false, stock: 0, seuil: 2 };
+    const origine = { produitId: '', produit: 'Taie Fictive NV', sku: 'SKU-FICTIF-1', qte: 3, prixUnit: 19.9, prixBrut: 59.7, remiseLigne: 0, remiseVal: 0, remiseType: 'pct', sousTotal: 59.7 };
+    // ligne du formulaire MODIFIABLE (mêmes sélecteurs que le vrai formulaire), remplie comme à l'ouverture de la commande
+    const divModifiable = () => { const opt = option(NV.id, 'Taie Fictive NV — 19.9 € · NON VENDABLE (prix à définir)', { ancienne: '1', prixUnit: '19.9', customNom: 'Taie Fictive NV' });
+      const champs = { '.ligne-produit': { value: NV.id, selectedOptions: [opt] }, '.ligne-qte': { value: '3' }, '.ligne-remise': { value: '0' }, '.ligne-remise-type': { value: 'pct' }, '.ligne-sous-total': { textContent: '', style: {} } };
+      return { _c: champs, querySelector: s => champs[s] || null }; };
+    let d = divModifiable(); B = nouveauBac([d]); bac = B.bac; bac.produits.push(NV); bac.venMemoriserLigne(d, origine);
+    l = bac.getLignesData();
+    test('adresse ou date seule modifiée : la ligne figée part TELLE QUELLE (valeurs d\'origine, champs importés compris)', l.length === 1 && JSON.stringify(l[0]) === JSON.stringify(origine), l);
+    test('…et l\'appli ne la refuse pas', bac.venLignesRefusees(l, bac.produits, { lignes: [origine] }).length === 0);
+    test('la copie gardée est indépendante (modifier la ligne envoyée ne change pas l\'origine)', (() => { l[0].qte = 99; return bac.getLignesData()[0].qte === 3; })());
+    d = divModifiable(); B = nouveauBac([d]); bac = B.bac; bac.produits.push(NV); l = bac.getLignesData();
+    test('ligne recalculée (non mémorisée) : 3 * 19.9 = 59.699999999999996 acceptée quand même (comparaison au centime)', l.length === 1 && l[0].prixBrut !== 59.7 && bac.venLignesRefusees(l, bac.produits, { lignes: [origine] }).length === 0, l[0]);
+    d = divModifiable(); B = nouveauBac([d]); bac = B.bac; bac.produits.push(NV); bac.venMemoriserLigne(d, origine); d._c['.ligne-qte'].value = '4'; l = bac.getLignesData();
+    test('quantité changée (3 → 4) : la ligne est recalculée et refusée (produit non vendable)', l.length === 1 && l[0].qte === 4 && JSON.stringify(bac.venLignesRefusees(l, bac.produits, { lignes: [origine] })) === JSON.stringify(['Taie Fictive NV']), l[0]);
+    d = divModifiable(); B = nouveauBac([d]); bac = B.bac; bac.produits.push(NV); bac.venMemoriserLigne(d, origine); d._c['.ligne-remise'].value = '5'; l = bac.getLignesData();
+    test('remise changée : la ligne est recalculée (plus la ligne d\'origine) et refusée', l[0].remiseVal === 5 && bac.venLignesRefusees(l, bac.produits, { lignes: [origine] }).length === 1, l[0]);
+    const dOk = { querySelector: s => s === '.ligne-produit' ? { value: 'pr-mat', selectedOptions: [option('pr-mat', 'Matelas 140×190×20 — 189 €')] } : s === '.ligne-qte' ? { value: '1' } : s === '.ligne-remise' ? { value: '0' } : s === '.ligne-remise-type' ? { value: 'pct' } : null };
+    B = nouveauBac([dOk]); bac = B.bac; bac.venMemoriserLigne(dOk, { produitId: 'pr-mat', produit: 'Matelas 140×190×20', qte: 1, prixUnit: 150, sousTotal: 150 }); l = bac.getLignesData();
+    test('ligne d\'un produit VENDABLE (non figée) : prix du catalogue, comme avant (la mémorisation ne vaut que pour une ligne figée)', l[0].prixUnit === 189, l[0]);
+  }
+
+  console.log('\n3 ter. ANCIENNE COMMANDE SANS LIGNES ROUVERTE : LIGNE D\'ORIGINE RECONSTRUITE (v7.5.158, revue Codex PR 26 sur 7e5c4cf)');
+  {
+    // valeurs FICTIVES
+    const NV = { id: 'pr-taie-nv', nom: 'Taie Fictive NV', cat: 'Linge', prix: 19.9, vendable: false, stock: 0, seuil: 2 };
+    const cmdNV = { id: 'CMD-FICTIVE-1', produit: 'Taie Fictive NV', qte: 3, prix: 59.7, prixBrut: 59.7, lignes: null, remiseGlobaleVal: 0, remiseGlobaleType: 'pct' };
+    const cmdMat = { id: 'CMD-FICTIVE-2', produit: 'Matelas 140×190×20', qte: 1, prix: 199, fraisPort: 10, lignes: [], remiseGlobaleVal: 0, remiseGlobaleType: 'pct' };
+    // ligne du formulaire remplie comme openCmd le fait (option figée ajoutée, quantité saisie)
+    const divPrincipale = (b, c) => { const op = b.venOptionPrincipale(c, b.produits); const opt = option(op.value, op.texte, Object.assign({}, op.dataset));
+      const ch = { '.ligne-produit': { value: op.value, selectedOptions: [opt] }, '.ligne-qte': { value: String(op.qte) }, '.ligne-remise': { value: '0' }, '.ligne-remise-type': { value: 'pct' }, '.ligne-sous-total': { textContent: '', style: {} } };
+      const d = { _c: ch, _op: op, querySelector: s => ch[s] || null }; b.venMemoriserPrincipal(d, c); return d; };
+    const principal = c => ({ produit: c.produit, qte: c.qte, prix: c.prix });
+    B = nouveauBac([]); bac = B.bac; bac.produits.push(NV);
+    let op = bac.venOptionPrincipale(cmdNV, bac.produits);
+    test('produit principal devenu non vendable : option FIGÉE au même produit (même identifiant), 19,9 € l\'unité, mention non vendable',
+      op.value === NV.id && op.dataset.ancienne === '1' && op.dataset.principal === '1' && op.dataset.prixUnit === '19.9' && op.dataset.customNom === 'Taie Fictive NV' && op.qte === 3 && op.texte.includes('NON VENDABLE'), op);
+    op = bac.venOptionPrincipale({ produit: 'Matelas ancien modèle fictif', qte: 2, prix: 300 }, bac.produits);
+    test('libellé dont seul le PREMIER MOT ressemble à un produit (« Matelas … ») : AUCUN autre produit choisi (« _custom_ » + libellé)', op.value === '_custom_Matelas ancien modèle fictif' && op.dataset.prixUnit === '150', op);
+    op = bac.venOptionPrincipale(cmdMat, bac.produits);
+    test('nom exact d\'un produit vendable : ce produit-là, prix unitaire hors port (199 − 10 = 189)', op.value === 'pr-mat' && op.dataset.prixUnit === '189' && !op.texte.includes('NON VENDABLE'), op);
+    test('commande sans libellé : rien à reconstruire', bac.venOptionPrincipale({ produit: '  ' }, bac.produits) === null && bac.venOptionPrincipale(null, bac.produits) === null);
+
+    let d = divPrincipale(bac, cmdNV); B = nouveauBac([d]); bac = B.bac; bac.produits.push(NV); d = divPrincipale(bac, cmdNV); B.bac.document.querySelectorAll = () => [d];
+    l = bac.getLignesData();
+    test('changement d\'adresse seul : le formulaire a bien une ligne (plus de refus « Ajoutez au moins un produit »), au produit commandé', l.length === 1 && l[0].produitId === NV.id && l[0].produit === 'Taie Fictive NV' && l[0].qte === 3, l);
+    test('…la commande est gardée telle quelle (venPrincipalAGarder)', bac.venPrincipalAGarder(cmdNV, [d], '0', 'pct') === true);
+    let garde = bac.venGarderPrincipal({ produit: 'autre', lignes: l, qte: 9, prix: 1, prixBrut: 1 }, cmdNV);
+    test('…produit, quantité, prix et lignes d\'origine conservés (produit inchangé)', garde.produit === 'Taie Fictive NV' && garde.lignes === null && garde.qte === 3 && garde.prix === 59.7 && garde.prixBrut === 59.7, garde);
+    test('…et le contrôle non vendable (même règle que la base) l\'accepte', bac.venLignesRefusees(cmdNV.lignes, bac.produits, cmdNV, principal(cmdNV)).length === 0);
+    test('commande à lignes []: lignes [] gardées', bac.venGarderPrincipal({}, cmdMat).lignes.length === 0 && Array.isArray(bac.venGarderPrincipal({}, cmdMat).lignes));
+    d = divPrincipale(bac, cmdNV); d._c['.ligne-qte'].value = '4';
+    test('quantité changée (3 → 4) : la commande n\'est plus gardée telle quelle', bac.venPrincipalAGarder(cmdNV, [d], '0', 'pct') === false);
+    B = nouveauBac([d]); B.bac.produits.push(NV); l = B.bac.getLignesData();
+    test('…la ligne recalculée est REFUSÉE (produit non vendable modifié)', l.length === 1 && JSON.stringify(B.bac.venLignesRefusees(l, B.bac.produits, cmdNV)) === JSON.stringify(['Taie Fictive NV']), l);
+    d = divPrincipale(bac, cmdNV); d._c['.ligne-remise'].value = '5';
+    test('remise de ligne changée : plus gardée telle quelle', bac.venPrincipalAGarder(cmdNV, [d], '0', 'pct') === false);
+    d = divPrincipale(bac, cmdNV);
+    test('remise globale changée : plus gardée telle quelle', bac.venPrincipalAGarder(cmdNV, [d], '10', 'pct') === false && bac.venPrincipalAGarder(cmdNV, [d], '0', 'eur') === false);
+    const dAutre = ligne(option('pr-lit', 'Lit — 249 €'), 1);
+    test('autre ligne ajoutée : plus gardée telle quelle', bac.venPrincipalAGarder(cmdNV, [d, dAutre], '0', 'pct') === false);
+    test('commande AVEC lignes : jamais concernée', bac.venPrincipalAGarder(Object.assign({}, cmdNV, { lignes: [{ produitId: NV.id }] }), [d], '0', 'pct') === false);
+    // changement de produit VERS un non vendable : la ligne d'origine (vendable) remplacée par le produit non vendable
+    B = nouveauBac([]); bac = B.bac; bac.produits.push(NV); d = divPrincipale(bac, cmdMat);
+    const optNV = option(NV.id, 'Taie Fictive NV — 19.9 €'); d._c['.ligne-produit'].value = NV.id; d._c['.ligne-produit'].selectedOptions = [optNV];
+    test('produit changé (matelas → produit non vendable) : plus gardée telle quelle', bac.venPrincipalAGarder(cmdMat, [d], '0', 'pct') === false);
+    B = nouveauBac([d]); B.bac.produits.push(NV); l = B.bac.getLignesData();
+    test('…et REFUSÉE (produit non vendable ajouté)', l.length === 1 && l[0].produitId === NV.id && JSON.stringify(B.bac.venLignesRefusees(l, B.bac.produits, cmdMat)) === JSON.stringify(['Taie Fictive NV']), l);
+    d = divPrincipale(bac, cmdMat); d._c['.ligne-produit'].selectedOptions = [option('pr-mat', 'Matelas 140×190×20 — 189 €')];
+    test('même produit re-choisi dans la liste (option normale, prix catalogue) : ligne recalculée, plus gardée telle quelle', bac.venPrincipalAGarder(cmdMat, [d], '0', 'pct') === false);
+    d = divPrincipale(bac, cmdMat);
+    test('produit vendable inchangé (simple changement d\'adresse) : gardé tel quel, accepté', bac.venPrincipalAGarder(cmdMat, [d], '0', 'pct') === true && bac.venLignesRefusees(cmdMat.lignes, bac.produits, cmdMat, principal(cmdMat)).length === 0);
+  }
+
   console.log('\n4. HISTORIQUE ET STOCK : MENTION VISIBLE, DÉDUCTION INTACTE');
   ({ bac } = nouveauBac());
   test('libellé exact « ANCIENNE OFFRE — NE PLUS UTILISER »', bac.AO_LIBELLE === 'ANCIENNE OFFRE — NE PLUS UTILISER' && bac.aoBadge().includes('ANCIENNE OFFRE — NE PLUS UTILISER'));
@@ -76,7 +158,7 @@ let ok = 0, ko = 0; const test = (nom, cond, det) => { if (cond) { ok++; console
   test('commande ancienne sans lignes, au nom exact de l\'ancien pack : repérée', bac.aoCommande({ produit: nomAncien }, bac.produits) === true);
   test('commande d\'un autre produit : non repérée', bac.aoCommande({ lignes: [{ produitId: PACK15 }, { produitId: '_custom_x', produit: 'Lit Coffre 140x190 Blanc' }] }, bac.produits) === false);
   test('commande vide ou absente : non repérée, sans erreur', bac.aoCommande(null, bac.produits) === false && bac.aoCommande({}, bac.produits) === false);
-  const trouve = bac.stkTrouverProduit(ANCIEN, nomAncien);
+  const trouve = bac.produits.find(p => p.id === ANCIEN); // v7.5.198 : la base retrouve le produit par son identifiant (040)
   test('stock : l\'ancien pack est toujours retrouvé par son identifiant', !!trouve && trouve.id === ANCIEN, trouve && trouve.id);
   test('stock : ses composants (lit + matelas) sont toujours dans le catalogue', !!trouve && trouve.composants.length === 2 && trouve.composants.every(c => bac.produits.some(p => p.id === c.id)));
 

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { actionFactureSms } from '../functions/_shared/jarvis-facture-sms.ts';
 import { controlerDemande, controlerCommande, apercuCommande, construireSav, champsLitige, avantLitige, egal, jourParis,
-  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, resumeSuivi, resumeSms, variantesTel, resumeCredits, SEUIL_CREDITS_SMS_BAS, factureSms, MARQUE_LIEN_FACTURE, segmentsSms, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
+  VERSION, NIVEAUX, ACTIONS, niveauDe, ficheCommande, telMasque, transporteurPour, prochainNumero, lignesCommande, catalogueDepuisBase, catalogueJarvis, construireCommande, champsModification, champsPlanification, champsAnnulation, champsPrix, entreeStock, mouvementCamion, alerteCorrectionStock, estimerStock, lienFacture, coordonneesDepuis, nomConcorde, produitProche, resumeSuivi, resumeSms, variantesTel, resumeCredits, SEUIL_CREDITS_SMS_BAS, factureSms, MARQUE_LIEN_FACTURE, segmentsSms, critereClient, initiales, scoreNom, rechercheApprochee, SEUIL_APPROCHE, seuilPour, phonetique } from '../functions/_shared/jarvis-action-logique.ts';
 
 const T = Date.parse('2026-10-27T10:00:00Z');
 const cmd = (o) => ({ id: '#1588', statut: 'en-attente', client: 'Client Fictif', tel: '0600000000', email: 'fictif@exemple.test', adresse: '1 rue Fictive 93160 Noisy-le-Grand', produit: 'Matelas 140x190', transporteur: 'GLS', tracking_transporteur: '', date_livraison: '2026-10-28', ...o });
@@ -851,4 +851,79 @@ test('v2.17 comptage : TOUS les statuts réels comptés (en-route et arrivé com
   const bloc = src.slice(src.indexOf("d.action === 'compter_commandes'"), src.indexOf("d.action === 'lire_stock'"));
   assert.match(bloc, /const statuts = STATUTS_COMPTES;/); assert.match(bloc, /STATUTS_COMPTES_OUVERTS\.reduce/);
   assert.doesNotMatch(src, /STATUTS_OUVERTS/, 'index.ts n’utilise plus la liste de changer_statut');
+});
+
+test('v2.18 : produit NON VENDABLE (prix de vente à définir, migration 039) — jamais rapproché, refusé dans une commande, ensemble compris', () => {
+  const rows = [
+    { id: 'pr-15', nom: 'Matelas DODOCONFORT 140×190×15', prix: 100, actif: true },
+    { id: 'pr-new', nom: 'Matelas Hybride Fictif 140×190 – 25 cm', prix: null, actif: true, vendable: false, prix_vente_defini: false },
+    { id: 'pr-ens', nom: 'Ensemble 140x190 Matelas Hybride Fictif + Sommier', prix: 300, actif: true, composants: [{ id: 'pr-new', qte: 1 }] },
+    { id: 'pr-ok', nom: 'Ensemble 140x190 Matelas DODOCONFORT 15 + Sommier', prix: 250, actif: true, composants: [{ id: 'pr-15', qte: 1 }] },
+  ];
+  const cat = catalogueDepuisBase(rows);
+  assert.equal(cat.get('pr-new').non_vendable, true);
+  assert.equal(cat.get('pr-ens').non_vendable, true, 'ensemble dont un composant est non vendable');
+  assert.equal(cat.get('pr-15').non_vendable, undefined);
+  assert.equal(cat.get('pr-ok').non_vendable, undefined);
+  assert.match(lignesCommande([{ produitId: 'pr-new', produit: 'x', qte: 1 }], cat).erreur, /pas encore vendable/);
+  assert.match(lignesCommande([{ produitId: 'pr-ens', produit: 'x', qte: 1 }], cat).erreur, /pas encore vendable/);
+  assert.match(lignesCommande([{ produit: 'Matelas Hybride Fictif 140×190 – 25 cm', qte: 1 }], cat).erreur, /pas encore vendable/, 'nom exact refusé aussi');
+  assert.equal(produitProche('matelas hybride fictif 140x190', cat), null, 'jamais proposé par rapprochement');
+  const ok = lignesCommande([{ produitId: 'pr-15', produit: 'x', qte: 2 }], cat);
+  assert.equal(ok.erreur, null); assert.equal(ok.lignes[0].prixUnit, 100);
+  // avant la migration 039 (colonnes absentes) : tout reste vendable, comme avant
+  const avant = catalogueDepuisBase([{ id: 'a', nom: 'Matelas A', prix: 99 }]);
+  assert.equal(avant.get('a').non_vendable, undefined); assert.equal(avant.get('a').actif, true);
+});
+
+test('v2.19 (revue Codex PR 26 sur 66def07) : catalogue JARVIS COMPLET au-delà du plafond, composant non vendable hors 1re page', async () => {
+  // 1 500 produits FICTIFS ; l'ensemble est en 1re page, son composant non vendable (« zz-… ») trié en DERNIÈRE page
+  const base = [{ id: 'a0000-ens', nom: 'Ensemble Fictif Z + Sommier', prix: 300, actif: true, composants: [{ id: 'zz-composant', qte: 1 }, { id: 'p0001', qte: 1 }] }];
+  for (let n = 1; n < 1499; n++) base.push({ id: 'p' + String(n).padStart(4, '0'), nom: 'Produit fictif ' + n, prix: 10, actif: true });
+  base.push({ id: 'zz-composant', nom: 'Matelas Fictif Z 140×190', prix: null, actif: true, vendable: false, prix_vente_defini: false });
+  base.sort((x, y) => (x.id < y.id ? -1 : 1));
+  const plafond = 1000; const pages = [];
+  const lirePage = async (d, f) => { pages.push([d, f]); return base.slice(d, Math.min(f + 1, d + plafond)); };
+  const lireParIds = async (ids) => base.filter((r) => ids.includes(r.id));
+  const cat = await catalogueJarvis(lirePage, lireParIds);
+  assert.equal(cat.size, 1500, 'tout le catalogue est lu');
+  assert.ok(pages.length >= 2, 'plusieurs pages');
+  assert.equal(cat.get('zz-composant').non_vendable, true);
+  assert.equal(cat.get('a0000-ens').non_vendable, true, 'ensemble dont le composant (2e page) est non vendable');
+  assert.match(lignesCommande([{ produitId: 'a0000-ens', produit: 'x', qte: 1 }], cat).erreur, /pas encore vendable/);
+  // l'ancienne lecture (une seule requête plafonnée) ne voyait pas le composant : depuis la revue sur fd751b8, un composant ABSENT
+  // des lignes lues n'est plus vendable par défaut — l'ensemble est écarté même sur une lecture partielle
+  assert.equal(catalogueDepuisBase(base.slice(0, plafond)).get('a0000-ens').non_vendable, true);
+  // nom dicté à la casse / aux espaces / au « × » près : reconnu comme le produit non vendable (jamais une ligne hors catalogue)
+  assert.match(lignesCommande([{ produit: 'matelas fictif z 140 x 190', qte: 1 }], cat).erreur || '', /pas encore vendable/);
+  // v2.20 (revue Codex sur 4ec0313) : identifiant d'un produit vendable + nom d'un produit non vendable = contradiction refusée ;
+  // identifiant + son propre nom (ou sans nom) = accepté
+  assert.match(lignesCommande([{ produitId: 'p0001', produit: 'Matelas Fictif Z 140 x 190', qte: 1 }], cat).erreur || '', /pas encore vendable/);
+  assert.equal(lignesCommande([{ produitId: 'p0001', produit: 'produit fictif 1', qte: 1 }], cat).erreur, null);
+  assert.equal(lignesCommande([{ produitId: 'p0001', qte: 1 }], cat).erreur, null);
+  // v2.21 (revue Codex sur 17f631a) : identifiant vendable + texte = RÉFÉRENCE interne d'un produit non vendable → refusé (tous les champs examinés)
+  const catR = catalogueDepuisBase([{ id: 'n', nom: 'Matelas Fictif N', prix: null, vendable: false, prix_vente_defini: false, reference_interne: 'MC-TEST-9' }, { id: 'a', nom: 'Matelas Fictif A', prix: 100 }]);
+  assert.match(lignesCommande([{ produitId: 'a', produit: 'mc-test-9', qte: 1 }], catR).erreur || '', /pas encore vendable/);
+  assert.equal(lignesCommande([{ produitId: 'a', produit: 'Matelas Fictif A', qte: 1 }], catR).erreur, null);
+  // lecture impossible : exception (jamais un catalogue partiel)
+  await assert.rejects(catalogueJarvis(async () => { throw new Error('panne'); }, lireParIds));
+  const src = fs.readFileSync(new URL('../functions/jarvis-action/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /return await catalogueJarvis\(/);
+  assert.match(src, /\.select\('\*'\)\.order\('id'\)\.range\(debut, fin\)/);
+  assert.doesNotMatch(src, /sb\.from\('produits'\)\.select\('\*'\);/);
+});
+
+test('v2.22 (revue Codex PR 26 sur fd751b8) : composant introuvable signalé et catalogue refusé, prix NULL non vendable', async () => {
+  // ensemble FICTIF dont un composant n'existe pas : la lecture par identifiants ne le renvoie pas → exception (jamais « vendable »)
+  const base = [{ id: 'ens', nom: 'Ensemble Fictif', prix: 300, actif: true, composants: [{ id: 'fantome', qte: 1 }, { id: 'a', qte: 1 }] },
+    { id: 'a', nom: 'Matelas Fictif A', prix: 100, actif: true }];
+  const lirePage = async (d) => (d === 0 ? base : []);
+  await assert.rejects(catalogueJarvis(lirePage, async () => []), /composants introuvables : fantome/);
+  // composant présent par identifiant : catalogue accepté
+  const cat = await catalogueJarvis(lirePage, async (ids) => ids.map((id) => ({ id, nom: 'Composant ' + id, prix: 50, actif: false })));
+  assert.equal(cat.get('ens').non_vendable, undefined);
+  // prix NULL (même « prix défini ») = non vendable, comme l'application et la base
+  const catN = catalogueDepuisBase([{ id: 'p', nom: 'Matelas Fictif P', prix: null, prix_vente_defini: true, vendable: true }]);
+  assert.equal(catN.get('p').non_vendable, true);
+  assert.match(lignesCommande([{ produitId: 'p', produit: 'Matelas Fictif P', qte: 1 }], catN).erreur || '', /pas encore vendable/);
 });
