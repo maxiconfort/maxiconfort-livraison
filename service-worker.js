@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.204 - Fusion de Commandes filtres (9c87ab7, v7.5.200 : PR 27 7f2ed3f controle de coherence ligne par ligne et durees comparees signalees, PR 26 de0ca7b erreur inattendue apres l envoi de la reception = resultat INDETERMINE) dans le dropshipping ; version de la mise en ligne groupee (27/11/2026)
 // v7.5.203 - Fusion de Commandes filtres (ae4fcc5, v7.5.200 : tentative de reception gardee, controle de coherence du tableau de bord, champ de date garde avec la periode) dans le dropshipping (27/11/2026)
 // v7.5.202 - Dropshipping (revue Codex sur 53c7b59) : CAISSE TTC / MARGE HT (decision de Borhen corrigee), livre refuse par la base tant que les pieces ne sont pas confirmees (derogation admin motivee), deduction apres le succes de la confirmation, decoupage perime refuse, module garde hors ligne, entree de stock tampon rejouee avec la meme cle, recredit vers le lot d origine et cycles de relivraison, bornes explicites (27/11/2026)
 // v7.5.201 - Fusion de Commandes filtres (62f910d, PR 24 a 28 corrigees) et de la derniere correction de la PR 29 (8dde6a9, v7.5.199) dans le dropshipping (27/11/2026)
@@ -22,6 +23,7 @@
 //   [pile 24-28] v7.5.197 - Arrivage : fusion de la PR 25 (v7.5.196, PR 24 v7.5.195 incluse : validation de la remise recontrolee par la base, arrets figes) (27/11/2026)
 //   [pile 24-28] v7.5.196 - Habillage style D : fusion de la PR 24 (v7.5.195, derniere correction ciblee : validation recontrolee par la base, arrets figes) (27/11/2026)
 //   [pile 24-28] v7.5.195 - Caisse (revue Codex PR 24 sur 59f3a26, derniere correction ciblee) : validation de la remise recontrolee par la base apres le verrou (depenses et arrets), arrets d'une tournee validee figes pour la caisse (27/11/2026)
+//   [pile 24-28] v7.5.199 - Tableau de bord + menus (revue Codex PR 27 sur cbf3170) : controle de coherence apres la lecture paginee (relecture legere id + updated_at comparee ligne par ligne, relecture si la base a change), durees differentes des periodes comparees signalees, chiffres dates « lus a HH:MM » ; fusion de la PR 26 (v7.5.198 : tentative de reception gardee sur l'appareil) (27/11/2026)
 // v7.5.187 - Tableau de bord + menus : fusion de la PR 26 (v7.5.186 ; PR 25 v7.5.185 et PR 24 v7.5.184 incluses : relecture complete du verrou de caisse) (26/11/2026)
 // v7.5.186 - Arrivage : fusion de la PR 25 (v7.5.185, PR 24 v7.5.184 incluse : relecture complete du verrou de caisse) (26/11/2026)
 // v7.5.185 - Habillage style D : fusion de la PR 24 (v7.5.184, relecture complete du verrou de caisse) (26/11/2026)
@@ -69,7 +71,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-203';
+const CACHE_VERSION = 'maxiconfort-v7-5-204';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)

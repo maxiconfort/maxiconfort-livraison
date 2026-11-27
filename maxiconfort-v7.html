@@ -5441,17 +5441,42 @@ async function arrValider() {
   var t = c.total;
   if (!confirm('Valider la réception de ' + a.reference_interne + ' ?\n\n• ' + t.recue + ' article(s) en bon état AJOUTÉS au stock\n• ' + t.endommagee + ' endommagé(s) : NON ajoutés\n• ' + t.manquante + ' manquant(s)\n\nPrix de revient recalculé (' + (ARR_METHODES[ARR_METHODE_VALORISATION] || ARR_METHODE_VALORISATION) + ').\nCette validation est DÉFINITIVE (une seule fois).')) return;
   ARR_ETAT.envoi = true; arrMajControle();
+  var suivi = { tentative: null, issue: null }; // v7.5.198 (revue chatgpt-review sur 2a4db2f) : jusqu'où l'envoi est allé
   try { // revue Codex PR 26 sur 636f873 : verrou levé à coup sûr, même sur une erreur inattendue (finally)
-    await arrValiderEnvoi(a, ls, saisies, vue);
+    await arrValiderEnvoi(a, ls, saisies, vue, suivi);
   } catch(e) {
-    toast('Réception NON validée : erreur inattendue (' + ((e && e.message) || e) + ')', 'err');
+    arrErreurInattendue(a, suivi, e);
   } finally {
     if (ARR_ETAT.envoi) { ARR_ETAT.envoi = false; arrMajControle(); }
   }
 }
 // Suite de arrValider, verrou posé (ARR_ETAT.envoi = true) : relectures, contrôles, envoi. Chaque sortie lève le verrou AVANT de
 // redessiner (pour que le bouton revienne) ; arrValider le lève de toute façon à la fin.
-async function arrValiderEnvoi(a, ls, saisies, vue) {
+// v7.5.198 (revue chatgpt-review PR 26 sur 2a4db2f) : erreur INATTENDUE pendant la validation. Avant : toujours « Réception NON validée »
+// et bouton libéré, même si la requête était déjà partie (la base a pu valider) et sans état « à vérifier » en mémoire avant un
+// rechargement. Maintenant, selon `suivi` (rempli par arrValiderEnvoi) :
+//  - rien n'est parti (aucune tentative gardée) : « NON validée, rien n'a été envoyé » ;
+//  - réponse DÉFINITIVE déjà lue (validée ou refusée) : ce résultat est rappelé, rien d'autre ;
+//  - sinon (requête partie, résultat non conclu) : résultat INDÉTERMINÉ — l'arrivage est remis « à vérifier » avec la MÊME tentative
+//    (Valider bloqué, « Vérifier dans la base » imposé), sauf si une relecture de la base a déjà conclu (tentative effacée de l'appareil).
+function arrErreurInattendue(a, suivi, e) {
+  var txt = (e && e.message) || e;
+  ARR_ETAT.verification = false; ARR_ETAT.verificationId = null;
+  if (!suivi || !suivi.tentative) { toast('Réception NON validée : erreur inattendue (' + txt + ') — rien n\'a été envoyé', 'err'); return; }
+  if (suivi.issue === 'validee') { toast('Réception validée par la base, mais erreur inattendue ensuite (' + txt + ') : actualisez la liste', 'err'); return; }
+  if (suivi.issue === 'refusee') { toast('Réception NON validée (refusée par la base), puis erreur inattendue (' + txt + ')', 'err'); return; }
+  var k = String(a.id), lisible = true, gardee = null;
+  try { localStorage.getItem(ARR_CLE_TENTATIVES); gardee = arrLireTentatives()[k] || null; } catch(x) { lisible = false; }
+  // relecture déjà conclue = plus « à vérifier » en mémoire ET tentative effacée de l'appareil (stockage lisible) ; sinon : indéterminé
+  if (lisible && !arrAVerifierDe(a.id) && !(gardee && gardee.tentative === String(suivi.tentative))) {
+    toast('Erreur inattendue après la vérification dans la base (' + txt + ') : actualisez la liste', 'err'); return;
+  }
+  ARR_ETAT.aVerifier[k] = { id: a.id, ref: a.reference_interne, tentative: suivi.tentative };
+  toast('Résultat INDÉTERMINÉ : erreur inattendue après l\'envoi de la réception (' + txt + '). La base a pu la valider : rien n\'est renvoyé — touchez « Vérifier dans la base »', 'err');
+  try { arrRendre(); } catch(x) {}
+}
+async function arrValiderEnvoi(a, ls, saisies, vue, suivi) {
+  suivi = suivi || {};
   // revue Codex PR 26 sur 66def07 : lignes de CET arrivage relues par arrivage_id (complètes, par pages) juste avant l'envoi ; si elles
   // diffèrent de celles affichées (ligne ajoutée, retirée, quantité changée), rien n'est envoyé : l'écran est rafraîchi pour revérifier.
   var relu = null;
@@ -5482,6 +5507,7 @@ async function arrValiderEnvoi(a, ls, saisies, vue) {
   var tentative = arrNouvelleTentative(); // v7.5.191 : identifiant de CET envoi (jamais réutilisé)
   // v7.5.198 : tentative gardée sur l'appareil AVANT l'envoi ; si elle ne peut pas l'être, rien n'est envoyé
   if (!arrGarderTentative(a, tentative)) { ARR_ETAT.envoi = false; toast('Réception NON validée : cet appareil ne peut pas garder la trace de l\'envoi (stockage du navigateur indisponible) — rien n\'a été envoyé', 'err'); arrMajControle(); return; }
+  suivi.tentative = tentative; // dès ici, toute erreur inattendue = résultat INDÉTERMINÉ (la requête peut être partie)
   try {
     var r = await fetch(SUPABASE_URL + '/rest/v1/rpc/valider_reception_arrivage', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, arrEntetes()),
       body: JSON.stringify(arrCorpsValidation(a.id, ls, saisies, vue.empreinte, tentative)) });
@@ -5492,6 +5518,7 @@ async function arrValiderEnvoi(a, ls, saisies, vue) {
   // INDÉTERMINÉ, statut et mouvements relus dans la base, et seulement ensuite « validée » ou « non validée ».
   var issue = arrIssueValidation(sansReponse, http, j);
   if (issue === 'indeterminee') { await arrVerifierReception(a, tentative); return; }
+  suivi.issue = issue === 'validee' ? 'validee' : 'refusee';
   arrOublierTentative(a.id, tentative); // v7.5.198 : réponse DÉFINITIVE (validée ou refusée) : plus rien à vérifier pour cet envoi
   if (issue !== 'validee') {
     ARR_ETAT.envoi = false;
@@ -9077,6 +9104,11 @@ function tdbCouleur(c) { var s = String(c == null ? '' : c).trim(); return /^#[0
 function tdbEur(n) { var v = Math.round((parseFloat(n) || 0) * 100) / 100; return v.toLocaleString('fr-FR', { minimumFractionDigits: (v % 1 ? 2 : 0), maximumFractionDigits: 2 }) + ' €'; }
 /** Période choisie → bornes AAAA-MM-JJ (heure de l'appareil, jamais UTC) de la période en cours ENTIÈRE (du → au) et de la
  *  période précédente À DATE ÉGALE (pdu → pau : même nombre de jours écoulés). Jour : même jour de la semaine précédente. */
+/** Nombre de jours de [du, au] (dates AAAA-MM-JJ, bornes comprises ; calcul en UTC : aucun effet des changements d'heure). */
+function tdbNbJours(du, au) {
+  var j = function (x) { var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(x || '')); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : NaN; };
+  return Math.round((j(au) - j(du)) / 864e5) + 1;
+}
 function tdbPeriodes(mode, maintenant) {
   var n = new Date(maintenant || Date.now()), a = new Date(n.getFullYear(), n.getMonth(), n.getDate()), r;
   if (mode === 'semaine') {
@@ -9099,6 +9131,12 @@ function tdbPeriodes(mode, maintenant) {
   // v7.5.139 (revue Codex de 8705c41) : les COMPARAISONS de la période en cours s'arrêtent à aujourd'hui (cau), comme la
   // période précédente (pau) ; « au » (fin de période) ne sert plus qu'aux livraisons prévues et au « restant à livrer ».
   r.mode = mode; r.aujourdhui = tdbJ(a); r.cau = r.aujourdhui;
+  // v7.5.199 (revue chatgpt-review PR 27 sur 7ef4374, point 1) : DURÉES COMPARÉES. Le 29, 30 ou 31 mars, le mois en cours (29 à 31 jours)
+  // était comparé à février entier (28 jours) sans le dire ; de même le 29 février face au 28 février de l'année d'avant. La durée des
+  // deux périodes comparées (jours, bornes comprises) est désormais calculée ; si elle diffère, le libellé le dit EXPLICITEMENT
+  // (« durées différentes : 31 j contre 28 j »). Jour et semaine sont toujours à durée égale.
+  r.joursCours = tdbNbJours(r.du, r.cau); r.joursPrec = tdbNbJours(r.pdu, r.pau); r.dureesEgales = r.joursCours === r.joursPrec;
+  if (!r.dureesEgales) r.vs += ' — durées différentes : ' + r.joursCours + ' j contre ' + r.joursPrec + ' j';
   r.date = TDB_JOURS[a.getDay()].charAt(0).toUpperCase() + TDB_JOURS[a.getDay()].slice(1) + ' ' + tdbCourt(r.aujourdhui);
   r.moisDu = tdbJ(new Date(a.getFullYear(), a.getMonth(), 1)); r.moisAu = tdbJ(new Date(a.getFullYear(), a.getMonth() + 1, 0));
   return r;
@@ -9310,12 +9348,12 @@ function tdbLocalComplet() {
 // STRICTEMENT SUPÉRIEUR au dernier reçu (ordre id croissant, &id=gt.<dernier>, comparaison faite par la base dans le même ordre que le
 // tri) : une ligne présente du début à la fin est lue exactement une fois. Une page qui renverrait un identifiant déjà lu (filtre ignoré)
 // arrête la lecture avec une erreur (jamais de doublon ni de boucle).
-async function tdbLire(filtre) {
+async function tdbLire(filtre, cols) {
   var out = [], vus = {}, dernier = null;
   for (var page = 0; ; page++) {
     if (page >= TDB_PAGES_MAX) throw new Error('plus de ' + TDB_PAGES_MAX.toLocaleString('fr-FR') + ' pages (' + out.length.toLocaleString('fr-FR') + ' commandes lues) sur la période : lecture arrêtée, chiffres non calculés');
     var apres = dernier == null ? '' : '&id=gt.' + encodeURIComponent(dernier);
-    var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + TDB_COLS + filtre + apres + '&order=id.asc&limit=' + TDB_PAGE, {
+    var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + (cols || TDB_COLS) + filtre + apres + '&order=id.asc&limit=' + TDB_PAGE, {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     var rows = await r.json(); if (!Array.isArray(rows)) throw new Error('réponse inattendue');
@@ -9333,30 +9371,36 @@ async function tdbLire(filtre) {
 // v7.5.199 (revue Codex PR 27 sur cbf3170) : CONTRÔLE DE COHÉRENCE après la lecture paginée. La pagination par clé lit une fois chaque
 // commande présente du début à la fin, mais une commande insérée AVANT le curseur pendant la lecture est omise, et une commande
 // supprimée (ou sortie de la période) APRÈS avoir été lue reste comptée. Sans événement temps réel reçu, ce résultat était affiché
-// comme complet pendant 60 s. Désormais, une fois toutes les pages lues, la base est relue en UNE requête pour le même filtre :
-// nombre exact de commandes (en-tête Content-Range, « Prefer: count=exact ») et date de mise à jour la plus récente (updated_at). Si
-// l'un des deux diffère de ce qui a été lu, la base a changé pendant la lecture : elle est relue (TDB_ESSAIS_COHERENCE fois au plus),
-// puis, si elle change encore, erreur affichée (« chiffres non calculés »), jamais de chiffres présentés comme complets.
+// comme complet pendant 60 s.
+// v7.5.199 (revue chatgpt-review PR 27 sur 9fbea59, et revue native P2) : le contrôle par « nombre exact + updated_at le plus récent »
+// ne suffisait pas — A lue, A modifiée, puis B modifiée avant la lecture de sa page : même nombre, et le maximum lu (celui de B) est
+// aussi celui renvoyé par le contrôle ; l'ancienne valeur de A était acceptée. Désormais, une fois TOUTES les pages lues, les commandes
+// du même filtre sont relues EN ENTIER mais légèrement (identifiant + updated_at seulement, mêmes pages par clé) et comparées LIGNE PAR
+// LIGNE au jeu lu : même ensemble d'identifiants et même updated_at pour chacun. Toute différence (commande ajoutée, retirée, sortie du
+// filtre ou modifiée depuis sa lecture, à n'importe quelle page) = la base a changé pendant la lecture : relecture complète
+// (TDB_ESSAIS_COHERENCE fois au plus), puis erreur affichée (« chiffres non calculés »). Le contrôle commence après la dernière page
+// lue : chaque ligne acceptée est inchangée entre sa lecture et ce moment, donc le jeu accepté est celui de la base à cet instant.
+// Sans migration. Limite : une modification qui ne change pas updated_at n'est pas vue (l'appli et les fonctions de paiement le posent).
 var TDB_ESSAIS_COHERENCE = 3;
-function tdbMajMax(rows) {
-  var m = ''; (rows || []).forEach(function (c) { var u = c && c.updated_at ? String(c.updated_at) : ''; if (u && (!m || Date.parse(u) > Date.parse(m))) m = u; });
-  return m;
-}
 async function tdbControler(filtre) {
-  var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=id,updated_at' + filtre + '&order=updated_at.desc.nullslast,id.desc&limit=1', {
-    headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'count=exact' } });
-  if (!r.ok) throw new Error('contrôle de cohérence : HTTP ' + r.status);
-  var cr = r.headers && typeof r.headers.get === 'function' ? r.headers.get('content-range') : null;
-  var m = /\/(\d+)\s*$/.exec(String(cr || ''));
-  if (!m) throw new Error('contrôle de cohérence illisible (nombre de commandes absent) : chiffres non calculés');
-  var rows = await r.json(); if (!Array.isArray(rows)) throw new Error('contrôle de cohérence : réponse inattendue');
-  return { n: parseInt(m[1], 10), maj: rows.length && rows[0] && rows[0].updated_at ? String(rows[0].updated_at) : '' };
+  return tdbLire(filtre, 'id,updated_at'); // lecture seule, même filtre, mêmes pages par clé (garde-fous de tdbLire compris)
 }
 function tdbMemeMaj(a, b) { return (!a && !b) || (!!a && !!b && Date.parse(a) === Date.parse(b)); }
+// Jeu lu et relecture légère identiques ligne par ligne ? Renvoie '' si oui, sinon la première différence (texte court).
+function tdbDifference(rows, ctrl) {
+  var lus = {}; (rows || []).forEach(function (c) { lus[String(c.id)] = c; });
+  if ((ctrl || []).length !== (rows || []).length) return 'nombre de commandes ' + (rows || []).length + ' lu, ' + (ctrl || []).length + ' au contrôle';
+  for (var i = 0; i < ctrl.length; i++) {
+    var k = ctrl[i] && ctrl[i].id != null ? String(ctrl[i].id) : null, c = k != null ? lus[k] : null;
+    if (!c) return 'commande ' + k + ' absente de la lecture';
+    if (!tdbMemeMaj(c.updated_at ? String(c.updated_at) : '', ctrl[i].updated_at ? String(ctrl[i].updated_at) : '')) return 'commande ' + k + ' modifiée depuis sa lecture';
+  }
+  return '';
+}
 async function tdbLireCoherent(filtre) {
   for (var essai = 1; essai <= TDB_ESSAIS_COHERENCE; essai++) {
-    var rows = await tdbLire(filtre), c = await tdbControler(filtre);
-    if (c.n === rows.length && tdbMemeMaj(c.maj, tdbMajMax(rows))) return rows;
+    var rows = await tdbLire(filtre), ctrl = await tdbControler(filtre);
+    if (!tdbDifference(rows, ctrl)) return rows;
   }
   throw new Error('commandes modifiées pendant chaque lecture (' + TDB_ESSAIS_COHERENCE + ' essais) : chiffres non calculés');
 }
