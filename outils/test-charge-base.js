@@ -21,11 +21,14 @@ function nouveauBac(opts) {
     setTimeout: (f, ms) => { etat.minuteurs.push({ f, ms, actif: true }); return etat.minuteurs.length; },
     clearTimeout: (id) => { if (id && etat.minuteurs[id - 1]) etat.minuteurs[id - 1].actif = false; },
     document: { get hidden() { return etat.cache; }, getElementById: () => null },
+    // réponse programmable : objet, promesse (réponse différée), 'reseau' (coupure), 'jamais' (aucune réponse, abandon ignoré) ;
+    // json: 'jamais' = corps qui n'arrive jamais (abandon ignoré lui aussi : seul le délai global peut le borner)
     fetch: async (url) => {
       etat.requetes.push(url);
-      const r = etat.reponse(url);
+      const r = await etat.reponse(url);
       if (r === 'reseau') throw new Error('Failed to fetch');
-      return { ok: r.status >= 200 && r.status < 300, status: r.status, headers: { get: () => null }, json: async () => r.json };
+      if (r === 'jamais') return new Promise(() => {});
+      return { ok: r.status >= 200 && r.status < 300, status: r.status, headers: { get: (k) => (r.entetes || {})[k] || null }, json: () => (r.json === 'jamais' ? new Promise(() => {}) : Promise.resolve(r.json)) };
     } };
   vm.createContext(bac);
   vm.runInContext(tranche('// CHARGE-DEBUT', '// CHARGE-FIN'), bac);
@@ -81,7 +84,12 @@ function nouveauBac(opts) {
     statut = 401; etat.t += 400000; bac.chargeSucces(); delete bac.CHARGE_ETAT.echecsCle.mois; bac.CHARGE_ETAT.cache = {};
     await bac.chargeUnique('mois', 60000, lire);
     test('refus 401 : pas de pause générale ; la clé attend 10 s avant de réessayer', bac.CHARGE_ETAT.pauseJusqua === 0 && bac.CHARGE_ETAT.echecsCle.mois.pasAvant - etat.t === 10000);
-    test('chargeNoterReponse : 504 et 522 → pause ; 200 → levée', (() => { bac.chargeSucces(); bac.chargeNoterReponse(504); const a = bac.chargeEnPause(); bac.chargeNoterReponse(522); const d = bac.CHARGE_ETAT.pauseJusqua - etat.t; bac.chargeNoterReponse(200); return a && d === 30000 && !bac.chargeEnPause(); })());
+    test('chargeNoterReponse : 504 et 522 → pause croissante ; 200 pendant la pause → pause GARDÉE ; 200 après l’échéance → remise à zéro', (() => {
+      Object.assign(bac.CHARGE_ETAT, { echecs: 0, pauseJusqua: 0, dernierEchec: 0 });
+      const t0 = etat.t; bac.chargeNoterReponse(504, t0); const a = bac.chargeEnPause(); bac.chargeNoterReponse(522, t0); const d = bac.CHARGE_ETAT.pauseJusqua - etat.t;
+      bac.chargeNoterReponse(200, etat.t); const garde = bac.chargeEnPause() && bac.CHARGE_ETAT.echecs === 2;
+      etat.t += 30001; bac.chargeNoterReponse(200, etat.t);
+      return a && d === 30000 && garde && !bac.chargeEnPause() && bac.CHARGE_ETAT.echecs === 0; })());
     test('délai de lecture lourde : abandon programmé à 20 s', bac.CHARGE_DELAI_LECTURE === 20000 && etat.minuteurs.some((m) => m.ms === 20000));
   }
 
@@ -168,12 +176,13 @@ function nouveauBac(opts) {
   {
     const sl = fonction('async function sbLoadAll() {');
     test('sbLoadAll : plus de 2e requête « select=id » de comptage (total de la même réponse)', !/commandes\?select=id'/.test(sl) && /if \(cmdsTotal != null\) cmdTotalCount = cmdsTotal;/.test(sl));
-    test('sbLoadAll : 5xx noté, délai dépassé / réseau → pause', /chargeNoterReponse\(rCmds\.status\)/.test(sl) && /catch\(e\) \{\n\s*console\.warn\('sbLoadAll erreur:', e\.message\);\n\s*if \(typeof chargeEchec === 'function'\) chargeEchec\(\);/.test(sl));
+    test('sbLoadAll : 5xx noté, délai dépassé / réseau → pause', /chargeNoterReponse\(rCmds\.status, _cmdDebutLecture\)/.test(sl) && /catch\(e\) \{\n\s*console\.warn\('sbLoadAll erreur:', e\.message\);\n\s*if \(typeof chargeEchec === 'function'\) chargeEchec\(\);/.test(sl));
     test('plus aucun appel direct de sbLoadAll() hors de la garde (démarrage, reprise, rafraîchissement 60 s)', (html.match(/sbLoadAll\(\)/g) || []).length === 2 && /async function sbLoadAll\(\) \{/.test(html) &&/return sbLoadAll\(\);/.test(html));
     test('rafraîchissement automatique 60 s : passe par sbChargerTout', /if \(typeof sbChargerTout === 'function'\) \{\n\s*sbChargerTout\(\)\.then\(function\(\)\{/.test(html));
     const sp = fonction('function startPolling() {');
-    test('relève : jamais deux à la fois, jamais onglet caché, jamais pendant la pause', /if \(_pollingEnCours\) return;/.test(sp) && /chargeOngletCache\(\)\) return;/.test(sp) && /chargeEnPause\(\)\) \{ cmdSynchroPerdue\(/.test(sp) && /\} finally \{ _pollingEnCours = false; \}/.test(sp));
-    test('relève : réponse notée (5xx → pause), abandon après 15 s', /chargeNoterReponse\(rC\.status\)/.test(sp) && /_ctlRel\.abort\(\); \} catch\(e\) \{\} \}, 15000\)/.test(sp));
+    test('relève : jamais deux à la fois, jamais onglet caché, jamais pendant la pause', /if \(_pollingEnCours\) return;/.test(sp) && /chargeOngletCache\(\)\) return;/.test(sp) && /chargeEnPause\(\)\) \{ cmdSynchroPerdue\(/.test(sp) && /\} finally \{ if \(_dRel\) _dRel\.fin\(\); _pollingEnCours = false; \}/.test(sp));
+    test('relève : réponse notée avec son heure d’envoi (5xx → pause), relève ENTIÈRE bornée à 15 s (2 requêtes et 2 corps)', /chargeNoterReponse\(rC\.status, _debRel\)/.test(sp) && /_dRel = \(typeof chargeDelai === 'function'\) \? chargeDelai\(15000\)/.test(sp)
+      && (sp.match(/_dRel\.borne\(/g) || []).length === 4 && /\} finally \{ if \(_dRel\) _dRel\.fin\(\); _pollingEnCours = false; \}/.test(sp));
     const tdb = tranche('// TDB-DEBUT', '// TDB-FIN');
     test('tableau : lecture seulement affiché, visible, hors pause et hors chargement complet', /function tdbLecturePermise\(\) \{\n\s*if \(!tdbVisible\(\)\) return false;\n\s*if \(typeof chargeOngletCache === 'function' && chargeOngletCache\(\)\) return false;\n\s*if \(typeof chargeEnPause === 'function' && chargeEnPause\(\)\) return false;\n\s*if \(typeof _chargeToutVol !== 'undefined' && _chargeToutVol\) return false;/.test(tdb)
       && /!tropTot && tdbLecturePermise\(\)\) tdbCharger\(P, cle\);/.test(tdb));
@@ -183,6 +192,157 @@ function nouveauBac(opts) {
     test('bloc CHARGE : aucune écriture (lectures seulement)', !/method:\s*'(POST|PATCH|DELETE)'|sbSave|localStorage\.setItem/.test(tranche('// CHARGE-DEBUT', '// CHARGE-FIN')));
     const sw = fs.readFileSync(path.join(racine, 'service-worker.js'), 'utf8');
     test('version : CACHE_VERSION maxiconfort-v7-5-211 et en-tête v7.5.211', /const CACHE_VERSION = 'maxiconfort-v7-5-211';/.test(sw) && /^\/\/ v7\.5\.211 - /m.test(sw));
+  }
+
+  // minuteurs simulés de la durée « ms » encore actifs : déclenchés (échéance atteinte)
+  const declencher = (etat, ms) => etat.minuteurs.filter((m) => m.actif && m.ms === ms).forEach((m) => { m.actif = false; m.f(); });
+  const nbIndispo = (h) => (h.match(/⚠️ indisponible/g) || []).length;
+
+  console.log('\n8. REVUE PR 31 SUR 6ddb631 (point 1) : UN SUCCÈS NE LÈVE JAMAIS UNE PAUSE AVANT SON ÉCHÉANCE (réponses simultanées)');
+  {
+    const attentes = {};
+    const { bac, etat } = nouveauBac({ reponse: (url) => new Promise((res) => { attentes[url.split('?q=')[1]] = res; }) });
+    const lire = (q) => () => bac.chargeFetch('https://x.invalid/rest/v1/commandes?q=' + q, {});
+    const pA = bac.chargeUnique('a', 60000, lire('a')), pB = bac.chargeUnique('b', 60000, lire('b')), pC = bac.chargeUnique('c', 60000, lire('c'));
+    await attendre();
+    test('3 lectures parties en même temps', etat.requetes.length === 3 && !!(attentes.a && attentes.b && attentes.c), etat.requetes.length);
+    etat.t += 1000; attentes.a({ status: 503, json: {} }); await pA;
+    const fin1 = bac.CHARGE_ETAT.pauseJusqua;
+    attentes.b({ status: 200, json: [{ id: '#B' }] }); const rb = await pB;
+    test('A en 503 puis B réussie juste après : réponse de B prise, pause GARDÉE jusqu’à son échéance, compteur gardé',
+      Array.isArray(rb) && bac.chargeEnPause() && bac.CHARGE_ETAT.pauseJusqua === fin1 && bac.CHARGE_ETAT.echecs === 1, bac.CHARGE_ETAT);
+    const n0 = etat.requetes.length; await bac.chargeUnique('d', 60000, lire('d'));
+    test('pendant la pause gardée : aucune nouvelle lecture', etat.requetes.length === n0);
+    etat.t = fin1 + 1; attentes.c({ status: 200, json: [] }); await pC;
+    test('C partie AVANT l’échec et réussie APRÈS l’échéance : l’attente croissante ne repart pas à zéro', bac.CHARGE_ETAT.echecs === 1, bac.CHARGE_ETAT.echecs);
+    const pD = bac.chargeUnique('d', 60000, lire('d')); await attendre(); attentes.d({ status: 504, json: {} }); await pD;
+    test('échec suivant : attente croissante (30 s), pas remise à 10 s', bac.CHARGE_ETAT.pauseJusqua - etat.t === 30000, bac.CHARGE_ETAT.pauseJusqua - etat.t);
+    etat.t += 30001;
+    const pE = bac.chargeUnique('e', 60000, lire('e')); await attendre(); attentes.e({ status: 200, json: [] }); await pE;
+    test('lecture partie APRÈS l’échéance et réussie : remise à zéro', bac.CHARGE_ETAT.echecs === 0 && !bac.chargeEnPause());
+    bac.chargeEchec(); const fin2 = bac.CHARGE_ETAT.pauseJusqua; bac.chargeNoterReponse(200, etat.t - 1); bac.chargeNoterReponse(200, etat.t);
+    test('chargeNoterReponse(200) pendant la pause (relève, chargement complet, tableau) : pause gardée', bac.chargeEnPause() && bac.CHARGE_ETAT.pauseJusqua === fin2 && bac.CHARGE_ETAT.echecs === 1);
+    etat.t = fin2; bac.chargeNoterReponse(200, fin2 - 10001); // partie 1 ms avant l'échec (posé à fin2 - 10 s)
+    test('après l’échéance, réponse d’une requête partie AVANT l’échec : pas de remise à zéro', bac.CHARGE_ETAT.echecs === 1);
+  }
+
+  console.log('\n9. REVUE PR 31 SUR 6ddb631 (point 2) : COMPTEURS SANS RÉPONSE CONNUE → « INDISPONIBLE », JAMAIS « 0 CMD »');
+  {
+    const ligne = { id: '#9', prix: 50, date_commande: '2026-11-27', date_livraison: '2026-11-28', statut: 'en-attente', origine: 'LeBonCoin' };
+    const prep = (rep) => {
+      const { bac, etat } = nouveauBac({ reponse: rep });
+      etat.t = new Date(2026, 10, 27, 18, 40).getTime();
+      const box = { style: {}, innerHTML: '' };
+      Object.assign(bac, { SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k', role: 'admin', cmdStatsSel: { jour: '', sem: '', mois: '' }, cmdStatsCache: {} });
+      bac.document.getElementById = (id) => (id === 'cmd-stats-jour' ? box : null);
+      vm.runInContext(fonction('async function cmdFetchRange(dMin, dMaxExcl) {') + '\n' + fonction('async function renderCmdStatsJour() {'), bac);
+      return { bac, etat, box };
+    };
+    let { bac, etat, box } = prep(() => ({ status: 504, json: {} }));
+    await bac.renderCmdStatsJour();
+    test('première lecture en 504 (aucune réponse connue) : les 3 compteurs « indisponible »', nbIndispo(box.innerHTML) === 3, box.innerHTML.slice(0, 300));
+    test('… et aucun « 0 cmd » ni « 0 € » affiché', !/<strong>0<\/strong> cmd/.test(box.innerHTML) && !/>0 €</.test(box.innerHTML));
+    await bac.renderCmdStatsJour();
+    test('pendant la pause qui suit : toujours « indisponible », aucune requête', etat.requetes.length === 1 && nbIndispo(box.innerHTML) === 3, etat.requetes.length);
+    ({ bac, etat, box } = prep(() => 'jamais'));
+    const p = bac.renderCmdStatsJour(); await attendre();
+    declencher(etat, 20000); await p;
+    test('lecture sans réponse (délai de 20 s dépassé) : « indisponible », pause posée', nbIndispo(box.innerHTML) === 3 && bac.chargeEnPause());
+    ({ bac, etat, box } = prep((url) => (/date_commande=gte\.2026-11-01&/.test(url) ? { status: 200, json: [ligne] } : { status: 503, json: {} })));
+    bac.cmdStatsSel.jour = '2026-11-20';
+    await bac.renderCmdStatsJour();
+    test('mois lu, jour passé choisi en 503 : carte du jour « indisponible », semaine et mois chiffrés', nbIndispo(box.innerHTML) === 1 && (box.innerHTML.match(/<strong>1<\/strong> cmd/g) || []).length === 2, box.innerHTML.slice(0, 500));
+    bac.CHARGE_ETAT.pauseJusqua = 0; bac.CHARGE_ETAT.echecsCle = {}; etat.t += 400000;
+    const r = await bac.cmdFetchRange('2026-10-01', '2026-11-01');
+    test('cmdFetchRange en échec : résultat marqué « indisponible » (jamais un vrai 0)', r.indisponible === true && !bac.cmdStatsCache['2026-10-01_2026-11-01']);
+    ({ bac, etat, box } = prep(() => ({ status: 200, json: [ligne] })));
+    await bac.renderCmdStatsJour();
+    test('lecture réussie : chiffres affichés, aucun « indisponible »', nbIndispo(box.innerHTML) === 0 && /<strong>1<\/strong> cmd/.test(box.innerHTML));
+  }
+
+  console.log('\n10. REVUE PR 31 SUR 6ddb631 (point 3 et revue native P2) : RELÈVE ENTIÈRE BORNÉE À 15 S, CORPS ET TOURNÉES COMPRIS');
+  {
+    const prepRel = (rep) => {
+      const { bac, etat } = nouveauBac({ reponse: rep });
+      let tick = null; const pertes = [];
+      Object.assign(bac, { SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k', CMD_SELECT_COLS: 'id', navigator: { onLine: false }, offlineQueue: [], tournees: [],
+        setInterval: (f) => { tick = f; return 1; }, oqSignalerPurge() {}, offlineQueueFlush() {}, cmdSynchroPerdue: (m) => { pertes.push(m); }, cmdPollingAppliquer: () => false,
+        renderCmds() {}, renderDash() {}, renderTournees() {}, renderLivreur() {}, livControleNonRemontees() {}, findCmdForStop: () => null, paiEstEnLigne: () => false,
+        stkReprendreDeductions: () => Promise.resolve() });
+      vm.runInContext('var _pollingInterval = null;\nvar _pollingEnCours = false;\n' + fonction('function startPolling() {'), bac);
+      bac.startPolling();
+      return { bac, etat, tick: () => tick(), pertes };
+    };
+    for (const [nom, rep] of [
+      ['1re réponse (commandes) qui n’arrive jamais', () => 'jamais'],
+      ['corps des commandes qui n’arrive jamais', (u) => (u.includes('/commandes?') ? { status: 200, json: 'jamais' } : { status: 200, json: [] })],
+      ['requête des tournées sans réponse', (u) => (u.includes('/tournees?') ? 'jamais' : { status: 200, json: [] })],
+      ['corps des tournées qui n’arrive jamais', (u) => (u.includes('/tournees?') ? { status: 200, json: 'jamais' } : { status: 200, json: [] })],
+    ]) {
+      const { bac, etat, tick, pertes } = prepRel(rep);
+      const p = tick(); await attendre(10);
+      const bloque = bac._pollingEnCours === true, n0 = etat.requetes.length;
+      await tick();
+      test(nom + ' : relève en attente, la suivante ne s’empile pas', bloque && etat.requetes.length === n0, [bloque, n0, etat.requetes.length]);
+      declencher(etat, 15000); await p;
+      test(nom + ' : à 15 s la relève se termine (plus bloquée), synchro retirée, pause posée', bac._pollingEnCours === false && pertes.includes('relève') && bac.chargeEnPause(), [bac._pollingEnCours, pertes]);
+      etat.t += 10001; etat.reponse = () => ({ status: 200, json: [] });
+      const n1 = etat.requetes.length; await tick();
+      test(nom + ' : après la pause, une nouvelle relève part (2 requêtes) et se termine', etat.requetes.length === n1 + 2 && bac._pollingEnCours === false, etat.requetes.length - n1);
+    }
+    const { bac, etat, tick } = prepRel(() => ({ status: 200, json: [] }));
+    await tick();
+    test('relève normale : 2 requêtes, minuteur de 15 s arrêté à la fin, aucune pause', etat.requetes.length === 2 && !etat.minuteurs.some((m) => m.actif && m.ms === 15000) && !bac.chargeEnPause());
+  }
+
+  console.log('\n11. REVUE NATIVE PR 31 SUR 6ddb631 (P2) : CHARGEMENT COMPLET BORNÉ — LA PROMESSE PARTAGÉE SE TERMINE TOUJOURS');
+  {
+    const prepTout = (rep) => {
+      const { bac, etat } = nouveauBac({ reponse: rep });
+      Object.assign(bac, { commandes: [], tournees: [], caissesRemises: {}, nextCmdId: 1, cmdTotalCount: 0, cmdAllLoaded: false, CMD_SELECT_COLS: 'id,client', SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
+        localStorage: { getItem: () => null, setItem() {} }, isFinite, renderCmds() {}, renderDash() {}, renderTournees() {}, renderLivreur() {}, toast() {}, reconcilierTournees() {} });
+      bac.document.querySelector = () => null;
+      vm.runInContext(html.slice(html.indexOf('var cmdChargementComplet = false;'), html.indexOf('var _pollingInterval = null;')), bac);
+      vm.runInContext(fonction('async function sbLoadAll() {'), bac);
+      return { bac, etat };
+    };
+    const normal = (u) => (u.includes('/commandes?') ? { status: 200, json: [{ id: '#1', client: 'Client fictif' }], entetes: { 'Content-Range': '0-0/1' } } : { status: 200, json: [] });
+    for (const [nom, cas] of [['requête', 'jamais'], ['corps', { status: 200, json: 'jamais' }]]) {
+      const { bac, etat } = prepTout((u) => (u.includes('/caisse_remises?') ? cas : normal(u)));
+      const p = bac.sbChargerTout({ premier: true }); await attendre(10);
+      test('remises de caisse, ' + nom + ' sans réponse : chargement en attente (rien d’autre parti)', bac._chargeToutVol !== null && etat.requetes.length === 1, etat.requetes);
+      declencher(etat, 10000); const r = await p;
+      test('remises de caisse, ' + nom + ' sans réponse : à 10 s, abandon, commandes et tournées lues, chargement terminé', r === true && bac._chargeToutVol === null && etat.requetes.length === 3 && bac.commandes.length === 1, [r, etat.requetes.length]);
+    }
+    for (const [nom, rep, avant] of [
+      ['corps des commandes qui n’arrive jamais', (u) => (u.includes('/commandes?') ? { status: 200, json: 'jamais' } : normal(u)), null],
+      ['requête des tournées sans réponse', (u) => (u.includes('/tournees?') ? 'jamais' : normal(u)), 10000],
+      ['corps des tournées qui n’arrive jamais', (u) => (u.includes('/tournees?') ? { status: 200, json: 'jamais' } : normal(u)), null],
+      ['requête des commandes sans réponse', (u) => (u.includes('/commandes?') ? 'jamais' : normal(u)), 10000],
+    ]) {
+      const { bac, etat } = prepTout(rep);
+      const p = bac.sbChargerTout({ premier: true }); await attendre(10);
+      if (avant) { declencher(etat, avant); await attendre(10); } // abandon à 10 s ignoré par la fausse base : seul le délai global borne
+      const enAttente = bac._chargeToutVol !== null;
+      const p2 = bac.sbChargerTout({ premier: true });
+      test(nom + ' : chargement en attente, un 2e appel reçoit la même promesse', enAttente && p2 === p);
+      declencher(etat, 30000); await p;
+      test(nom + ' : à 30 s, la promesse partagée se termine, chargement libéré, pause posée', bac._chargeToutVol === null && bac.chargeEnPause() && !etat.minuteurs.some((m) => m.actif && (m.ms === 30000 || m.ms === 10000)));
+      etat.t += 61000; etat.reponse = normal;
+      const n0 = etat.requetes.length; const r2 = await bac.sbChargerTout();
+      test(nom + ' : plus tard, un nouveau chargement complet part et aboutit (plus jamais bloqué)', r2 === true && etat.requetes.length === n0 + 3 && bac.commandes.length === 1, [r2, etat.requetes.length - n0]);
+    }
+  }
+
+  console.log('\n12. TABLEAU DE BORD : PAGE DE LECTURE BORNÉE À 20 S, CORPS COMPRIS');
+  {
+    const { bac, etat } = nouveauBac({ reponse: () => ({ status: 200, json: 'jamais' }) });
+    Object.assign(bac, { SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k', zones: [] });
+    vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), bac);
+    let err = null; const p = bac.tdbLire('').catch((e) => { err = e; }); await attendre(10);
+    test('corps d’une page qui n’arrive jamais : lecture en attente', err === null && etat.requetes.length === 1);
+    declencher(etat, 20000); await p;
+    test('à 20 s : lecture rejetée « délai dépassé », pause posée', !!err && /délai dépassé/.test(err.message) && bac.chargeEnPause(), err && err.message);
   }
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');

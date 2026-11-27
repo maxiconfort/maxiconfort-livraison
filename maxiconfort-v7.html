@@ -7334,32 +7334,61 @@ function calculerProgressionChargement(t) {
 // Garde de charge des LECTURES LOURDES (jamais des écritures) :
 //  1. une seule lecture en cours par clé (chargeUnique) et réponse gardée au moins CHARGE_CACHE_MIN (60 s) ;
 //  2. après une erreur 5xx, 408, 429 ou un délai dépassé : pause croissante de toutes les lectures lourdes (10 s, 30 s, 60 s, puis 5 min
-//     au plus), remise à zéro au premier succès ; aucune relance immédiate ;
+//     au plus), remise à zéro au premier succès APRÈS l'échéance (jamais avant, cf. chargeSucces) ; aucune relance immédiate ;
 //  3. onglet caché (document.hidden) : aucune lecture de rafraîchissement (la dernière réponse connue est rendue) ;
 //  4. événements temps réel regroupés : un seul nouvel affichage (et donc au plus une lecture) CHARGE_REGROUPEMENT (5 s) après le dernier.
 var CHARGE_PAUSES = [10000, 30000, 60000, 300000];
 var CHARGE_CACHE_MIN = 60000;
 var CHARGE_REGROUPEMENT = 5000;
 var CHARGE_DELAI_LECTURE = 20000; // une lecture lourde sans réponse au bout de 20 s est abandonnée (= délai dépassé)
-var CHARGE_ETAT = { echecs: 0, pauseJusqua: 0, vols: {}, cache: {}, echecsCle: {} }; // echecsCle[cle] = { n, pasAvant } : attente propre à la clé
+var CHARGE_DELAI_COMPLET = 30000; // chargement complet (sbLoadAll) : commandes + tournées, réponses ET corps, bornés à 30 s au total
+var CHARGE_ETAT = { echecs: 0, pauseJusqua: 0, dernierEchec: 0, vols: {}, cache: {}, echecsCle: {} }; // echecsCle[cle] = { n, pasAvant } : attente propre à la clé
 function chargeDelaiPause(n) { return CHARGE_PAUSES[Math.min(Math.max(1, n || 1), CHARGE_PAUSES.length) - 1]; }
 function chargeEnPause(t) { return (t || Date.now()) < CHARGE_ETAT.pauseJusqua; }
 // statut HTTP (ou absence de réponse) qui signale une base surchargée
 function chargeSurcharge(statut) { return statut == null || statut >= 500 || statut === 408 || statut === 429; }
-function chargeEchec(t) { CHARGE_ETAT.echecs++; CHARGE_ETAT.pauseJusqua = (t || Date.now()) + chargeDelaiPause(CHARGE_ETAT.echecs); return CHARGE_ETAT.pauseJusqua; }
-function chargeSucces() { CHARGE_ETAT.echecs = 0; CHARGE_ETAT.pauseJusqua = 0; }
-// réponse d'une lecture lourde : succès → pause levée ; surcharge → pause croissante ; autre refus (401, 403…) → rien
-function chargeNoterReponse(statut, t) { if (statut >= 200 && statut < 400) chargeSucces(); else if (chargeSurcharge(statut)) chargeEchec(t); }
+function chargeEchec(t) {
+  var a = t || Date.now(); CHARGE_ETAT.echecs++; CHARGE_ETAT.dernierEchec = Math.max(CHARGE_ETAT.dernierEchec || 0, a);
+  CHARGE_ETAT.pauseJusqua = Math.max(CHARGE_ETAT.pauseJusqua || 0, a + chargeDelaiPause(CHARGE_ETAT.echecs)); return CHARGE_ETAT.pauseJusqua;
+}
+// v7.5.211 (revue chatgpt-review PR 31 sur 6ddb631, point 1) : un succès ne lève JAMAIS une pause avant son échéance, et une réponse
+// partie AVANT le dernier échec (« debut », heure d'envoi) ne remet pas l'attente croissante à zéro : deux réponses arrivées en même
+// temps (l'une en échec, l'autre réussie) laissent la pause en place jusqu'à son échéance. Rend vrai si la remise à zéro a eu lieu.
+function chargeSucces(debut) {
+  if (Date.now() < CHARGE_ETAT.pauseJusqua) return false;
+  if (debut != null && debut < (CHARGE_ETAT.dernierEchec || 0)) return false;
+  CHARGE_ETAT.echecs = 0; CHARGE_ETAT.pauseJusqua = 0; return true;
+}
+// réponse d'une lecture lourde (debut = heure d'envoi) : succès → remise à zéro (seulement après l'échéance de la pause) ;
+// surcharge → pause croissante ; autre refus (401, 403…) → rien
+function chargeNoterReponse(statut, debut) { if (statut >= 200 && statut < 400) chargeSucces(debut); else if (chargeSurcharge(statut)) chargeEchec(); }
 function chargeOngletCache() { return typeof document !== 'undefined' && !!document && document.hidden === true; }
-// fetch d'une lecture lourde, abandonné après CHARGE_DELAI_LECTURE ; refus HTTP → erreur portant .statut
+// v7.5.211 (revue chatgpt-review PR 31 sur 6ddb631, point 3, et revue native P2) : délai GLOBAL d'une suite d'opérations réseau,
+// réponses ET lectures des corps comprises. À l'échéance : abandon (ctrl.abort) et toute opération passée par borne() est rejetée
+// « délai dépassé » — même un fetch ou un .json() qui ignorerait l'abandon : la promesse attendue se termine toujours.
+// ctrlExterne (facultatif) : contrôleur d'abandon déjà passé aux fetch. fin() : minuteur arrêté (à appeler dans un finally).
+function chargeDelai(ms, ctrlExterne) {
+  var ctrl = ctrlExterne || (typeof AbortController !== 'undefined' ? new AbortController() : null);
+  var d = { signal: ctrl ? ctrl.signal : undefined, expire: false, minuteur: null }, rejeter = null;
+  var garde = new Promise(function (ok, ko) { rejeter = ko; });
+  garde.catch(function () {});
+  d.minuteur = setTimeout(function () {
+    d.expire = true; d.minuteur = null;
+    try { if (ctrl) ctrl.abort(); } catch (e) {}
+    var err = new Error('délai dépassé (' + Math.round(ms / 1000) + ' s)'); err.statut = null; err.delai = true; rejeter(err);
+  }, ms);
+  d.borne = function (p) { return Promise.race([Promise.resolve(p), garde]); };
+  d.fin = function () { if (d.minuteur) { clearTimeout(d.minuteur); d.minuteur = null; } };
+  return d;
+}
+// fetch d'une lecture lourde, borné à CHARGE_DELAI_LECTURE corps compris ; refus HTTP → erreur portant .statut
 async function chargeFetch(url, init) {
-  var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  var minuteur = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, CHARGE_DELAI_LECTURE) : null;
+  var d = chargeDelai(CHARGE_DELAI_LECTURE);
   try {
-    var r = await fetch(url, Object.assign({}, init || {}, ctrl ? { signal: ctrl.signal } : {}));
+    var r = await d.borne(fetch(url, Object.assign({}, init || {}, d.signal ? { signal: d.signal } : {})));
     if (!r.ok) { var err = new Error('HTTP ' + r.status); err.statut = r.status; throw err; }
-    return await r.json();
-  } finally { if (minuteur) clearTimeout(minuteur); }
+    return await d.borne(r.json());
+  } finally { d.fin(); }
 }
 // Une seule lecture en cours par clé ; réponse gardée « ttl » ms. En pause ou onglet caché : AUCUNE lecture, la dernière réponse connue
 // (même plus ancienne) est rendue, sinon undefined. Erreur : pause notée, dernière réponse connue rendue (sinon undefined).
@@ -7368,10 +7397,10 @@ function chargeUnique(cle, ttl, lire) {
   if (c && t - c.at < Math.max(ttl || 0, CHARGE_CACHE_MIN)) return Promise.resolve(c.val);
   if (CHARGE_ETAT.vols[cle]) return CHARGE_ETAT.vols[cle];
   var ec = CHARGE_ETAT.echecsCle[cle];
-  // attente croissante PROPRE à la clé (un succès d'une autre lecture lève la pause générale, pas celle-ci)
+  // attente croissante PROPRE à la clé (le succès d'une autre lecture ne lève pas celle-ci)
   if (chargeEnPause(t) || (ec && t < ec.pasAvant) || chargeOngletCache()) return Promise.resolve(c ? c.val : undefined);
   var p = Promise.resolve().then(lire).then(function (val) {
-    delete CHARGE_ETAT.vols[cle]; delete CHARGE_ETAT.echecsCle[cle]; CHARGE_ETAT.cache[cle] = { val: val, at: Date.now() }; chargeSucces(); return val;
+    delete CHARGE_ETAT.vols[cle]; delete CHARGE_ETAT.echecsCle[cle]; CHARGE_ETAT.cache[cle] = { val: val, at: Date.now() }; chargeSucces(t); return val;
   }, function (e) {
     delete CHARGE_ETAT.vols[cle];
     var n = ((CHARGE_ETAT.echecsCle[cle] || {}).n || 0) + 1;
@@ -7425,12 +7454,15 @@ async function sbLoadAll() {
     if (saved) caissesRemises = JSON.parse(saved);
   } catch(e) {}
   // Sync depuis Supabase (écrase localStorage si données plus récentes)
+  // v7.5.211 (revue native P2 PR 31 sur 6ddb631) : lecture des remises de caisse bornée à 10 s, corps compris (avant : sans délai,
+  // une requête sans réponse laissait _chargeToutVol en attente pour toujours et bloquait tout chargement complet suivant)
+  var _dCaisse = (typeof chargeDelai === 'function') ? chargeDelai(10000) : { borne: function (p) { return p; }, fin: function () {}, signal: undefined };
   try {
-    var rCaisse = await fetch(SUPABASE_URL + '/rest/v1/caisse_remises?select=*', {
+    var rCaisse = await _dCaisse.borne(fetch(SUPABASE_URL + '/rest/v1/caisse_remises?select=*', Object.assign({
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
-    });
+    }, _dCaisse.signal ? { signal: _dCaisse.signal } : {})));
     if (rCaisse.ok) {
-      var caisseData = await rCaisse.json();
+      var caisseData = await _dCaisse.borne(rCaisse.json());
       if (Array.isArray(caisseData)) {
         caisseData.forEach(function(r) {
           if (r.validee) caissesRemises[r.key_remise] = { validee: true, date: r.date_remise, par: r.par, attendu: r.especes_attendues, remis: r.especes_remises, ecart: r.ecart, cb: r.cb_encaisse, commentaire: r.commentaire }; // v7.5.114
@@ -7440,29 +7472,35 @@ async function sbLoadAll() {
       }
     }
   } catch(e) { /* fallback localStorage déjà chargé */ }
+  finally { _dCaisse.fin(); }
 
+  var _dTout = null; // v7.5.211 (revue native P2 PR 31) : délai global du chargement, corps compris
   try {
     var controller = new AbortController();
-    var timeout = setTimeout(function(){ controller.abort(); }, 10000); // 10s timeout
+    var timeout = setTimeout(function(){ controller.abort(); }, 10000); // 10s timeout (réponses des 2 requêtes)
+    // v7.5.211 (revue native P2 PR 31 sur 6ddb631) : en plus, délai GLOBAL de CHARGE_DELAI_COMPLET (30 s) sur les 2 requêtes ET la lecture
+    // de leurs corps (avant : le minuteur de 10 s était arrêté avant les .json(), un corps qui ne finissait jamais bloquait tout)
+    _dTout = (typeof chargeDelai === 'function') ? chargeDelai(typeof CHARGE_DELAI_COMPLET !== 'undefined' ? CHARGE_DELAI_COMPLET : 30000, controller) : { borne: function (p) { return p; }, fin: function () {} };
     // select explicite : exclut gls_pdf_base64 (PDF 50-400 Ko/cmd, récupéré à la demande via getLabel)
     // v7.5.149 (revue Codex PR 27, P2) : chargement en cours = complétude incertaine ; le total est demandé dans la MÊME réponse
     // (Prefer: count=exact → Content-Range « 0-999/1001 ») : la liste reçue et le total décrivent le même instant
     cmdChargementComplet = false;
     var _cmdDebutLecture = Date.now(); // v7.5.154 : la preuve exige un temps réel connecté AVANT ce début, sans perte depuis
     _cmdFile = cmdRtOuvrir(); // v7.5.157 : événements temps réel reçus à partir d'ici, rejoués sur l'instantané (cmdRejouerFile)
-    var rCmds = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=created_at.desc', {
+    var rCmds = await _dTout.borne(fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=created_at.desc', {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'count=exact' },
       signal: controller.signal
-    });
-    if (typeof chargeNoterReponse === 'function') chargeNoterReponse(rCmds.status); // v7.5.211 : 5xx → pause croissante des lectures lourdes
-    var rTour = await fetch(SUPABASE_URL + '/rest/v1/tournees?select=*&order=created_at.desc', {
+    }));
+    if (typeof chargeNoterReponse === 'function') chargeNoterReponse(rCmds.status, _cmdDebutLecture); // v7.5.211 : 5xx → pause croissante des lectures lourdes
+    var rTour = await _dTout.borne(fetch(SUPABASE_URL + '/rest/v1/tournees?select=*&order=created_at.desc', {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
       signal: controller.signal
-    });
+    }));
     clearTimeout(timeout);
-    var cmdsRes = { data: rCmds.ok ? await rCmds.json() : [], error: rCmds.ok ? null : 'HTTP '+rCmds.status };
+    var cmdsRes = { data: rCmds.ok ? await _dTout.borne(rCmds.json()) : [], error: rCmds.ok ? null : 'HTTP '+rCmds.status };
     var cmdsTotal = cmdTotalDepuisEntete(rCmds.headers && rCmds.headers.get ? rCmds.headers.get('Content-Range') : null);
-    var tourRes = { data: rTour.ok ? await rTour.json() : [], error: rTour.ok ? null : 'HTTP '+rTour.status };
+    var tourRes = { data: rTour.ok ? await _dTout.borne(rTour.json()) : [], error: rTour.ok ? null : 'HTTP '+rTour.status };
+    _dTout.fin();
     if (cmdsRes.error) { console.warn('Supabase commandes error:', cmdsRes.error); }
     if (tourRes.error) { console.warn('Supabase tournees error:', tourRes.error); }
 
@@ -7554,6 +7592,7 @@ async function sbLoadAll() {
   } catch(e) {
     console.warn('sbLoadAll erreur:', e.message);
     if (typeof chargeEchec === 'function') chargeEchec(); // v7.5.211 : délai dépassé ou réseau → pause croissante, aucune relance immédiate
+    if (_dTout) _dTout.fin(); try { clearTimeout(timeout); } catch(x) {} // v7.5.211 : minuteurs arrêtés
     if (_cmdFile) { cmdRtFermer(_cmdFile); _cmdFile = null; } // v7.5.157 : file fermée (événements déjà appliqués à la liste gardée)
     // Fallback cache localStorage — uniquement si AUCUNE donnée chargée depuis Supabase
     // NE PAS utiliser le cache si Supabase a répondu (même partiellement)
@@ -7955,6 +7994,7 @@ function startPolling() {
     if (typeof chargeOngletCache === 'function' && chargeOngletCache()) return;
     if (typeof chargeEnPause === 'function' && chargeEnPause()) { cmdSynchroPerdue('relève suspendue (base surchargée)'); return; }
     _pollingEnCours = true;
+    var _dRel = null; // v7.5.211 : délai de la relève
     try {
       // Recharger commandes
       // v7.5.51 : tri par updated_at (date de MODIFICATION) et non created_at.
@@ -7963,18 +8003,18 @@ function startPolling() {
       // le livreur) restait HORS fenetre -> l'encaissement ne remontait jamais
       // en direct cote admin (sauf rechargement complet). Desormais toute commande
       // que le livreur vient de modifier remonte en tete et est rafraichie en 30s.
-      var _ctlRel = typeof AbortController !== 'undefined' ? new AbortController() : null; // v7.5.211 : relève abandonnée après 15 s
-      var _minRel = _ctlRel ? setTimeout(function() { try { _ctlRel.abort(); } catch(e) {} }, 15000) : null;
-      var rC;
-      try {
-        rC = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=updated_at.desc.nullslast&limit=80', {
-          headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }, signal: _ctlRel ? _ctlRel.signal : undefined
-        });
-      } finally { if (_minRel) clearTimeout(_minRel); }
-      if (typeof chargeNoterReponse === 'function') chargeNoterReponse(rC.status); // v7.5.211 : 5xx → pause croissante
+      // v7.5.211 (revue chatgpt-review PR 31 sur 6ddb631, point 3, et revue native P2) : TOUTE la relève bornée à 15 s — les deux
+      // requêtes (commandes, tournées) ET la lecture de leurs corps (avant : seul l'en-tête de la 1re réponse l'était, un corps ou la
+      // requête des tournées sans fin laissait _pollingEnCours bloqué et plus aucune relève ne partait)
+      _dRel = (typeof chargeDelai === 'function') ? chargeDelai(15000) : { borne: function(p) { return p; }, fin: function() {}, signal: undefined };
+      var _debRel = Date.now();
+      var rC = await _dRel.borne(fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=updated_at.desc.nullslast&limit=80', {
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }, signal: _dRel.signal
+      }));
+      if (typeof chargeNoterReponse === 'function') chargeNoterReponse(rC.status, _debRel); // v7.5.211 : 5xx → pause croissante
       if (typeof chargeEnPause === 'function' && chargeEnPause()) { cmdSynchroPerdue('relève HTTP ' + rC.status); return; } // pas de 2e requête
       if (rC.ok) {
-        var data = await rC.json();
+        var data = await _dRel.borne(rC.json());
         if (data && data.length > 0) {
           var updated = false;
           data.forEach(function(r) {
@@ -8013,11 +8053,11 @@ function startPolling() {
       } else cmdSynchroPerdue('relève HTTP ' + rC.status); // v7.5.154 : relève des commandes en échec → preuve retirée
 
       // Recharger tournées
-      var rT = await fetch(SUPABASE_URL + '/rest/v1/tournees?select=*', {
-        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
-      });
+      var rT = await _dRel.borne(fetch(SUPABASE_URL + '/rest/v1/tournees?select=*', {
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }, signal: _dRel.signal
+      }));
       if (rT.ok) {
-        var tData = await rT.json();
+        var tData = await _dRel.borne(rT.json());
         if (tData && tData.length > 0) {
           var tupdated = false;
           tData.forEach(function(r) {
@@ -8069,7 +8109,7 @@ function startPolling() {
     } catch(e) {
       console.warn('Polling erreur:', e.message); cmdSynchroPerdue('relève'); // v7.5.154 : preuve retirée
       if (typeof chargeEchec === 'function') chargeEchec(); // v7.5.211 : délai dépassé ou réseau → pause croissante
-    } finally { _pollingEnCours = false; }
+    } finally { if (_dRel) _dRel.fin(); _pollingEnCours = false; }
   }, 10000); // toutes les 10 secondes
 }
 
@@ -9768,15 +9808,21 @@ async function tdbLire(filtre, cols) {
   for (var page = 0; ; page++) {
     if (page >= TDB_PAGES_MAX) throw new Error('plus de ' + TDB_PAGES_MAX.toLocaleString('fr-FR') + ' pages (' + out.length.toLocaleString('fr-FR') + ' commandes lues) sur la période : lecture arrêtée, chiffres non calculés');
     var apres = dernier == null ? '' : '&id=gt.' + encodeURIComponent(dernier);
-    // v7.5.211 : page abandonnée après 20 s (délai dépassé) ; 5xx ou délai → pause croissante de toutes les lectures lourdes (CHARGE)
-    var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null, minu = ctl ? setTimeout(function () { try { ctl.abort(); } catch (e) {} }, 20000) : null, r;
+    // v7.5.211 : page bornée à 20 s, CORPS COMPRIS (revue native P2 PR 31 sur 6ddb631 : avant, le minuteur était arrêté avant le .json()) ;
+    // 5xx ou délai → pause croissante de toutes les lectures lourdes (CHARGE)
+    var _dPage = (typeof chargeDelai === 'function') ? chargeDelai(20000) : (function () {
+      var c = typeof AbortController !== 'undefined' ? new AbortController() : null, m = c ? setTimeout(function () { try { c.abort(); } catch (e) {} }, 20000) : null;
+      return { signal: c ? c.signal : undefined, borne: function (p) { return p; }, fin: function () { if (m) clearTimeout(m); } };
+    })(), r, rows;
     try {
-      r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + (cols || TDB_COLS) + filtre + apres + '&order=id.asc&limit=' + TDB_PAGE, Object.assign({
-        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } }, ctl ? { signal: ctl.signal } : {}));
-    } catch (e) { if (typeof chargeEchec === 'function') chargeEchec(); throw e; }
-    finally { if (minu) clearTimeout(minu); }
-    if (!r.ok) { if (typeof chargeNoterReponse === 'function') chargeNoterReponse(r.status); throw new Error('HTTP ' + r.status); }
-    var rows = await r.json(); if (!Array.isArray(rows)) throw new Error('réponse inattendue');
+      try {
+        r = await _dPage.borne(fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + (cols || TDB_COLS) + filtre + apres + '&order=id.asc&limit=' + TDB_PAGE, Object.assign({
+          headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } }, _dPage.signal ? { signal: _dPage.signal } : {})));
+      } catch (e) { if (typeof chargeEchec === 'function') chargeEchec(); throw e; }
+      if (!r.ok) { if (typeof chargeNoterReponse === 'function') chargeNoterReponse(r.status); throw new Error('HTTP ' + r.status); }
+      try { rows = await _dPage.borne(r.json()); } catch (e) { if (typeof chargeEchec === 'function') chargeEchec(); throw e; }
+    } finally { _dPage.fin(); }
+    if (!Array.isArray(rows)) throw new Error('réponse inattendue');
     if (!rows.length) break;
     for (var k = 0; k < rows.length; k++) {
       var id = rows[k] && rows[k].id;
@@ -10037,6 +10083,9 @@ async function cmdFetchRange(dMin, dMaxExcl) {
     }
   } catch(e) { console.warn('cmdFetchRange', e.message); }
   if (immuable && lu) cmdStatsCache[key] = res; // v7.5.211 : un échec n'est jamais gardé comme « 0 commande » définitif
+  // v7.5.211 (revue chatgpt-review PR 31 sur 6ddb631, point 2) : lecture impossible (erreur, pause, onglet caché) et aucune réponse
+  // connue → « indisponible », jamais un « 0 commande » qui passerait pour un vrai chiffre
+  if (!lu) res.indisponible = true;
   return res;
 }
 
@@ -10097,11 +10146,11 @@ async function renderCmdStatsJour() {
   // v7.5.211 (incident du 27/11/2026, base saturée) : renderCmdStatsJour est appelé par CHAQUE renderCmds (événement temps réel,
   // relève, chargement complet, filtre…) et relançait à chaque fois cette lecture du mois (263 requêtes en 20 min) — désormais une
   // seule lecture à la fois, réponse gardée 60 s, attente croissante après erreur, aucune lecture onglet caché (dernière réponse gardée).
-  var moisData = [];
+  var moisData = [], moisLu = false; // v7.5.211 (revue chatgpt-review PR 31, point 2) : moisLu faux = aucune réponse connue → « indisponible »
   try {
     var url = SUPABASE_URL + '/rest/v1/commandes?select=id,prix,date_commande,date_livraison,statut,origine&date_commande=gte.' + debutMoisStr + '&date_commande=lt.' + demainStr + '&statut=not.eq.annul%C3%A9&limit=1000';
     var data = await chargeUnique('cmdStatsMois:' + debutMoisStr + ':' + demainStr, CHARGE_CACHE_MIN, function() { return chargeFetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } }); });
-    if (Array.isArray(data)) moisData = data;
+    if (Array.isArray(data)) { moisData = data; moisLu = true; }
   } catch(e) { console.warn('renderCmdStatsJour fetch err:', e.message); }
 
   // Filtre rétroactif global
@@ -10121,7 +10170,7 @@ async function renderCmdStatsJour() {
     });
     var nb = items.length;
     var total = items.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
-    return { nb: nb, total: total };
+    return moisLu ? { nb: nb, total: total } : { nb: 0, total: 0, indisponible: true };
   }
 
   // v7.5.96 : chaque carte affiche la période EN COURS par défaut (depuis le fetch du mois
@@ -10164,20 +10213,22 @@ async function renderCmdStatsJour() {
   }
   var moisSel = '<select onchange="cmdStatsSel.mois=this.value; renderCmdStatsJour();" style="'+inStyle+'" title="Choisir un mois">'+moisOpts+'</select>';
 
-  function carte(ico, lbl, selHtml, nb, total, bg, brd, txt) {
+  function carte(ico, lbl, selHtml, nb, total, bg, brd, txt, indispo) {
     // white-space:nowrap + flex:0 0 auto : la carte ne se compresse pas et le montant
     // (ex "1 656,45 €", qui contient des espaces) ne passe plus jamais a la ligne.
     var h = '<div style="background:'+bg+';border:1px solid '+brd+';border-radius:8px;padding:6px 10px;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:'+txt+';white-space:nowrap;flex:0 0 auto">'+
-      '<span style="white-space:nowrap">'+ico+(lbl?' '+lbl:'')+'</span>'+selHtml+
-      '<span style="white-space:nowrap"><strong>'+nb+'</strong> cmd'+(nb>1?'s':'')+'</span>';
+      '<span style="white-space:nowrap">'+ico+(lbl?' '+lbl:'')+'</span>'+selHtml;
+    // v7.5.211 (revue chatgpt-review PR 31 sur 6ddb631, point 2) : lecture impossible sans réponse connue → « indisponible » (ni 0 ni montant)
+    if (indispo) return h + '<span class="cmd-stats-indispo" style="white-space:nowrap;opacity:.8" title="Lecture de la base impossible pour le moment (base surchargée ou hors ligne) : chiffres non disponibles, nouvel essai automatique">⚠️ indisponible</span></div>';
+    h += '<span style="white-space:nowrap"><strong>'+nb+'</strong> cmd'+(nb>1?'s':'')+'</span>';
     if (showMontants) h += '<span style="opacity:.5">·</span><span style="font-weight:900;white-space:nowrap">'+total.toLocaleString('fr-FR').replace(/\s/g,' ')+' €</span>';
     return h + '</div>';
   }
 
   box.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
-    carte('📊', '',     jourSel, jStats.nb, jStats.total, 'var(--bl)', 'var(--blue)', 'var(--bd)') +
-    carte('📅', 'Sem.', semSel,  sStats.nb, sStats.total, 'var(--gl)', 'var(--green)', 'var(--gd)') +
-    carte('📆', '',     moisSel, mStats.nb, mStats.total, 'var(--ol)', 'var(--orange)', 'var(--od)') +
+    carte('📊', '',     jourSel, jStats.nb, jStats.total, 'var(--bl)', 'var(--blue)', 'var(--bd)', jStats.indisponible) +
+    carte('📅', 'Sem.', semSel,  sStats.nb, sStats.total, 'var(--gl)', 'var(--green)', 'var(--gd)', sStats.indisponible) +
+    carte('📆', '',     moisSel, mStats.nb, mStats.total, 'var(--ol)', 'var(--orange)', 'var(--od)', mStats.indisponible) +
   '</div>';
 }
 

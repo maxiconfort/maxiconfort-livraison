@@ -573,7 +573,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
       && b.cmdComparerDates('2026-11-26T11:00:00+01:00', '2026-11-26T10:00:00Z') === 0 && b.cmdComparerDates('', T1) === null && b.cmdComparerDates('hier', T1) === null);
     test('branchements : gestionnaire temps réel → file AVANT tout le reste (suppressions comprises) ; file ouverte avant la lecture ; updated_at lu',
       /table:'commandes'\}, function\(payload\) \{\n\s*cmdRtRecu\(payload\);[^\n]*\n\s*\/\/[^\n]*\n\s*if \(!cmdTempsReelAppliquer\(payload\)\) return;\n/.test(html)
-      && html.indexOf('_cmdFile = cmdRtOuvrir();') < html.indexOf("var rCmds = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS")
+      && html.indexOf('_cmdFile = cmdRtOuvrir();') < html.indexOf("var rCmds = await _dTout.borne(fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS") // v7.5.211 : lecture bornée (délai global)
       && html.indexOf('_cmdFile = cmdRtOuvrir();') > html.indexOf('async function sbLoadAll() {')
       && /var CMD_SELECT_COLS = '[^']*,updated_at';/.test(html));
   }
