@@ -11,7 +11,7 @@ const fonction = (entete) => { const i = html.indexOf(entete); if (i < 0) throw 
 
 const bac = { console, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, zones: [] };
 vm.createContext(bac);
-vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), bac);
+vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), bac); bac.tdbLireCoherent = (f) => bac.tdbLire(f); // v7.5.199 : contrôle de cohérence neutre ici (testé en section 7 sexies)
 vm.runInContext(tranche('var ZONES_IDF_DEFAUT = [', '\n];\n') + '\n];\n' + fonction('function getZoneFromAdresse(adresse) {'), bac);
 const D = (a, m, j, h) => new Date(a, m - 1, j, h || 12, 0, 0).getTime();
 
@@ -150,7 +150,7 @@ test('bloc « Paiements — mois » retiré du tableau de bord (et sa fonction, 
 test('admin : carte Encaissé cliquable → page Encaissements', /tdb-carte tdb-lien" role="link"[^>]*onclick="tdbAller\('finance'\)"[^>]*><div class="tdb-carte-l">Encaissé/.test(hA), hA.match(/.{80}Encaissé.{20}/));
 test('collab : aucune carte vers Encaissements', !hC.includes("tdbAller('finance')"));
 test('Commandes récentes : colonne Montant pour l’admin seulement', /var A = role === 'admin'[\s\S]*?\(A \? '<th>Montant<\/th>' : ''\)/.test(fonction('function tdbRecentes() {')));
-test('lecture de la base : SELECT seulement, limitée à la période, par pages de 1 000 (clé : id croissant, après le dernier reçu)', (() => { const f = tranche('async function tdbLire(filtre) {', 'async function tdbCharger'); return f.includes("'&id=gt.' + encodeURIComponent(dernier)") && f.includes("'&order=id.asc&limit=' + TDB_PAGE") && /var TDB_PAGE = 1000;/.test(html) && !/Range|offset/.test(f) && !/method|POST|PATCH|DELETE/.test(f) && f.includes("'/rest/v1/commandes?select='"); })());
+test('lecture de la base : SELECT seulement, limitée à la période, par pages de 1 000 (clé : id croissant, après le dernier reçu)', (() => { const f = tranche('async function tdbLire(filtre) {', '// v7.5.199 (revue Codex PR 27 sur cbf3170) : CONTRÔLE DE COHÉRENCE'); return f.includes("'&id=gt.' + encodeURIComponent(dernier)") && f.includes("'&order=id.asc&limit=' + TDB_PAGE") && /var TDB_PAGE = 1000;/.test(html) && !/Range|offset/.test(f) && !/method|POST|PATCH|DELETE/.test(f) && f.includes("'/rest/v1/commandes?select='"); })());
 test('aucune écriture dans le bloc TDB', !/sbSave|rpcPin|method:\s*'(POST|PATCH|DELETE)'|localStorage\.setItem|\.insert\(|\.update\(/.test(tranche('// TDB-DEBUT', '// TDB-FIN')));
 
 console.log('\n6. MENUS');
@@ -203,7 +203,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
     renderDash: () => { rendus++; }, getZoneFromAdresse: () => null, arrChargerRevients: () => Promise.resolve(),
     document: { getElementById: (id) => (id === 'tdb-contenu' ? elContenu : id === 'p-dashboard' ? { classList: { contains: () => pageOn.on } } : id === 'dash-periode' ? { value: 'mois' } : null) },
     fetch: () => { lectures++; return new Promise((ok) => { enAttente.push(() => ok({ ok: true, json: async () => [] })); }); } };
-  vm.createContext(b4); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b4);
+  vm.createContext(b4); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b4); b4.tdbLireCoherent = (f) => b4.tdbLire(f); // v7.5.199 : contrôle de cohérence neutre ici (testé en section 7 sexies)
   const attendre = () => new Promise((r) => setImmediate(r));
   b4.tdbRendre(); // base incomplète → lecture par période (3 requêtes)
   const n1 = lectures;
@@ -285,7 +285,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
       document: { getElementById: (id) => (id === 'tdb-contenu' ? el : id === 'p-dashboard' ? { classList: { contains: () => true } } : id === 'dash-periode' ? periode : null) },
       // v7.5.157 : page suivante (filtre id=gt.) d'une base FICTIVE dont tout tient sur une page → vide, aussitôt (tdbLire lit jusqu'à une page vide)
       fetch: (u, o) => { if (/[?&]id=gt\./.test(u)) return Promise.resolve({ ok: true, json: async () => [] }); lectures++; return new Promise((ok) => { enCours.push((rows) => ok({ ok: true, json: async () => rows })); }); } };
-    vm.createContext(b5); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b5);
+    vm.createContext(b5); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b5); b5.tdbLireCoherent = (f) => b5.tdbLire(f); // v7.5.199 : contrôle de cohérence neutre ici (testé en section 7 sexies)
     const attendre = async () => { for (let k = 0; k < 6; k++) await new Promise((r) => setImmediate(r)); };
     const ligne = (id) => ({ id, prix: 1, statut: 'livré', stpaie: '', montant_enc: 0, date_commande: '2026-11-01', date_livraison: '2026-11-01', origine: '', adresse: '', livreur: '' });
     b5.tdbRendre(); const mois = enCours.splice(0); // Mois : 2 lectures
@@ -322,13 +322,13 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
         const rows = tri.filter((id) => apres == null || id > apres).slice(0, Math.min(lim, b6.plafond)).map((id) => ({ id }));
         return Promise.resolve({ ok: true, json: async () => rows });
       } };
-    vm.createContext(b6); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b6);
+    vm.createContext(b6); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b6); b6.tdbLireCoherent = (f) => b6.tdbLire(f); // v7.5.199 : contrôle de cohérence neutre ici (testé en section 7 sexies)
     b6.base = Array.from({ length: 31005 }, (_, k) => idDe(k));
     const tout = await b6.tdbLire('');
     test('au-delà de 30 pages : la lecture continue jusqu’à la dernière (31 005 lignes, 32 pages + page vide de fin)', tout.length === 31005 && pages === 33 && new Set(tout.map((r) => r.id)).size === 31005, [tout.length, pages]);
     test('pagination par clé : 1re page sans filtre d’identifiant, suivantes après le DERNIER identifiant reçu (encodé), ordre id croissant, aucune plage « Range »',
       !/id=gt\./.test(urls[0]) && urls[1].includes('&id=gt.' + encodeURIComponent(idDe(999)) + '&order=id.asc&limit=1000') && urls.every((u) => u.includes('&order=id.asc&limit=1000'))
-      && !/Range|offset=/.test(tranche('async function tdbLire(filtre) {', 'async function tdbCharger')), urls.slice(0, 2));
+      && !/Range|offset=/.test(tranche('async function tdbLire(filtre) {', '// v7.5.199 (revue Codex PR 27 sur cbf3170) : CONTRÔLE DE COHÉRENCE')), urls.slice(0, 2));
     // base qui plafonne chaque réponse SOUS 1 000 lignes (réglage max-rows)
     b6.plafond = 300; pages = 0; urls.length = 0;
     const tout300 = await b6.tdbLire('');
@@ -385,7 +385,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
       renderDash: () => { b7.tdbRendre(); }, getZoneFromAdresse: () => null, arrChargerRevients: () => new Promise(() => {}),
       document: { getElementById: (id) => (id === 'tdb-contenu' ? el : id === 'p-dashboard' ? { classList: { contains: () => true } } : id === 'dash-periode' ? { value: 'mois' } : null) },
       fetch: () => { lectures++; return Promise.resolve(echoue ? { ok: false, status: 503, json: async () => ({}) } : { ok: true, json: async () => [] }); } };
-    vm.createContext(b7); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b7);
+    vm.createContext(b7); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b7); b7.tdbLireCoherent = (f) => b7.tdbLire(f); // v7.5.199 : contrôle de cohérence neutre ici (testé en section 7 sexies)
     const attendre = async () => { for (let k = 0; k < 12; k++) await new Promise((r) => setImmediate(r)); };
     b7.tdbRendre(); await attendre();
     test('échec : une seule lecture (Mois = 2 requêtes), aucune boucle de requêtes', lectures === 2, lectures);
@@ -433,7 +433,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
       vm.createContext(b8);
       vm.runInContext(html.slice(html.indexOf('var cmdChargementComplet = false;'), html.indexOf('var _pollingInterval = null;')), b8);
       vm.runInContext(fonction('async function sbLoadAll() {'), b8);
-      vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b8);
+      vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b8); b8.tdbLireCoherent = (f) => b8.tdbLire(f); // v7.5.199 : contrôle de cohérence neutre ici (testé en section 7 sexies)
       if (!o.sansTempsReel) b8.cmdTempsReelStatut('SUBSCRIBED', 1); // v7.5.154 : temps réel connecté bien avant la lecture
       if (o.avant) o.avant(b8);
       await b8.sbLoadAll();
@@ -511,7 +511,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
       vm.createContext(b);
       vm.runInContext(html.slice(html.indexOf('var cmdChargementComplet = false;'), html.indexOf('var _pollingInterval = null;')), b);
       vm.runInContext(fonction('async function sbLoadAll() {'), b);
-      vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b);
+      vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b); b.tdbLireCoherent = (f) => b.tdbLire(f); // v7.5.199 : contrôle de cohérence neutre ici (testé en section 7 sexies)
       b.cmdTempsReelStatut('SUBSCRIBED', 1);
       if (o.avant) o.avant(b);
       await b.sbLoadAll();
@@ -577,7 +577,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
       vm.createContext(b);
       vm.runInContext(html.slice(html.indexOf('var cmdChargementComplet = false;'), html.indexOf('var _pollingInterval = null;')), b);
       vm.runInContext(fonction('async function sbLoadAll() {'), b);
-      vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b);
+      vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b); b.tdbLireCoherent = (f) => b.tdbLire(f); // v7.5.199 : contrôle de cohérence neutre ici (testé en section 7 sexies)
       b.cmdTempsReelStatut('SUBSCRIBED', 1);
       await b.sbLoadAll();
       return b;
@@ -640,7 +640,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
         if (attente === 'bloquer') return new Promise((ok) => { attente = () => ok(fin()); }); return Promise.resolve(fin()); },
       sb: { channel: () => ({ on(ev, f, fn) { gestionnaire = fn; return this; }, subscribe() { return this; } }) } };
     vm.createContext(b);
-    vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b);
+    vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), b); b.tdbLireCoherent = (f) => b.tdbLire(f); // v7.5.199 : contrôle de cohérence neutre ici (testé en section 7 sexies)
     vm.runInContext(fonction('function sbStartRealtimeProduits() {'), b);
     b.sbStartRealtimeProduits();
     const tic = () => new Promise((r) => setImmediate(r));
@@ -672,7 +672,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
         document: { getElementById: (id) => (id === 'tdb-contenu' ? s.el : id === 'p-dashboard' ? { classList: { contains: () => true } } : id === 'dash-periode' ? s.periode : null) },
         // v7.5.157 : page suivante (filtre id=gt.) d'une base FICTIVE dont tout tient sur une page → vide, aussitôt (tdbLire lit jusqu'à une page vide)
         fetch: (u, o) => { if (/[?&]id=gt\./.test(u)) return Promise.resolve({ ok: true, json: async () => [] }); s.lectures++; return new Promise((ok) => { s.enCours.push((rows) => ok({ ok: true, json: async () => rows })); }); } };
-      vm.createContext(s.b); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), s.b);
+      vm.createContext(s.b); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), s.b); s.b.tdbLireCoherent = (f) => s.b.tdbLire(f); // v7.5.199 : contrôle de cohérence neutre ici (testé en section 7 sexies)
       s.aller = (v) => { s.periode.value = v; s.b.tdbRendre(); return s.enCours.splice(0); };
       return s;
     };
@@ -733,6 +733,87 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
     test('zones / livreurs / note : noms échappés, couleur hors liste blanche remplacée (aucune injection dans style)', !/<img/i.test(hZ) && !hZ.includes('url(') && hZ.includes('background:#a39b90') && hZ.includes('&lt;img src=x onerror=alert(1)&gt;'), hZ.slice(0, 300));
     test('couleur de zone : codes #rgb / #rrggbb et noms gardés, le reste neutralisé', bac.tdbCouleur('#1a2B3c') === '#1a2B3c' && bac.tdbCouleur('#abc') === '#abc' && bac.tdbCouleur('teal') === 'teal'
       && bac.tdbCouleur('red;x:y') === '#a39b90' && bac.tdbCouleur('"') === '#a39b90' && bac.tdbCouleur(null) === '#a39b90');
+  }
+  console.log('\n7 sexies. REVUE CODEX PR 27 SUR cbf3170 (contrôle de cohérence après la lecture paginée, synchronisation perdue)');
+  { // base FICTIVE : chaque ligne répond à tous les filtres ; « plafond » lignes par page ; « pendant(n) » modifie la base avant la n-ième requête
+    const T0 = '2026-11-27T08:00:00.000Z', T1 = '2026-11-27T08:05:00.000Z', T2 = '2026-11-27T08:06:00.000Z';
+    const cmd = (id, maj, prix) => ({ id, prix: prix || 100, date_commande: '2026-11-02', date_livraison: '2026-11-03', statut: 'livré', stpaie: '', montant_enc: 0, origine: '', adresse: '', livreur: '', updated_at: maj || T0 });
+    const minuteurs = []; const el = { innerHTML: '' };
+    const fabrique = (base, plus) => {
+      const x = Object.assign({ console, JSON, Math, Date, Number, String, Object, Array, parseFloat, parseInt, isNaN, Promise, encodeURIComponent, zones: [],
+        role: 'admin', commandes: [], produits: [], SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k', base, plafond: 2, pendant: null, requetes: 0, controles: [],
+        setTimeout: (f, ms) => { minuteurs.push({ f, ms }); return minuteurs.length; }, clearTimeout: () => {},
+        renderDash: () => {}, getZoneFromAdresse: () => null, arrChargerRevients: () => new Promise(() => {}),
+        document: { getElementById: (id) => (id === 'tdb-contenu' ? el : id === 'p-dashboard' ? { classList: { contains: () => true } } : id === 'dash-periode' ? { value: 'mois' } : null) },
+        fetch: (url, o) => {
+          x.requetes++; if (x.pendant) x.pendant(x.requetes, x);
+          const tri = x.base.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+          if (url.includes('select=id,updated_at')) { // contrôle : nombre exact + updated_at le plus récent
+            x.controles.push({ url, prefer: o && o.headers && o.headers.Prefer });
+            const rec = tri.slice().sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0];
+            const n = x.sansTotal ? null : tri.length;
+            return Promise.resolve({ ok: true, headers: { get: (h) => (h.toLowerCase() === 'content-range' && n != null ? (n ? '0-0/' : '*/') + n : null) }, json: async () => (rec ? [{ id: rec.id, updated_at: rec.updated_at }] : []) });
+          }
+          const m = /[?&]id=gt\.([^&]*)/.exec(url), apres = m ? decodeURIComponent(m[1]) : null;
+          const rows = tri.filter((c) => apres == null || c.id > apres).slice(0, x.plafond).map((c) => Object.assign({}, c));
+          return Promise.resolve({ ok: true, json: async () => rows });
+        } }, plus || {});
+      vm.createContext(x); vm.runInContext(tranche('// TDB-DEBUT', '// TDB-FIN'), x); return x;
+    };
+    const attendre = async () => { for (let k = 0; k < 40; k++) await new Promise((r) => setImmediate(r)); };
+    const ids = (rows) => rows.map((r) => r.id).sort().join(',');
+    const cinq = () => ['C01', 'C02', 'C03', 'C04', 'C05'].map((id) => cmd(id));
+    // a) insertion AVANT le curseur pendant la lecture (aucun temps réel) : omise par la pagination -> détectée, base relue
+    let x = fabrique(cinq());
+    x.pendant = (n, b) => { if (n === 2) b.base.push(cmd('C00', T1)); };
+    let lu = await x.tdbLireCoherent('');
+    test('insertion avant le curseur pendant la lecture : détectée par le contrôle (nombre exact), base relue, la commande insérée est comptée',
+      ids(lu) === 'C00,C01,C02,C03,C04,C05' && x.controles.length === 2 && x.controles.every((c) => c.prefer === 'count=exact'), [ids(lu), x.controles.length]);
+    // b) suppression APRÈS lecture : la ligne lue n'est plus dans la base -> détectée, plus comptée
+    x = fabrique(cinq()); x.pendant = (n, b) => { if (n === 3) b.base = b.base.filter((c) => c.id !== 'C01'); };
+    lu = await x.tdbLireCoherent('');
+    test('suppression d’une commande déjà lue : détectée, base relue, la commande supprimée n’est plus comptée', ids(lu) === 'C02,C03,C04,C05' && x.controles.length === 2, [ids(lu), x.controles.length]);
+    // c) suppression + insertion simultanées (même nombre) : la date de mise à jour la plus récente diffère -> détectée
+    x = fabrique(cinq()); x.pendant = (n, b) => { if (n === 3) { b.base = b.base.filter((c) => c.id !== 'C01'); b.base.push(cmd('C00', T1)); } };
+    lu = await x.tdbLireCoherent('');
+    test('suppression + insertion pendant la lecture (nombre inchangé) : détectée par la date de mise à jour, base relue', ids(lu) === 'C00,C02,C03,C04,C05' && x.controles.length === 2, [ids(lu), x.controles.length]);
+    // d) commande déjà lue MODIFIÉE pendant la lecture (prix) : updated_at plus récent -> relue avec la nouvelle valeur
+    x = fabrique(cinq()); x.pendant = (n, b) => { if (n === 3) b.base = b.base.map((c) => (c.id === 'C01' ? cmd('C01', T2, 999) : c)); };
+    lu = await x.tdbLireCoherent('');
+    test('commande déjà lue modifiée pendant la lecture : détectée, relue avec la nouvelle valeur', lu.find((r) => r.id === 'C01').prix === 999 && x.controles.length === 2, lu.find((r) => r.id === 'C01'));
+    // e) base stable : une seule lecture + un contrôle (pas de relecture inutile)
+    x = fabrique(cinq()); lu = await x.tdbLireCoherent('');
+    test('base stable : une lecture et UN contrôle, aucune relecture', ids(lu) === 'C01,C02,C03,C04,C05' && x.controles.length === 1 && x.requetes === 5, [x.controles.length, x.requetes]);
+    // f) nombre exact illisible (en-tête absent) : erreur, jamais de chiffres présentés comme complets
+    x = fabrique(cinq()); x.sansTotal = true; let err = '';
+    try { await x.tdbLireCoherent(''); } catch (e) { err = e.message; }
+    test('contrôle illisible (nombre de commandes absent) : erreur « chiffres non calculés »', /contrôle de cohérence illisible/.test(err) && /chiffres non calculés/.test(err), err);
+    // g) AFFICHAGE, synchronisation perdue (aucun temps réel) : base modifiée pendant la lecture -> chiffres de la lecture COHÉRENTE, datés
+    minuteurs.length = 0; el.innerHTML = '';
+    x = fabrique(cinq()); x.pendant = (n, b) => { if (n === 2) b.base.push(cmd('C00', T1)); };
+    x.tdbRendre(); await attendre();
+    test('affichage, synchronisation perdue : les lignes affichées sont celles de la lecture relue (commande insérée comprise), sans erreur',
+      x.TDB_ETAT.erreur === '' && Array.isArray(x.TDB_ETAT.lignes) && x.TDB_ETAT.lignes.some((l) => l.id === 'C00') && x.TDB_ETAT.lignes.length === 6, [x.TDB_ETAT.erreur, x.TDB_ETAT.lignes && x.TDB_ETAT.lignes.map((l) => l.id)]);
+    test('… chiffres DATÉS : « Chiffres lus dans la base à HH:MM (synchronisation en direct indisponible … nouvelle lecture chaque minute) »',
+      /Chiffres lus dans la base à \d\d:\d\d \(synchronisation en direct indisponible : modifications depuis cette heure non prises en compte, nouvelle lecture chaque minute\)/.test(el.innerHTML), el.innerHTML.slice(-400));
+    test('… nouvelle lecture programmée à l’expiration (≈ 60 s)', minuteurs.some((m) => m.ms > 59000 && m.ms <= 60200), minuteurs.map((m) => m.ms));
+    // h) base modifiée à CHAQUE lecture : erreur affichée avec « Réessayer », jamais « Chiffres lus » ni chiffres présentés comme complets
+    el.innerHTML = '';
+    x = fabrique(cinq()); let k = 0; x.pendant = (n, b) => { k++; b.base.push(cmd('B' + String(9999 - k).padStart(4, '0'), '2026-11-27T09:' + String(k % 60).padStart(2, '0') + ':00.000Z')); };
+    x.tdbRendre(); await attendre();
+    test('base modifiée pendant chaque lecture : erreur affichée (« modifiées pendant chaque lecture … chiffres non calculés »), bouton Réessayer, aucune mention « Chiffres lus »',
+      /commandes modifiées pendant chaque lecture \(3 essais\)/.test(x.TDB_ETAT.erreur) && /Lecture de la base impossible/.test(el.innerHTML) && el.innerHTML.includes('tdbReessayer()') && !/Chiffres lus dans la base/.test(el.innerHTML), [x.TDB_ETAT.erreur, el.innerHTML.slice(-300)]);
+    // i) temps réel GARANTI depuis la lecture : mention datée sans « indisponible »
+    el.innerHTML = '';
+    x = fabrique(cinq(), { cmdSynchroGarantieDepuis: () => true });
+    x.tdbRendre(); await attendre();
+    test('temps réel garanti : « Chiffres lus dans la base à HH:MM. » sans « synchronisation en direct indisponible »',
+      /Chiffres lus dans la base à \d\d:\d\d\./.test(el.innerHTML) && !/indisponible/.test(el.innerHTML), el.innerHTML.slice(-300));
+    // j) code : le contrôle est une LECTURE (GET), même filtre, nombre exact demandé
+    const fc = tranche('async function tdbControler(filtre) {', 'function tdbMemeMaj');
+    test('code : contrôle en lecture seule (aucune écriture), même filtre, « Prefer: count=exact », date de mise à jour la plus récente',
+      !/method|POST|PATCH|DELETE/.test(fc) && fc.includes("'/rest/v1/commandes?select=id,updated_at' + filtre") && fc.includes("'Prefer': 'count=exact'") && fc.includes('order=updated_at.desc.nullslast'));
+    test('code : les trois lectures du tableau passent par la lecture contrôlée', (tranche('async function tdbCharger(P, cle) {', 'function tdbAller').match(/tdbLireCoherent\(/g) || []).length === 3);
   }
   console.log('\n8. MISE EN LIGNE');
 
