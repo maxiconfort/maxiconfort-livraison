@@ -71,7 +71,10 @@
 --   (suppression d'une commande livrée) : la commande encore présente est SUPPRIMÉE PAR LA FONCTION, dans la même
 --   transaction, avant le recrédit (v7.5.208, avis chatgpt-review sur 8905a30 : jamais de recrédit pour une commande qui
 --   reste livrée ; suppression refusée par la base → « suppression_refusee », rien n'est recrédité) ; commande déjà
---   supprimée : recrédit depuis le journal.
+--   supprimée : recrédit depuis le journal. v7.5.209 (avis chatgpt-review sur 3fefbc9) : commande supprimée par la fonction
+--   alors qu'elle était déduite ou livrée SANS déduction journalisée (ancienne version de l'appli) : suppression maintenue,
+--   rien recrédité, réponse { ok, recredit_manuel_requis: true, produits: [{produit_id, nom, qte}] } écrite au journal
+--   stock_operations (rejouée à l'identique) ; l'appli prévient le bureau (recrédit à faire à la main).
 --
 -- 3. MOUVEMENT MANUEL — public.mouvement_stock_produit(p_produit_id, p_type, p_qte, p_motif, p_cle) (réserve Codex n° 3) :
 --   administrateur ou collaboratrice ; entree / retour (+qte), sortie (−qte, jamais sous 0), correction (stock = qte,
@@ -481,13 +484,15 @@ declare
   v_ids text[];
   v_retours jsonb := '[]'::jsonb;
   v_res jsonb; v_op bigint;
+  v_supprimee_ici boolean := false;   -- v7.5.209 : commande supprimée PAR CET APPEL (p_suppression)
+  v_produits jsonb;
 begin
   if v_role is null then return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
   if v_role not in ('admin', 'collab') then return json_build_object('ok', false, 'erreur', 'droits_insuffisants'); end if;
   if coalesce(btrim(p_cmd_id), '') = '' then return json_build_object('ok', false, 'erreur', 'commande_requise'); end if;
 
   perform pg_advisory_xact_lock(hashtext('l040|' || p_cmd_id));
-  select id, statut, stock_deduit into c from public.commandes where id = p_cmd_id for update;
+  select id, statut, stock_deduit, lignes, produit, qte into c from public.commandes where id = p_cmd_id for update;
   v_trouvee := found;
   -- v7.5.208 (avis chatgpt-review sur 8905a30) : p_suppression n'est plus une simple DÉCLARATION de l'appelant. Commande
   -- encore présente : elle est RÉELLEMENT SUPPRIMÉE ICI, dans la même transaction et sous le même verrou, AVANT tout recrédit
@@ -504,6 +509,7 @@ begin
       return json_build_object('ok', false, 'erreur', 'suppression_refusee');
     end if;
     v_trouvee := false;
+    v_supprimee_ici := true;
   end if;
   if not v_trouvee and not coalesce(p_suppression, false) then
     return json_build_object('ok', false, 'erreur', 'commande_introuvable');
@@ -516,6 +522,29 @@ begin
   select id, nature, sortie_max into o from public.stock_operations
    where cmd_id = p_cmd_id and nature in ('deduction', 'recredit') order by id desc limit 1;
   if not found or o.nature <> 'deduction' then
+    -- v7.5.209 (avis chatgpt-review sur 3fefbc9) : commande SUPPRIMÉE PAR CET APPEL alors qu'elle était déduite (stock_deduit)
+    -- ou livrée, SANS déduction journalisée (déduite par une ANCIENNE version de l'appli, qui retirait le stock elle-même) :
+    -- quantités sorties inconnues, rien n'est recrédité. La suppression demandée par le bureau est MAINTENUE (la refuser ne
+    -- rendrait pas les quantités connues et bloquerait le bureau), mais ce n'est plus un succès muet : les produits de la
+    -- commande (copiés AVANT sa disparition) sont écrits au journal stock_operations (nature « recredit », aucun stock
+    -- touché, réponse rejouée à l'identique) et la réponse dit explicitement « recredit_manuel_requis » avec leur détail.
+    if v_supprimee_ici and (coalesce(c.stock_deduit, false) or coalesce(c.statut, '') in ('livré', 'livre')) then
+      select coalesce(jsonb_agg(jsonb_build_object('produit_id', interne.l040_trouver_produit(x.l ->> 'produitId',
+               coalesce(nullif(x.l ->> 'nom', ''), x.l ->> 'produit')), 'nom', coalesce(nullif(x.l ->> 'nom', ''), x.l ->> 'produit'),
+               'qte', interne.l040_qte(x.l -> 'qte')) order by x.n), '[]'::jsonb) into v_produits
+        from (select e.value as l, e.n from jsonb_array_elements(case when jsonb_typeof(c.lignes) = 'array' then c.lignes else '[]'::jsonb end)
+                with ordinality as e(value, n) where jsonb_typeof(e.value) = 'object') x;
+      if jsonb_array_length(v_produits) = 0 and coalesce(c.produit, '') <> '' then
+        v_produits := jsonb_build_array(jsonb_build_object('produit_id', interne.l040_trouver_produit(null, c.produit),
+          'nom', c.produit, 'qte', interne.l040_qte(to_jsonb(c.qte))));
+      end if;
+      v_res := jsonb_build_object('retours', '[]'::jsonb, 'recredit_manuel_requis', true,
+        'deduction_certaine', coalesce(c.stock_deduit, false), 'statut', c.statut, 'produits', v_produits);
+      insert into public.stock_operations (nature, cmd_id, sortie_max, resultat, acteur)
+      values ('recredit', p_cmd_id, null, v_res, v_role) returning id into v_op;
+      return (v_res || jsonb_build_object('ok', true, 'deja', false, 'stock_deduit', false, 'operation_id', v_op,
+        'stocks_actuels', '{}'::jsonb))::json;
+    end if;
     if not v_trouvee then return interne.l040_rejeu(p_cmd_id, 'recredit'); end if; -- commande supprimée : déjà fait / rien à faire
     -- déduite par une ANCIENNE version de l'appli (aucune sortie journalisée) : quantités inconnues, rien n'est touché
     return json_build_object('ok', false, 'erreur', 'sans_journal');

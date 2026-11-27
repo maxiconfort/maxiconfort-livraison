@@ -3961,6 +3961,18 @@ function stkRecreditEnvoyer(id) {
     }
     var c = x.corps;
     if (!c || typeof c !== 'object') return 'reessayer';
+    // v7.5.209 (avis chatgpt-review sur 3fefbc9) : commande SUPPRIMÉE alors qu'elle avait été déduite par une ANCIENNE
+    // version (aucune sortie journalisée) : la base l'a supprimée mais n'a RIEN recrédité (quantités inconnues) ; le
+    // bureau est prévenu clairement, avec les produits de la commande, que le stock est à corriger à la main.
+    if (c.ok && c.recredit_manuel_requis) {
+      stkFileRetirer(cle);
+      var det = (Array.isArray(c.produits) ? c.produits : []).map(function(x) {
+        var p = x && stkProduit(x.produit_id); return ((p && p.nom) || (x && x.nom) || (x && x.produit_id) || '?') + ' ×' + ((x && x.qte) || 1);
+      }).join(', ');
+      stkRecreditSignaler(id, 'Recrédit de stock à faire à la main : ' + id + ' (commande supprimée)', 'Cette commande ' + (c.deduction_certaine ? 'avait été déduite' : 'était livrée et a peut-être été déduite') + ' par une ancienne version de l\'application : la base ne connaît pas les quantités sorties. La commande est supprimée mais RIEN n\'a été recrédité. ' + (c.deduction_certaine ? 'Remettre' : 'Vérifier puis remettre') + ' à la main dans la page Stock : ' + (det || 'produits inconnus') + '.');
+      try { toast('⚠️ Commande ' + id + ' supprimée : stock à recréditer à la main (voir les alertes)', 'err'); } catch(e) {}
+      return c.deja ? 'deja' : 'ok';
+    }
     if (c.ok) { stkRecreditAppliquer(id, c); stkFileRetirer(cle); return c.deja ? 'deja' : 'ok'; }
     if (c.erreur === 'commande_encore_livree') {
       // le nouveau statut n'est pas encore enregistré en base (en file, ou envoi en cours) : réessayer ; sinon la

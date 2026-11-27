@@ -117,6 +117,9 @@ function baseRpc(cmds, stock) {
         ? Object.assign({}, c.derniere.resultat, { ok: true, deja: true, stock_deduit: false, operation_id: c.derniere.op, stocks_actuels: actuels(c.derniere.resultat.retours.map(x => x.produit_id)) })
         : { ok: true, deja: true, stock_deduit: false, resultat_inconnu: true, retours: [], stocks_actuels: {} };
       else if (c && c.statut === 'livré' && !sup) rep = { ok: false, erreur: 'commande_encore_livree', statut: c.statut };
+      // v7.5.209 : suppression d'une commande déduite par une ancienne version (aucune déduction journalisée) : supprimée,
+      // rien recrédité, « recredit_manuel_requis » avec les produits (comme la 040)
+      else if (sup && c && (!c.derniere || c.derniere.nature !== 'deduction')) { rep = { ok: true, deja: false, stock_deduit: false, recredit_manuel_requis: true, deduction_certaine: !!c.stock_deduit, retours: [], produits: (c.lignes || []).map(l => ({ produit_id: l.p, nom: l.p, qte: l.q })), operation_id: ++b.ops, stocks_actuels: {} }; delete b.cmds[id]; }
       else if (!c.derniere || c.derniere.nature !== 'deduction') rep = { ok: false, erreur: 'sans_journal' };
       else {
         const retours = c.derniere.resultat.retraits.filter(x => x.qte > 0).map(x => { const av = b.stock[x.produit_id]; b.stock[x.produit_id] = av + x.qte; return { produit_id: x.produit_id, nom: x.nom, qte: x.qte, demande: x.qte, stock_avant: av, stock_apres: av + x.qte }; });
@@ -1313,6 +1316,17 @@ const rpcs = (bac) => bac._envois.filter(e => /\/rpc\/deduire_stock_livraison$/.
     let nSave = 0; bac.sbSaveCommande = async () => { nSave++; };
     const r = await bac.stkReCrediterStock('#X6', { suppression: true });
     test('suppression d\'une commande livrée : recrédit avec p_suppression = vrai, sans sauvegarde de la commande (p1 3 → 5)', r === 'ok' && nSave === 0 && b.stock.p1 === 5 && bac._envois.some(e => /recrediter/.test(e.url) && e.body.p_suppression === true));
+  }
+  {
+    // v7.5.209 (avis chatgpt-review sur 3fefbc9) : SUPPRESSION d'une commande déduite par une ANCIENNE version (aucune
+    // déduction journalisée) : la base supprime et répond « recredit_manuel_requis » ; l'appli prévient le bureau clairement
+    const { bac, b } = bacRecredit({ '#X9': { statut: 'livré', stock_deduit: true, lignes: [{ p: 'p1', q: 2 }] } }, { p1: 5 });
+    bac.commandes = [{ id: '#X9', statut: 'livré', stockDeduit: true }];
+    const r = await bac.stkReCrediterStock('#X9', { suppression: true });
+    const n = bac._notifs.find(x => /^Recrédit de stock à faire à la main : #X9 \(commande supprimée\)/.test(x[2]));
+    test('suppression d\'une commande déduite par une ancienne version : « recredit_manuel_requis » → rien recrédité (p1 5), demande retirée, notification claire avec le produit (p1 ×2) et message à l\'écran',
+      r === 'ok' && b.stock.p1 === 5 && !bac.offlineQueue.length && !!n && /RIEN n'a été recrédité/.test(n[3]) && /p1 ×2/.test(n[3])
+      && bac._toasts.some(x => /stock à recréditer à la main/.test(x[0])), [r, bac._notifs.map(x => x.slice(2, 4)), bac._toasts]);
   }
   for (const rS of ['collab', 'livreur']) {
     const { bac, b } = bacRecredit({ '#X7': { statut: 'annulé', stock_deduit: true, lignes: [] } }, { p1: 5 }, { role: rS });

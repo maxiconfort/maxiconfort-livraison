@@ -459,6 +459,29 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   const paRC2 = await stock('pa');
   rc = await recrediter('admin', '#RC2');
   test('déduite par une ancienne version (aucune sortie journalisée) : « sans_journal », rien touché, stock_deduit reste vrai', rc.ok === false && rc.erreur === 'sans_journal' && (await stock('pa')) === paRC2 && (await deduit('#RC2')) === true, rc);
+  // v7.5.209 (avis chatgpt-review sur 3fefbc9) : SUPPRESSION (p_suppression) d'une commande livrée DÉDUITE PAR UNE
+  // ANCIENNE VERSION (stock_deduit vrai, aucune sortie journalisée) : plus de succès muet « deja / rien à faire »
+  await commande('#RC6', { lignes: [{ produitId: 'pa', qte: 2, nom: 'Produit A fictif' }] });
+  await q('livreur', "update public.commandes set stock_deduit = true where id = '#RC6'");
+  const paRC6 = await stock('pa'), opsRC6 = await nbOps('#RC6');
+  rc = await recrediter('admin', '#RC6', true);
+  test('suppression d\'une commande déduite par une ANCIENNE version : « recredit_manuel_requis » explicite (deduction_certaine, produits pa ×2), RIEN recrédité, commande supprimée',
+    rc.ok === true && rc.recredit_manuel_requis === true && rc.deduction_certaine === true && rc.deja === false
+    && Array.isArray(rc.produits) && rc.produits.length === 1 && rc.produits[0].produit_id === 'pa' && rc.produits[0].qte === 2
+    && Array.isArray(rc.retours) && rc.retours.length === 0 && (await stock('pa')) === paRC6
+    && (await q('proprio', "select 1 from public.commandes where id = '#RC6'")).length === 0, rc);
+  const opRC6 = await un('proprio', "select nature, resultat from public.stock_operations where cmd_id = '#RC6' order by id desc limit 1");
+  test('… une ligne écrite au journal stock_operations (recrédit manuel requis, produits)', (await nbOps('#RC6')) === opsRC6 + 1
+    && opRC6.nature === 'recredit' && opRC6.resultat.recredit_manuel_requis === true && opRC6.resultat.produits[0].produit_id === 'pa', opRC6);
+  rc = await recrediter('admin', '#RC6', true);
+  test('… rejoué (réponse perdue) : deja, MÊME alerte « recredit_manuel_requis » avec les produits, rien recrédité, aucune nouvelle ligne',
+    rc.ok === true && rc.deja === true && rc.recredit_manuel_requis === true && rc.produits[0].qte === 2 && (await stock('pa')) === paRC6
+    && (await nbOps('#RC6')) === opsRC6 + 1, rc);
+  // même cas, commande seulement « livré » (stock_deduit faux) : alerte « à vérifier » (deduction_certaine faux)
+  await commande('#RC7', { lignes: [{ produitId: 'pa', qte: 1 }] });
+  rc = await recrediter('collab', '#RC7', true);
+  test('suppression d\'une commande « livré » sans déduction journalisée (collaboratrice) : « recredit_manuel_requis », deduction_certaine = faux, rien recrédité',
+    rc.ok === true && rc.recredit_manuel_requis === true && rc.deduction_certaine === false && (await stock('pa')) === paRC6, rc);
   // suppression d'une commande livrée
   await commande('#RC3', { lignes: [{ produitId: 'pb', qte: 2 }] });
   await deduire('livreur', '#RC3');
