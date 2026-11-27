@@ -7680,7 +7680,7 @@ function tdbHtml(e) {
 }
 
 // ── Données et affichage ──
-var TDB_COLS = 'id,prix,date_commande,date_livraison,statut,stpaie,montant_enc,origine,adresse,livreur';
+var TDB_COLS = 'id,prix,date_commande,date_livraison,statut,stpaie,montant_enc,origine,adresse,livreur,updated_at'; // v7.5.199 : updated_at (contrôle de cohérence)
 // v7.5.151 (revue Codex PR 27 sur a46f8aa) : lectures suivies PAR PÉRIODE — vols[clé] = numéro de la lecture EN COURS pour cette
 // période (plus une seule « enCours » globale) ; cache[clé] = lecture réussie d'une période qui n'était plus affichée à son arrivée.
 var TDB_ETAT = { cle: '', lignes: null, at: 0, vols: {}, cache: {}, erreur: '', revientsDemandes: false, revientsGen: 0, revientsVol: false, gen: 0, req: 0, echecs: 0, reessaiA: 0 };
@@ -7720,6 +7720,13 @@ function tdbProgrammerExpiration(ms) {
  *  et une insertion (temps réel, relève) pouvait faire atteindre le total à une liste à laquelle manquait une ancienne commande. On exige
  *  la PREUVE posée par sbLoadAll (cmdChargementComplet : liste lue en entier, total donné par la MÊME réponse), retirée dès qu'un
  *  chargement est incertain (nouveau chargement en cours, lecture en échec ou incomplète). */
+// v7.5.199 (revue Codex PR 27 sur cbf3170) : chiffres lus PAR PÉRIODE = toujours datés (« lus dans la base à HH:MM »). Sans temps réel
+// garanti (non connecté, ou perte de synchronisation), la mention le dit : une modification faite depuis n'est vue qu'à la relecture.
+function tdbNoteLecture(t) {
+  var d = new Date(t), hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  var direct = typeof cmdSynchroGarantieDepuis === 'function' && cmdSynchroGarantieDepuis(t);
+  return 'Chiffres lus dans la base à ' + hm + (direct ? '' : ' (synchronisation en direct indisponible : modifications depuis cette heure non prises en compte, nouvelle lecture chaque minute)') + '.';
+}
 function tdbLocalComplet() {
   return Array.isArray(commandes) && commandes.length > 0 && typeof cmdChargementComplet !== 'undefined' && cmdChargementComplet === true;
 }
@@ -7751,6 +7758,36 @@ async function tdbLire(filtre) {
   }
   return out;
 }
+// v7.5.199 (revue Codex PR 27 sur cbf3170) : CONTRÔLE DE COHÉRENCE après la lecture paginée. La pagination par clé lit une fois chaque
+// commande présente du début à la fin, mais une commande insérée AVANT le curseur pendant la lecture est omise, et une commande
+// supprimée (ou sortie de la période) APRÈS avoir été lue reste comptée. Sans événement temps réel reçu, ce résultat était affiché
+// comme complet pendant 60 s. Désormais, une fois toutes les pages lues, la base est relue en UNE requête pour le même filtre :
+// nombre exact de commandes (en-tête Content-Range, « Prefer: count=exact ») et date de mise à jour la plus récente (updated_at). Si
+// l'un des deux diffère de ce qui a été lu, la base a changé pendant la lecture : elle est relue (TDB_ESSAIS_COHERENCE fois au plus),
+// puis, si elle change encore, erreur affichée (« chiffres non calculés »), jamais de chiffres présentés comme complets.
+var TDB_ESSAIS_COHERENCE = 3;
+function tdbMajMax(rows) {
+  var m = ''; (rows || []).forEach(function (c) { var u = c && c.updated_at ? String(c.updated_at) : ''; if (u && (!m || Date.parse(u) > Date.parse(m))) m = u; });
+  return m;
+}
+async function tdbControler(filtre) {
+  var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=id,updated_at' + filtre + '&order=updated_at.desc.nullslast,id.desc&limit=1', {
+    headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'count=exact' } });
+  if (!r.ok) throw new Error('contrôle de cohérence : HTTP ' + r.status);
+  var cr = r.headers && typeof r.headers.get === 'function' ? r.headers.get('content-range') : null;
+  var m = /\/(\d+)\s*$/.exec(String(cr || ''));
+  if (!m) throw new Error('contrôle de cohérence illisible (nombre de commandes absent) : chiffres non calculés');
+  var rows = await r.json(); if (!Array.isArray(rows)) throw new Error('contrôle de cohérence : réponse inattendue');
+  return { n: parseInt(m[1], 10), maj: rows.length && rows[0] && rows[0].updated_at ? String(rows[0].updated_at) : '' };
+}
+function tdbMemeMaj(a, b) { return (!a && !b) || (!!a && !!b && Date.parse(a) === Date.parse(b)); }
+async function tdbLireCoherent(filtre) {
+  for (var essai = 1; essai <= TDB_ESSAIS_COHERENCE; essai++) {
+    var rows = await tdbLire(filtre), c = await tdbControler(filtre);
+    if (c.n === rows.length && tdbMemeMaj(c.maj, tdbMajMax(rows))) return rows;
+  }
+  throw new Error('commandes modifiées pendant chaque lecture (' + TDB_ESSAIS_COHERENCE + ' essais) : chiffres non calculés');
+}
 /** Clé d'une période (mode + bornes) et clé de la période AFFICHÉE (sélecteur Jour / Semaine / Mois / Année). */
 function tdbCleDe(mode, P) { return mode + ':' + P.du + ':' + P.pdu + ':' + P.pau; }
 function tdbCleAffichee() { var sel = document.getElementById('dash-periode'), mode = (sel && sel.value) || 'jour'; return tdbCleDe(mode, tdbPeriodes(mode)); }
@@ -7764,8 +7801,8 @@ async function tdbCharger(P, cle) {
   var gen = TDB_ETAT.gen, req = ++TDB_ETAT.req, lignes = null, erreur = ''; TDB_ETAT.vols[cle] = req;
   var per = function (du, au) { return '&statut=neq.annul%C3%A9&or=(and(date_livraison.gte.' + du + ',date_livraison.lte.' + au + '),and(date_commande.gte.' + du + ',date_commande.lte.' + au + '))'; };
   try {
-    var lots = await Promise.all([tdbLire(per(P.du, P.au)), tdbLire(per(P.pdu, P.pau)),
-      P.mode === 'mois' ? Promise.resolve([]) : tdbLire('&statut=eq.livr%C3%A9&date_livraison=gte.' + P.moisDu + '&date_livraison=lte.' + P.moisAu)]);
+    var lots = await Promise.all([tdbLireCoherent(per(P.du, P.au)), tdbLireCoherent(per(P.pdu, P.pau)),
+      P.mode === 'mois' ? Promise.resolve([]) : tdbLireCoherent('&statut=eq.livr%C3%A9&date_livraison=gte.' + P.moisDu + '&date_livraison=lte.' + P.moisAu)]);
     var vu = {}; lignes = [];
     lots.forEach(function (l) { l.forEach(function (c) { if (!vu[c.id]) { vu[c.id] = 1; lignes.push(tdbLigne(c)); } }); });
   } catch (e) { lignes = null; erreur = String(e && e.message || e); }
@@ -7775,7 +7812,7 @@ async function tdbCharger(P, cle) {
     return;
   }
   delete TDB_ETAT.cache[cle];
-  TDB_ETAT.lignes = lignes; TDB_ETAT.erreur = erreur;
+  TDB_ETAT.lignes = lignes; TDB_ETAT.erreur = erreur; TDB_ETAT.luA = erreur ? 0 : Date.now();
   TDB_ETAT.cle = cle;
   // une commande a changé pendant la lecture : résultat affiché mais aussitôt périmé (relu au prochain affichage)
   TDB_ETAT.at = gen === TDB_ETAT.gen ? Date.now() : 0;
@@ -7806,14 +7843,14 @@ function tdbRendre() {
     var c0 = TDB_ETAT.cache[cle];
     if (c0 && TDB_ETAT.cle !== cle) {
       delete TDB_ETAT.cache[cle];
-      if (c0.gen === TDB_ETAT.gen && Date.now() - c0.at < TDB_DUREE) { TDB_ETAT.cle = cle; TDB_ETAT.lignes = c0.lignes; TDB_ETAT.at = c0.at; TDB_ETAT.erreur = ''; TDB_ETAT.echecs = 0; TDB_ETAT.reessaiA = 0; }
+      if (c0.gen === TDB_ETAT.gen && Date.now() - c0.at < TDB_DUREE) { TDB_ETAT.cle = cle; TDB_ETAT.lignes = c0.lignes; TDB_ETAT.at = c0.at; TDB_ETAT.luA = c0.at; TDB_ETAT.erreur = ''; TDB_ETAT.echecs = 0; TDB_ETAT.reessaiA = 0; }
     }
     var frais = TDB_ETAT.cle === cle && Date.now() - TDB_ETAT.at < TDB_DUREE;
     var echec = TDB_ETAT.cle === cle && !!TDB_ETAT.erreur, patiente = echec && Date.now() < TDB_ETAT.reessaiA;
     if (!frais && !patiente && !TDB_ETAT.vols[cle]) tdbCharger(P, cle);
     else if (frais) tdbProgrammerExpiration(TDB_ETAT.at + TDB_DUREE - Date.now());
     if (patiente) tdbProgrammerExpiration(TDB_ETAT.reessaiA - Date.now()); // nouvelle tentative différée (tableau affiché)
-    if (TDB_ETAT.cle === cle && TDB_ETAT.lignes) lignes = TDB_ETAT.lignes;
+    if (TDB_ETAT.cle === cle && TDB_ETAT.lignes) { lignes = TDB_ETAT.lignes; if (TDB_ETAT.luA) note = tdbNoteLecture(TDB_ETAT.luA); }
     else if (echec) { // v7.5.149 : l'avertissement RESTE affiché, même pendant la nouvelle tentative
       lignes = locales(); reessayer = true;
       var quand = new Date(TDB_ETAT.reessaiA), hm = String(quand.getHours()).padStart(2, '0') + ':' + String(quand.getMinutes()).padStart(2, '0');
