@@ -3688,6 +3688,9 @@ function oqSucces(type, data, tsV, r) {
 var DED_BASE_ABSENTE_MSG = '⏳ Stock : mise à jour de la base en attente — la déduction sera faite automatiquement';
 var _dedEnvoi = {}, _dedBaseAbsenteVue = false, _dedErreurVue = {}, _dedProchain = {};
 var DED_PAUSE_MS = 60000, DED_PAUSE_ABSENTE_MS = 300000; // relève : pas plus d'un essai par minute (5 min si fonction absente)
+// v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 3) : attente PROPRE aux demandes de déduction après une erreur 5xx (408, 429)
+// ou une coupure : croissante par demande (1 min, 2 min, puis 5 min au plus), remise à zéro à la première réponse de la base
+var DED_PAUSES_SURCHARGE = [60000, 120000, 300000], _dedSurcharges = {};
 function dedEnFile(id) { return offlineQueue.some(function(q) { return oqCle(q) === 'deduction|' + id; }); }
 function dedFileRetirer(id) {
   var n = offlineQueue.length;
@@ -3784,6 +3787,7 @@ function dedErreurSignaler(id, detail) {
 async function stkDeductionEnvoyer(id, cmdV) {
   if (!id) return 'abandon';
   if (_dedEnvoi[id]) return _dedEnvoi[id]; // un seul envoi à la fois par commande
+  var surcharge = false; // v7.5.211 : 5xx / 408 / 429 / coupure → attente croissante propre à cette demande
   var envoi = (async function() {
     var resp, corps = null, txt = '';
     try {
@@ -3792,8 +3796,9 @@ async function stkDeductionEnvoyer(id, cmdV) {
         headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
         body: JSON.stringify({ p_cmd_id: id })
       });
-    } catch(e) { return 'reessayer'; } // coupure, ou réponse perdue après la déduction : le rejeu répondra « deja »
+    } catch(e) { surcharge = true; return 'reessayer'; } // coupure, ou réponse perdue après la déduction : le rejeu répondra « deja »
     try { txt = await resp.text(); corps = txt ? JSON.parse(txt) : null; } catch(e) { corps = null; }
+    if (!resp.ok && httpTemporaire(resp.status)) surcharge = true;
     if (!resp.ok) {
       if (resp.status === 404 || (corps && corps.code === 'PGRST202')) { // fonction absente : migration 040 pas appliquée
         if (!_dedBaseAbsenteVue) { _dedBaseAbsenteVue = true; try { toast(DED_BASE_ABSENTE_MSG, 'info'); } catch(e) {} }
@@ -3820,7 +3825,12 @@ async function stkDeductionEnvoyer(id, cmdV) {
   // un deuxième appelant pendant l'envoi reçoit le MÊME résultat final (« absente » → « reessayer » : jamais retiré)
   var fin = envoi.catch(function() { return 'reessayer'; }).then(function(r) {
     delete _dedEnvoi[id];
-    if (r === 'absente' || r === 'reessayer') _dedProchain[id] = Date.now() + (r === 'absente' ? DED_PAUSE_ABSENTE_MS : DED_PAUSE_MS);
+    var attente = (r === 'absente') ? DED_PAUSE_ABSENTE_MS : DED_PAUSE_MS;
+    if (r === 'reessayer' && surcharge) {
+      var n = (_dedSurcharges[id] || 0) + 1; _dedSurcharges[id] = n;
+      attente = DED_PAUSES_SURCHARGE[Math.min(n, DED_PAUSES_SURCHARGE.length) - 1];
+    } else delete _dedSurcharges[id];
+    if (r === 'absente' || r === 'reessayer') _dedProchain[id] = Date.now() + attente;
     else delete _dedProchain[id];
     if (r === 'refus' || r === 'abandon') delete _dedSession[id];
     return r === 'absente' ? 'reessayer' : r;
@@ -3833,6 +3843,8 @@ function stkDemanderDeduction(cmd, pAvant) {
   if (!cmd || !cmd.id || cmd.stockDeduit) return Promise.resolve('deja');
   try { stkDeductionPoser(cmd); } catch(e) { console.warn('[stock] demande de déduction :', e && e.message); }
   return Promise.resolve(pAvant).catch(function() {}).then(function() {
+      // v7.5.211 : « livré » refusé par la base et statut remis (cmdRemettreStatut) : aucune déduction à demander
+      if (cmd._statutRefuse && !(cmd.statut === 'livré' || cmd.statut === 'livre')) return 'abandon';
       // v7.5.201 (revue Codex P1) : demande gardée en file, envoyée seulement après le SUCCÈS de la confirmation des pièces
       if (typeof dropDeductionPermise === 'function' && !dropDeductionPermise(cmd.id)) return 'reessayer';
       return stkDeductionEnvoyer(cmd.id, cmd); })
@@ -3875,6 +3887,15 @@ function stkReprendreDeductions(force) {
     });
   }
   return Promise.all(p).then(function() {});
+}
+// v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 3) : reprise des ÉCRITURES en attente, appelée au début de chaque passage
+// de la relève, AVANT ses gardes de lecture (pause de charge, onglet caché, relève en cours) : elle ne dépend jamais d'elles.
+// Chaque demande garde sa propre attente (_dedProchain : 1 min, croissante après une erreur 5xx ou une coupure). Ne rejette jamais.
+function stkRepriseEcritures() {
+  try {
+    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) return Promise.resolve();
+    return stkReprendreDeductions(false).catch(function(e) { console.warn('[stock] reprise des écritures :', e && e.message); });
+  } catch(e) { return Promise.resolve(); }
 }
 
 // v7.5.198 : appel d'une fonction de la base (rpc) — { etat: 'ok' | 'reseau' | 'absente' | 'http', status, corps }
@@ -5595,6 +5616,13 @@ async function sbSaveCommande(cmd, oqCtx) {
   // v7.5.196 (réserve Codex 1 sur a84fa19) : date de CETTE version (prise avant l'envoi) : en cas de succès, les
   // versions plus anciennes de la commande encore en file sont retirées (oqSucces) et ne l'écraseront plus.
   var tsVersion = (oqCtx && Number(oqCtx.ts)) || Date.now();
+  // v7.5.211 (revue native P2 sur 3aba95e, même famille) : RÉPONSES DANS LE DÉSORDRE. Chaque envoi porte un numéro d'ordre ; le
+  // dernier succès et le dernier refus de chaque commande sont retenus (mémoire de la page seulement ; jamais pour un rejeu de la
+  // file, qui porte une version plus ancienne). Le refus d'un envoi PLUS ANCIEN qu'un succès déjà reçu ne marque plus la commande
+  // « refusée » (ni message, ni notification : la version la plus récente est bien enregistrée) ; le succès d'un envoi plus
+  // ancien qu'un refus déjà reçu n'efface plus la marque de ce refus.
+  var _suivi = sbSaveCommande; _suivi.ordre = (_suivi.ordre || 0) + 1; _suivi.succes = _suivi.succes || {}; _suivi.refus = _suivi.refus || {};
+  var _ordre = _suivi.ordre;
   // Toujours tenter Supabase d'abord, queue seulement si fetch échoue
   try {
     // Corps complet de la commande
@@ -5671,11 +5699,16 @@ async function sbSaveCommande(cmd, oqCtx) {
       if (syncRefusDefinitif(resp.status)) {
         // v7.5.135 : refus DÉFINITIF -> jamais en file d'attente, message clair, alerte gardée dans les notifications
         var _msgRefus = syncMessageRefus(resp.status, errTxt);
-        cmd._syncRefus = { status: resp.status, message: _msgRefus, at: new Date().toISOString() };
-        showSync('⛔ Commande refusée par la base', 'err');
-        toast('⛔ Commande ' + (cmd.id || '') + ' NON enregistrée : la base a refusé (' + _msgRefus + '). Corrigez-la puis enregistrez de nouveau.', 'err');
-        if (typeof notifAjout === 'function') { try { notifAjout('err', 'commande', '⛔ Refusée par la base — ' + (cmd.id || ''), _msgRefus + ' (rien n’a été enregistré ; la commande n’est PAS en attente de synchronisation)', 'Voir', 'commandes'); } catch(ex) {} }
+        var _depasse = !_depuisFile && (_suivi.succes[cmd.id] || 0) > _ordre; // un envoi PLUS RÉCENT de cette commande a déjà réussi
+        if (!_depuisFile) _suivi.refus[cmd.id] = Math.max(_suivi.refus[cmd.id] || 0, _ordre);
+        if (!_depasse) {
+          cmd._syncRefus = { status: resp.status, message: _msgRefus, at: new Date().toISOString() };
+          showSync('⛔ Commande refusée par la base', 'err');
+          toast('⛔ Commande ' + (cmd.id || '') + ' NON enregistrée : la base a refusé (' + _msgRefus + '). Corrigez-la puis enregistrez de nouveau.', 'err');
+          if (typeof notifAjout === 'function') { try { notifAjout('err', 'commande', '⛔ Refusée par la base — ' + (cmd.id || ''), _msgRefus + ' (rien n’a été enregistré ; la commande n’est PAS en attente de synchronisation)', 'Voir', 'commandes'); } catch(ex) {} }
+        }
         _res = { ok: false, definitif: true, status: resp.status, message: _msgRefus };
+        if (_depasse) _res.depasse = true;
       } else {
         if (_depuisFile) throw new Error('synchronisation passagère impossible (' + resp.status + ')');
         offlineQueueAdd('commande', cmd, oqCtx);
@@ -5683,7 +5716,8 @@ async function sbSaveCommande(cmd, oqCtx) {
         _res = { ok: false, definitif: false, status: resp.status };
       }
     } else {
-      delete cmd._syncRefus;
+      if (!_depuisFile) _suivi.succes[cmd.id] = Math.max(_suivi.succes[cmd.id] || 0, _ordre);
+      if (_depuisFile || !((_suivi.refus[cmd.id] || 0) > _ordre)) { delete cmd._syncRefus; delete cmd._statutRefuse; } // v7.5.211 (sauf après un refus PLUS RÉCENT)
       try { oqSucces('commande', cmd, tsVersion, null); } catch(e) {} // v7.5.196
       showSync('✅ Commande sauvegardée', 'ok');
     }
@@ -5732,7 +5766,51 @@ async function resetSmsTourneeFlags(cmdId) {
   } catch (e) { console.warn('resetSmsTourneeFlags', e && e.message); }
 }
 
-async function sbSaveTournee(t) {
+// v7.5.211 (avis chatgpt-review PR 31 sur 3aba95e, point 3) : FILE D'ENREGISTREMENT PAR TOURNÉE. Avant, deux enregistrements de la
+// même tournée pouvaient être en vol en même temps (envoi de la synchronisation, puis remise d'un arrêt après un statut refusé,
+// renvoyée au délai de garde puis à la fin du premier envoi) : la base pouvait les recevoir dans l'ordre inverse et garder le
+// plus ancien. Désormais TOUS les enregistrements d'une tournée (tous les appelants de sbSaveTournee : synchronisation, vue
+// livreur, signature, remise d'un arrêt, rejeu de la file hors ligne…) passent par ici :
+//   - UN SEUL envoi en vol par tournée ; le suivant ne part qu'après la RÉPONSE du précédent (réussie ou non) ;
+//   - pendant un envoi, les demandes suivantes sont regroupées en UNE seule : le DERNIER ÉTAT gagne (la tournée est lue au moment
+//     du départ, jamais à la demande) ;
+//   - plus aucun délai de garde ni renvoi : rien ne part en parallèle. Un envoi sans réponse retient les suivants jusqu'à ce que
+//     le navigateur ou la passerelle de la base y mette fin (comme une coupure : l'état local reste juste, il repart ensuite).
+// « avant » (facultatif) : fonction appelée juste avant le départ ; elle rend la tournée à envoyer, ou null si cette demande n'a
+// plus lieu d'être (remise périmée). La promesse rendue se termine avec le résultat de l'envoi qui a porté la demande.
+var _tourneeFile = {};
+function sbSaveTournee(t, avant) {
+  var tid = (t && t.id !== undefined && t.id !== null) ? String(t.id) : '';
+  if (!tid) return sbEnvoyerTournee(t);
+  var f = _tourneeFile[tid] || (_tourneeFile[tid] = { enVol: false, attente: null });
+  var demande = { t: t, avant: (typeof avant === 'function') ? avant : null };
+  if (!f.enVol) return tourneeFilePartir(tid, f, [demande]);
+  if (!f.attente) { var a = { demandes: [], fin: null }; a.promesse = new Promise(function(r) { a.fin = r; }); f.attente = a; }
+  f.attente.demandes.push(demande);
+  return f.attente.promesse;
+}
+function tourneeFilePartir(tid, f, demandes) {
+  f.enVol = true;
+  var p;
+  try {
+    var cible = null;
+    demandes.forEach(function(d) {
+      var x = d.t;
+      if (d.avant) { try { x = d.avant(); } catch(e) { x = null; console.warn('[tournée] préparation de l\'envoi :', e && e.message); } }
+      if (x) cible = x; // la dernière demande encore valable porte l'état à envoyer
+    });
+    p = cible ? Promise.resolve(sbEnvoyerTournee(cible)) : Promise.resolve(undefined);
+  } catch(e) { p = Promise.resolve(undefined); }
+  var suite = function(r) {
+    f.enVol = false;
+    var a = f.attente; f.attente = null;
+    if (a) { try { a.fin(tourneeFilePartir(tid, f, a.demandes)); } catch(e) { a.fin(undefined); } }
+    else if (_tourneeFile[tid] === f) delete _tourneeFile[tid];
+    return r;
+  };
+  return p.then(suite, function() { return suite(undefined); });
+}
+async function sbEnvoyerTournee(t) {
   if (!navigator.onLine) { offlineQueueAdd('tournee', t); return; }
   try {
     // Upsert — crée si n'existe pas, met à jour si existe → déclenche Realtime
@@ -5936,15 +6014,131 @@ async function dropRpc(nom, params) {
   try { txt = await resp.text(); corps = txt ? JSON.parse(txt) : null; } catch(e) { corps = null; }
   return { statut: resp.status, httpOk: resp.ok, corps: corps, absente: resp.status === 404 || !!(corps && corps.code === 'PGRST202') };
 }
+var _dropVerifEchecA = 0; // v7.5.211 : dernière vérification sans réponse exploitable (réseau, 5xx)
 async function dropVerifier() {
   if (dropActif === true) return true;
+  // v7.5.211 (incident du 27/11, base saturée) : après une vérification sans réponse, pas de nouvelle avant 15 s (avant : une à chaque
+  // affichage) ; l'état reste celui d'avant (inconnu = « Livré » bloqué pour nos livreurs, comme après un échec)
+  if (_dropVerifEchecA && Date.now() - _dropVerifEchecA < 15000) return false;
   var r = await dropRpc('drop_version', {});
+  _dropVerifEchecA = (r.absente || (r.httpOk && r.corps === '041')) ? 0 : Date.now();
   if (r.absente) { dropActif = false; dropActifCache = false; try { localStorage.removeItem('mx_drop_actif'); } catch(e) {} }
   else if (r.httpOk && r.corps === '041') { dropActif = true; dropActifCache = true; try { localStorage.setItem('mx_drop_actif', '041'); } catch(e) {} }
   return dropActif === true;
 }
+// v7.5.211 (défaut observé en production sur une commande sans livreur, GO de Borhen) : commande CONCERNÉE par le contrôle des
+// pièces — même règle que la base (interne.l041_concernee) : livrée par NOS livreurs (transporteur RANOU, vide = RANOU) ET avec un
+// livreur attribué. Une commande GLS ou sans livreur (retrait, vente du bureau) ne l'est pas : jamais découpée par l'appli, jamais
+// bloquée. Commande inconnue sur l'appareil → tenue pour concernée (prudence). Pure.
+function dropCmdConcernee(c) {
+  if (!c) return true;
+  if ((String(c.transporteur || '').trim().toUpperCase() || 'RANOU') !== 'RANOU') return false;
+  return String(c.livreur || '').trim() !== '';
+}
+function dropCmdDe(cmdId) {
+  try { return (typeof commandes !== 'undefined' && Array.isArray(commandes)) ? (commandes.find(function(x) { return x && x.id === cmdId; }) || null) : null; } catch(e) { return null; }
+}
+// v7.5.211 (avis chatgpt-review PR 31 sur df07c0d, point 3) : pièce DÉJÀ déclarée = provenance, issue de livraison ou achat (même
+// règle que la base, interne.l042_pieces_jamais_declarees). Pure.
+function dropPieceDeclaree(p) { return !!(p && (p.provenance || p.livraison || p.achat_id || (p.achat && (p.achat.id || p.achat.statut)))); }
+// Commande CONTRÔLÉE par l'appli (pièces prises en compte, « Livré » bloqué tant qu'elles ne sont pas réglées, déduction en
+// attente de leur confirmation) : commande concernée, OU commande devenue non concernée (livreur retiré, passage en GLS) dont une
+// pièce connue de l'appareil a DÉJÀ été déclarée — la base (042) contrôle toujours celle-ci : l'appli ne doit ni masquer ces
+// pièces ni laisser passer un « Livré » que la base refusera.
+function dropCmdControlee(cmdId) {
+  if (dropCmdConcernee(dropCmdDe(cmdId))) return true;
+  var e = dropPieces[cmdId];
+  return !!(e && (e.pieces || []).some(dropPieceDeclaree));
+}
+// Lecture SANS création des pièces d'une commande non concernée (jamais pendant une pause après erreur de la base ; plus jamais
+// si la 042 n'est pas appliquée). Rend vrai si une lecture vient d'être lancée.
+// v7.5.211 (avis chatgpt-review PR 31 sur 3aba95e, point 2) : « Livré » n'est permis qu'après une lecture CONCLUANTE (la base a
+// répondu : aucune pièce déclarée — une réponse « aucune pièce » est concluante). L'état de chaque lecture est gardé :
+//   { enCours }            lecture partie, pas encore de réponse → « Livré » en attente (« vérification des pièces… ») ;
+//   { ok, at, signe }      lecture concluante, valable DROP_LU_VALIDE_MS et tant que le livreur / transporteur de la commande n'a
+//                          pas changé (une commande redevenue concernée entre-temps a pu recevoir des déclarations) ;
+//   { ok: false, at }      lecture en échec → « Livré » refusé, à réessayer : nouvel essai à la demande (clic « Livré », espacé de
+//                          DROP_LU_REESSAI_MS), ou de lui-même 5 min plus tard à l'affichage (jamais une lecture à chaque affichage).
+// Une lecture restée sans réponse plus de DROP_LU_ATTENTE_MAX_MS est tenue pour un échec (jamais d'attente sans fin : nouvel
+// essai possible au clic suivant ; si elle finit par répondre, sa réponse concluante reste bonne à prendre).
+var _dropLuNonConcernee = {}, _dropLireAbsente = false, DROP_LU_VALIDE_MS = 300000, DROP_LU_REESSAI_MS = 3000, DROP_LU_ATTENTE_MAX_MS = 20000;
+var DROP_MSG_VERIF = 'Vérification des pièces… réessayez dans un instant';
+var DROP_MSG_VERIF_ECHEC = 'Pièces non vérifiées (lecture impossible : réseau ou base indisponible) — « Livré » refusé pour l\'instant, réessayez';
+function dropLuSigne(c) { return c ? ((String(c.transporteur || '').trim().toUpperCase() || 'RANOU') + '|' + String(c.livreur || '').trim()) : ''; }
+function dropLuConcluante(cmdId) {
+  var m = _dropLuNonConcernee[cmdId];
+  return !!(m && m.ok && !m.enCours && Date.now() - m.at < DROP_LU_VALIDE_MS && m.signe === dropLuSigne(dropCmdDe(cmdId)));
+}
+function dropLuEnCours(cmdId) { var m = _dropLuNonConcernee[cmdId]; return !!(m && m.enCours && Date.now() - m.at < DROP_LU_ATTENTE_MAX_MS); }
+function dropLireNonConcernee(cmdId, demande) {
+  var m = _dropLuNonConcernee[cmdId];
+  if (!cmdId || _dropLireAbsente || dropLuEnCours(cmdId) || dropLuConcluante(cmdId)) return false;
+  if (m && !m.ok && Date.now() - m.at < (demande ? DROP_LU_REESSAI_MS : 300000)) return false;
+  if (typeof chargeEnPause === 'function' && chargeEnPause()) return false;
+  var etat = _dropLuNonConcernee[cmdId] = { at: Date.now(), ok: false, enCours: true };
+  // fin de la lecture : concluante → dropChargerPieces a posé un nouvel état « ok » ; sinon cet état devient « échec ». Dans les
+  // deux cas l'écran est redessiné (le bouton quitte l'attente)
+  var fin = function() {
+    if (_dropLuNonConcernee[cmdId] === etat) { etat.enCours = false; etat.at = Date.now(); }
+    try { dropRafraichir(); } catch(e) {}
+  };
+  try { dropVerifier().then(function(a) { return a ? dropChargerPieces(cmdId) : null; }).then(fin, fin); } catch(e) { etat.enCours = false; }
+  return true;
+}
+// « Livré » d'une commande non concernée en attente de la lecture de ses pièces (bouton affiché « en attente »)
+function dropLivreEnAttente(cmdId) {
+  try {
+    if (!cmdId || _dropLireAbsente || (!dropModuleActif() && !dropEtatInconnu())) return false;
+    var c = dropCmdDe(cmdId);
+    return !!c && !dropCmdConcernee(c) && !dropCmdControlee(cmdId) && dropLuEnCours(cmdId);
+  } catch(e) { return false; }
+}
 async function dropChargerPieces(cmdId) {
   if (!cmdId || dropActif !== true) return null;
+  // v7.5.211 (défaut observé en production) : pas de découpage (drop_pieces crée les pièces) pour une commande NON concernée
+  // (GLS, sans livreur) ni pour une commande DÉJÀ livrée dont l'appareil ne connaît pas les pièces : la base la découpait à la
+  // simple ouverture de la fiche, puis refusait son « Livré » (PIECES_NON_CONFIRMEES)
+  var _c = dropCmdDe(cmdId);
+  var _livree = _c && (String(_c.statut || '') === 'livré' || String(_c.statut || '') === 'livre');
+  // v7.5.211 (avis chatgpt-review PR 31 sur df07c0d, point 3) : commande NON concernée → jamais de création (drop_pieces), mais
+  // lecture SANS création (drop_pieces_lire, 042) : si une pièce A DÉJÀ été déclarée (provenance, livraison, achat — ex. livreur
+  // retiré après la déclaration), la base contrôle toujours son « Livré » ; l'appli garde donc ces pièces et les contrôle aussi.
+  // Pièces jamais déclarées : rien gardé. Fonction absente (042 pas appliquée) : aucune lecture, plus aucun essai de la session.
+  if (_c && !dropCmdConcernee(_c)) {
+    var _rien = { pieces: [], nonConcernee: true };
+    if (_dropLireAbsente) return _rien;
+    var _signe = dropLuSigne(_c); // livreur / transporteur AU DÉPART de la lecture : changés pendant la lecture → non concluante
+    var rn = await dropRpc('drop_pieces_lire', { p_cmd_id: cmdId });
+    if (rn.absente) { _dropLireAbsente = true; return _rien; }
+    // commande INCONNUE de la base pour l'administrateur ou la collaboratrice (créée sur l'appareil, pas encore enregistrée) : elle
+    // n'a aucune pièce → lecture concluante. Pour un livreur, « introuvable » peut vouloir dire « pas à lui » : non concluant.
+    var _absenteBase = !!(rn.httpOk && rn.corps && rn.corps.ok === false && rn.corps.erreur === 'commande_introuvable'
+      && typeof role !== 'undefined' && (role === 'admin' || role === 'collab'));
+    if (!(rn.httpOk && rn.corps && rn.corps.ok) && !_absenteBase) return _rien; // échec de lecture : rien changé, non concluant (dropLireNonConcernee : « Livré » refusé, à réessayer)
+    _dropLuNonConcernee[cmdId] = { at: Date.now(), ok: true, signe: _signe };
+    var psn = (rn.corps && rn.corps.pieces) || [];
+    if (!psn.some(dropPieceDeclaree)) {
+      // la base fait foi : des pièces connues de l'appareil comme déclarées et qui ne le sont plus (réinitialisées) sont oubliées
+      if (dropPieces[cmdId] && (dropPieces[cmdId].pieces || []).some(dropPieceDeclaree)) { delete dropPieces[cmdId]; dropSauver(); }
+      return _rien;
+    }
+    dropPieces[cmdId] = { pieces: psn, perime: !!rn.corps.perime, tva: rn.corps.tva_pct, derogation: !!rn.corps.derogation, lectureSeule: true, at: Date.now() };
+    dropSauver();
+    return dropPieces[cmdId];
+  }
+  // v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 5) : commande concernée DÉJÀ livrée → lecture SANS création
+  // (drop_pieces_lire, migration 042) : les pièces déclarées sur un autre appareil sont consultables sur un appareil neuf, et la
+  // commande n'est jamais découpée ni redécoupée. Fonction absente (042 pas appliquée) : aucune pièce lue, aucun découpage.
+  if (_livree) {
+    var rl = await dropRpc('drop_pieces_lire', { p_cmd_id: cmdId });
+    if (rl.httpOk && rl.corps && rl.corps.ok) {
+      dropPieces[cmdId] = { pieces: rl.corps.pieces || [], perime: !!rl.corps.perime, tva: rl.corps.tva_pct, derogation: !!rl.corps.derogation, lectureSeule: true, at: Date.now() };
+      dropSauver();
+      return dropPieces[cmdId];
+    }
+    if (rl.absente) return dropPieces[cmdId] || { pieces: [], nonConcernee: true };
+    return null; // échec de lecture (réseau, 5xx, session) : rien gardé, nouvel essai plus tard
+  }
   var r = await dropRpc('drop_pieces', { p_cmd_id: cmdId });
   if (r.httpOk && r.corps && r.corps.ok) {
     dropPieces[cmdId] = { pieces: r.corps.pieces || [], perime: !!r.corps.perime, tva: r.corps.tva_pct, derogation: !!r.corps.derogation, at: Date.now() };
@@ -5959,25 +6153,34 @@ async function dropChargerPieces(cmdId) {
   }
   return null;
 }
-function dropPiecesDe(cmdId) { return (dropModuleActif() && dropPieces[cmdId]) ? (dropPieces[cmdId].pieces || []) : []; }
+// v7.5.211 (défaut observé en production) : pièces d'une commande NON concernée (découpée par une version précédente à l'ouverture
+// de sa fiche) jamais prises en compte : ni blocage, ni confirmation envoyée, ni attente de la déduction — SAUF si l'une d'elles
+// a déjà été déclarée (avis chatgpt-review sur df07c0d, point 3 : la base la contrôle toujours, cf. dropCmdControlee)
+function dropPiecesDe(cmdId) { return (dropModuleActif() && dropPieces[cmdId] && dropCmdControlee(cmdId)) ? (dropPieces[cmdId].pieces || []) : []; }
 function dropTvaDe(cmdId) { return dropTva(dropPieces[cmdId] && dropPieces[cmdId].tva); }
 // pièces de toutes les commandes RANOU d'une tournée (une à la fois), puis nouvel affichage
 var _dropChargementEnCours = {};
+var _dropTourneeEchecA = {}; // v7.5.211 : dernier échec de lecture des pièces, par tournée
 async function dropChargerTournee(t, apres, force) {
   if (!t || !t.id || _dropChargementEnCours[t.id]) return;
+  // v7.5.211 (incident du 27/11) : après un échec, pas de nouvelle lecture des pièces de la tournée avant 15 s (avant : à chaque affichage)
+  if (!force && _dropTourneeEchecA[t.id] && Date.now() - _dropTourneeEchecA[t.id] < 15000) return;
   _dropChargementEnCours[t.id] = true;
   try {
     if (!(await dropVerifier())) return;
-    var change = false;
+    var change = false, echec = false;
     for (var i = 0; i < (t.stops || []).length; i++) {
       var s = t.stops[i]; if (!s || !s.cmdId) continue;
       var c = (typeof findCmdForStop === 'function') ? findCmdForStop(s) : null;
       if (c && (c.transporteur || 'RANOU') !== 'RANOU') continue;
+      if (c && !dropCmdControlee(s.cmdId)) continue; // v7.5.211 : commande non concernée (sans livreur) jamais découpée ; pièces déjà déclarées : relues sans création
       if (!force && dropPieces[s.cmdId] && Date.now() - (dropPieces[s.cmdId].at || 0) < 60000) continue; // relu au plus une fois par minute
       var avant = JSON.stringify(dropPieces[s.cmdId] && dropPieces[s.cmdId].pieces);
       var r = await dropChargerPieces(s.cmdId);
-      if (r && JSON.stringify(r.pieces) !== avant) change = true;
+      if (!r) { echec = true; continue; } // v7.5.211 : lecture sans résultat → nouvelle passe dans 15 s au plus tôt
+      if (JSON.stringify(r.pieces) !== avant) change = true;
     }
+    if (echec) _dropTourneeEchecA[t.id] = Date.now(); else delete _dropTourneeEchecA[t.id];
     if (change && typeof apres === 'function') apres();
   } catch(e) { console.warn('[drop] chargement des pièces :', e && e.message); }
   finally { delete _dropChargementEnCours[t.id]; }
@@ -6102,6 +6305,7 @@ function dropConfEnFile(cmdId) {
 }
 function dropDeductionPermise(cmdId) {
   if (!cmdId) return true;
+  if (!dropCmdControlee(cmdId)) return true; // v7.5.211 : commande non concernée (aucune pièce déjà déclarée) : la déduction n'attend aucune pièce
   return dropDeductionPermiseDe(dropPieces[cmdId], dropConfEnFile(cmdId), dropConfEtat[cmdId], dropModuleActif());
 }
 function dropDepenseLocale(d) {
@@ -6127,13 +6331,30 @@ var _dropLectureLancee = {};
 // v7.5.205 (avis chatgpt-review n° 2 sur 76ebd77) : état du module INCONNU = jamais vérifié auprès de la base ET aucun état
 // gardé sur l'appareil (premier démarrage sans réseau) : la migration 041 peut déjà être active
 function dropEtatInconnu() { return dropActif === null && dropActifCache !== true; }
-function dropBloqueLivre(cmdId) {
+// demande = vrai quand l'utilisateur DEMANDE « Livré » (clic, validation de la signature) : une lecture en échec est relancée
+// tout de suite ; à l'affichage (demande absente), jamais plus d'une lecture par commande toutes les 5 min après un échec
+function dropBloqueLivre(cmdId, demande) {
   if (!cmdId) return '';
   var inconnu = dropEtatInconnu();
   if (!dropModuleActif() && !inconnu) return '';
   // v7.5.201 : commande livrée par nos livreurs (pas GLS) ; pièces jamais lues (hors ligne) ou découpage périmé = BLOQUÉ
   var c = (typeof commandes !== 'undefined') ? commandes.find(function(x) { return x && x.id === cmdId; }) : null;
   var ranou = !c || String(c.transporteur || 'RANOU').toUpperCase() === 'RANOU';
+  // v7.5.211 (défaut observé en production, GO de Borhen) : commande NON concernée (sans livreur : retrait, vente du bureau) :
+  // jamais bloquée et jamais découpée (même règle que la base, interne.l041_concernee)
+  // (avis chatgpt-review sur df07c0d, point 3) sauf si une de ses pièces a DÉJÀ été déclarée : la base la contrôle toujours, l'appli
+  // aussi ; pièces pas encore connues de l'appareil : lues SANS création (dropLireNonConcernee)
+  // (avis chatgpt-review sur 3aba95e, point 2) « Livré » seulement après une lecture CONCLUANTE : sur un appareil neuf, ou après un
+  // échec réseau, des pièces déjà déclarées étaient encore inconnues quand « Livré » était permis. En attente de la réponse :
+  // « vérification des pièces… » ; lecture en échec : refus clair, à réessayer. Une commande jamais découpée reste livrable : la
+  // réponse « aucune pièce » est concluante. 042 pas appliquée (lecture impossible) : comme avant, jamais bloquée par l'appli.
+  var _nonConc = !!c && !dropCmdConcernee(c);
+  if (_nonConc && !dropCmdControlee(cmdId)) {
+    if (_dropLireAbsente || dropLuConcluante(cmdId)) return '';
+    var _lance = false; try { _lance = dropLireNonConcernee(cmdId, demande); } catch(e) {}
+    if (_dropLireAbsente || dropLuConcluante(cmdId)) return '';
+    return (_lance || dropLuEnCours(cmdId)) ? DROP_MSG_VERIF : DROP_MSG_VERIF_ECHEC;
+  }
   // v7.5.205 : état inconnu → BLOQUÉ pour les commandes concernées (nos livreurs ; jamais GLS) ; vérification relancée tout de
   // suite (réseau revenu : module absent = débloqué, module présent = pièces lues puis contrôle normal)
   if (inconnu) {
@@ -6143,7 +6364,7 @@ function dropBloqueLivre(cmdId) {
   }
   // pièces jamais lues sur cet appareil : lecture lancée tout de suite (réseau présent), « Livré » possible au clic suivant
   if (ranou && !dropPieces[cmdId] && !(Date.now() - (_dropLectureLancee[cmdId] || 0) < 30000)) { _dropLectureLancee[cmdId] = Date.now(); try { dropVerifier().then(function(a) { if (a) return dropChargerPieces(cmdId).then(function() { dropRafraichir(); }); }).catch(function() {}); } catch(e) {} }
-  return dropRaisonLivraison(dropPieces[cmdId], dropConfirm[cmdId], true, ranou);
+  return dropRaisonLivraison(dropPieces[cmdId], dropConfirm[cmdId], true, ranou || _nonConc);
 }
 // v7.5.202 : pièces de la commande à confirmer à la base avant le « livré » ?
 function dropAConfirmer(cmdId) { return dropPiecesDe(cmdId).some(function(p) { return p && !p.livraison; }); }
@@ -6312,7 +6533,8 @@ function dropLivraisonHtml(t, s, i) {
   if (!dropModuleActif() || !s || !s.cmdId || s.statut === 'livré') return '';
   var ps = dropPiecesDe(s.cmdId);
   // v7.5.201 : pièces non contrôlables (hors ligne, refus, découpage périmé) : la raison est affichée sur l'arrêt
-  if (!ps.length) { var r0 = dropBloqueLivre(s.cmdId); return r0 ? '<div style="margin:10px 0;padding:10px;border:2px solid var(--red);border-radius:12px;font-size:13px;font-weight:800;color:var(--red)">🔒 ' + dropEchap(r0) + '</div>' : ''; }
+  // v7.5.211 : lecture des pièces en cours (commande non concernée) : encadré d'attente, pas un refus
+  if (!ps.length) { var r0 = dropBloqueLivre(s.cmdId); if (r0 === DROP_MSG_VERIF) return '<div style="margin:10px 0;padding:10px;border:2px solid var(--orange);border-radius:12px;font-size:13px;font-weight:800;color:var(--orange)">⏳ ' + dropEchap(r0) + '</div>'; return r0 ? '<div style="margin:10px 0;padding:10px;border:2px solid var(--red);border-radius:12px;font-size:13px;font-weight:800;color:var(--red)">🔒 ' + dropEchap(r0) + '</div>' : ''; }
   var cf = dropConfirm[s.cmdId] || {};
   var raison = dropBloqueLivre(s.cmdId);
   return '<div style="margin:10px 0;padding:10px;border:2px solid ' + (raison ? 'var(--orange)' : 'var(--green)') + ';border-radius:12px">' +
@@ -7320,6 +7542,134 @@ function calculerProgressionChargement(t) {
   };
 }
 
+// CHARGE-DEBUT — v7.5.211 (incident du 27/11/2026 18h40 : base saturée, requêtes en 504/522 et « statement timeout »).
+// Garde de charge des LECTURES LOURDES (jamais des écritures) :
+//  1. une seule lecture en cours par clé (chargeUnique) et réponse gardée au moins CHARGE_CACHE_MIN (60 s) ;
+//  2. après une erreur 5xx, 408, 429 ou un délai dépassé : pause croissante de toutes les lectures lourdes (10 s, 30 s, 60 s, puis 5 min
+//     au plus), remise à zéro au premier succès APRÈS l'échéance (jamais avant, cf. chargeSucces) ; aucune relance immédiate ;
+//  3. onglet caché (document.hidden) : aucune lecture de rafraîchissement (la dernière réponse connue est rendue) ;
+//  4. événements temps réel regroupés : un seul nouvel affichage (et donc au plus une lecture) CHARGE_REGROUPEMENT (5 s) après le dernier.
+var CHARGE_PAUSES = [10000, 30000, 60000, 300000];
+var CHARGE_CACHE_MIN = 60000;
+var CHARGE_REGROUPEMENT = 5000;
+var CHARGE_DELAI_LECTURE = 20000; // une lecture lourde sans réponse au bout de 20 s est abandonnée (= délai dépassé)
+var CHARGE_DELAI_COMPLET = 30000; // chargement complet (sbLoadAll) : commandes + tournées, réponses ET corps, bornés à 30 s au total
+var CHARGE_ETAT = { echecs: 0, pauseJusqua: 0, dernierEchec: 0, vols: {}, cache: {}, echecsCle: {}, perimes: {} }; // echecsCle[cle] = { n, pasAvant } : attente propre à la clé ; perimes[cle] = heure de lecture d'une ancienne réponse rendue
+function chargeDelaiPause(n) { return CHARGE_PAUSES[Math.min(Math.max(1, n || 1), CHARGE_PAUSES.length) - 1]; }
+function chargeEnPause(t) { return (t || Date.now()) < CHARGE_ETAT.pauseJusqua; }
+// statut HTTP (ou absence de réponse) qui signale une base surchargée
+function chargeSurcharge(statut) { return statut == null || statut >= 500 || statut === 408 || statut === 429; }
+function chargeEchec(t) {
+  var a = t || Date.now(); CHARGE_ETAT.echecs++; CHARGE_ETAT.dernierEchec = Math.max(CHARGE_ETAT.dernierEchec || 0, a);
+  CHARGE_ETAT.pauseJusqua = Math.max(CHARGE_ETAT.pauseJusqua || 0, a + chargeDelaiPause(CHARGE_ETAT.echecs)); return CHARGE_ETAT.pauseJusqua;
+}
+// v7.5.211 (revue chatgpt-review PR 31 sur 6ddb631, point 1) : un succès ne lève JAMAIS une pause avant son échéance, et une réponse
+// partie AVANT le dernier échec (« debut », heure d'envoi) ne remet pas l'attente croissante à zéro : deux réponses arrivées en même
+// temps (l'une en échec, l'autre réussie) laissent la pause en place jusqu'à son échéance. Rend vrai si la remise à zéro a eu lieu.
+function chargeSucces(debut) {
+  if (Date.now() < CHARGE_ETAT.pauseJusqua) return false;
+  if (debut != null && debut < (CHARGE_ETAT.dernierEchec || 0)) return false;
+  CHARGE_ETAT.echecs = 0; CHARGE_ETAT.pauseJusqua = 0; return true;
+}
+// réponse d'une lecture lourde (debut = heure d'envoi) : succès → remise à zéro (seulement après l'échéance de la pause) ;
+// surcharge → pause croissante ; autre refus (401, 403…) → rien
+function chargeNoterReponse(statut, debut) { if (statut >= 200 && statut < 400) chargeSucces(debut); else if (chargeSurcharge(statut)) chargeEchec(); }
+// v7.5.211 (revue native P2 PR 31 sur adf71bb) : en-tête d'une réponse d'une suite de lectures (relève, chargement complet) : un
+// échec de surcharge est noté TOUT DE SUITE (rend vrai : la suite doit s'arrêter) ; un succès n'est JAMAIS noté ici — l'attente
+// croissante n'est remise à zéro (chargeSucces) qu'une fois TOUTES les réponses ET leurs corps lus avec succès.
+function chargeNoterEchecHttp(statut) { if (chargeSurcharge(statut)) { chargeEchec(); return true; } return false; }
+function chargeOngletCache() { return typeof document !== 'undefined' && !!document && document.hidden === true; }
+// v7.5.211 (revue chatgpt-review PR 31 sur 6ddb631, point 3, et revue native P2) : délai GLOBAL d'une suite d'opérations réseau,
+// réponses ET lectures des corps comprises. À l'échéance : abandon (ctrl.abort) et toute opération passée par borne() est rejetée
+// « délai dépassé » — même un fetch ou un .json() qui ignorerait l'abandon : la promesse attendue se termine toujours.
+// ctrlExterne (facultatif) : contrôleur d'abandon déjà passé aux fetch. fin() : minuteur arrêté (à appeler dans un finally).
+function chargeDelai(ms, ctrlExterne) {
+  var ctrl = ctrlExterne || (typeof AbortController !== 'undefined' ? new AbortController() : null);
+  var d = { signal: ctrl ? ctrl.signal : undefined, expire: false, minuteur: null }, rejeter = null;
+  var garde = new Promise(function (ok, ko) { rejeter = ko; });
+  garde.catch(function () {});
+  d.minuteur = setTimeout(function () {
+    d.expire = true; d.minuteur = null;
+    try { if (ctrl) ctrl.abort(); } catch (e) {}
+    var err = new Error('délai dépassé (' + Math.round(ms / 1000) + ' s)'); err.statut = null; err.delai = true; rejeter(err);
+  }, ms);
+  d.borne = function (p) { return Promise.race([Promise.resolve(p), garde]); };
+  d.fin = function () { if (d.minuteur) { clearTimeout(d.minuteur); d.minuteur = null; } };
+  return d;
+}
+// fetch d'une lecture lourde, borné à CHARGE_DELAI_LECTURE corps compris ; refus HTTP → erreur portant .statut
+async function chargeFetch(url, init) {
+  var d = chargeDelai(CHARGE_DELAI_LECTURE);
+  try {
+    var r = await d.borne(fetch(url, Object.assign({}, init || {}, d.signal ? { signal: d.signal } : {})));
+    if (!r.ok) { var err = new Error('HTTP ' + r.status); err.statut = r.status; throw err; }
+    return await d.borne(r.json());
+  } finally { d.fin(); }
+}
+// Une seule lecture en cours par clé ; réponse gardée « ttl » ms. En pause ou onglet caché : AUCUNE lecture, la dernière réponse connue
+// (même plus ancienne) est rendue, sinon undefined. Erreur : pause notée, dernière réponse connue rendue (sinon undefined).
+// v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 4) : quand la réponse rendue est une ancienne réponse gardée (pause, échec,
+// onglet caché), son heure de lecture est notée (CHARGE_ETAT.perimes[cle], lue par chargeLuA) pour l'afficher « lu à HH:MM ».
+function chargeRendrePerimee(cle, c) {
+  if (!CHARGE_ETAT.perimes) CHARGE_ETAT.perimes = {};
+  if (c) CHARGE_ETAT.perimes[cle] = c.at; else delete CHARGE_ETAT.perimes[cle];
+  return c ? c.val : undefined;
+}
+// heure de lecture (ms) de la dernière réponse rendue pour « cle » SI c'était une ancienne réponse gardée ; null si elle était fraîche
+function chargeLuA(cle) { var p = CHARGE_ETAT.perimes && CHARGE_ETAT.perimes[cle]; return p ? p : null; }
+// « HH:MM » (heure locale) d'une heure en ms
+function chargeHeure(ms) { var d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+function chargeUnique(cle, ttl, lire) {
+  var t = Date.now(), c = CHARGE_ETAT.cache[cle];
+  if (c && t - c.at < Math.max(ttl || 0, CHARGE_CACHE_MIN)) { if (CHARGE_ETAT.perimes) delete CHARGE_ETAT.perimes[cle]; return Promise.resolve(c.val); }
+  if (CHARGE_ETAT.vols[cle]) return CHARGE_ETAT.vols[cle];
+  var ec = CHARGE_ETAT.echecsCle[cle];
+  // attente croissante PROPRE à la clé (le succès d'une autre lecture ne lève pas celle-ci)
+  if (chargeEnPause(t) || (ec && t < ec.pasAvant) || chargeOngletCache()) return Promise.resolve(chargeRendrePerimee(cle, c));
+  var p = Promise.resolve().then(lire).then(function (val) {
+    delete CHARGE_ETAT.vols[cle]; delete CHARGE_ETAT.echecsCle[cle]; CHARGE_ETAT.cache[cle] = { val: val, at: Date.now() };
+    if (CHARGE_ETAT.perimes) delete CHARGE_ETAT.perimes[cle];
+    chargeSucces(t); return val;
+  }, function (e) {
+    delete CHARGE_ETAT.vols[cle];
+    var n = ((CHARGE_ETAT.echecsCle[cle] || {}).n || 0) + 1;
+    CHARGE_ETAT.echecsCle[cle] = { n: n, pasAvant: Date.now() + chargeDelaiPause(n) };
+    if (chargeSurcharge(e && e.statut != null ? e.statut : null)) chargeEchec();
+    try { console.warn('[charge] ' + cle + ' : ' + (e && e.message)); } catch (x) {}
+    return chargeRendrePerimee(cle, c);
+  });
+  CHARGE_ETAT.vols[cle] = p;
+  return p;
+}
+// Regroupement : fn appelée UNE fois, CHARGE_REGROUPEMENT ms après le DERNIER appel de la clé (débounce).
+var _chargeRegroupes = {};
+function chargeRegrouper(cle, fn, ms) {
+  if (_chargeRegroupes[cle]) clearTimeout(_chargeRegroupes[cle]);
+  _chargeRegroupes[cle] = setTimeout(function () { _chargeRegroupes[cle] = null; try { fn(); } catch (e) { console.warn('[charge] ' + cle + ' : ' + e.message); } }, ms || CHARGE_REGROUPEMENT);
+}
+// Lecture complète des commandes (sbLoadAll) : une seule à la fois, jamais onglet caché ni pendant une pause, au plus une par
+// CHARGE_CACHE_MIN hors premier chargement (opts.premier) ; la promesse de la lecture en cours est rendue aux autres appelants.
+var _chargeToutVol = null, _chargeToutA = 0;
+function sbChargerTout(opts) {
+  var o = opts || {};
+  if (_chargeToutVol) return _chargeToutVol;
+  if (!o.premier) {
+    if (chargeOngletCache() || chargeEnPause()) return Promise.resolve(false);
+    if (!o.sansEspacement && _chargeToutA && Date.now() - _chargeToutA < CHARGE_CACHE_MIN - 1000) return Promise.resolve(false);
+  }
+  _chargeToutA = Date.now();
+  _chargeToutVol = Promise.resolve().then(function () { return sbLoadAll(); }).then(function () { _chargeToutVol = null; return true; },
+    function (e) { _chargeToutVol = null; console.warn('[charge] chargement complet : ' + (e && e.message)); return false; });
+  return _chargeToutVol;
+}
+// v7.5.211 (avis chatgpt-review PR 31 sur df07c0d, point 2) : reprise « liste vide » 3 s après le premier chargement — seulement si
+// ce chargement n'a PAS lu les commandes (échec). Une base réellement vide (commandes lues avec succès, 0 ligne) n'est jamais
+// relue à 3 s : la limite d'un chargement complet par minute s'applique. _chargeToutLuA = heure de la dernière lecture réussie
+// des commandes par le chargement complet (0 = jamais). Pure.
+var _chargeToutLuA = 0;
+function chargeRepriseListeVide(nbCommandes, luA) { return nbCommandes === 0 && !luA; }
+// CHARGE-FIN
+
 // Colonnes chargées pour les commandes — EXCLUT gls_pdf_base64 (PDF étiquette 50-400 Ko/cmd,
 // stocké par gls-create-shipment, récupéré uniquement à la demande via l'action getLabel)
 var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_etiquette_imprimee_at,gls_creation_statut,gls_creation_at,gls_creation_erreur,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at,frais_port,stock_deduit,payment_source,payment_transactions,ticket_cb,encaisse_par,encaisse_at,encaisse_tournee,annulation_motif,annulation_commentaire,annulation_par,annulation_at,updated_at'; // v7.5.157 : updated_at (rejeu du temps réel)
@@ -7339,12 +7689,15 @@ async function sbLoadAll() {
     if (saved) caissesRemises = JSON.parse(saved);
   } catch(e) {}
   // Sync depuis Supabase (écrase localStorage si données plus récentes)
+  // v7.5.211 (revue native P2 PR 31 sur 6ddb631) : lecture des remises de caisse bornée à 10 s, corps compris (avant : sans délai,
+  // une requête sans réponse laissait _chargeToutVol en attente pour toujours et bloquait tout chargement complet suivant)
+  var _dCaisse = (typeof chargeDelai === 'function') ? chargeDelai(10000) : { borne: function (p) { return p; }, fin: function () {}, signal: undefined };
   try {
-    var rCaisse = await fetch(SUPABASE_URL + '/rest/v1/caisse_remises?select=*', {
+    var rCaisse = await _dCaisse.borne(fetch(SUPABASE_URL + '/rest/v1/caisse_remises?select=*', Object.assign({
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
-    });
+    }, _dCaisse.signal ? { signal: _dCaisse.signal } : {})));
     if (rCaisse.ok) {
-      var caisseData = await rCaisse.json();
+      var caisseData = await _dCaisse.borne(rCaisse.json());
       if (Array.isArray(caisseData)) {
         caisseData.forEach(function(r) {
           if (r.validee) caissesRemises[r.key_remise] = { validee: true, date: r.date_remise, par: r.par, attendu: r.especes_attendues, remis: r.especes_remises, ecart: r.ecart, cb: r.cb_encaisse, commentaire: r.commentaire }; // v7.5.114
@@ -7354,28 +7707,44 @@ async function sbLoadAll() {
       }
     }
   } catch(e) { /* fallback localStorage déjà chargé */ }
+  finally { _dCaisse.fin(); }
 
+  var _dTout = null; // v7.5.211 (revue native P2 PR 31) : délai global du chargement, corps compris
   try {
     var controller = new AbortController();
-    var timeout = setTimeout(function(){ controller.abort(); }, 10000); // 10s timeout
+    var timeout = setTimeout(function(){ controller.abort(); }, 10000); // 10s timeout (réponses des 2 requêtes)
+    // v7.5.211 (revue native P2 PR 31 sur 6ddb631) : en plus, délai GLOBAL de CHARGE_DELAI_COMPLET (30 s) sur les 2 requêtes ET la lecture
+    // de leurs corps (avant : le minuteur de 10 s était arrêté avant les .json(), un corps qui ne finissait jamais bloquait tout)
+    _dTout = (typeof chargeDelai === 'function') ? chargeDelai(typeof CHARGE_DELAI_COMPLET !== 'undefined' ? CHARGE_DELAI_COMPLET : 30000, controller) : { borne: function (p) { return p; }, fin: function () {} };
     // select explicite : exclut gls_pdf_base64 (PDF 50-400 Ko/cmd, récupéré à la demande via getLabel)
     // v7.5.149 (revue Codex PR 27, P2) : chargement en cours = complétude incertaine ; le total est demandé dans la MÊME réponse
     // (Prefer: count=exact → Content-Range « 0-999/1001 ») : la liste reçue et le total décrivent le même instant
     cmdChargementComplet = false;
     var _cmdDebutLecture = Date.now(); // v7.5.154 : la preuve exige un temps réel connecté AVANT ce début, sans perte depuis
     _cmdFile = cmdRtOuvrir(); // v7.5.157 : événements temps réel reçus à partir d'ici, rejoués sur l'instantané (cmdRejouerFile)
-    var rCmds = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=created_at.desc', {
+    var rCmds = await _dTout.borne(fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=created_at.desc', {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'count=exact' },
       signal: controller.signal
-    });
-    var rTour = await fetch(SUPABASE_URL + '/rest/v1/tournees?select=*&order=created_at.desc', {
+    }));
+    // v7.5.211 (avis chatgpt-review et revue native P2 PR 31 sur adf71bb) : surcharge (5xx, 408, 429) notée TOUT DE SUITE et suite
+    // ARRÊTÉE (la requête des tournées ne part pas : on n'insiste pas auprès d'une base saturée) ; un succès n'est noté qu'à la fin,
+    // une fois les deux réponses ET leurs corps lus
+    if (typeof chargeNoterEchecHttp === 'function' && chargeNoterEchecHttp(rCmds.status)) {
+      var _eCmds = new Error('commandes HTTP ' + rCmds.status + ' (base surchargée)'); _eCmds.chargeNote = true; throw _eCmds;
+    }
+    var rTour = await _dTout.borne(fetch(SUPABASE_URL + '/rest/v1/tournees?select=*&order=created_at.desc', {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
       signal: controller.signal
-    });
+    }));
     clearTimeout(timeout);
-    var cmdsRes = { data: rCmds.ok ? await rCmds.json() : [], error: rCmds.ok ? null : 'HTTP '+rCmds.status };
+    var _tourSurcharge = (typeof chargeNoterEchecHttp === 'function') && chargeNoterEchecHttp(rTour.status); // v7.5.211 : 5xx des tournées compté aussi
+    var cmdsRes = { data: rCmds.ok ? await _dTout.borne(rCmds.json()) : [], error: rCmds.ok ? null : 'HTTP '+rCmds.status };
     var cmdsTotal = cmdTotalDepuisEntete(rCmds.headers && rCmds.headers.get ? rCmds.headers.get('Content-Range') : null);
-    var tourRes = { data: rTour.ok ? await rTour.json() : [], error: rTour.ok ? null : 'HTTP '+rTour.status };
+    var tourRes = { data: (rTour.ok && !_tourSurcharge) ? await _dTout.borne(rTour.json()) : [], error: rTour.ok ? null : 'HTTP '+rTour.status };
+    _dTout.fin();
+    // v7.5.211 (revue native P2 PR 31 sur adf71bb) : attente croissante remise à zéro SEULEMENT ici, les deux réponses lues avec succès
+    if (rCmds.ok && rTour.ok && typeof chargeSucces === 'function') chargeSucces(_cmdDebutLecture);
+    if (!cmdsRes.error && Array.isArray(cmdsRes.data)) _chargeToutLuA = Date.now(); // v7.5.211 : commandes lues avec succès (même 0 ligne) → pas de reprise « liste vide »
     if (cmdsRes.error) { console.warn('Supabase commandes error:', cmdsRes.error); }
     if (tourRes.error) { console.warn('Supabase tournees error:', tourRes.error); }
 
@@ -7427,18 +7796,10 @@ async function sbLoadAll() {
       try { livControleNonRemontees(); } catch(e) {} // v7.5.191 : contrôle admin, lecture seule
     }
 
-    // Récupérer le nombre total de commandes pour la pagination
-    try {
-      var rCount = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=id', {
-        headers: {
-          'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
-          'Prefer': 'count=exact', 'Range': '0-0'
-        }
-      });
-      var countHeader = rCount.headers.get('Content-Range');
-      if (countHeader) cmdTotalCount = parseInt(countHeader.split('/')[1]) || 0;
-      cmdAllLoaded = true; // Tout chargé au démarrage
-    } catch(e) {}
+    // Nombre total de commandes pour la pagination. v7.5.211 (incident du 27/11, base saturée) : plus de 2e requête « select=id »
+    // de comptage à chaque chargement — le total est déjà donné par la MÊME réponse (Prefer: count=exact, Content-Range).
+    if (cmdsTotal != null) cmdTotalCount = cmdsTotal;
+    cmdAllLoaded = true; // Tout chargé au démarrage
 
     // Mettre à jour nextCmdId
     if (commandes.length > 0) {
@@ -7474,6 +7835,9 @@ async function sbLoadAll() {
     }
   } catch(e) {
     console.warn('sbLoadAll erreur:', e.message);
+    // v7.5.211 : délai dépassé ou réseau → pause croissante, aucune relance immédiate (surcharge HTTP déjà notée : pas comptée deux fois)
+    if (typeof chargeEchec === 'function' && !(e && e.chargeNote)) chargeEchec();
+    if (_dTout) _dTout.fin(); try { clearTimeout(timeout); } catch(x) {} // v7.5.211 : minuteurs arrêtés
     if (_cmdFile) { cmdRtFermer(_cmdFile); _cmdFile = null; } // v7.5.157 : file fermée (événements déjà appliqués à la liste gardée)
     // Fallback cache localStorage — uniquement si AUCUNE donnée chargée depuis Supabase
     // NE PAS utiliser le cache si Supabase a répondu (même partiellement)
@@ -7862,12 +8226,24 @@ function cmdFusionnerChargees(nouvelles, anciennes) {
 }
 
 var _pollingInterval = null;
+var _pollingEnCours = false; // v7.5.211 : une seule relève à la fois
 function startPolling() {
   if (_pollingInterval) return;
   oqSignalerPurge(); // v7.5.191 : anciennes mises à jour de stock retirées de la file → une notification
   // Vider la queue offline au démarrage si items en attente
   if (navigator.onLine && offlineQueue.length > 0) setTimeout(offlineQueueFlush, 3000);
   _pollingInterval = setInterval(async function() {
+    // v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 3) : les ÉCRITURES en attente (demandes de déduction du stock, recrédits,
+    // mouvements) reprennent à CHAQUE passage, AVANT les gardes de lecture : ni la pause de charge, ni l'onglet caché, ni une relève
+    // encore en cours ne les bloquent. Elles ont leur PROPRE attente (par demande, croissante après une erreur 5xx : stkDeductionEnvoyer).
+    stkRepriseEcritures();
+    // v7.5.211 (incident du 27/11, base saturée) : une seule relève à la fois (avant : une relève lente ou bloquée n'empêchait pas
+    // la suivante, 10 s plus tard — les requêtes s'empilaient), aucune relève onglet caché, aucune pendant la pause croissante après erreur
+    if (_pollingEnCours) return;
+    if (typeof chargeOngletCache === 'function' && chargeOngletCache()) return;
+    if (typeof chargeEnPause === 'function' && chargeEnPause()) { cmdSynchroPerdue('relève suspendue (base surchargée)'); return; }
+    _pollingEnCours = true;
+    var _dRel = null; // v7.5.211 : délai de la relève
     try {
       // Recharger commandes
       // v7.5.51 : tri par updated_at (date de MODIFICATION) et non created_at.
@@ -7876,11 +8252,21 @@ function startPolling() {
       // le livreur) restait HORS fenetre -> l'encaissement ne remontait jamais
       // en direct cote admin (sauf rechargement complet). Desormais toute commande
       // que le livreur vient de modifier remonte en tete et est rafraichie en 30s.
-      var rC = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=updated_at.desc.nullslast&limit=80', {
-        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
-      });
+      // v7.5.211 (revue chatgpt-review PR 31 sur 6ddb631, point 3, et revue native P2) : TOUTE la relève bornée à 15 s — les deux
+      // requêtes (commandes, tournées) ET la lecture de leurs corps (avant : seul l'en-tête de la 1re réponse l'était, un corps ou la
+      // requête des tournées sans fin laissait _pollingEnCours bloqué et plus aucune relève ne partait)
+      _dRel = (typeof chargeDelai === 'function') ? chargeDelai(15000) : { borne: function(p) { return p; }, fin: function() {}, signal: undefined };
+      var _debRel = Date.now();
+      var rC = await _dRel.borne(fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=updated_at.desc.nullslast&limit=80', {
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }, signal: _dRel.signal
+      }));
+      // v7.5.211 (revue native P2 PR 31 sur adf71bb) : surcharge notée TOUT DE SUITE, suite arrêtée (pas de 2e requête) ; un succès
+      // n'est noté qu'en fin de relève, les deux réponses et leurs corps lus (avant : remise à zéro dès l'en-tête des commandes, et un
+      // corps ou des tournées hors délai à chaque fois laissaient la pause bloquée à 10 s)
+      if (typeof chargeNoterEchecHttp === 'function' && chargeNoterEchecHttp(rC.status)) { cmdSynchroPerdue('relève HTTP ' + rC.status); return; }
+      if (typeof chargeEnPause === 'function' && chargeEnPause()) { cmdSynchroPerdue('relève HTTP ' + rC.status); return; } // pas de 2e requête
       if (rC.ok) {
-        var data = await rC.json();
+        var data = await _dRel.borne(rC.json());
         if (data && data.length > 0) {
           var updated = false;
           data.forEach(function(r) {
@@ -7919,11 +8305,13 @@ function startPolling() {
       } else cmdSynchroPerdue('relève HTTP ' + rC.status); // v7.5.154 : relève des commandes en échec → preuve retirée
 
       // Recharger tournées
-      var rT = await fetch(SUPABASE_URL + '/rest/v1/tournees?select=*', {
-        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
-      });
+      var rT = await _dRel.borne(fetch(SUPABASE_URL + '/rest/v1/tournees?select=*', {
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }, signal: _dRel.signal
+      }));
+      // v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 2) : un 5xx des tournées compte aussi dans l'attente croissante
+      if (typeof chargeNoterEchecHttp === 'function' && chargeNoterEchecHttp(rT.status)) cmdSynchroPerdue('relève tournées HTTP ' + rT.status);
       if (rT.ok) {
-        var tData = await rT.json();
+        var tData = await _dRel.borne(rT.json());
         if (tData && tData.length > 0) {
           var tupdated = false;
           tData.forEach(function(r) {
@@ -7950,6 +8338,8 @@ function startPolling() {
         }
         try { livControleNonRemontees(); } catch(e) {} // v7.5.191 : contrôle admin, lecture seule
       }
+      // v7.5.211 (revue native P2 PR 31 sur adf71bb) : attente croissante remise à zéro SEULEMENT ici, les deux réponses et leurs corps lus
+      if (rC.ok && rT.ok && typeof chargeSucces === 'function') chargeSucces(_debRel);
     // Sync prix/paie/stpaie des stops depuis les commandes mises à jour
     var _syncNeeded = false;
     tournees.forEach(function(t) {
@@ -7969,10 +8359,13 @@ function startPolling() {
       });
     });
     if (_syncNeeded) renderLivreur();
-    // v7.5.197 : demandes de déduction du stock restées en file : renvoyées (au plus une fois par minute)
-    try { if (navigator.onLine) stkReprendreDeductions(false).catch(function() {}); } catch(e) {}
+    // v7.5.197 : demandes de déduction du stock restées en file : renvoyées — v7.5.211 : au début de CHAQUE passage (stkRepriseEcritures),
+    // plus ici (une relève suspendue par la pause ou l'onglet caché les bloquait)
 
-    } catch(e) { console.warn('Polling erreur:', e.message); cmdSynchroPerdue('relève'); } // v7.5.154 : preuve retirée
+    } catch(e) {
+      console.warn('Polling erreur:', e.message); cmdSynchroPerdue('relève'); // v7.5.154 : preuve retirée
+      if (typeof chargeEchec === 'function') chargeEchec(); // v7.5.211 : délai dépassé ou réseau → pause croissante
+    } finally { if (_dRel) _dRel.fin(); _pollingEnCours = false; }
   }, 10000); // toutes les 10 secondes
 }
 
@@ -7998,7 +8391,10 @@ function sbStartRealtime() {
       // v7.5.160 : appliqué à la liste actuelle, SUPPRESSIONS comprises (retirée par payload.old.id ; sans identifiant -> preuve retirée)
       if (!cmdTempsReelAppliquer(payload)) return;
       if (typeof tdbSignaler === 'function') tdbSignaler('commandes'); // v7.5.138
-      renderDash(); renderCmds(); renderTournees(); renderLivreur();
+      // v7.5.211 (incident du 27/11, base saturée) : tableau de bord et liste des commandes (qui relisaient la base à chaque événement)
+      // redessinés UNE fois, 5 s après le dernier événement d'une rafale ; tournées et écran du livreur (sans lecture) tout de suite
+      chargeRegrouper('rt-commandes', function() { renderDash(); renderCmds(); });
+      renderTournees(); renderLivreur();
     })
     .on('postgres_changes', {event:'*', schema:'public', table:'tournees'}, function(payload) {
       var r = payload.new;
@@ -8081,6 +8477,11 @@ document.addEventListener('visibilitychange', function() {
   if (document.visibilityState === 'visible' && !sbRealtimeIsConnected) {
     console.log('[Realtime] Onglet actif → reconnexion');
     sbStartRealtime();
+  }
+  // v7.5.211 : aucune lecture onglet caché ; au retour, rattrapage (au plus une lecture complète par minute, hors pause après erreur)
+  if (document.visibilityState === 'visible' && typeof role !== 'undefined' && role) {
+    try { if (typeof sbChargerTout === 'function') sbChargerTout().then(function(fait) { if (fait) { renderCmds(); renderDash(); } }); } catch(e) {}
+    try { if (typeof tdbVisible === 'function' && tdbVisible()) renderDash(); } catch(e) {}
   }
 });
 
@@ -8960,7 +9361,7 @@ function buildUI(r) {
   sbLoadEntretiens(); // Entretiens
   sbLoadZones();      // Zones géographiques
   sbLoadLivreurs().then(function() {
-    sbLoadAll().then(function() {
+    sbChargerTout({ premier: true }).then(function() { // v7.5.211 : une seule lecture complète à la fois (CHARGE)
       renderDash(); renderCmds(); renderTournees(); renderLivreur();
       // v7.5.197 : reprise des demandes de déduction restées en file (fermeture ou coupure pendant l'envoi) pour les
       // commandes livrées dont stock_deduit est encore faux : renvoyées (la base ne déduit jamais deux fois)
@@ -8976,10 +9377,11 @@ function buildUI(r) {
         if (typeof renderLivreur === 'function') renderLivreur();
         if (typeof renderCamionContenu === 'function') renderCamionContenu();
       });
-      // Si commandes vides, réessayer après 3s
-      if (commandes.length === 0) {
+      // Si commandes vides, réessayer après 3s — v7.5.211 (avis chatgpt-review sur df07c0d, point 2) : seulement si le premier
+      // chargement n'a PAS lu les commandes (échec) ; une base réellement vide n'est pas relue (au plus un chargement complet par minute)
+      if (chargeRepriseListeVide(commandes.length, _chargeToutLuA)) {
         setTimeout(function() {
-          sbLoadAll().then(function() {
+          sbChargerTout({ sansEspacement: true }).then(function() { // v7.5.211 : jamais pendant une pause après erreur ni onglet caché
             renderDash(); renderCmds(); renderTournees(); renderLivreur();
           });
         }, 3000);
@@ -9600,6 +10002,21 @@ function tdbReessayer() { TDB_ETAT.reessaiA = 0; tdbRendre(); }
 // v7.5.139 (revue Codex de 8705c41) : la lecture continue page après page jusqu'à la dernière ; garde-fou EXPLICITE (jamais un
 // arrêt silencieux) : au-delà de TDB_PAGES_MAX pages, erreur affichée (« chiffres non calculés »), jamais de chiffres tronqués.
 var TDB_PAGES_MAX = 500;
+// v7.5.211 (incident du 27/11/2026, base saturée : 115 lectures du tableau + ~100 contrôles « id,updated_at » en 20 min) :
+//  - une période n'est RELUE qu'au plus une fois par TDB_RELECTURE_MIN (60 s) — avant, chaque événement temps réel arrivé PENDANT une
+//    lecture la déclarait périmée et une nouvelle lecture (3 lots × lecture + contrôle) repartait AUSSITÔT : boucle tant que la base
+//    était lente et que des commandes changeaient ;
+//  - aucune lecture si le tableau n'est pas affiché, si l'onglet est caché, pendant la pause croissante après erreur (CHARGE) ou pendant
+//    un chargement complet des commandes (il redessine le tableau à son arrivée) ;
+//  - signaux regroupés : un seul nouvel affichage TDB_REGROUPEMENT (5 s) après le dernier signal.
+var TDB_RELECTURE_MIN = 60000, TDB_REGROUPEMENT = 5000;
+function tdbLecturePermise() {
+  if (!tdbVisible()) return false;
+  if (typeof chargeOngletCache === 'function' && chargeOngletCache()) return false;
+  if (typeof chargeEnPause === 'function' && chargeEnPause()) return false;
+  if (typeof _chargeToutVol !== 'undefined' && _chargeToutVol) return false;
+  return true;
+}
 var TDB_PAGE = 1000; // v7.5.157 : lignes demandées par page (la base peut en rendre moins : la page suivante part du dernier identifiant reçu)
 var _tdbSignal = null, _tdbExpire = null;
 function tdbVisible() { var p = document.getElementById('p-dashboard'); return !!(p && p.classList && p.classList.contains('on')); }
@@ -9613,7 +10030,7 @@ function tdbSignaler(quoi) {
   // refaite à son arrivée (génération), jamais deux lectures en même temps (une réponse ancienne ne remplace pas une récente)
   if (quoi === 'revients') { TDB_ETAT.revientsDemandes = false; TDB_ETAT.revientsGen++; }
   clearTimeout(_tdbSignal);
-  _tdbSignal = setTimeout(function () { _tdbSignal = null; if (tdbVisible()) renderDash(); }, 800);
+  _tdbSignal = setTimeout(function () { _tdbSignal = null; if (tdbVisible()) renderDash(); }, TDB_REGROUPEMENT); // v7.5.211 : 5 s (avant 0,8 s)
 }
 /** Relecture programmée à l'expiration de la lecture par période (tableau affiché seulement). */
 function tdbProgrammerExpiration(ms) {
@@ -9648,10 +10065,21 @@ async function tdbLire(filtre, cols) {
   for (var page = 0; ; page++) {
     if (page >= TDB_PAGES_MAX) throw new Error('plus de ' + TDB_PAGES_MAX.toLocaleString('fr-FR') + ' pages (' + out.length.toLocaleString('fr-FR') + ' commandes lues) sur la période : lecture arrêtée, chiffres non calculés');
     var apres = dernier == null ? '' : '&id=gt.' + encodeURIComponent(dernier);
-    var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + (cols || TDB_COLS) + filtre + apres + '&order=id.asc&limit=' + TDB_PAGE, {
-      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    var rows = await r.json(); if (!Array.isArray(rows)) throw new Error('réponse inattendue');
+    // v7.5.211 : page bornée à 20 s, CORPS COMPRIS (revue native P2 PR 31 sur 6ddb631 : avant, le minuteur était arrêté avant le .json()) ;
+    // 5xx ou délai → pause croissante de toutes les lectures lourdes (CHARGE)
+    var _dPage = (typeof chargeDelai === 'function') ? chargeDelai(20000) : (function () {
+      var c = typeof AbortController !== 'undefined' ? new AbortController() : null, m = c ? setTimeout(function () { try { c.abort(); } catch (e) {} }, 20000) : null;
+      return { signal: c ? c.signal : undefined, borne: function (p) { return p; }, fin: function () { if (m) clearTimeout(m); } };
+    })(), r, rows;
+    try {
+      try {
+        r = await _dPage.borne(fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + (cols || TDB_COLS) + filtre + apres + '&order=id.asc&limit=' + TDB_PAGE, Object.assign({
+          headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } }, _dPage.signal ? { signal: _dPage.signal } : {})));
+      } catch (e) { if (typeof chargeEchec === 'function') chargeEchec(); throw e; }
+      if (!r.ok) { if (typeof chargeNoterReponse === 'function') chargeNoterReponse(r.status); throw new Error('HTTP ' + r.status); }
+      try { rows = await _dPage.borne(r.json()); } catch (e) { if (typeof chargeEchec === 'function') chargeEchec(); throw e; }
+    } finally { _dPage.fin(); }
+    if (!Array.isArray(rows)) throw new Error('réponse inattendue');
     if (!rows.length) break;
     for (var k = 0; k < rows.length; k++) {
       var id = rows[k] && rows[k].id;
@@ -9758,8 +10186,12 @@ function tdbRendre() {
     }
     var frais = TDB_ETAT.cle === cle && Date.now() - TDB_ETAT.at < TDB_DUREE;
     var echec = TDB_ETAT.cle === cle && !!TDB_ETAT.erreur, patiente = echec && Date.now() < TDB_ETAT.reessaiA;
-    if (!frais && !patiente && !TDB_ETAT.vols[cle]) tdbCharger(P, cle);
+    // v7.5.211 : même période relue au plus une fois par minute (relecture programmée à l'échéance), et seulement tableau affiché
+    var tropTot = TDB_ETAT.cle === cle && !!TDB_ETAT.luA && Date.now() - TDB_ETAT.luA < TDB_RELECTURE_MIN;
+    if (!frais && !patiente && !TDB_ETAT.vols[cle] && !tropTot && tdbLecturePermise()) tdbCharger(P, cle);
     else if (frais) tdbProgrammerExpiration(TDB_ETAT.at + TDB_DUREE - Date.now());
+    else if (tropTot && !patiente) tdbProgrammerExpiration(TDB_ETAT.luA + TDB_RELECTURE_MIN - Date.now());
+    else if (!patiente && typeof chargeEnPause === 'function' && chargeEnPause()) tdbProgrammerExpiration(CHARGE_ETAT.pauseJusqua - Date.now());
     if (patiente) tdbProgrammerExpiration(TDB_ETAT.reessaiA - Date.now()); // nouvelle tentative différée (tableau affiché)
     if (TDB_ETAT.cle === cle && TDB_ETAT.lignes) { lignes = TDB_ETAT.lignes; if (TDB_ETAT.luA) note = tdbNoteLecture(TDB_ETAT.luA); }
     else if (echec) { // v7.5.149 : l'avertissement RESTE affiché, même pendant la nouvelle tentative
@@ -9892,21 +10324,29 @@ async function cmdFetchRange(dMin, dMaxExcl) {
   var tk = tn.getFullYear() + '-' + String(tn.getMonth()+1).padStart(2,'0') + '-' + String(tn.getDate()).padStart(2,'0');
   var immuable = dMaxExcl <= tk; // plage entierement passee -> ne changera plus
   if (immuable && cmdStatsCache[key]) return cmdStatsCache[key];
-  var res = { nb: 0, total: 0 };
+  var res = { nb: 0, total: 0 }, lu = false;
   try {
     var url = SUPABASE_URL + '/rest/v1/commandes?select=id,prix,date_commande,date_livraison,statut,origine&date_commande=gte.' + dMin + '&date_commande=lt.' + dMaxExcl + '&statut=not.eq.annul%C3%A9&limit=2000';
-    var r = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
-    if (r.ok) {
-      var data = await r.json();
+    // v7.5.211 (incident du 27/11) : une seule lecture à la fois par plage, réponse gardée 60 s, attente croissante après erreur
+    var data = await chargeUnique('cmdPlage:' + key, CHARGE_CACHE_MIN, function() { return chargeFetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } }); });
+    var _luA = (typeof chargeLuA === 'function') ? chargeLuA('cmdPlage:' + key) : null; // v7.5.211 : ancienne réponse gardée → son heure
+    if (Array.isArray(data)) {
+      lu = true;
       var vr = (data || []).filter(function(c){
         if (!c.date_commande) return false;
         var notRetro = !c.date_livraison || c.date_livraison >= c.date_commande;
         return notRetro && (c.origine || '').toUpperCase().indexOf('SAV') !== 0;
       });
       res = { nb: vr.length, total: vr.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0) };
+      // v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 4) : chiffres d'une ancienne réponse (pause, échec) → « lu à HH:MM »
+      // (une telle réponse n'est jamais gardée comme définitive dans cmdStatsCache : relue plus tard)
+      if (_luA) res.luA = _luA;
     }
   } catch(e) { console.warn('cmdFetchRange', e.message); }
-  if (immuable) cmdStatsCache[key] = res;
+  if (immuable && lu && !res.luA) cmdStatsCache[key] = res; // v7.5.211 : un échec n'est jamais gardé comme « 0 commande » définitif
+  // v7.5.211 (revue chatgpt-review PR 31 sur 6ddb631, point 2) : lecture impossible (erreur, pause, onglet caché) et aucune réponse
+  // connue → « indisponible », jamais un « 0 commande » qui passerait pour un vrai chiffre
+  if (!lu) res.indisponible = true;
   return res;
 }
 
@@ -9964,14 +10404,16 @@ async function renderCmdStatsJour() {
   // v7.5.24 : utilise date_commande (vraie date prise commande)
   // v7.5.25 : exclut les saisies retroactives (date_livraison < date_commande)
   // v7.5.32 : date_commande source de verite + filtre retroactif maintenu
-  var moisData = [];
+  // v7.5.211 (incident du 27/11/2026, base saturée) : renderCmdStatsJour est appelé par CHAQUE renderCmds (événement temps réel,
+  // relève, chargement complet, filtre…) et relançait à chaque fois cette lecture du mois (263 requêtes en 20 min) — désormais une
+  // seule lecture à la fois, réponse gardée 60 s, attente croissante après erreur, aucune lecture onglet caché (dernière réponse gardée).
+  var moisData = [], moisLu = false; // v7.5.211 (revue chatgpt-review PR 31, point 2) : moisLu faux = aucune réponse connue → « indisponible »
+  var moisLuA = null; // v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 4) : heure de lecture d'une ancienne réponse gardée (pause, échec)
   try {
     var url = SUPABASE_URL + '/rest/v1/commandes?select=id,prix,date_commande,date_livraison,statut,origine&date_commande=gte.' + debutMoisStr + '&date_commande=lt.' + demainStr + '&statut=not.eq.annul%C3%A9&limit=1000';
-    var r = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
-    if (r.ok) {
-      var data = await r.json();
-      if (Array.isArray(data)) moisData = data;
-    }
+    var _cleMois = 'cmdStatsMois:' + debutMoisStr + ':' + demainStr;
+    var data = await chargeUnique(_cleMois, CHARGE_CACHE_MIN, function() { return chargeFetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } }); });
+    if (Array.isArray(data)) { moisData = data; moisLu = true; if (typeof chargeLuA === 'function') moisLuA = chargeLuA(_cleMois); }
   } catch(e) { console.warn('renderCmdStatsJour fetch err:', e.message); }
 
   // Filtre rétroactif global
@@ -9991,7 +10433,7 @@ async function renderCmdStatsJour() {
     });
     var nb = items.length;
     var total = items.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
-    return { nb: nb, total: total };
+    return moisLu ? { nb: nb, total: total, luA: moisLuA } : { nb: 0, total: 0, indisponible: true };
   }
 
   // v7.5.96 : chaque carte affiche la période EN COURS par défaut (depuis le fetch du mois
@@ -10034,20 +10476,24 @@ async function renderCmdStatsJour() {
   }
   var moisSel = '<select onchange="cmdStatsSel.mois=this.value; renderCmdStatsJour();" style="'+inStyle+'" title="Choisir un mois">'+moisOpts+'</select>';
 
-  function carte(ico, lbl, selHtml, nb, total, bg, brd, txt) {
+  function carte(ico, lbl, selHtml, nb, total, bg, brd, txt, indispo, luA) {
     // white-space:nowrap + flex:0 0 auto : la carte ne se compresse pas et le montant
     // (ex "1 656,45 €", qui contient des espaces) ne passe plus jamais a la ligne.
     var h = '<div style="background:'+bg+';border:1px solid '+brd+';border-radius:8px;padding:6px 10px;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:'+txt+';white-space:nowrap;flex:0 0 auto">'+
-      '<span style="white-space:nowrap">'+ico+(lbl?' '+lbl:'')+'</span>'+selHtml+
-      '<span style="white-space:nowrap"><strong>'+nb+'</strong> cmd'+(nb>1?'s':'')+'</span>';
+      '<span style="white-space:nowrap">'+ico+(lbl?' '+lbl:'')+'</span>'+selHtml;
+    // v7.5.211 (revue chatgpt-review PR 31 sur 6ddb631, point 2) : lecture impossible sans réponse connue → « indisponible » (ni 0 ni montant)
+    if (indispo) return h + '<span class="cmd-stats-indispo" style="white-space:nowrap;opacity:.8" title="Lecture de la base impossible pour le moment (base surchargée ou hors ligne) : chiffres non disponibles, nouvel essai automatique">⚠️ indisponible</span></div>';
+    h += '<span style="white-space:nowrap"><strong>'+nb+'</strong> cmd'+(nb>1?'s':'')+'</span>';
     if (showMontants) h += '<span style="opacity:.5">·</span><span style="font-weight:900;white-space:nowrap">'+total.toLocaleString('fr-FR').replace(/\s/g,' ')+' €</span>';
+    // v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 4) : chiffres d'une ancienne réponse (base surchargée, pause) → heure de lecture
+    if (luA && typeof chargeHeure === 'function') h += '<span class="cmd-stats-lu-a" style="white-space:nowrap;opacity:.75;font-weight:600" title="Base surchargée ou hors ligne : chiffres de la dernière lecture réussie, nouvel essai automatique">lu à '+chargeHeure(luA)+'</span>';
     return h + '</div>';
   }
 
   box.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
-    carte('📊', '',     jourSel, jStats.nb, jStats.total, 'var(--bl)', 'var(--blue)', 'var(--bd)') +
-    carte('📅', 'Sem.', semSel,  sStats.nb, sStats.total, 'var(--gl)', 'var(--green)', 'var(--gd)') +
-    carte('📆', '',     moisSel, mStats.nb, mStats.total, 'var(--ol)', 'var(--orange)', 'var(--od)') +
+    carte('📊', '',     jourSel, jStats.nb, jStats.total, 'var(--bl)', 'var(--blue)', 'var(--bd)', jStats.indisponible, jStats.luA) +
+    carte('📅', 'Sem.', semSel,  sStats.nb, sStats.total, 'var(--gl)', 'var(--green)', 'var(--gd)', sStats.indisponible, sStats.luA) +
+    carte('📆', '',     moisSel, mStats.nb, mStats.total, 'var(--ol)', 'var(--orange)', 'var(--od)', mStats.indisponible, mStats.luA) +
   '</div>';
 }
 
@@ -12085,7 +12531,9 @@ function ouvrirCmd(id) {
   if (!c) return;
   var _gpanel_title=document.getElementById('panel-title'); if(_gpanel_title) _gpanel_title.textContent=c.client;
 
-  document.getElementById('panel-sub').innerHTML = c.id+' &nbsp;&middot;&nbsp; '+stBdg(c.statut)+(confirmBadge(c)?' &nbsp; '+confirmBadge(c):'');
+  document.getElementById('panel-sub').innerHTML = c.id+' &nbsp;&middot;&nbsp; '+stBdg(c.statut)+(confirmBadge(c)?' &nbsp; '+confirmBadge(c):'')+
+    // v7.5.211 (défaut observé en production) : changement de statut refusé par la base (dans les 30 dernières minutes) : dit clairement
+    ((c._statutRefuse && Date.now() - (c._statutRefuse.at || 0) < 1800000) ? ' &nbsp; <span class="cmd-statut-refuse" style="color:var(--red);font-weight:800">⛔ « '+(['en-attente','en-route','arrivé','livré','reporté','annulé'].indexOf(c._statutRefuse.vers) >= 0 ? c._statutRefuse.vers : '?')+' » refusé par la base : rien n’a été enregistré</span>' : '');
   const tel = c.tel||'';
   const waNum = tel.startsWith('0') ? '33'+tel.slice(1) : tel;
 
@@ -12279,12 +12727,13 @@ function chgStatut(id, st, _annOk) {
   c.statut=st;
   // Enregistrer dans l'historique
   if (!c.historique) c.historique = [];
-  c.historique.push({
+  var _hist = {
     date: new Date().toISOString(),
     de: ancienStatut,
     vers: st,
     par: role + (livNom ? ' (' + livNom + ')' : '')
-  });
+  };
+  c.historique.push(_hist);
   // Déduire le stock si livré — v7.5.197 : demande posée en file ici, envoyée à la base APRÈS l'enregistrement du
   // « livré » (sbSaveCommande plus bas) ; la base déduit une seule fois
   if (st === 'livré') {
@@ -12296,11 +12745,39 @@ function chgStatut(id, st, _annOk) {
   // v7.5.85b : synchroniser la TOURNÉE avec le nouveau statut (annulé -> stop annulé,
   // reporté/date -> déplacement, etc.). Avant, changer le statut d'une commande ne
   // touchait pas la tournée -> le client annulé restait dans la tournée.
+  // v7.5.211 (revue native P2 sur df07c0d) : l'état des arrêts de cette commande est relevé AVANT et APRÈS cette synchronisation
+  // (elle marque l'arrêt « livré », ou le retire, et l'ENREGISTRE) : si la base refuse ensuite la commande, l'arrêt est remis
+  // tel qu'il était et réenregistré (arretsRemettre, appelée par cmdRemettreStatut)
+  var _arrM = null;
+  // (revue native P2 sur 358825d) chaque changement de statut porte un NUMÉRO DE GÉNÉRATION par commande : une remise différée
+  // d'un changement plus ancien n'est plus jamais réappliquée dès qu'un nouveau changement a commencé
+  // (revue native P2 sur 3aba95e) la génération est aussi vérifiée AVANT la remise du statut (statutEssaiRegler, plus bas) : le
+  // refus d'un essai plus ancien, reçu après le succès d'un essai plus récent, ne remet plus rien
+  _arretsGen[id] = (_arretsGen[id] || 0) + 1;
+  var _gen = _arretsGen[id];
+  try { _arrM = { vers: st, gen: _gen, avant: arretsRelever(id) }; } catch(e) { _arrM = null; }
   if (typeof reconcilierTournees === 'function') reconcilierTournees();
+  try { if (_arrM) _arrM.apres = arretsRelever(id); } catch(e) { _arrM = null; }
+  var _essai = statutEssaiPoser(id, ancienStatut, st, _gen, _arrM);
+  _essai.hist = _hist; // ligne d'historique de cet essai (retirée s'il est refusé ; « de » corrigé si l'essai d'avant est refusé)
   renderCmds(); renderDash(); renderTournees(); renderLivreur();
   // v7.5.39 : re-render Suivi logistique (sinon le statut reste l'ancien)
   if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres();
-  var _pSc = sbSaveCommande(c); // Sync Supabase
+  // v7.5.211 (défaut observé en production, GO de Borhen) : refus DÉFINITIF de la base (ex. « Livré » refusé, PIECES_NON_CONFIRMEES) :
+  // rien n'est enregistré → l'ancien statut est remis à l'écran (liste et fiche), et la raison dite clairement (cmdRemettreStatut),
+  // AVANT la demande de déduction (qui est alors retirée)
+  // (revue native P2 sur 3aba95e) deux essais qui se chevauchent : la remise n'est faite que si CET essai est encore celui dont
+  // l'écran porte le statut (statutEssaiRegler compare sa génération à la génération courante de la commande). Refus d'un essai
+  // dépassé par un plus récent : rien n'est remis (ni statut, ni arrêt, ni demande de déduction du stock).
+  var _pSc = Promise.resolve(sbSaveCommande(c)).then(function(res) {
+    var _refus = !!(res && res.ok === false && res.definitif);
+    var _rem = statutEssaiRegler(id, _essai, _refus);
+    if (_refus && _rem) { try { cmdRemettreStatut(c, _rem.de, st, res, _rem.arr); } catch(e) { console.warn('[statut] remise :', e && e.message); } }
+    // essai refusé : sa ligne d'historique ne reste jamais (cmdRemettreStatut retire celle de l'essai remis ; ici celle d'un
+    // essai refusé sans remise, dépassé par un plus récent)
+    if (_refus) { try { var _k = c.historique ? c.historique.indexOf(_hist) : -1; if (_k > -1) c.historique.splice(_k, 1); } catch(e) {} }
+    return res;
+  }); // Sync Supabase
   if (st === 'livré') stkDemanderDeduction(c, _pSc); // v7.5.197 : après l'enregistrement du « livré »
   if (_recredit) stkReCrediterStock(id, { avant: _pSc }); // v7.5.198 : après l'enregistrement du nouveau statut
   // v7.5.206 (revue native P2 sur cfbf0fa) : annulée / reportée AVANT sa livraison depuis la fiche commande : pièces déclarées
@@ -12312,6 +12789,163 @@ function chgStatut(id, st, _annOk) {
   toast('Statut mis à jour : ' + st, 'ok');
 }
 
+// v7.5.211 (revue native P2 sur df07c0d) : ARRÊTS DE TOURNÉE d'une commande dont le changement de statut est en cours
+// d'enregistrement. chgStatut synchronise la tournée AVANT la réponse de la base (arrêt marqué « livré », ou retiré, et
+// enregistré) ; rappeler reconcilierTournees après un refus ne défait rien (elle garde tout arrêt déjà « livré »). Sans remise,
+// il restait une commande « en-attente » avec un arrêt « livré » ENREGISTRÉ (alerte « Livraison non remontée »).
+//   arretsRelever(cmdId)  : copie de chaque arrêt de la commande (tournée, rang, contenu).
+//   arretsRemettre(cmdId, refuse, m) : après le refus du statut « refuse », remet CHAQUE champ que la synchronisation avait changé
+//     (relevé « m » de l'essai refusé : statut, heure, heureStatut…), seulement s'il porte encore la valeur posée par elle (un
+//     changement fait entre-temps n'est jamais écrasé) ; un arrêt retiré est replacé à son rang s'il n'est dans aucune tournée ;
+//     chaque tournée touchée est RÉENREGISTRÉE par la file de la tournée (sbSaveTournee). Rend le nombre de tournées remises.
+var _arretsGen = {};
+function arretsRelever(cmdId) {
+  var r = [];
+  if (typeof tournees === 'undefined' || !Array.isArray(tournees)) return r;
+  tournees.forEach(function(t) {
+    if (!t || !Array.isArray(t.stops)) return;
+    t.stops.forEach(function(s, i) { if (s && s.cmdId === cmdId) r.push({ tid: t.id, rang: i, arret: JSON.parse(JSON.stringify(s)) }); });
+  });
+  return r;
+}
+// v7.5.211 (revue native P2 sur 3aba95e) : ESSAIS DE CHANGEMENT DE STATUT SANS RÉPONSE, par commande. Deux essais peuvent se
+// chevaucher (« Livré » refusé une première fois, relancé avant la réponse…) et leurs réponses arriver dans n'importe quel ordre.
+// Avant : le rappel d'un essai ANCIEN, refusé, remettait son « ancien statut » même après le succès d'un essai plus récent, et
+// retirait la demande de déduction du stock de celui-ci. Chaque essai garde donc sa génération, le statut d'où il part (« de »),
+// la génération de l'essai qui avait posé ce statut (« deGen », 0 = statut déjà à l'écran sans essai en vol) et le relevé de ses
+// arrêts. « tete » = génération de l'essai dont l'écran porte le statut (= génération courante tant qu'aucun essai n'est refusé).
+//   statutEssaiPoser(id, de, vers, gen, arr) : nouvel essai (il devient la tête).
+//   statutEssaiRegler(id, essai, refuse)    : réponse reçue. Rend { de, arr } si le statut est à remettre, sinon null :
+//     - accepté (ou mis en file : pas un refus) : rien à remettre ;
+//     - refusé, et l'essai n'est PLUS la tête (un essai plus récent a pris le relais) : rien n'est remis ; les essais plus récents
+//       encore sans réponse qui partaient du statut refusé repartent du statut d'avant (et de l'état d'avant des arrêts) : s'ils
+//       sont refusés à leur tour, la commande ne revient jamais à un statut que la base a refusé ;
+//     - refusé, et l'essai est la tête : remise au statut d'où il partait ; la tête redevient l'essai qui avait posé ce statut
+//       (s'il est refusé plus tard, la remise continue jusqu'au dernier statut non refusé).
+var _statutEssais = {};
+function statutEssaiPoser(id, de, vers, gen, arr) {
+  var e = _statutEssais[id] || (_statutEssais[id] = { tete: 0, liste: [] });
+  var essai = { gen: gen, de: de, deGen: e.tete, vers: vers, arr: arr || null };
+  e.liste.push(essai); e.tete = gen;
+  return essai;
+}
+function statutEssaiRegler(id, essai, refuse) {
+  var e = _statutEssais[id];
+  if (!e || !essai) return null;
+  var i = e.liste.indexOf(essai);
+  if (i < 0) return null;
+  e.liste.splice(i, 1);
+  var r = null;
+  if (refuse) {
+    e.liste.forEach(function(x) {
+      if (x.deGen !== essai.gen) return;
+      x.de = essai.de; x.deGen = essai.deGen;
+      if (x.arr && essai.arr) x.arr.avant = essai.arr.avant;
+      if (x.hist) x.hist.de = essai.de;
+    });
+    if (e.tete === essai.gen) { e.tete = essai.deGen; r = { de: essai.de, arr: essai.arr }; } // génération courante : remise
+  }
+  if (!e.liste.length) delete _statutEssais[id];
+  return r;
+}
+// v7.5.211 (avis chatgpt-review PR 31 sur 3b46387, point 1, puis sur 3aba95e, point 3) : ORDRE DES ENREGISTREMENTS. La
+// synchronisation enregistre la tournée (arrêt « livré ») AVANT la réponse de la base sur la commande ; la remise est faite TOUT
+// DE SUITE à l'écran, puis réenregistrée par la FILE DE LA TOURNÉE (sbSaveTournee) : un seul enregistrement en vol par tournée,
+// le suivant part après la réponse du précédent, le dernier état gagne. Plus de délai de garde ni de second envoi de la remise
+// (deux remises pouvaient se croiser en vol).
+// Revue native P2 sur 358825d : une remise en attente ne doit jamais défaire un changement PLUS RÉCENT (ex. « Livré » réussi au
+// 2e essai pendant l'attente) : au moment de partir, elle est abandonnée si un nouveau changement de statut de la commande a
+// commencé depuis (numéro de génération, _arretsGen) ou si la commande porte de nouveau le statut refusé.
+// remise des champs changés par la synchronisation (relevé « m ») dans les tournées ACTUELLES ; sans effet si elle est déjà faite
+// (rejouable : tournées relues depuis la base entre-temps). seulementTid : une seule tournée. Rend les tournées modifiées.
+function arretsAppliquer(m, cmdId, seulementTid) {
+  var faits = [];
+  if (!m || typeof tournees === 'undefined' || !Array.isArray(tournees)) return faits;
+  var egal = function(a, b) { return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b); };
+  (m.avant || []).forEach(function(av) {
+    if (seulementTid !== undefined && av.tid !== seulementTid) return;
+    var t = tournees.find(function(x) { return x && x.id === av.tid; });
+    if (!t || !Array.isArray(t.stops)) return;
+    var ap = (m.apres || []).find(function(x) { return x.tid === av.tid; }) || null;
+    var s = t.stops.find(function(x) { return x && x.cmdId === cmdId; });
+    var change = false;
+    if (s && ap) {
+      var cles = {};
+      Object.keys(av.arret).forEach(function(k) { cles[k] = 1; });
+      Object.keys(ap.arret).forEach(function(k) { cles[k] = 1; });
+      Object.keys(cles).forEach(function(k) {
+        if (egal(av.arret[k], ap.arret[k]) || !egal(s[k], ap.arret[k])) return; // pas touché par la synchronisation, ou changé depuis
+        if (av.arret[k] === undefined) delete s[k]; else s[k] = JSON.parse(JSON.stringify(av.arret[k]));
+        change = true;
+      });
+    } else if (!s && !ap) {
+      // arrêt RETIRÉ par la synchronisation (ex. « annulé » refusé) : replacé à son rang, sauf s'il est déjà dans une tournée
+      var ailleurs = tournees.some(function(x) { return x && Array.isArray(x.stops) && x.stops.some(function(y) { return y && y.cmdId === cmdId; }); });
+      if (!ailleurs) { t.stops.splice(Math.min(av.rang, t.stops.length), 0, JSON.parse(JSON.stringify(av.arret))); change = true; }
+    }
+    if (change) faits.push(av.tid);
+  });
+  return faits;
+}
+function arretsRemettre(cmdId, refuse, m) {
+  if (!m || m.vers !== refuse) return 0;
+  var tids = arretsAppliquer(m, cmdId); // à l'écran tout de suite
+  // remise en attente encore valable ? Non dès qu'un changement de statut de cette commande a commencé APRÈS elle (génération),
+  // ou que la commande porte de nouveau le statut refusé (remis par un autre chemin, ex. vue livreur)
+  var genRemise = _arretsGen[cmdId];
+  var perimee = function() {
+    try {
+      if (_arretsGen[cmdId] !== genRemise) return true;
+      var c = (typeof commandes !== 'undefined' && Array.isArray(commandes)) ? commandes.find(function(x) { return x && x.id === cmdId; }) : null;
+      return !!(c && c.statut === refuse);
+    } catch(e) { return false; }
+  };
+  tids.forEach(function(tid) {
+    try {
+      var t0 = tournees.find(function(x) { return x && x.id === tid; });
+      if (!t0) return;
+      // file de la tournée : part tout de suite si aucun enregistrement n'est en vol, sinon après la réponse de celui-ci ; au
+      // départ, la remise est refaite sur les tournées ACTUELLES (relues depuis la base pendant l'attente) puis envoyée
+      sbSaveTournee(t0, function() {
+        if (perimee()) return null;
+        arretsAppliquer(m, cmdId, tid);
+        return tournees.find(function(x) { return x && x.id === tid; }) || null;
+      });
+    } catch(e) { console.warn('[statut] arrêt remis, enregistrement :', e && e.message); }
+  });
+  return tids.length;
+}
+
+// v7.5.211 (défaut observé en production, GO de Borhen) : la base a REFUSÉ définitivement l'enregistrement d'un changement de statut
+// (ex. « Livré » refusé, PIECES_NON_CONFIRMEES) : rien n'est enregistré. Avant : la fiche affichait « Livré ✓ » et l'en-tête « Livré ».
+// Désormais l'ancien statut est remis (seulement si la commande porte encore le statut refusé : un changement fait entre-temps
+// n'est jamais écrasé), la demande de déduction du stock posée pour ce « livré » est retirée, la liste et la fiche ouverte sont
+// redessinées et la raison est dite clairement. Rend vrai si le statut a été remis.
+// arr (facultatif) : relevé des arrêts de l'essai refusé (chgStatut), pour la remise de l'arrêt de tournée.
+function cmdRemettreStatut(c, ancien, refuse, res, arr) {
+  if (!c || c.statut !== refuse || ancien === refuse) return false;
+  c.statut = ancien;
+  if (c.historique && c.historique.length && c.historique[c.historique.length - 1].vers === refuse) c.historique.pop();
+  c._statutRefuse = { de: ancien, vers: refuse, at: Date.now(), message: (res && res.message) || '' };
+  if (refuse === 'livré' || refuse === 'livre') {
+    try { offlineQueue = offlineQueue.filter(function(q) { return !(q && q.type === 'deduction' && q.data && q.data.id === c.id); }); oqEcrire(); } catch(e) {}
+    try { delete _dedSession[c.id]; } catch(e) {}
+  }
+  try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(e) {}
+  // revue native P2 sur df07c0d : l'arrêt de tournée (marqué « livré » ou retiré, et enregistré, avant la réponse de la base) est
+  // remis tel qu'il était et RÉENREGISTRÉ ; la synchronisation normale ne le ferait pas (elle garde tout arrêt déjà « livré »)
+  try { if (typeof arretsRemettre === 'function') arretsRemettre(c.id, refuse, arr); } catch(e) { console.warn('[statut] arrêt non remis :', e && e.message); }
+  try { if (typeof reconcilierTournees === 'function') reconcilierTournees(); } catch(e) {}
+  try { renderCmds(); renderDash(); renderTournees(); renderLivreur(); } catch(e) {}
+  try { if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres(); } catch(e) {}
+  try {
+    var _pan = document.getElementById('cmd-panel');
+    if (typeof currentCmdId !== 'undefined' && currentCmdId === c.id && _pan && _pan.classList.contains('on')) { closePanel(); ouvrirCmd(c.id); }
+  } catch(e) {}
+  var _lib = { 'en-attente': 'En attente', 'en-route': 'En route', 'arrivé': 'Arrivé', 'livré': 'Livré', 'reporté': 'Reporté', 'annulé': 'Annulé' };
+  toast('⛔ « ' + (_lib[refuse] || refuse) + ' » REFUSÉ par la base : la commande ' + (c.id || '') + ' reste « ' + (_lib[ancien] || ancien || '?') + ' » (rien n’a été enregistré)' + (res && res.message ? ' — ' + res.message : ''), 'err');
+  return true;
+}
 function assignerLiv(id) {
   const c=commandes.find(x=>x.id===id);
   const l=document.getElementById('pa-liv')?.value||'';
@@ -13148,6 +13782,9 @@ function reconcilierTournees() {
 
     var ids = Object.keys(aSauver);
     if (ids.length) {
+      // v7.5.211 (avis chatgpt-review PR 31 sur 3b46387, point 1, puis sur 3aba95e, point 3) : sbSaveTournee met chaque tournée
+      // dans SA file (un seul enregistrement en vol) — la remise d'un arrêt après un statut refusé part après la réponse de
+      // celui-ci, jamais en même temps (jamais dans l'ordre inverse)
       ids.forEach(function(id){ try { sbSaveTournee(aSauver[id]); } catch(_e){} });
       if (typeof renderTournees === 'function') renderTournees();
       console.log('[reconcilierTournees] ' + ids.length + ' tournée(s) synchronisée(s).');
@@ -14025,7 +14662,9 @@ function renderLivreur() {
 
     // v7.5.129 : trois gros boutons de résultat ; les autres statuts sont repliés sous « Autres statuts »
     var resBtns = [{k:'livré',ico:'<i class="icd icd-ok"></i>',lbl:'Livré',cls:'lv-res-livre',act:'lv-st-action'},{k:'reporté',ico:'<i class="icd icd-cal"></i>',lbl:'Reporté',cls:'lv-res-reporte',act:'lv-report-action'},{k:'absent',ico:'<i class="icd icd-absent"></i>',lbl:'Client absent',cls:'lv-res-absent',act:'lv-absent-action'}].map(function(r){
-      return '<button class="lv-resbtn '+r.cls+(st===r.k?' actif':'')+' '+r.act+'" data-tid="'+t.id+'" data-idx="'+i+'" data-statut="'+r.k+'"><span class="sticon">'+r.ico+'</span>'+r.lbl+'</button>';
+      // v7.5.211 : « Livré » en attente tant que la lecture des pièces d'une commande non concernée n'a pas répondu
+      var _att = r.k === 'livré' && st !== 'livré' && typeof dropLivreEnAttente === 'function' && dropLivreEnAttente(s.cmdId);
+      return '<button class="lv-resbtn '+r.cls+(st===r.k?' actif':'')+' '+r.act+'" data-tid="'+t.id+'" data-idx="'+i+'" data-statut="'+r.k+'"'+(_att?' aria-busy="true" style="opacity:.55"':'')+'><span class="sticon">'+(_att?'⏳':r.ico)+'</span>'+(_att?'Vérification des pièces…':r.lbl)+'</button>';
     }).join('');
     var stBtns = stDefs.filter(function(sd){ return RT_RESULTATS.indexOf(sd.k) < 0; }).map(function(sd) {
       var isA = st === sd.k;
@@ -15056,7 +15695,9 @@ function setLvSt(tid, idx, st, _annOk) {
   if (st === 'annulé' && s && s.statut !== 'annulé' && !_annOk) { var _cAnn = commandes.find(function(c){ return c.id === s.cmdId; }) || null; annDemanderMotif(_cAnn || { id: s.cmdId || '', client: s.client || '' }, function(m){ if (_cAnn) { _cAnn.annMotif = m.motif; _cAnn.annCom = m.commentaire; } setLvSt(tid, idx, st, true); }); return; }
   // v7.5.199 (dropshipping) : « Livré » BLOQUÉ tant qu'une pièce n'a pas sa provenance, qu'un enlèvement n'est pas payé ou que les pièces
   // ne sont pas confirmées ; reporté / absent : les pièces achetées partent dans le stock du camion (base, rejouable)
-  if (st === 'livré' && s && s.statut !== 'livré' && typeof dropBloqueLivre === 'function') { var _dropB = dropBloqueLivre(s.cmdId); if (_dropB) { toast('🔒 ' + _dropB, 'err'); return; } }
+  // v7.5.211 (avis chatgpt-review sur 3aba95e, point 2) : commande non concernée → lecture CONCLUANTE de ses pièces attendue
+  // (« vérification des pièces… » : message d'attente ; lecture en échec : refus, à réessayer)
+  if (st === 'livré' && s && s.statut !== 'livré' && typeof dropBloqueLivre === 'function') { var _dropB = dropBloqueLivre(s.cmdId, true); if (_dropB) { if (typeof DROP_MSG_VERIF !== 'undefined' && _dropB === DROP_MSG_VERIF) toast('⏳ ' + _dropB, 'info'); else toast('🔒 ' + _dropB, 'err'); return; } }
   // v7.5.206 (revue native P2 sur cfbf0fa) : un arrêt ANNULÉ avant sa livraison est une issue sans livraison comme les autres
   // (achat « Enlevé et payé » → stock du camion) — la base le fait aussi d'elle-même (déclencheur commandes_annulee_pieces)
   if ((typeof dropIssueSansLivraison === 'function' ? dropIssueSansLivraison(st, s && s.statut) : (st === 'reporté' || st === 'absent')) && s && s.cmdId && typeof dropApresNonLivre === 'function') { try { dropApresNonLivre(s.cmdId); } catch(e) {} }
@@ -15380,7 +16021,7 @@ function validerSig(){
   if(!t) return;
   const s=t.stops[idx];
   // v7.5.199 : même contrôle des pièces qu'à l'ouverture de la signature (elles ont pu changer entre-temps)
-  if (s && typeof dropBloqueLivre === 'function') { var _dropB2 = dropBloqueLivre(s.cmdId); if (_dropB2) { toast('🔒 ' + _dropB2, 'err'); return; } }
+  if (s && typeof dropBloqueLivre === 'function') { var _dropB2 = dropBloqueLivre(s.cmdId, true); if (_dropB2) { if (typeof DROP_MSG_VERIF !== 'undefined' && _dropB2 === DROP_MSG_VERIF) toast('⏳ ' + _dropB2, 'info'); else toast('🔒 ' + _dropB2, 'err'); return; } }
   // v7.5.129 : montant encaissé = ce qui reste dû par défaut ; seulement à la baisse, avec un motif
   var _rtCtl = null, _rtCmd = null, _rtReste = 0, _rtDeja = 0, _rtMotif = '';
   if (!sigCodActif && sigPaieEncaisse && !sigPrepaidMode && sigPaieMode !== 'Mixte' && typeof rtControleMontant === 'function') {
@@ -18860,7 +19501,7 @@ function notifInit() {
 function notifRendreListe() {
   var filtered = notifications.filter(function(n) {
     if (notifCurrentFilter === 'all') return true;
-    if (notifCurrentFilter === 'urgent') return n.type === 'urgent';
+    if (notifCurrentFilter === 'urgent') return notifTypeNorm(n.type) === 'urgent'; // v7.5.211 : anciennes cartes « err » comprises
     return n.cat === notifCurrentFilter;
   });
   var icons = {urgent:'🔴', warn:'🟡', success:'🟢', info:'🔵'};
@@ -18868,7 +19509,7 @@ function notifRendreListe() {
   document.getElementById('notif-list').innerHTML = filtered.length
     ? filtered.map(function(n) {
         return '<div class="notif-card '+n.type+(n.lu?'':' unread')+'" id="nc-'+n.id+'">'+
-          '<div class="notif-icon" style="background:'+bgIco[n.type]+'">'+icons[n.type]+'</div>'+
+          '<div class="notif-icon" style="background:'+(bgIco[notifTypeNorm(n.type)]||'var(--bl)')+'">'+(icons[notifTypeNorm(n.type)]||'🔔')+'</div>'+ // v7.5.211 : jamais « undefined »
           '<div style="flex:1">'+
             '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">'+
               '<div style="font-size:13px;font-weight:'+(n.lu?'500':'700')+'">'+n.titre+'</div>'+
@@ -18932,7 +19573,15 @@ function notifUpdateBadge() {
 }
 
 // Ajouter notification auto depuis autres modules
+// v7.5.211 (défaut observé en production) : type de notification ramené aux 4 connus (urgent, warn, success, info) — « err »
+// (refus définitif de la base) affichait « undefined » à la place de l'icône de la carte
+function notifTypeNorm(t) {
+  t = String(t || '').toLowerCase();
+  if (t === 'err' || t === 'error' || t === 'erreur') return 'urgent';
+  return ['urgent', 'warn', 'success', 'info'].indexOf(t) >= 0 ? t : 'info';
+}
 function notifAjout(type, cat, titre, msg, action, page) {
+  type = notifTypeNorm(type);
   var now = new Date();
   notifications.unshift({
     id: generateId('n'),
@@ -22485,8 +23134,9 @@ setInterval(function() {
 setInterval(function() {
   try {
     // Recharger les données fraîches depuis Supabase
-    if (typeof sbLoadAll === 'function') {
-      sbLoadAll().then(function(){
+    // v7.5.211 (incident du 27/11) : une seule lecture complète à la fois, aucune lecture onglet caché ni pendant une pause après erreur
+    if (typeof sbChargerTout === 'function') {
+      sbChargerTout().then(function(){
         // Re-render des vues actives uniquement
         var pageDash    = document.getElementById('p-dash');
         var pageGps     = document.getElementById('p-gps');

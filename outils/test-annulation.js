@@ -27,13 +27,15 @@ function nouveauBac(roleS) {
     fetch: async (url, opt) => { envois.push({ url, body: JSON.parse(opt.body) }); return { ok: true, text: async () => '' }; },
     offlineQueueAdd() {}, showSync() {}, toast(m, t) { bac._toasts.push([m, t]); }, _toasts: [], _fenetre: null,
     commandes: [], tournees: [], livNom: roleS === 'livreur' ? 'RANOU' : '', role: roleS, stockCamion: [],
-    stkDeductionPoser() {}, stkDemanderDeduction() { return Promise.resolve('ok'); }, stkReCrediterStock() {}, reconcilierTournees() {}, renderCmds() {}, renderDash() {}, renderTournees() {}, renderLivreur() {}, suiviAppliquerFiltres() {},
+    stkDeductionPoser() {}, stkDemanderDeduction() { return Promise.resolve('ok'); }, stkReCrediterStock() {}, reconcilierTournees() {}, arretsRelever() { return []; }, renderCmds() {}, renderDash() {}, renderTournees() {}, renderLivreur() {}, suiviAppliquerFiltres() {},
     closePanel() {}, ouvrirCmd() {}, sbSaveTournee(t) { tournee.push(JSON.parse(JSON.stringify(t))); }, retirerStockCamion() {}, paiVerrouBody() {}, findCmdForStop(s) { return bac.commandes.find(c => c.id === s.cmdId) || null; } };
   vm.createContext(bac);
   vm.runInContext(extraireBloc('// ANN-DEBUT', '// ANN-FIN'), bac);
   // v7.5.171 : fin des livraisons ≠ clôture (bloc RT), utilisée par setLvSt
   for (const f of ['function rtLivraisonsTerminees(t)', 'function rtStatutApresArret(t)']) vm.runInContext(extraireFonction(f), bac);
-  for (const f of ['function syncRefusDefinitif(status)', 'function syncMessageRefus(status, texte)', 'async function sbSaveCommande(cmd, oqCtx)', 'function chgStatut(id, st, _annOk)', 'function setLvSt(tid, idx, st, _annOk)']) vm.runInContext(extraireFonction(f), bac);
+  // v7.5.211 : chgStatut suit chaque essai de changement de statut (génération, statutEssai*)
+  vm.runInContext('var _arretsGen = {}, _statutEssais = {};', bac);
+  for (const f of ['function syncRefusDefinitif(status)', 'function syncMessageRefus(status, texte)', 'async function sbSaveCommande(cmd, oqCtx)', 'function statutEssaiPoser(id, de, vers, gen, arr)', 'function statutEssaiRegler(id, essai, refuse)', 'function chgStatut(id, st, _annOk)', 'function setLvSt(tid, idx, st, _annOk)']) vm.runInContext(extraireFonction(f), bac);
   return { bac, envois, tournee, champ: id => parId[id] };
 }
 let ok = 0, ko = 0; const test = (nom, cond, det) => { if (cond) { ok++; console.log('  OK   ' + nom); } else { ko++; console.log('  ÉCHEC ' + nom + (det !== undefined ? ' — ' + JSON.stringify(det) : '')); } };
