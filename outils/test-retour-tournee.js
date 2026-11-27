@@ -935,7 +935,9 @@ const LBC = (plus) => Object.assign({ id: '#T3', client: 'Client LBC', tel: '', 
   }
   { // tournées : suppression refusée tant que le point de caisse est validé ; refus de la base -> tournée relue
     const { bac } = nouveauBac('admin');
-    for (const f of ['function supprimerTournee(tid)', 'async function sbRechargerTournee(id)', 'async function sbSaveTournee(t)']) vm.runInContext(extraireFonction(f), bac);
+    // v7.5.211 : sbSaveTournee = file par tournée (un seul envoi en vol) ; l'envoi réel est sbEnvoyerTournee
+    vm.runInContext('var _tourneeFile = {};', bac);
+    for (const f of ['function supprimerTournee(tid)', 'async function sbRechargerTournee(id)', 'function sbSaveTournee(t, avant)', 'function tourneeFilePartir(tid, f, demandes)', 'async function sbEnvoyerTournee(t)']) vm.runInContext(extraireFonction(f), bac);
     bac.verifierProtectionTournee = () => true; bac.navigator = { onLine: true }; bac.console = { log() {}, warn() {}, error() {} };
     bac.tournees = [{ id: 'T-S', livreur: 'RANOU', date: '2026-11-24', statut: 'terminée', stops: [] }];
     bac.caissesRemises = { 't_T-S': { validee: true } }; let appels = [];

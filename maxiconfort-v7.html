@@ -5616,6 +5616,13 @@ async function sbSaveCommande(cmd, oqCtx) {
   // v7.5.196 (réserve Codex 1 sur a84fa19) : date de CETTE version (prise avant l'envoi) : en cas de succès, les
   // versions plus anciennes de la commande encore en file sont retirées (oqSucces) et ne l'écraseront plus.
   var tsVersion = (oqCtx && Number(oqCtx.ts)) || Date.now();
+  // v7.5.211 (revue native P2 sur 3aba95e, même famille) : RÉPONSES DANS LE DÉSORDRE. Chaque envoi porte un numéro d'ordre ; le
+  // dernier succès et le dernier refus de chaque commande sont retenus (mémoire de la page seulement ; jamais pour un rejeu de la
+  // file, qui porte une version plus ancienne). Le refus d'un envoi PLUS ANCIEN qu'un succès déjà reçu ne marque plus la commande
+  // « refusée » (ni message, ni notification : la version la plus récente est bien enregistrée) ; le succès d'un envoi plus
+  // ancien qu'un refus déjà reçu n'efface plus la marque de ce refus.
+  var _suivi = sbSaveCommande; _suivi.ordre = (_suivi.ordre || 0) + 1; _suivi.succes = _suivi.succes || {}; _suivi.refus = _suivi.refus || {};
+  var _ordre = _suivi.ordre;
   // Toujours tenter Supabase d'abord, queue seulement si fetch échoue
   try {
     // Corps complet de la commande
@@ -5692,11 +5699,16 @@ async function sbSaveCommande(cmd, oqCtx) {
       if (syncRefusDefinitif(resp.status)) {
         // v7.5.135 : refus DÉFINITIF -> jamais en file d'attente, message clair, alerte gardée dans les notifications
         var _msgRefus = syncMessageRefus(resp.status, errTxt);
-        cmd._syncRefus = { status: resp.status, message: _msgRefus, at: new Date().toISOString() };
-        showSync('⛔ Commande refusée par la base', 'err');
-        toast('⛔ Commande ' + (cmd.id || '') + ' NON enregistrée : la base a refusé (' + _msgRefus + '). Corrigez-la puis enregistrez de nouveau.', 'err');
-        if (typeof notifAjout === 'function') { try { notifAjout('err', 'commande', '⛔ Refusée par la base — ' + (cmd.id || ''), _msgRefus + ' (rien n’a été enregistré ; la commande n’est PAS en attente de synchronisation)', 'Voir', 'commandes'); } catch(ex) {} }
+        var _depasse = !_depuisFile && (_suivi.succes[cmd.id] || 0) > _ordre; // un envoi PLUS RÉCENT de cette commande a déjà réussi
+        if (!_depuisFile) _suivi.refus[cmd.id] = Math.max(_suivi.refus[cmd.id] || 0, _ordre);
+        if (!_depasse) {
+          cmd._syncRefus = { status: resp.status, message: _msgRefus, at: new Date().toISOString() };
+          showSync('⛔ Commande refusée par la base', 'err');
+          toast('⛔ Commande ' + (cmd.id || '') + ' NON enregistrée : la base a refusé (' + _msgRefus + '). Corrigez-la puis enregistrez de nouveau.', 'err');
+          if (typeof notifAjout === 'function') { try { notifAjout('err', 'commande', '⛔ Refusée par la base — ' + (cmd.id || ''), _msgRefus + ' (rien n’a été enregistré ; la commande n’est PAS en attente de synchronisation)', 'Voir', 'commandes'); } catch(ex) {} }
+        }
         _res = { ok: false, definitif: true, status: resp.status, message: _msgRefus };
+        if (_depasse) _res.depasse = true;
       } else {
         if (_depuisFile) throw new Error('synchronisation passagère impossible (' + resp.status + ')');
         offlineQueueAdd('commande', cmd, oqCtx);
@@ -5704,7 +5716,8 @@ async function sbSaveCommande(cmd, oqCtx) {
         _res = { ok: false, definitif: false, status: resp.status };
       }
     } else {
-      delete cmd._syncRefus; delete cmd._statutRefuse; // v7.5.211
+      if (!_depuisFile) _suivi.succes[cmd.id] = Math.max(_suivi.succes[cmd.id] || 0, _ordre);
+      if (_depuisFile || !((_suivi.refus[cmd.id] || 0) > _ordre)) { delete cmd._syncRefus; delete cmd._statutRefuse; } // v7.5.211 (sauf après un refus PLUS RÉCENT)
       try { oqSucces('commande', cmd, tsVersion, null); } catch(e) {} // v7.5.196
       showSync('✅ Commande sauvegardée', 'ok');
     }
@@ -5753,7 +5766,51 @@ async function resetSmsTourneeFlags(cmdId) {
   } catch (e) { console.warn('resetSmsTourneeFlags', e && e.message); }
 }
 
-async function sbSaveTournee(t) {
+// v7.5.211 (avis chatgpt-review PR 31 sur 3aba95e, point 3) : FILE D'ENREGISTREMENT PAR TOURNÉE. Avant, deux enregistrements de la
+// même tournée pouvaient être en vol en même temps (envoi de la synchronisation, puis remise d'un arrêt après un statut refusé,
+// renvoyée au délai de garde puis à la fin du premier envoi) : la base pouvait les recevoir dans l'ordre inverse et garder le
+// plus ancien. Désormais TOUS les enregistrements d'une tournée (tous les appelants de sbSaveTournee : synchronisation, vue
+// livreur, signature, remise d'un arrêt, rejeu de la file hors ligne…) passent par ici :
+//   - UN SEUL envoi en vol par tournée ; le suivant ne part qu'après la RÉPONSE du précédent (réussie ou non) ;
+//   - pendant un envoi, les demandes suivantes sont regroupées en UNE seule : le DERNIER ÉTAT gagne (la tournée est lue au moment
+//     du départ, jamais à la demande) ;
+//   - plus aucun délai de garde ni renvoi : rien ne part en parallèle. Un envoi sans réponse retient les suivants jusqu'à ce que
+//     le navigateur ou la passerelle de la base y mette fin (comme une coupure : l'état local reste juste, il repart ensuite).
+// « avant » (facultatif) : fonction appelée juste avant le départ ; elle rend la tournée à envoyer, ou null si cette demande n'a
+// plus lieu d'être (remise périmée). La promesse rendue se termine avec le résultat de l'envoi qui a porté la demande.
+var _tourneeFile = {};
+function sbSaveTournee(t, avant) {
+  var tid = (t && t.id !== undefined && t.id !== null) ? String(t.id) : '';
+  if (!tid) return sbEnvoyerTournee(t);
+  var f = _tourneeFile[tid] || (_tourneeFile[tid] = { enVol: false, attente: null });
+  var demande = { t: t, avant: (typeof avant === 'function') ? avant : null };
+  if (!f.enVol) return tourneeFilePartir(tid, f, [demande]);
+  if (!f.attente) { var a = { demandes: [], fin: null }; a.promesse = new Promise(function(r) { a.fin = r; }); f.attente = a; }
+  f.attente.demandes.push(demande);
+  return f.attente.promesse;
+}
+function tourneeFilePartir(tid, f, demandes) {
+  f.enVol = true;
+  var p;
+  try {
+    var cible = null;
+    demandes.forEach(function(d) {
+      var x = d.t;
+      if (d.avant) { try { x = d.avant(); } catch(e) { x = null; console.warn('[tournée] préparation de l\'envoi :', e && e.message); } }
+      if (x) cible = x; // la dernière demande encore valable porte l'état à envoyer
+    });
+    p = cible ? Promise.resolve(sbEnvoyerTournee(cible)) : Promise.resolve(undefined);
+  } catch(e) { p = Promise.resolve(undefined); }
+  var suite = function(r) {
+    f.enVol = false;
+    var a = f.attente; f.attente = null;
+    if (a) { try { a.fin(tourneeFilePartir(tid, f, a.demandes)); } catch(e) { a.fin(undefined); } }
+    else if (_tourneeFile[tid] === f) delete _tourneeFile[tid];
+    return r;
+  };
+  return p.then(suite, function() { return suite(undefined); });
+}
+async function sbEnvoyerTournee(t) {
   if (!navigator.onLine) { offlineQueueAdd('tournee', t); return; }
   try {
     // Upsert — crée si n'existe pas, met à jour si existe → déclenche Realtime
@@ -5993,16 +6050,48 @@ function dropCmdControlee(cmdId) {
   var e = dropPieces[cmdId];
   return !!(e && (e.pieces || []).some(dropPieceDeclaree));
 }
-// Lecture SANS création des pièces d'une commande non concernée (une fois par session et par commande ; nouvel essai 5 min après
-// un échec ; jamais pendant une pause après erreur de la base ; plus jamais si la 042 n'est pas appliquée). Rend vrai si lancée.
-var _dropLuNonConcernee = {}, _dropLireAbsente = false;
-function dropLireNonConcernee(cmdId) {
+// Lecture SANS création des pièces d'une commande non concernée (jamais pendant une pause après erreur de la base ; plus jamais
+// si la 042 n'est pas appliquée). Rend vrai si une lecture vient d'être lancée.
+// v7.5.211 (avis chatgpt-review PR 31 sur 3aba95e, point 2) : « Livré » n'est permis qu'après une lecture CONCLUANTE (la base a
+// répondu : aucune pièce déclarée — une réponse « aucune pièce » est concluante). L'état de chaque lecture est gardé :
+//   { enCours }            lecture partie, pas encore de réponse → « Livré » en attente (« vérification des pièces… ») ;
+//   { ok, at, signe }      lecture concluante, valable DROP_LU_VALIDE_MS et tant que le livreur / transporteur de la commande n'a
+//                          pas changé (une commande redevenue concernée entre-temps a pu recevoir des déclarations) ;
+//   { ok: false, at }      lecture en échec → « Livré » refusé, à réessayer : nouvel essai à la demande (clic « Livré », espacé de
+//                          DROP_LU_REESSAI_MS), ou de lui-même 5 min plus tard à l'affichage (jamais une lecture à chaque affichage).
+// Une lecture restée sans réponse plus de DROP_LU_ATTENTE_MAX_MS est tenue pour un échec (jamais d'attente sans fin : nouvel
+// essai possible au clic suivant ; si elle finit par répondre, sa réponse concluante reste bonne à prendre).
+var _dropLuNonConcernee = {}, _dropLireAbsente = false, DROP_LU_VALIDE_MS = 300000, DROP_LU_REESSAI_MS = 3000, DROP_LU_ATTENTE_MAX_MS = 20000;
+var DROP_MSG_VERIF = 'Vérification des pièces… réessayez dans un instant';
+var DROP_MSG_VERIF_ECHEC = 'Pièces non vérifiées (lecture impossible : réseau ou base indisponible) — « Livré » refusé pour l\'instant, réessayez';
+function dropLuSigne(c) { return c ? ((String(c.transporteur || '').trim().toUpperCase() || 'RANOU') + '|' + String(c.livreur || '').trim()) : ''; }
+function dropLuConcluante(cmdId) {
   var m = _dropLuNonConcernee[cmdId];
-  if (!cmdId || _dropLireAbsente || (m && (m.ok || Date.now() - m.at < 300000))) return false;
+  return !!(m && m.ok && !m.enCours && Date.now() - m.at < DROP_LU_VALIDE_MS && m.signe === dropLuSigne(dropCmdDe(cmdId)));
+}
+function dropLuEnCours(cmdId) { var m = _dropLuNonConcernee[cmdId]; return !!(m && m.enCours && Date.now() - m.at < DROP_LU_ATTENTE_MAX_MS); }
+function dropLireNonConcernee(cmdId, demande) {
+  var m = _dropLuNonConcernee[cmdId];
+  if (!cmdId || _dropLireAbsente || dropLuEnCours(cmdId) || dropLuConcluante(cmdId)) return false;
+  if (m && !m.ok && Date.now() - m.at < (demande ? DROP_LU_REESSAI_MS : 300000)) return false;
   if (typeof chargeEnPause === 'function' && chargeEnPause()) return false;
-  _dropLuNonConcernee[cmdId] = { at: Date.now(), ok: false };
-  try { dropVerifier().then(function(a) { return a ? dropChargerPieces(cmdId) : null; }).then(function(r) { if (r && r.pieces && r.pieces.length) dropRafraichir(); }).catch(function() {}); } catch(e) {}
+  var etat = _dropLuNonConcernee[cmdId] = { at: Date.now(), ok: false, enCours: true };
+  // fin de la lecture : concluante → dropChargerPieces a posé un nouvel état « ok » ; sinon cet état devient « échec ». Dans les
+  // deux cas l'écran est redessiné (le bouton quitte l'attente)
+  var fin = function() {
+    if (_dropLuNonConcernee[cmdId] === etat) { etat.enCours = false; etat.at = Date.now(); }
+    try { dropRafraichir(); } catch(e) {}
+  };
+  try { dropVerifier().then(function(a) { return a ? dropChargerPieces(cmdId) : null; }).then(fin, fin); } catch(e) { etat.enCours = false; }
   return true;
+}
+// « Livré » d'une commande non concernée en attente de la lecture de ses pièces (bouton affiché « en attente »)
+function dropLivreEnAttente(cmdId) {
+  try {
+    if (!cmdId || _dropLireAbsente || (!dropModuleActif() && !dropEtatInconnu())) return false;
+    var c = dropCmdDe(cmdId);
+    return !!c && !dropCmdConcernee(c) && !dropCmdControlee(cmdId) && dropLuEnCours(cmdId);
+  } catch(e) { return false; }
 }
 async function dropChargerPieces(cmdId) {
   if (!cmdId || dropActif !== true) return null;
@@ -6018,11 +6107,16 @@ async function dropChargerPieces(cmdId) {
   if (_c && !dropCmdConcernee(_c)) {
     var _rien = { pieces: [], nonConcernee: true };
     if (_dropLireAbsente) return _rien;
+    var _signe = dropLuSigne(_c); // livreur / transporteur AU DÉPART de la lecture : changés pendant la lecture → non concluante
     var rn = await dropRpc('drop_pieces_lire', { p_cmd_id: cmdId });
     if (rn.absente) { _dropLireAbsente = true; return _rien; }
-    if (!(rn.httpOk && rn.corps && rn.corps.ok)) return _rien; // échec de lecture : rien changé, nouvel essai plus tard (dropLireNonConcernee)
-    _dropLuNonConcernee[cmdId] = { at: Date.now(), ok: true };
-    var psn = rn.corps.pieces || [];
+    // commande INCONNUE de la base pour l'administrateur ou la collaboratrice (créée sur l'appareil, pas encore enregistrée) : elle
+    // n'a aucune pièce → lecture concluante. Pour un livreur, « introuvable » peut vouloir dire « pas à lui » : non concluant.
+    var _absenteBase = !!(rn.httpOk && rn.corps && rn.corps.ok === false && rn.corps.erreur === 'commande_introuvable'
+      && typeof role !== 'undefined' && (role === 'admin' || role === 'collab'));
+    if (!(rn.httpOk && rn.corps && rn.corps.ok) && !_absenteBase) return _rien; // échec de lecture : rien changé, non concluant (dropLireNonConcernee : « Livré » refusé, à réessayer)
+    _dropLuNonConcernee[cmdId] = { at: Date.now(), ok: true, signe: _signe };
+    var psn = (rn.corps && rn.corps.pieces) || [];
     if (!psn.some(dropPieceDeclaree)) {
       // la base fait foi : des pièces connues de l'appareil comme déclarées et qui ne le sont plus (réinitialisées) sont oubliées
       if (dropPieces[cmdId] && (dropPieces[cmdId].pieces || []).some(dropPieceDeclaree)) { delete dropPieces[cmdId]; dropSauver(); }
@@ -6237,7 +6331,9 @@ var _dropLectureLancee = {};
 // v7.5.205 (avis chatgpt-review n° 2 sur 76ebd77) : état du module INCONNU = jamais vérifié auprès de la base ET aucun état
 // gardé sur l'appareil (premier démarrage sans réseau) : la migration 041 peut déjà être active
 function dropEtatInconnu() { return dropActif === null && dropActifCache !== true; }
-function dropBloqueLivre(cmdId) {
+// demande = vrai quand l'utilisateur DEMANDE « Livré » (clic, validation de la signature) : une lecture en échec est relancée
+// tout de suite ; à l'affichage (demande absente), jamais plus d'une lecture par commande toutes les 5 min après un échec
+function dropBloqueLivre(cmdId, demande) {
   if (!cmdId) return '';
   var inconnu = dropEtatInconnu();
   if (!dropModuleActif() && !inconnu) return '';
@@ -6247,9 +6343,18 @@ function dropBloqueLivre(cmdId) {
   // v7.5.211 (défaut observé en production, GO de Borhen) : commande NON concernée (sans livreur : retrait, vente du bureau) :
   // jamais bloquée et jamais découpée (même règle que la base, interne.l041_concernee)
   // (avis chatgpt-review sur df07c0d, point 3) sauf si une de ses pièces a DÉJÀ été déclarée : la base la contrôle toujours, l'appli
-  // aussi ; pièces pas encore connues de l'appareil : lues une fois SANS création (dropLireNonConcernee)
+  // aussi ; pièces pas encore connues de l'appareil : lues SANS création (dropLireNonConcernee)
+  // (avis chatgpt-review sur 3aba95e, point 2) « Livré » seulement après une lecture CONCLUANTE : sur un appareil neuf, ou après un
+  // échec réseau, des pièces déjà déclarées étaient encore inconnues quand « Livré » était permis. En attente de la réponse :
+  // « vérification des pièces… » ; lecture en échec : refus clair, à réessayer. Une commande jamais découpée reste livrable : la
+  // réponse « aucune pièce » est concluante. 042 pas appliquée (lecture impossible) : comme avant, jamais bloquée par l'appli.
   var _nonConc = !!c && !dropCmdConcernee(c);
-  if (_nonConc && !dropCmdControlee(cmdId)) { try { dropLireNonConcernee(cmdId); } catch(e) {} return ''; }
+  if (_nonConc && !dropCmdControlee(cmdId)) {
+    if (_dropLireAbsente || dropLuConcluante(cmdId)) return '';
+    var _lance = false; try { _lance = dropLireNonConcernee(cmdId, demande); } catch(e) {}
+    if (_dropLireAbsente || dropLuConcluante(cmdId)) return '';
+    return (_lance || dropLuEnCours(cmdId)) ? DROP_MSG_VERIF : DROP_MSG_VERIF_ECHEC;
+  }
   // v7.5.205 : état inconnu → BLOQUÉ pour les commandes concernées (nos livreurs ; jamais GLS) ; vérification relancée tout de
   // suite (réseau revenu : module absent = débloqué, module présent = pièces lues puis contrôle normal)
   if (inconnu) {
@@ -6428,7 +6533,8 @@ function dropLivraisonHtml(t, s, i) {
   if (!dropModuleActif() || !s || !s.cmdId || s.statut === 'livré') return '';
   var ps = dropPiecesDe(s.cmdId);
   // v7.5.201 : pièces non contrôlables (hors ligne, refus, découpage périmé) : la raison est affichée sur l'arrêt
-  if (!ps.length) { var r0 = dropBloqueLivre(s.cmdId); return r0 ? '<div style="margin:10px 0;padding:10px;border:2px solid var(--red);border-radius:12px;font-size:13px;font-weight:800;color:var(--red)">🔒 ' + dropEchap(r0) + '</div>' : ''; }
+  // v7.5.211 : lecture des pièces en cours (commande non concernée) : encadré d'attente, pas un refus
+  if (!ps.length) { var r0 = dropBloqueLivre(s.cmdId); if (r0 === DROP_MSG_VERIF) return '<div style="margin:10px 0;padding:10px;border:2px solid var(--orange);border-radius:12px;font-size:13px;font-weight:800;color:var(--orange)">⏳ ' + dropEchap(r0) + '</div>'; return r0 ? '<div style="margin:10px 0;padding:10px;border:2px solid var(--red);border-radius:12px;font-size:13px;font-weight:800;color:var(--red)">🔒 ' + dropEchap(r0) + '</div>' : ''; }
   var cf = dropConfirm[s.cmdId] || {};
   var raison = dropBloqueLivre(s.cmdId);
   return '<div style="margin:10px 0;padding:10px;border:2px solid ' + (raison ? 'var(--orange)' : 'var(--green)') + ';border-radius:12px">' +
@@ -12621,12 +12727,13 @@ function chgStatut(id, st, _annOk) {
   c.statut=st;
   // Enregistrer dans l'historique
   if (!c.historique) c.historique = [];
-  c.historique.push({
+  var _hist = {
     date: new Date().toISOString(),
     de: ancienStatut,
     vers: st,
     par: role + (livNom ? ' (' + livNom + ')' : '')
-  });
+  };
+  c.historique.push(_hist);
   // Déduire le stock si livré — v7.5.197 : demande posée en file ici, envoyée à la base APRÈS l'enregistrement du
   // « livré » (sbSaveCommande plus bas) ; la base déduit une seule fois
   if (st === 'livré') {
@@ -12644,18 +12751,31 @@ function chgStatut(id, st, _annOk) {
   var _arrM = null;
   // (revue native P2 sur 358825d) chaque changement de statut porte un NUMÉRO DE GÉNÉRATION par commande : une remise différée
   // d'un changement plus ancien n'est plus jamais réappliquée dès qu'un nouveau changement a commencé
-  try { _arretsGen[id] = (_arretsGen[id] || 0) + 1; _arrM = { vers: st, gen: _arretsGen[id], avant: arretsRelever(id) }; } catch(e) { _arrM = null; }
+  // (revue native P2 sur 3aba95e) la génération est aussi vérifiée AVANT la remise du statut (statutEssaiRegler, plus bas) : le
+  // refus d'un essai plus ancien, reçu après le succès d'un essai plus récent, ne remet plus rien
+  _arretsGen[id] = (_arretsGen[id] || 0) + 1;
+  var _gen = _arretsGen[id];
+  try { _arrM = { vers: st, gen: _gen, avant: arretsRelever(id) }; } catch(e) { _arrM = null; }
   if (typeof reconcilierTournees === 'function') reconcilierTournees();
-  try { if (_arrM) { _arrM.apres = arretsRelever(id); _arretsAvantStatut[id] = _arrM; } } catch(e) {}
+  try { if (_arrM) _arrM.apres = arretsRelever(id); } catch(e) { _arrM = null; }
+  var _essai = statutEssaiPoser(id, ancienStatut, st, _gen, _arrM);
+  _essai.hist = _hist; // ligne d'historique de cet essai (retirée s'il est refusé ; « de » corrigé si l'essai d'avant est refusé)
   renderCmds(); renderDash(); renderTournees(); renderLivreur();
   // v7.5.39 : re-render Suivi logistique (sinon le statut reste l'ancien)
   if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres();
   // v7.5.211 (défaut observé en production, GO de Borhen) : refus DÉFINITIF de la base (ex. « Livré » refusé, PIECES_NON_CONFIRMEES) :
   // rien n'est enregistré → l'ancien statut est remis à l'écran (liste et fiche), et la raison dite clairement (cmdRemettreStatut),
   // AVANT la demande de déduction (qui est alors retirée)
+  // (revue native P2 sur 3aba95e) deux essais qui se chevauchent : la remise n'est faite que si CET essai est encore celui dont
+  // l'écran porte le statut (statutEssaiRegler compare sa génération à la génération courante de la commande). Refus d'un essai
+  // dépassé par un plus récent : rien n'est remis (ni statut, ni arrêt, ni demande de déduction du stock).
   var _pSc = Promise.resolve(sbSaveCommande(c)).then(function(res) {
-    if (res && res.ok === false && res.definitif) { try { cmdRemettreStatut(c, ancienStatut, st, res); } catch(e) { console.warn('[statut] remise :', e && e.message); } }
-    arretsOublier(id, _arrM);
+    var _refus = !!(res && res.ok === false && res.definitif);
+    var _rem = statutEssaiRegler(id, _essai, _refus);
+    if (_refus && _rem) { try { cmdRemettreStatut(c, _rem.de, st, res, _rem.arr); } catch(e) { console.warn('[statut] remise :', e && e.message); } }
+    // essai refusé : sa ligne d'historique ne reste jamais (cmdRemettreStatut retire celle de l'essai remis ; ici celle d'un
+    // essai refusé sans remise, dépassé par un plus récent)
+    if (_refus) { try { var _k = c.historique ? c.historique.indexOf(_hist) : -1; if (_k > -1) c.historique.splice(_k, 1); } catch(e) {} }
     return res;
   }); // Sync Supabase
   if (st === 'livré') stkDemanderDeduction(c, _pSc); // v7.5.197 : après l'enregistrement du « livré »
@@ -12674,12 +12794,11 @@ function chgStatut(id, st, _annOk) {
 // enregistré) ; rappeler reconcilierTournees après un refus ne défait rien (elle garde tout arrêt déjà « livré »). Sans remise,
 // il restait une commande « en-attente » avec un arrêt « livré » ENREGISTRÉ (alerte « Livraison non remontée »).
 //   arretsRelever(cmdId)  : copie de chaque arrêt de la commande (tournée, rang, contenu).
-//   arretsRemettre(cmdId, refuse) : après le refus du statut « refuse », remet CHAQUE champ que la synchronisation avait changé
-//     (statut, heure, heureStatut…), seulement s'il porte encore la valeur posée par elle (un changement fait entre-temps n'est
-//     jamais écrasé) ; un arrêt retiré est replacé à son rang s'il n'est dans aucune tournée ; chaque tournée touchée est
-//     RÉENREGISTRÉE (sbSaveTournee), après la fin de l'enregistrement précédent. Rend le nombre de tournées remises.
-//   arretsOublier(cmdId, memo) : réponse reçue → relevé oublié (seulement si c'est encore celui de ce changement).
-var _arretsAvantStatut = {}, _arretsGen = {};
+//   arretsRemettre(cmdId, refuse, m) : après le refus du statut « refuse », remet CHAQUE champ que la synchronisation avait changé
+//     (relevé « m » de l'essai refusé : statut, heure, heureStatut…), seulement s'il porte encore la valeur posée par elle (un
+//     changement fait entre-temps n'est jamais écrasé) ; un arrêt retiré est replacé à son rang s'il n'est dans aucune tournée ;
+//     chaque tournée touchée est RÉENREGISTRÉE par la file de la tournée (sbSaveTournee). Rend le nombre de tournées remises.
+var _arretsGen = {};
 function arretsRelever(cmdId) {
   var r = [];
   if (typeof tournees === 'undefined' || !Array.isArray(tournees)) return r;
@@ -12689,28 +12808,54 @@ function arretsRelever(cmdId) {
   });
   return r;
 }
-function arretsOublier(cmdId, memo) {
-  try { if (memo && _arretsAvantStatut[cmdId] === memo) delete _arretsAvantStatut[cmdId]; } catch(e) {}
+// v7.5.211 (revue native P2 sur 3aba95e) : ESSAIS DE CHANGEMENT DE STATUT SANS RÉPONSE, par commande. Deux essais peuvent se
+// chevaucher (« Livré » refusé une première fois, relancé avant la réponse…) et leurs réponses arriver dans n'importe quel ordre.
+// Avant : le rappel d'un essai ANCIEN, refusé, remettait son « ancien statut » même après le succès d'un essai plus récent, et
+// retirait la demande de déduction du stock de celui-ci. Chaque essai garde donc sa génération, le statut d'où il part (« de »),
+// la génération de l'essai qui avait posé ce statut (« deGen », 0 = statut déjà à l'écran sans essai en vol) et le relevé de ses
+// arrêts. « tete » = génération de l'essai dont l'écran porte le statut (= génération courante tant qu'aucun essai n'est refusé).
+//   statutEssaiPoser(id, de, vers, gen, arr) : nouvel essai (il devient la tête).
+//   statutEssaiRegler(id, essai, refuse)    : réponse reçue. Rend { de, arr } si le statut est à remettre, sinon null :
+//     - accepté (ou mis en file : pas un refus) : rien à remettre ;
+//     - refusé, et l'essai n'est PLUS la tête (un essai plus récent a pris le relais) : rien n'est remis ; les essais plus récents
+//       encore sans réponse qui partaient du statut refusé repartent du statut d'avant (et de l'état d'avant des arrêts) : s'ils
+//       sont refusés à leur tour, la commande ne revient jamais à un statut que la base a refusé ;
+//     - refusé, et l'essai est la tête : remise au statut d'où il partait ; la tête redevient l'essai qui avait posé ce statut
+//       (s'il est refusé plus tard, la remise continue jusqu'au dernier statut non refusé).
+var _statutEssais = {};
+function statutEssaiPoser(id, de, vers, gen, arr) {
+  var e = _statutEssais[id] || (_statutEssais[id] = { tete: 0, liste: [] });
+  var essai = { gen: gen, de: de, deGen: e.tete, vers: vers, arr: arr || null };
+  e.liste.push(essai); e.tete = gen;
+  return essai;
 }
-// v7.5.211 (avis chatgpt-review PR 31 sur 3b46387, point 1) : ORDRE DES ENREGISTREMENTS. La synchronisation enregistre la tournée
-// (arrêt « livré ») AVANT la réponse de la base sur la commande ; si le réenregistrement de la remise partait sans attendre la fin
-// de ce premier envoi, la base pouvait les recevoir dans l'ordre inverse et garder l'arrêt refusé. Chaque envoi d'une tournée fait
-// par la synchronisation est donc noté (arretsNoterEnvoi) ; la remise est faite TOUT DE SUITE à l'écran, puis réenregistrée
-// seulement une fois ces envois terminés (réussis ou non) — au plus tard après ARRETS_ATTENTE_MAX si l'un d'eux ne répond jamais.
-// Avis chatgpt-review sur 358825d : un premier envoi qui aboutit APRÈS le délai de garde pouvait réécrire l'arrêt « livré »
-// par-dessus la remise déjà envoyée. La remise envoyée au délai de garde est donc RENVOYÉE quand ce premier envoi se termine
-// enfin (remise refaite, tournée réenregistrée) : le dernier enregistrement reçu par la base est toujours l'arrêt remis.
-// Revue native P2 sur 358825d : une remise différée ne doit jamais défaire un changement PLUS RÉCENT (ex. « Livré » réussi au
-// 2e essai pendant l'attente) : avant chaque envoi différé, elle est abandonnée si un nouveau changement de statut de la
-// commande a commencé (numéro de génération, _arretsGen) ou si la commande porte de nouveau le statut refusé.
-var _arretsEnvois = {}, ARRETS_ATTENTE_MAX = 30000;
-function arretsNoterEnvoi(tid, p) {
-  var sansErreur = Promise.resolve(p).catch(function() {});
-  var pr = _arretsEnvois[tid] ? Promise.all([_arretsEnvois[tid], sansErreur]) : sansErreur;
-  _arretsEnvois[tid] = pr;
-  pr.then(function() { if (_arretsEnvois[tid] === pr) delete _arretsEnvois[tid]; });
-  return pr;
+function statutEssaiRegler(id, essai, refuse) {
+  var e = _statutEssais[id];
+  if (!e || !essai) return null;
+  var i = e.liste.indexOf(essai);
+  if (i < 0) return null;
+  e.liste.splice(i, 1);
+  var r = null;
+  if (refuse) {
+    e.liste.forEach(function(x) {
+      if (x.deGen !== essai.gen) return;
+      x.de = essai.de; x.deGen = essai.deGen;
+      if (x.arr && essai.arr) x.arr.avant = essai.arr.avant;
+      if (x.hist) x.hist.de = essai.de;
+    });
+    if (e.tete === essai.gen) { e.tete = essai.deGen; r = { de: essai.de, arr: essai.arr }; } // génération courante : remise
+  }
+  if (!e.liste.length) delete _statutEssais[id];
+  return r;
 }
+// v7.5.211 (avis chatgpt-review PR 31 sur 3b46387, point 1, puis sur 3aba95e, point 3) : ORDRE DES ENREGISTREMENTS. La
+// synchronisation enregistre la tournée (arrêt « livré ») AVANT la réponse de la base sur la commande ; la remise est faite TOUT
+// DE SUITE à l'écran, puis réenregistrée par la FILE DE LA TOURNÉE (sbSaveTournee) : un seul enregistrement en vol par tournée,
+// le suivant part après la réponse du précédent, le dernier état gagne. Plus de délai de garde ni de second envoi de la remise
+// (deux remises pouvaient se croiser en vol).
+// Revue native P2 sur 358825d : une remise en attente ne doit jamais défaire un changement PLUS RÉCENT (ex. « Livré » réussi au
+// 2e essai pendant l'attente) : au moment de partir, elle est abandonnée si un nouveau changement de statut de la commande a
+// commencé depuis (numéro de génération, _arretsGen) ou si la commande porte de nouveau le statut refusé.
 // remise des champs changés par la synchronisation (relevé « m ») dans les tournées ACTUELLES ; sans effet si elle est déjà faite
 // (rejouable : tournées relues depuis la base entre-temps). seulementTid : une seule tournée. Rend les tournées modifiées.
 function arretsAppliquer(m, cmdId, seulementTid) {
@@ -12742,37 +12887,31 @@ function arretsAppliquer(m, cmdId, seulementTid) {
   });
   return faits;
 }
-function arretsRemettre(cmdId, refuse) {
-  var m = _arretsAvantStatut[cmdId];
+function arretsRemettre(cmdId, refuse, m) {
   if (!m || m.vers !== refuse) return 0;
-  delete _arretsAvantStatut[cmdId];
   var tids = arretsAppliquer(m, cmdId); // à l'écran tout de suite
-  // remise différée encore valable ? Non dès qu'un changement de statut plus récent de cette commande a commencé (génération),
+  // remise en attente encore valable ? Non dès qu'un changement de statut de cette commande a commencé APRÈS elle (génération),
   // ou que la commande porte de nouveau le statut refusé (remis par un autre chemin, ex. vue livreur)
+  var genRemise = _arretsGen[cmdId];
   var perimee = function() {
     try {
-      if (m.gen !== undefined && _arretsGen[cmdId] !== m.gen) return true;
+      if (_arretsGen[cmdId] !== genRemise) return true;
       var c = (typeof commandes !== 'undefined' && Array.isArray(commandes)) ? commandes.find(function(x) { return x && x.id === cmdId; }) : null;
       return !!(c && c.statut === refuse);
     } catch(e) { return false; }
   };
   tids.forEach(function(tid) {
-    var envoyer = function() {
-      if (perimee()) return;
-      try {
-        arretsAppliquer(m, cmdId, tid); // tournées relues depuis la base pendant l'attente : remise refaite avant l'envoi
-        var t = tournees.find(function(x) { return x && x.id === tid; });
-        if (t) arretsNoterEnvoi(tid, sbSaveTournee(t));
-      } catch(e) { console.warn('[statut] arrêt remis, enregistrement :', e && e.message); }
-    };
-    var enCours = _arretsEnvois[tid];
-    if (!enCours) { envoyer(); return; }
-    // seulement APRÈS la fin de l'enregistrement précédent de cette tournée. Si le délai de garde a déjà fait partir la remise,
-    // elle est RENVOYÉE ici : l'envoi tardif a pu arriver en base après elle, la remise doit rester le dernier enregistrement.
-    var termine = false, auDelai = false;
-    var apresEnvoi = function() { termine = true; envoyer(); };
-    enCours.then(apresEnvoi, apresEnvoi);
-    try { if (typeof setTimeout === 'function') setTimeout(function() { if (termine || auDelai) return; auDelai = true; envoyer(); }, ARRETS_ATTENTE_MAX); } catch(e) {}
+    try {
+      var t0 = tournees.find(function(x) { return x && x.id === tid; });
+      if (!t0) return;
+      // file de la tournée : part tout de suite si aucun enregistrement n'est en vol, sinon après la réponse de celui-ci ; au
+      // départ, la remise est refaite sur les tournées ACTUELLES (relues depuis la base pendant l'attente) puis envoyée
+      sbSaveTournee(t0, function() {
+        if (perimee()) return null;
+        arretsAppliquer(m, cmdId, tid);
+        return tournees.find(function(x) { return x && x.id === tid; }) || null;
+      });
+    } catch(e) { console.warn('[statut] arrêt remis, enregistrement :', e && e.message); }
   });
   return tids.length;
 }
@@ -12782,7 +12921,8 @@ function arretsRemettre(cmdId, refuse) {
 // Désormais l'ancien statut est remis (seulement si la commande porte encore le statut refusé : un changement fait entre-temps
 // n'est jamais écrasé), la demande de déduction du stock posée pour ce « livré » est retirée, la liste et la fiche ouverte sont
 // redessinées et la raison est dite clairement. Rend vrai si le statut a été remis.
-function cmdRemettreStatut(c, ancien, refuse, res) {
+// arr (facultatif) : relevé des arrêts de l'essai refusé (chgStatut), pour la remise de l'arrêt de tournée.
+function cmdRemettreStatut(c, ancien, refuse, res, arr) {
   if (!c || c.statut !== refuse || ancien === refuse) return false;
   c.statut = ancien;
   if (c.historique && c.historique.length && c.historique[c.historique.length - 1].vers === refuse) c.historique.pop();
@@ -12794,7 +12934,7 @@ function cmdRemettreStatut(c, ancien, refuse, res) {
   try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(e) {}
   // revue native P2 sur df07c0d : l'arrêt de tournée (marqué « livré » ou retiré, et enregistré, avant la réponse de la base) est
   // remis tel qu'il était et RÉENREGISTRÉ ; la synchronisation normale ne le ferait pas (elle garde tout arrêt déjà « livré »)
-  try { if (typeof arretsRemettre === 'function') arretsRemettre(c.id, refuse); } catch(e) { console.warn('[statut] arrêt non remis :', e && e.message); }
+  try { if (typeof arretsRemettre === 'function') arretsRemettre(c.id, refuse, arr); } catch(e) { console.warn('[statut] arrêt non remis :', e && e.message); }
   try { if (typeof reconcilierTournees === 'function') reconcilierTournees(); } catch(e) {}
   try { renderCmds(); renderDash(); renderTournees(); renderLivreur(); } catch(e) {}
   try { if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres(); } catch(e) {}
@@ -13642,9 +13782,10 @@ function reconcilierTournees() {
 
     var ids = Object.keys(aSauver);
     if (ids.length) {
-      // v7.5.211 (avis chatgpt-review PR 31 sur 3b46387, point 1) : envoi noté (arretsNoterEnvoi) — la remise d'un arrêt après un
-      // statut refusé attend la fin de cet enregistrement avant de réenregistrer la tournée (jamais dans l'ordre inverse)
-      ids.forEach(function(id){ try { var _pT = sbSaveTournee(aSauver[id]); if (typeof arretsNoterEnvoi === 'function') arretsNoterEnvoi(id, _pT); } catch(_e){} });
+      // v7.5.211 (avis chatgpt-review PR 31 sur 3b46387, point 1, puis sur 3aba95e, point 3) : sbSaveTournee met chaque tournée
+      // dans SA file (un seul enregistrement en vol) — la remise d'un arrêt après un statut refusé part après la réponse de
+      // celui-ci, jamais en même temps (jamais dans l'ordre inverse)
+      ids.forEach(function(id){ try { sbSaveTournee(aSauver[id]); } catch(_e){} });
       if (typeof renderTournees === 'function') renderTournees();
       console.log('[reconcilierTournees] ' + ids.length + ' tournée(s) synchronisée(s).');
     }
@@ -14521,7 +14662,9 @@ function renderLivreur() {
 
     // v7.5.129 : trois gros boutons de résultat ; les autres statuts sont repliés sous « Autres statuts »
     var resBtns = [{k:'livré',ico:'<i class="icd icd-ok"></i>',lbl:'Livré',cls:'lv-res-livre',act:'lv-st-action'},{k:'reporté',ico:'<i class="icd icd-cal"></i>',lbl:'Reporté',cls:'lv-res-reporte',act:'lv-report-action'},{k:'absent',ico:'<i class="icd icd-absent"></i>',lbl:'Client absent',cls:'lv-res-absent',act:'lv-absent-action'}].map(function(r){
-      return '<button class="lv-resbtn '+r.cls+(st===r.k?' actif':'')+' '+r.act+'" data-tid="'+t.id+'" data-idx="'+i+'" data-statut="'+r.k+'"><span class="sticon">'+r.ico+'</span>'+r.lbl+'</button>';
+      // v7.5.211 : « Livré » en attente tant que la lecture des pièces d'une commande non concernée n'a pas répondu
+      var _att = r.k === 'livré' && st !== 'livré' && typeof dropLivreEnAttente === 'function' && dropLivreEnAttente(s.cmdId);
+      return '<button class="lv-resbtn '+r.cls+(st===r.k?' actif':'')+' '+r.act+'" data-tid="'+t.id+'" data-idx="'+i+'" data-statut="'+r.k+'"'+(_att?' aria-busy="true" style="opacity:.55"':'')+'><span class="sticon">'+(_att?'⏳':r.ico)+'</span>'+(_att?'Vérification des pièces…':r.lbl)+'</button>';
     }).join('');
     var stBtns = stDefs.filter(function(sd){ return RT_RESULTATS.indexOf(sd.k) < 0; }).map(function(sd) {
       var isA = st === sd.k;
@@ -15552,7 +15695,9 @@ function setLvSt(tid, idx, st, _annOk) {
   if (st === 'annulé' && s && s.statut !== 'annulé' && !_annOk) { var _cAnn = commandes.find(function(c){ return c.id === s.cmdId; }) || null; annDemanderMotif(_cAnn || { id: s.cmdId || '', client: s.client || '' }, function(m){ if (_cAnn) { _cAnn.annMotif = m.motif; _cAnn.annCom = m.commentaire; } setLvSt(tid, idx, st, true); }); return; }
   // v7.5.199 (dropshipping) : « Livré » BLOQUÉ tant qu'une pièce n'a pas sa provenance, qu'un enlèvement n'est pas payé ou que les pièces
   // ne sont pas confirmées ; reporté / absent : les pièces achetées partent dans le stock du camion (base, rejouable)
-  if (st === 'livré' && s && s.statut !== 'livré' && typeof dropBloqueLivre === 'function') { var _dropB = dropBloqueLivre(s.cmdId); if (_dropB) { toast('🔒 ' + _dropB, 'err'); return; } }
+  // v7.5.211 (avis chatgpt-review sur 3aba95e, point 2) : commande non concernée → lecture CONCLUANTE de ses pièces attendue
+  // (« vérification des pièces… » : message d'attente ; lecture en échec : refus, à réessayer)
+  if (st === 'livré' && s && s.statut !== 'livré' && typeof dropBloqueLivre === 'function') { var _dropB = dropBloqueLivre(s.cmdId, true); if (_dropB) { if (typeof DROP_MSG_VERIF !== 'undefined' && _dropB === DROP_MSG_VERIF) toast('⏳ ' + _dropB, 'info'); else toast('🔒 ' + _dropB, 'err'); return; } }
   // v7.5.206 (revue native P2 sur cfbf0fa) : un arrêt ANNULÉ avant sa livraison est une issue sans livraison comme les autres
   // (achat « Enlevé et payé » → stock du camion) — la base le fait aussi d'elle-même (déclencheur commandes_annulee_pieces)
   if ((typeof dropIssueSansLivraison === 'function' ? dropIssueSansLivraison(st, s && s.statut) : (st === 'reporté' || st === 'absent')) && s && s.cmdId && typeof dropApresNonLivre === 'function') { try { dropApresNonLivre(s.cmdId); } catch(e) {} }
@@ -15876,7 +16021,7 @@ function validerSig(){
   if(!t) return;
   const s=t.stops[idx];
   // v7.5.199 : même contrôle des pièces qu'à l'ouverture de la signature (elles ont pu changer entre-temps)
-  if (s && typeof dropBloqueLivre === 'function') { var _dropB2 = dropBloqueLivre(s.cmdId); if (_dropB2) { toast('🔒 ' + _dropB2, 'err'); return; } }
+  if (s && typeof dropBloqueLivre === 'function') { var _dropB2 = dropBloqueLivre(s.cmdId, true); if (_dropB2) { if (typeof DROP_MSG_VERIF !== 'undefined' && _dropB2 === DROP_MSG_VERIF) toast('⏳ ' + _dropB2, 'info'); else toast('🔒 ' + _dropB2, 'err'); return; } }
   // v7.5.129 : montant encaissé = ce qui reste dû par défaut ; seulement à la baisse, avec un motif
   var _rtCtl = null, _rtCmd = null, _rtReste = 0, _rtDeja = 0, _rtMotif = '';
   if (!sigCodActif && sigPaieEncaisse && !sigPrepaidMode && sigPaieMode !== 'Mixte' && typeof rtControleMontant === 'function') {

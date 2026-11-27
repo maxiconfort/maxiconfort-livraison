@@ -29,9 +29,15 @@
 --           du retrait s'il y en a une) ET une alerte de drop_alertes (type existant « livre_sans_confirmation », clé
 --           « non_concernee:<commande>:<cycle> ») : elle apparaît dans la liste des alertes de la page Dropshipping, sans
 --           nouveau code dans l'appli.
---      Ces traces ne bloquent RIEN : écrites « au mieux », chacune dans un bloc d'exception — si le journal ou l'alerte ne
---      peut pas être écrit, le « livré » (ou le retrait du livreur) est enregistré quand même, et un avertissement part dans
---      les journaux de la base. Une commande jamais découpée (sans livreur depuis toujours, GLS…) ne produit aucune ligne.
+--      TRACE OBLIGATOIRE (avis chatgpt-review sur 3aba95e, point 1 — application stricte du choix B : « on laisse passer, mais
+--      tout est tracé, personne ne peut le faire en cachette ») : sur ce chemin, la LIGNE DE JOURNAL est écrite dans la MÊME
+--      transaction que l'écriture de la commande. Si elle ne peut pas être écrite (journal indisponible, ligne refusée ou
+--      ignorée, lecture nécessaire à la trace en échec), l'écriture concernée est REFUSÉE — retrait du livreur (ou sortie de
+--      RANOU) d'une commande aux pièces jamais déclarées, ou « livré » sans contrôle des pièces :
+--        « TRACE_IMPOSSIBLE : journal indisponible, réessayez ; rien n'a été enregistré » (P0001, rien n'est écrit).
+--      Chemin normal (journal disponible) : rien n'est bloqué, comme avant. L'ALERTE reste « au mieux » (son propre bloc
+--      d'exception : si elle ne peut pas être créée, l'écriture passe, la ligne de journal fait foi, un avertissement part dans
+--      les journaux de la base). Une commande jamais découpée (sans livreur depuis toujours, GLS…) ne produit aucune ligne.
 -- La migration elle-même ne crée, ne modifie ni ne supprime aucune ligne (fonctions et un déclencheur seulement). Les lignes de
 -- journal et les alertes sont écrites ensuite, par le déclencheur, à chaque passage par le chemin tracé. Rejouable. Une seule
 -- transaction.
@@ -51,7 +57,9 @@
 --   -- d) drop function if exists public.drop_pieces_lire(text);   (l'appli v7.5.211 revient alors à « aucune pièce lue » pour
 --   --    une commande déjà livrée inconnue de l'appareil)
 --   -- e) traces du choix B : retirer le déclencheur puis sa fonction (les lignes déjà écrites dans drop_journal restent : ajout
---   --    seul ; les alertes déjà créées restent et se marquent « Vu » dans l'appli)
+--   --    seul ; les alertes déjà créées restent et se marquent « Vu » dans l'appli). ATTENTION : la trace obligatoire part
+--   --    avec eux — le chemin « livreur retiré puis livré » n'est alors plus tracé du tout, et plus jamais refusé
+--   --    « TRACE_IMPOSSIBLE ». En cas de journal durablement indisponible, c'est aussi la seule façon de lever ce refus.
 --   drop trigger if exists commandes_trace_042 on public.commandes;
 --   drop function if exists interne.l042_tracer();
 --   commit;
@@ -192,21 +200,27 @@ revoke all on function public.drop_pieces_lire(text) from public, anon, authenti
 grant execute on function public.drop_pieces_lire(text) to anon;   -- session vérifiée DANS la fonction
 
 -- 5. TRACES DU CHOIX B (DÉCISION DE BORHEN, 27/11/2026 vers 21h45). Déclencheur APRÈS écriture : il ne voit que les écritures
---    réellement faites (un « livré » refusé par la garde n'écrit rien), il ne peut ni refuser ni modifier la commande (sa valeur
---    de retour est ignorée) et il est indépendant de la garde. Aucune lecture tant que l'écriture n'est ni un passage à « livré »
---    ni un changement de livreur / transporteur. Mêmes règles que la garde : sessions de l'application seulement, « concernée »
---    lue AVANT et APRÈS l'écriture. JOURNAL « AU MIEUX » : tout est dans un bloc d'exception (et chaque écriture dans le sien) —
---    une trace qui échoue n'empêche jamais l'enregistrement de la commande ; un avertissement est émis à la place.
+--    réellement faites (un « livré » refusé par la garde n'écrit rien), il ne modifie jamais la commande (sa valeur de retour
+--    est ignorée) et il est indépendant de la garde. Aucune lecture tant que l'écriture n'est ni un passage à « livré » ni un
+--    changement de livreur / transporteur. Mêmes règles que la garde : sessions de l'application seulement, « concernée » lue
+--    AVANT et APRÈS l'écriture.
+--    TRACE OBLIGATOIRE (avis chatgpt-review sur 3aba95e, point 1 ; application stricte du choix B de Borhen) : sur le chemin
+--    tracé, la ligne de journal est écrite dans la MÊME transaction que la commande, et son numéro est relu (insertion
+--    « returning ») : si elle n'est pas écrite — erreur, ligne ignorée par un déclencheur, lecture nécessaire à la trace en
+--    échec — l'écriture de la commande est REFUSÉE (« TRACE_IMPOSSIBLE », P0001 : un déclencheur APRÈS écriture qui échoue
+--    annule l'écriture). Journal disponible : rien n'est bloqué. L'ALERTE, elle, reste « au mieux » (son propre bloc
+--    d'exception) : la ligne de journal fait foi.
 create or replace function interne.l042_tracer() returns trigger
 language plpgsql security definer set search_path = public, interne, pg_catalog as $$
--- l042_trace (repère lu par l'auto-contrôle de la 042 : ne pas retirer)
+-- l042_trace l042_trace_obligatoire (repères lus par l'auto-contrôle de la 042 : ne pas retirer)
 declare v_livre boolean; v_chg boolean; v_avant boolean; v_apres boolean; v_n integer; v_cycle integer; v_retrait bigint;
-  v_action text; v_det jsonb;
+  v_action text; v_det jsonb; v_ligne bigint; v_cause text;
 begin
   v_livre := coalesce(new.statut, '') in ('livré', 'livre') and (tg_op = 'INSERT' or coalesce(old.statut, '') not in ('livré', 'livre'));
   v_chg := tg_op = 'UPDATE' and coalesce(new.statut, '') not in ('livré', 'livre')
            and (old.livreur is distinct from new.livreur or old.transporteur is distinct from new.transporteur);
   if not v_livre and not v_chg then return null; end if;
+  -- 1) l'écriture est-elle sur le chemin tracé ? puis 2) LIGNE DE JOURNAL OBLIGATOIRE. Tout échec ici refuse l'écriture.
   begin
     if public.session_role() is null then return null; end if;                 -- comme la garde : sessions de l'application
     select count(*), max(cycle) into v_n, v_cycle from public.commande_pieces where cmd_id = new.id;
@@ -223,34 +237,40 @@ begin
       -- a) commande concernée qui ne l'est plus (livreur retiré, ou sortie de RANOU), pièces jamais déclarées
       v_action := case when coalesce(btrim(new.livreur), '') = '' then 'livreur_retire_pieces_non_declarees'
                        else 'transporteur_change_pieces_non_declarees' end;
-      begin
-        perform interne.l041_journal(v_action, new.id, null, null, null, v_det);
-      exception when others then
-        raise warning 'l042_tracer : ligne de journal « % » non écrite pour % (%)', v_action, new.id, sqlerrm;
-      end;
     elsif v_livre and not v_avant and not v_apres then
       -- b) « livré » accepté sans contrôle des pièces (commande non concernée, découpée, pièces jamais déclarées)
+      v_action := 'livre_sans_controle_non_concernee';
       select max(j.id) into v_retrait from public.drop_journal j
        where j.cmd_id = new.id and j.action in ('livreur_retire_pieces_non_declarees', 'transporteur_change_pieces_non_declarees');
-      begin
-        perform interne.l041_journal('livre_sans_controle_non_concernee', new.id, null, null, null,
-          v_det || jsonb_build_object('retrait_journal_id', v_retrait));
-      exception when others then
-        raise warning 'l042_tracer : ligne de journal « livre_sans_controle_non_concernee » non écrite pour % (%)', new.id, sqlerrm;
-      end;
-      begin
-        perform interne.l041_alerte('livre_sans_confirmation', 'non_concernee:' || new.id || ':' || v_cycle, new.id, null, null,
-          'Livré SANS contrôle des pièces : ' || new.id || ' — commande non concernée (sans livreur ou hors RANOU), ' || v_n
-          || ' pièce(s) jamais déclarée(s) — par ' || interne.l041_acteur() || ' le '
-          || to_char(now() at time zone 'Europe/Paris', 'DD/MM/YYYY "à" HH24:MI')
-          || case when v_retrait is not null then ' — son livreur avait été retiré auparavant (voir le journal)' else '' end, null);
-      exception when others then
-        raise warning 'l042_tracer : alerte non créée pour % (%)', new.id, sqlerrm;
-      end;
+      v_det := v_det || jsonb_build_object('retrait_journal_id', v_retrait);
+    else
+      return null;                                                             -- hors du chemin tracé : rien à écrire
     end if;
+    -- même ligne que interne.l041_journal (041), écrite ici pour en relire le numéro : sans numéro, pas de trace
+    insert into public.drop_journal (action, cmd_id, piece_id, achat_id, montant, details, acteur)
+    values (v_action, new.id, null, null, null, v_det, interne.l041_acteur())
+    returning id into v_ligne;
+    if v_ligne is null then raise exception 'ligne de journal « % » non écrite', v_action; end if;
   exception when others then
-    raise warning 'l042_tracer : trace non écrite pour % (%)', new.id, sqlerrm;
+    v_cause := sqlerrm;
+    raise exception using errcode = 'P0001',
+      message = 'TRACE_IMPOSSIBLE : journal indisponible, réessayez ; rien n''a été enregistré',
+      detail = 'Commande ' || coalesce(new.id, '?') || ' — la trace obligatoire (' || coalesce(v_action, 'chemin à déterminer')
+               || ') n''a pas pu être écrite : ' || coalesce(v_cause, '?'),
+      hint = 'Réessayez dans un instant. Si le refus dure, prévenez l''administrateur (journal du dropshipping indisponible).';
   end;
+  -- 3) ALERTE « au mieux » (seulement pour le « livré » sans contrôle) : la ligne de journal ci-dessus fait foi
+  if v_action = 'livre_sans_controle_non_concernee' then
+    begin
+      perform interne.l041_alerte('livre_sans_confirmation', 'non_concernee:' || new.id || ':' || v_cycle, new.id, null, null,
+        'Livré SANS contrôle des pièces : ' || new.id || ' — commande non concernée (sans livreur ou hors RANOU), ' || v_n
+        || ' pièce(s) jamais déclarée(s) — par ' || interne.l041_acteur() || ' le '
+        || to_char(now() at time zone 'Europe/Paris', 'DD/MM/YYYY "à" HH24:MI')
+        || case when v_retrait is not null then ' — son livreur avait été retiré auparavant (voir le journal)' else '' end, null);
+    exception when others then
+      raise warning 'l042_tracer : alerte non créée pour % (%) — la ligne de journal % fait foi', new.id, sqlerrm, v_ligne;
+    end;
+  end if;
   return null;
 end $$;
 revoke all on function interne.l042_tracer() from public, anon, authenticated;
@@ -278,15 +298,27 @@ begin
   if f is null and interne.l041_concernee('GLS', 'Livreur', '#042-AUTO-CONTROLE-INEXISTANTE') then f := 'GLS non concernée'; end if;
   if f is null and interne.l041_concernee('RANOU', '', '#042-AUTO-CONTROLE-INEXISTANTE') then f := 'sans livreur non concernée'; end if;
   if f is null and not interne.l041_concernee('', 'Livreur', '#042-AUTO-CONTROLE-INEXISTANTE') then f := 'RANOU avec livreur concernée'; end if;
-  -- traces du choix B : fonction et déclencheur en place, écritures « au mieux », alerte acceptée par la table
+  -- traces du choix B : fonction et déclencheur en place, ligne de journal OBLIGATOIRE (refus « TRACE_IMPOSSIBLE » si elle n'est
+  -- pas écrite, numéro relu), alerte « au mieux » (avertissement seulement), alerte acceptée par la table
   if f is null and to_regprocedure('interne.l042_tracer()') is null then f := 'fonction des traces'; end if;
   if f is null then
     select prosrc into v_src from pg_proc where oid = 'interne.l042_tracer()'::regprocedure;
-    if position('l042_trace' in v_src) = 0 or position('livre_sans_controle_non_concernee' in v_src) = 0
-       or position('livreur_retire_pieces_non_declarees' in v_src) = 0 or position('exception when others' in v_src) = 0
-       or position('raise exception' in lower(v_src)) > 0 then
-      f := 'traces : repères, types de ligne, écriture au mieux (jamais de refus)';
+    if position('l042_trace_obligatoire' in v_src) = 0 or position('livre_sans_controle_non_concernee' in v_src) = 0
+       or position('livreur_retire_pieces_non_declarees' in v_src) = 0 or position('transporteur_change_pieces_non_declarees' in v_src) = 0
+       or position('insert into public.drop_journal' in v_src) = 0 or position('returning id into v_ligne' in v_src) = 0
+       or position('TRACE_IMPOSSIBLE : journal indisponible, réessayez ; rien n''''a été enregistré' in v_src) = 0
+       or position('raise warning' in v_src) = 0 then
+      f := 'traces : repères, types de ligne, ligne de journal obligatoire (refus TRACE_IMPOSSIBLE), alerte au mieux';
     end if;
+    -- le refus est bien levé APRÈS l'insertion de la ligne (bloc d'exception du journal), et l'alerte APRÈS lui, hors de ce bloc
+    if f is null and not (position('returning id into v_ligne' in v_src) < position('TRACE_IMPOSSIBLE' in v_src)
+                          and position('TRACE_IMPOSSIBLE' in v_src) < position('interne.l041_alerte(' in v_src)) then
+      f := 'traces : ordre journal obligatoire → refus → alerte au mieux';
+    end if;
+  end if;
+  if f is null and not exists (select 1 from information_schema.columns c where c.table_schema = 'public' and c.table_name = 'drop_journal'
+                                 and c.column_name in ('action', 'cmd_id', 'details', 'acteur') having count(*) = 4) then
+    f := 'colonnes de drop_journal attendues par la trace obligatoire';
   end if;
   if f is null and not exists (select 1 from pg_trigger t where t.tgrelid = 'public.commandes'::regclass and t.tgname = 'commandes_trace_042'
                                  and not t.tgisinternal and t.tgfoid = 'interne.l042_tracer()'::regprocedure

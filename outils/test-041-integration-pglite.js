@@ -562,32 +562,87 @@ grant select, insert, update, delete on storage.objects to anon;
   test('#N11 : livreur changé (A → B, toujours concernée) → aucune trace ; passée en GLS dans une écriture séparée → ligne « transporteur_change_pieces_non_declarees » ; « livré » accepté, tracé et relié',
     jN11a.length === 0 && jN11b.length === 1 && jN11b[0].action === 'transporteur_change_pieces_non_declarees' && jN11b[0].details.transporteur_apres === 'GLS'
     && eN11 === null && jN11c.length === 2 && Number(jN11c[1].details.retrait_journal_id) === Number(jN11c[0].id) && (await al('#N11')).length === 1, [jN11a, jN11b, eN11, jN11c]);
-  // JOURNAL « AU MIEUX » : le journal puis l'alerte sont rendus INÉCRIVABLES (déclencheurs d'essai) → rien n'est bloqué
+  // TRACE OBLIGATOIRE (avis chatgpt-review sur 3aba95e, point 1 ; application stricte du choix B de Borhen : « on laisse passer,
+  // mais tout est tracé, personne ne peut le faire en cachette ») : le journal est rendu INÉCRIVABLE (déclencheur d'essai) →
+  // les deux écritures du chemin sont REFUSÉES (« TRACE_IMPOSSIBLE »), rien n'est enregistré ; l'alerte reste « au mieux ».
+  const MSG_TRACE = 'TRACE_IMPOSSIBLE : journal indisponible, réessayez ; rien n\'a été enregistré';
   await db.exec(`set role l41i_postgres;
     create function public.essai_042_panne() returns trigger language plpgsql as $f$ begin raise exception 'PANNE D''ESSAI (%)', tg_table_name; end $f$;
+    create function public.essai_042_ignore() returns trigger language plpgsql as $f$ begin return null; end $f$;
     create trigger essai_042_panne_j before insert on public.drop_journal for each row when (new.action like '%pieces_non_declarees' or new.action = 'livre_sans_controle_non_concernee') execute function public.essai_042_panne();
     reset role;`);
   await cmd('#N12', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 1 }], 120);
   await rpc('livreur', 'public.drop_pieces($1)', ['#N12']);
+  const totJ12 = await nb('public.drop_journal'), totA12 = await nb('public.drop_alertes');
   const eN12a = await echec('admin', "update public.commandes set livreur = '' where id = '#N12'");
-  const eN12b = await echec('admin', "update public.commandes set statut = 'livré' where id = '#N12'");
-  const cN12 = await un(P, "select statut, livreur from public.commandes where id = '#N12'");
-  test('journal en PANNE (écriture refusée) : le retrait du livreur ET le « livré » sont enregistrés quand même (rien n\'est bloqué par les traces)',
-    eN12a === null && eN12b === null && cN12.statut === 'livré' && (cN12.livreur || '') === '', [eN12a, eN12b, cN12]);
-  test('… aucune ligne de journal (panne), mais l\'alerte est créée quand même (chaque écriture a son propre bloc d\'exception)',
-    (await jr('#N12')).length === 0 && (await al('#N12')).length === 1, [await jr('#N12'), await al('#N12')]);
-  await db.exec(`set role l41i_postgres;
-    create trigger essai_042_panne_a before insert on public.drop_alertes for each row when (new.cle like 'non_concernee:%') execute function public.essai_042_panne();
-    reset role;`);
+  const cN12a = await un(P, "select statut, livreur from public.commandes where id = '#N12'");
+  test('journal en PANNE : le RETRAIT DU LIVREUR d\'une commande aux pièces jamais déclarées est REFUSÉ — « ' + MSG_TRACE + ' »',
+    !!eN12a && eN12a.includes(MSG_TRACE), eN12a);
+  test('… rien n\'a été enregistré : le livreur est toujours là, aucune ligne de journal, aucune alerte',
+    cN12a.livreur === 'Livreur-A' && cN12a.statut !== 'livré' && (await jr('#N12')).length === 0 && (await nb('public.drop_journal')) === totJ12 && (await nb('public.drop_alertes')) === totA12, cN12a);
+  const eN12g = await echec('admin', "update public.commandes set transporteur = 'GLS' where id = '#N12'");
+  test('journal en PANNE : la SORTIE DE RANOU (passage en GLS) de cette commande est refusée de la même façon, rien d\'enregistré',
+    !!eN12g && eN12g.includes(MSG_TRACE) && (await un(P, "select transporteur from public.commandes where id = '#N12'")).transporteur === 'RANOU', eN12g);
+  // #N14 (test demandé) : sans livreur depuis toujours, découpée à l'ouverture de sa fiche → « livré » sans contrôle des pièces
   await cmd('#N14', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 1 }], 120, { livreur: '' });
   await rpc('admin', 'public.drop_pieces($1)', ['#N14']);
+  const sN14 = await stock('ps90');
   const eN14 = await echec('admin', "update public.commandes set statut = 'livré' where id = '#N14'");
+  const cN14 = await un(P, "select statut, stock_deduit from public.commandes where id = '#N14'");
   const rN14 = await rpc('admin', 'public.deduire_stock_livraison($1)', ['#N14']);
-  test('journal ET alertes en panne : « livré » accepté quand même, déduction faite (040), aucune trace écrite',
-    eN14 === null && (await un(P, "select statut from public.commandes where id = '#N14'")).statut === 'livré' && rN14.ok && (await jr('#N14')).length === 0 && (await al('#N14')).length === 0, [eN14, rN14]);
+  test('#N14, journal en PANNE : « livré » sans contrôle des pièces REFUSÉ — « ' + MSG_TRACE + ' » (avant : accepté sans aucune trace)',
+    !!eN14 && eN14.includes(MSG_TRACE), eN14);
+  test('#N14 … rien n\'a été enregistré : statut inchangé, aucune ligne de journal, aucune alerte, aucune déduction du stock',
+    cN14.statut === 'en-route' && !cN14.stock_deduit && (await jr('#N14')).length === 0 && (await al('#N14')).length === 0
+    && !(rN14 && rN14.ok) && (await stock('ps90')) === sN14, [cN14, rN14]);
+  // une ligne IGNORÉE en silence (déclencheur qui rend « rien ») n'est pas une trace : refusé aussi (numéro de ligne relu)
   await db.exec(`set role l41i_postgres;
-    drop trigger essai_042_panne_j on public.drop_journal; drop trigger essai_042_panne_a on public.drop_alertes; drop function public.essai_042_panne();
+    drop trigger essai_042_panne_j on public.drop_journal;
+    create trigger essai_042_ignore_j before insert on public.drop_journal for each row when (new.action like '%pieces_non_declarees' or new.action = 'livre_sans_controle_non_concernee') execute function public.essai_042_ignore();
     reset role;`);
+  const eN14i = await echec('admin', "update public.commandes set statut = 'livré' where id = '#N14'");
+  test('#N14, ligne de journal IGNORÉE en silence (aucune erreur, mais aucune ligne) : « livré » refusé aussi, rien d\'enregistré',
+    !!eN14i && eN14i.includes(MSG_TRACE) && (await un(P, "select statut from public.commandes where id = '#N14'")).statut === 'en-route' && (await jr('#N14')).length === 0, eN14i);
+  // les écritures HORS du chemin tracé ne dépendent jamais du journal : rien n'est bloqué
+  await cmd('#N16', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 1 }], 120, { livreur: '' });
+  await cmd('#N17', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 1 }], 120);
+  await rpc('livreur', 'public.drop_pieces($1)', ['#N17']);
+  await cmd('#N18', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 1 }], 120);
+  const pN18 = (await rpc('livreur', 'public.drop_pieces($1)', ['#N18'])).pieces || [];
+  const dN18 = await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pN18[0].id, 'depot']);
+  test('journal toujours indisponible, écritures HORS du chemin tracé : jamais bloquées (commande jamais découpée « livré » ; livreur changé A → B ; autre statut ; pièce DÉCLARÉE puis livreur retiré : la garde contrôle toujours ; écriture du serveur)',
+    (await echec('admin', "update public.commandes set statut = 'livré' where id = '#N16'")) === null
+    && (await echec('admin', "update public.commandes set livreur = 'Livreur-B' where id = '#N17'")) === null
+    && (await echec('admin', "update public.commandes set statut = 'en-attente' where id = '#N14'")) === null
+    && dN18 && dN18.ok && (await echec('admin', "update public.commandes set livreur = '' where id = '#N18'")) === null
+    && (await echec(P, "update public.commandes set livreur = '' where id = '#N17'")) === null);
+  // journal de nouveau disponible, ALERTES en panne : la ligne de journal est écrite, l'écriture passe, l'alerte manque (au mieux)
+  await db.exec(`set role l41i_postgres;
+    drop trigger essai_042_ignore_j on public.drop_journal;
+    create trigger essai_042_panne_a before insert on public.drop_alertes for each row when (new.cle like 'non_concernee:%') execute function public.essai_042_panne();
+    reset role;`);
+  const eN14b = await echec('admin', "update public.commandes set statut = 'livré' where id = '#N14'");
+  const jN14 = await jr('#N14');
+  const rN14b = await rpc('admin', 'public.deduire_stock_livraison($1)', ['#N14']);
+  test('#N14, journal DISPONIBLE et alertes en panne : « livré » accepté (chemin normal non bloquant), ligne de journal écrite dans la même transaction, déduction faite (040) ; seule l\'alerte manque (« au mieux »)',
+    eN14b === null && (await un(P, "select statut from public.commandes where id = '#N14'")).statut === 'livré' && jN14.length === 1 && jN14[0].action === 'livre_sans_controle_non_concernee'
+    && rN14b.ok && (await al('#N14')).length === 0, [eN14b, jN14, rN14b]);
+  await db.exec(`set role l41i_postgres;
+    drop trigger essai_042_panne_a on public.drop_alertes; drop function public.essai_042_panne(); drop function public.essai_042_ignore();
+    reset role;`);
+  // journal et alertes rétablis : le retrait du livreur de #N12, refusé plus haut, passe au nouvel essai — tracé, puis « livré » tracé et relié
+  const eN12b = await echec('admin', "update public.commandes set livreur = '' where id = '#N12'");
+  const eN12c = await echec('admin', "update public.commandes set statut = 'livré' where id = '#N12'");
+  const jN12 = await jr('#N12');
+  test('#N12, journal rétabli : NOUVEL ESSAI accepté — retrait du livreur tracé, puis « livré » tracé et relié à la ligne du retrait, alerte créée',
+    eN12b === null && eN12c === null && jN12.length === 2 && jN12[0].action === 'livreur_retire_pieces_non_declarees' && jN12[1].action === 'livre_sans_controle_non_concernee'
+    && Number(jN12[1].details.retrait_journal_id) === Number(jN12[0].id) && (await al('#N12')).length === 1, [eN12b, eN12c, jN12]);
+  {
+    const src42 = (await un(P, "select prosrc from pg_proc where oid = 'interne.l042_tracer()'::regprocedure")).prosrc;
+    test('interne.l042_tracer : ligne de journal écrite avec relecture de son numéro, refus « TRACE_IMPOSSIBLE » dans le bloc du journal, alerte APRÈS et à part (avertissement seulement)',
+      /returning id into v_ligne/.test(src42) && src42.indexOf('returning id into v_ligne') < src42.indexOf('TRACE_IMPOSSIBLE') && src42.indexOf('TRACE_IMPOSSIBLE') < src42.indexOf('interne.l041_alerte(')
+      && /raise warning 'l042_tracer : alerte non créée/.test(src42) && (src42.match(/raise exception/g) || []).length === 2);
+  }
   // livré → en-attente → livré : seconde ligne de journal, alerte de nouveau « non vue » (message daté)
   await q(P, "update public.drop_alertes set message = message || ' (ancienne)' where cmd_id = '#N1' and cle like 'non_concernee:%'");
   await q(P, "update public.drop_alertes set vue_par = 'admin', vue_at = now() where cmd_id = '#N1' and cle like 'non_concernee:%'");
