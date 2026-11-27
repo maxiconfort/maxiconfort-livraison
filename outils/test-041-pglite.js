@@ -176,8 +176,11 @@ grant select, insert, update, delete on storage.objects to anon;
     test('contrôle section 9 : sans la 039 (produits_revient) → migration ANNULÉE', !!e9 && /produits_revient\.prix_revient_ht/.test(e9), e9);
   }
   test('réglages créés : alerte camion 3 jours, charges fixes VIDES, GLS vide, lot tampon 30 jours, TVA 20',
-    JSON.stringify((await q(P, "select cle, valeur from public.parametres where cle like 'drop_%' order by cle")).map(r => r.cle + '=' + r.valeur))
+    JSON.stringify((await q(P, "select cle, valeur from public.parametres where cle like 'drop_%' and cle <> 'drop_actif_depuis' order by cle")).map(r => r.cle + '=' + r.valeur))
       === JSON.stringify(['drop_camion_alerte_jours=3', 'drop_charges_fixes_jour_ht=', 'drop_gls_cout_commande_ht=', 'drop_tampon_alerte_jours=30', 'drop_tva_pct=20']));
+  const ACTIF = (await un(P, "select valeur from public.parametres where cle = 'drop_actif_depuis'")).valeur;
+  test('v7.5.205 : date d\'activation du module notée à la 1re application (drop_actif_depuis, gardée au rejeu)', /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(ACTIF)
+    && (await un(P, 'select interne.l041_actif_depuis() = $1::timestamptz as v', [ACTIF])).v === true, ACTIF);
   test('bucket drop-tickets créé PRIVÉ', (await un(P, "select public from storage.buckets where id = 'drop-tickets'")).public === false);
   const src = (await un(P, "select prosrc from pg_proc where proname = 'drop_enlever_payer'")).prosrc;
   test('texte : enlèvement — commande puis pièce verrouillées (FOR UPDATE) avant toute lecture de l\'achat',
@@ -194,7 +197,9 @@ grant select, insert, update, delete on storage.objects to anon;
   await q(P, "insert into public.produits_revient (produit_id, prix_revient_ht) values ('pm140', 100), ('pm180', 150), ('ps90', 40)");
   const cmd = (id, champs) => q(P, 'insert into public.commandes (id, client, produit, lignes, qte, prix, livreur, transporteur, statut, date_livraison) values ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10)',
     [id, 'Client fictif', champs.produit || null, champs.lignes ? JSON.stringify(champs.lignes) : null, champs.qte || 1, champs.prix || 0,
-     champs.livreur || 'Livreur-A', champs.transporteur || 'RANOU', champs.statut || 'en-route', champs.date || AUJ]);
+     champs.livreur === undefined ? 'Livreur-A' : champs.livreur, champs.transporteur || 'RANOU', champs.statut || 'en-route', champs.date || AUJ])
+    // v7.5.205 : commande créée AVANT l'activation du module (champs.avant = nombre de jours)
+    .then((x) => champs.avant ? q(P, "update public.commandes set created_at = now() - make_interval(days => $2) where id = $1", [id, champs.avant]) : x);
   await cmd('#C1', { lignes: [{ produitId: 'pe180', nom: 'Ensemble fictif 180', qte: 1 }], prix: 720 });
   await cmd('#C2', { lignes: [{ produitId: 'pm140', nom: 'Matelas fictif 140', qte: 2 }], prix: 600 });
   await cmd('#CB', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360, livreur: 'Livreur-B' });
@@ -343,7 +348,7 @@ grant select, insert, update, delete on storage.objects to anon;
   r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#C1']);
   test('idempotente : 2e appel « deja », aucun retrait de plus', r.ok && r.deja === true && (await stock('ps90')) === avant.s - 1);
   test('journal des sorties : composant de l\'ensemble noté', (await nb("public.stock_sorties_livraison where cmd_id = '#C1' and produit_id = 'ps90' and composant_de = 'pe180' and qte_retiree = 1")) === 1);
-  await cmd('#C4', { lignes: [{ produitId: 'pm140', qte: 2 }], prix: 600, statut: 'livré' });
+  await cmd('#C4', { lignes: [{ produitId: 'pm140', qte: 2 }], prix: 600, statut: 'livré', avant: 30 });   // créée avant l'activation
   const s140 = await stock('pm140');
   r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#C4']);
   test('commande SANS pièces (bureau, GLS, avant ce module) : retrait par la fonction de la 040 conservée (2 matelas, opération journalisée)', r.ok && r.mode === undefined && r.operation_id > 0 && (await stock('pm140')) === s140 - 2, r);
@@ -530,8 +535,8 @@ grant select, insert, update, delete on storage.objects to anon;
   m = await echec('admin', "update public.commandes set statut = 'livré' where id = '#L1'");
   test('administrateur : refusé lui aussi sans dérogation', !!m && /PIECES_NON_CONFIRMEES/.test(m), m);
   test('statut inchangé en base', (await un(P, "select statut from public.commandes where id = '#L1'")).statut === 'en-route');
-  await cmd('#L2', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360 });
-  test('compatibilité : commande NON découpée par le module (aucune pièce) → « livré » accepté', (await echec('livreur', "update public.commandes set statut = 'livré' where id = '#L2'")) === null);
+  await cmd('#L2', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360, avant: 3 });
+  test('compatibilité : commande CRÉÉE AVANT l\'activation, jamais découpée → « livré » accepté (v7.5.205)', (await echec('livreur', "update public.commandes set statut = 'livré' where id = '#L2'")) === null);
   test('compatibilité : création directe « livré » (bureau) sans pièces → acceptée', (await echec('admin', "insert into public.commandes (id, client, statut, date_livraison) values ('#L3', 'Client fictif', 'livré', $1)", [AUJ])) === null);
   r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#L1', JSON.stringify([{ id: pL1.id, livree: true }])]);
   test('après la confirmation des pièces : « livré » accepté', r.ok && (await echec('livreur', "update public.commandes set statut = 'livré' where id = '#L1'")) === null, r);
@@ -753,6 +758,53 @@ grant select, insert, update, delete on storage.objects to anon;
   test('unité libérée (redéclarée Dépôt) : de nouveau disponible, le total des unités est conservé (2 + 1)', r.ok
     && (await un(P, 'select utilise_par_piece from public.stock_camion where id = $1', [uW3])).utilise_par_piece === null
     && Number((await un(P, "select sum(quantite)::int as n from public.stock_camion where (id = $1 or scinde_de = $1) and status = 'en_camion'", [scV])).n) === 3, r);
+
+  console.log('\n22. v7.5.205 (E, avis chatgpt-review n° 1) : COMMANDE CONCERNÉE JAMAIS DÉCOUPÉE — découpage et confirmation imposés, dérogation explicite');
+  const DECOUP = /DECOUPAGE_REQUIS/;
+  await cmd('#E1', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360 });
+  test('commande concernée (nos livreurs, livreur attribué, créée après l\'activation) jamais découpée : « livré » REFUSÉ au livreur (DECOUPAGE_REQUIS)',
+    DECOUP.test(await echec('livreur', "update public.commandes set statut = 'livré' where id = '#E1'") || ''));
+  test('… à l\'administrateur aussi, et par un upsert', DECOUP.test(await echec('admin', "update public.commandes set statut = 'livré' where id = '#E1'") || '')
+    && DECOUP.test(await echec('livreur', "insert into public.commandes (id, client, livreur, statut, date_livraison) values ('#E1', 'Client fictif', 'Livreur-A', 'livré', $1) on conflict (id) do update set statut = excluded.statut", [AUJ]) || ''));
+  test('contournement impossible : le livreur qui vide le livreur ou passe en GLS dans la même écriture reste refusé',
+    DECOUP.test(await echec('livreur', "update public.commandes set statut = 'livré', livreur = '' where id = '#E1'") || '')
+    && DECOUP.test(await echec('livreur', "update public.commandes set statut = 'livré', transporteur = 'GLS' where id = '#E1'") || ''));
+  test('statut inchangé en base', (await un(P, "select statut from public.commandes where id = '#E1'")).statut === 'en-route');
+  await q(P, "update public.commandes set statut = 'livré' where id = '#E1'");   // hors session (serveur, maintenance) : non bloqué
+  const s140e = await stock('pm140');
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#E1']);
+  test('« livré » posé hors session : la déduction REFUSE (decoupage_requis), rien retiré, alerte, stock_deduit reste faux', r.ok === false && r.erreur === 'decoupage_requis'
+    && (await stock('pm140')) === s140e && (await nb("public.drop_alertes where type = 'livre_sans_confirmation' and cmd_id = '#E1'")) === 1
+    && !(await un(P, "select stock_deduit from public.commandes where id = '#E1'")).stock_deduit, r);
+  r = await rpc('livreurB', 'public.deduire_stock_livraison($1)', ['#E1']);
+  test('autre livreur : rien n\'est révélé (réponse de la 040)', r.ok === false && r.erreur !== 'decoupage_requis', r);
+  r = await rpc('admin', 'public.drop_livre_sans_confirmation($1, $2)', ['#E1', 'Livrée par le bureau, vérifiée']);
+  test('dérogation explicite de l\'administrateur sur une commande jamais découpée : cycle 1, journalisée', r.ok && r.cycle === 1
+    && (await nb("public.drop_journal where action = 'derogation_livre' and cmd_id = '#E1'")) === 1, r);
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#E1']);
+  test('après dérogation : déduction par la 040 (1 matelas)', r.ok && r.mode === undefined && (await stock('pm140')) === s140e - 1, r);
+  await cmd('#E2', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360 });
+  r = await rpc('admin', 'public.drop_livre_sans_confirmation($1, $2)', ['#E2', 'Livrée par le bureau, vérifiée']);
+  test('dérogation de l\'administrateur AVANT le « livré » : « livré » accepté ensuite', r.ok && (await echec('livreur', "update public.commandes set statut = 'livré' where id = '#E2'")) === null, r);
+  await cmd('#E3', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360, transporteur: 'GLS' });
+  test('compatibilité : commande GLS jamais découpée (même avec un livreur) → « livré » accepté, déduction 040', (await echec('livreur', "update public.commandes set statut = 'livré' where id = '#E3'")) === null
+    && (await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#E3'])).ok === true);
+  await cmd('#E4', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360, livreur: '' });
+  test('compatibilité : commande sans livreur (bureau, retrait) → « livré » accepté ; dérogation inutile (rien_a_deroger)', (await echec('admin', "update public.commandes set statut = 'livré' where id = '#E4'")) === null
+    && (await rpc('admin', 'public.drop_livre_sans_confirmation($1, $2)', ['#E4', 'Livrée par le bureau, vérifiée'])).erreur === 'rien_a_deroger');
+  await cmd('#E5', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360, statut: 'livré', avant: 60 });
+  test('compatibilité : ancienne commande déjà livrée : remise « livré » ou modifiée sans blocage', (await echec('admin', "update public.commandes set statut = 'livré', prix = 361 where id = '#E5'")) === null);
+  test('création directe « livré » d\'une commande concernée (bureau, avec livreur) : refusée — créer, déroger, puis livrer', DECOUP.test(await echec('admin', "insert into public.commandes (id, client, livreur, statut, date_livraison) values ('#E6', 'Client fictif', 'Livreur-A', 'livré', $1)", [AUJ]) || ''));
+  await cmd('#E7', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360 });
+  const pE7 = (await rpc('livreur', 'public.drop_pieces($1)', ['#E7'])).pieces[0];
+  test('une fois découpée : le contrôle pièce par pièce reprend (PIECES_NON_CONFIRMEES)', /PIECES_NON_CONFIRMEES/.test(await echec('livreur', "update public.commandes set statut = 'livré' where id = '#E7'") || ''));
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pE7.id, 'depot']);
+  await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#E7', JSON.stringify([{ id: pE7.id, livree: true }])]);
+  test('… puis « livré » accepté après la confirmation', (await echec('livreur', "update public.commandes set statut = 'livré' where id = '#E7'")) === null);
+  await q('admin', "update public.parametres set valeur = 'n importe quoi' where cle = 'drop_actif_depuis'");
+  await cmd('#E8', { lignes: [{ produitId: 'pm140', qte: 1 }], prix: 360, avant: 400 });
+  test('date d\'activation illisible : côté sûr (toutes les commandes concernées)', DECOUP.test(await echec('livreur', "update public.commandes set statut = 'livré' where id = '#E8'") || ''));
+  await q('admin', "update public.parametres set valeur = $1 where cle = 'drop_actif_depuis'", [ACTIF]);
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

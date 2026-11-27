@@ -109,7 +109,10 @@ insert into public.parametres (cle, valeur) values
   ('drop_charges_fixes_jour_ht', ''),         -- charges fixes du jour (HT) : VIDE = non comptées dans le bilan
   ('drop_gls_cout_commande_ht', ''),          -- coût GLS HT par commande livrée par GLS : VIDE = « GLS non renseigné »
   ('drop_tva_pct', '20'),                     -- TVA pour passer le prix de vente TTC d'une commande en HT
-  ('drop_tampon_alerte_jours', '30')          -- alerte : lot du stock tampon dropshipping non écoulé depuis plus de N jours
+  ('drop_tampon_alerte_jours', '30'),         -- alerte : lot du stock tampon dropshipping non écoulé depuis plus de N jours
+  -- v7.5.205 (avis chatgpt-review n° 1) : date d'ACTIVATION du module = première application de cette migration (gardée aux
+  -- rejeux) ; une commande créée avant n'est jamais obligée au découpage (compatibilité, voir interne.l041_concernee)
+  ('drop_actif_depuis', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
 on conflict (cle) do nothing;
 
 create or replace function interne.l041_reglage(p_cle text) returns numeric
@@ -122,6 +125,31 @@ begin
   return v::numeric;
 end $$;
 revoke all on function interne.l041_reglage(text) from public, anon, authenticated;
+
+-- v7.5.205 : date d'activation du module (réglage drop_actif_depuis) ; illisible ou absente = « depuis toujours » (côté sûr :
+-- les commandes sont alors toutes concernées)
+create or replace function interne.l041_actif_depuis() returns timestamptz
+language plpgsql stable security definer set search_path = public, pg_catalog as $$
+declare v text;
+begin
+  select btrim(coalesce(valeur, '')) into v from public.parametres where cle = 'drop_actif_depuis';
+  if coalesce(v, '') = '' then return '-infinity'::timestamptz; end if;
+  begin return v::timestamptz; exception when others then return '-infinity'::timestamptz; end;
+end $$;
+revoke all on function interne.l041_actif_depuis() from public, anon, authenticated;
+
+-- v7.5.205 (avis chatgpt-review n° 1 sur 76ebd77 et b8b7fe0) : COMMANDE CONCERNÉE par l'obligation de découpage en pièces et
+-- de confirmation avant « livré » (et avant la déduction du stock) =
+--   1. livrée par NOS livreurs : transporteur RANOU (vide = RANOU, comme l'appli) — jamais une commande GLS ;
+--   2. avec un livreur attribué (une commande sans livreur = retrait ou vente du bureau) ;
+--   3. CRÉÉE après l'activation du module (created_at >= drop_actif_depuis) — une commande antérieure n'est jamais obligée.
+-- Une commande concernée ne passe « livré » que découpée et confirmée pièce par pièce, ou par DÉROGATION explicite et
+-- journalisée de l'administrateur (drop_livre_sans_confirmation). Les commandes déjà livrées ne sont jamais touchées.
+create or replace function interne.l041_concernee(p_transporteur text, p_livreur text, p_cree timestamptz) returns boolean
+language sql stable security definer set search_path = public, interne, pg_catalog as $$
+  select upper(coalesce(nullif(btrim(p_transporteur), ''), 'RANOU')) = 'RANOU' and coalesce(btrim(p_livreur), '') <> ''
+     and p_cree is not null and p_cree >= interne.l041_actif_depuis() $$;
+revoke all on function interne.l041_concernee(text, text, timestamptz) from public, anon, authenticated;
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 -- 2. Tables
@@ -1078,8 +1106,19 @@ begin
     return json_build_object('ok', false, 'erreur', 'session_requise');
   end if;
   if coalesce(btrim(p_cmd_id), '') = '' then return json_build_object('ok', false, 'erreur', 'commande_requise'); end if;
-  -- commande sans pièces : la 040, inchangée
+  -- commande sans pièces : la 040, inchangée — SAUF (v7.5.205, avis chatgpt-review n° 1) une commande CONCERNÉE
+  -- (interne.l041_concernee : nos livreurs, livreur attribué, créée après l'activation) jamais découpée : posée « livré » hors
+  -- de l'application, elle ne contourne pas les trois contrôles ; la déduction attend le découpage et la confirmation des
+  -- pièces, ou la dérogation de l'administrateur (cycle 1)
   if not exists (select 1 from public.commande_pieces where cmd_id = p_cmd_id) then
+    select id, statut, stock_deduit, transporteur, livreur, created_at into c from public.commandes where id = p_cmd_id;
+    if found and coalesce(c.statut, '') in ('livré', 'livre') and not coalesce(c.stock_deduit, false)
+       and interne.l041_concernee(c.transporteur, c.livreur, c.created_at) and interne.l041_cmd_autorisee(p_cmd_id, true)
+       and not exists (select 1 from public.drop_derogations d where d.cmd_id = p_cmd_id and d.cycle = 1) then
+      perform interne.l041_alerte('livre_sans_confirmation', 'cmd:' || p_cmd_id, p_cmd_id, null, null,
+        'Livré sans découpage en pièces : ' || p_cmd_id || ' — stock NON retiré tant que les pièces ne sont pas découpées et confirmées (ou dérogation de l''administrateur)', null);
+      return json_build_object('ok', false, 'erreur', 'decoupage_requis');
+    end if;
     return interne.l041_deduire_040(p_cmd_id);
   end if;
   v_acteur := v_role || coalesce(':' || v_liv, '');
@@ -1259,14 +1298,20 @@ grant execute on function public.recrediter_stock_livraison(text, boolean) to an
 -- pièces pour le cycle en cours (motif obligatoire, journalisé, alerte) ; la déduction retire alors les pièces non fournisseur
 create or replace function public.drop_livre_sans_confirmation(p_cmd_id text, p_motif text) returns json
 language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
-declare v_cycle integer; v_motif text := btrim(coalesce(p_motif, ''));
+declare v_cycle integer; v_motif text := btrim(coalesce(p_motif, '')); c record;
 begin
   if public.session_role() is distinct from 'admin' then return json_build_object('ok', false, 'erreur', 'admin_requis'); end if;
   if length(v_motif) < 5 or length(v_motif) > 500 then return json_build_object('ok', false, 'erreur', 'motif_requis'); end if;
-  perform 1 from public.commandes where id = p_cmd_id for update;
+  select id, transporteur, livreur, created_at into c from public.commandes where id = p_cmd_id for update;
   if not found then return json_build_object('ok', false, 'erreur', 'commande_introuvable'); end if;
   select max(cycle) into v_cycle from public.commande_pieces where cmd_id = p_cmd_id;
-  if v_cycle is null or not exists (select 1 from public.commande_pieces where cmd_id = p_cmd_id and livraison is null) then
+  if v_cycle is null then
+    -- v7.5.205 (avis chatgpt-review n° 1) : commande CONCERNÉE jamais découpée : dérogation du cycle 1 (la seule voie pour
+    -- la passer « livré » sans découpage) ; une commande non concernée n'a besoin d'aucune dérogation
+    if not interne.l041_concernee(c.transporteur, c.livreur, c.created_at) then
+      return json_build_object('ok', false, 'erreur', 'rien_a_deroger'); end if;
+    v_cycle := 1;
+  elsif not exists (select 1 from public.commande_pieces where cmd_id = p_cmd_id and livraison is null) then
     return json_build_object('ok', false, 'erreur', 'rien_a_deroger'); end if;
   if exists (select 1 from public.drop_derogations where cmd_id = p_cmd_id and cycle = v_cycle) then
     return json_build_object('ok', true, 'deja', true, 'cycle', v_cycle); end if;
@@ -1279,16 +1324,35 @@ end $$;
 
 -- v7.5.201 (revue Codex, réserve n° 1) : la BASE refuse le passage à « livré » d'une commande dont une pièce n'est pas
 -- confirmée (sessions de l'application : livreur, collaboratrice, administrateur), sauf dérogation de l'administrateur.
--- Compatibilité : une commande que ce module n'a pas découpée (aucune pièce : GLS, bureau, avant ce module) n'est jamais
--- bloquée ; un upsert (POST merge-duplicates) d'une commande existante est contrôlé par sa branche UPDATE.
+-- Compatibilité : une commande jamais découpée n'est bloquée que si elle est CONCERNÉE (v7.5.205 : interne.l041_concernee —
+-- jamais GLS, ni sans livreur, ni créée avant l'activation du module, ni déjà livrée)
+-- ; un upsert (POST merge-duplicates) d'une commande existante est contrôlé par sa branche UPDATE.
 create or replace function interne.l041_livre_garde() returns trigger
 language plpgsql security definer set search_path = public, interne, pg_catalog as $$
-declare v_cycle integer; v_n integer;
+declare v_cycle integer; v_n integer; v_tot integer; v_role text := public.session_role(); v_conc boolean;
 begin
-  if coalesce(new.statut, '') not in ('livré', 'livre') or public.session_role() is null then return new; end if;
+  if coalesce(new.statut, '') not in ('livré', 'livre') or v_role is null then return new; end if;
   if tg_op = 'UPDATE' and coalesce(old.statut, '') in ('livré', 'livre') then return new; end if;
   if tg_op = 'INSERT' and exists (select 1 from public.commandes x where x.id = new.id) then return new; end if;   -- upsert : la mise à jour contrôle
-  select max(cycle), count(*) filter (where livraison is null) into v_cycle, v_n from public.commande_pieces where cmd_id = new.id;
+  select max(cycle), count(*), count(*) filter (where livraison is null) into v_cycle, v_tot, v_n from public.commande_pieces where cmd_id = new.id;
+  if coalesce(v_tot, 0) = 0 then
+    -- v7.5.205 (avis chatgpt-review n° 1) : commande jamais découpée. Non concernée (GLS, sans livreur, antérieure à
+    -- l'activation) : jamais bloquée, comme avant. CONCERNÉE : « livré » refusé tant qu'elle n'est ni découpée ni confirmée,
+    -- sauf dérogation de l'administrateur (cycle 1). Valeurs lues : celles d'AVANT la mise à jour pour le livreur (sa garde
+    -- de la 019, qui passe après ce déclencheur, les lui impose de toute façon : il ne peut pas vider le livreur ou changer
+    -- le transporteur dans la même écriture pour contourner le contrôle) ; date de création toujours celle d'avant.
+    if tg_op = 'UPDATE' then
+      v_conc := case when v_role = 'livreur' then interne.l041_concernee(old.transporteur, old.livreur, old.created_at)
+                     else interne.l041_concernee(new.transporteur, new.livreur, old.created_at) end;
+    else
+      v_conc := interne.l041_concernee(new.transporteur, new.livreur, coalesce(new.created_at, now()));
+    end if;
+    if not v_conc then return new; end if;
+    if exists (select 1 from public.drop_derogations d where d.cmd_id = new.id and d.cycle = 1) then return new; end if;
+    raise exception using errcode = 'P0001',
+      message = 'DECOUPAGE_REQUIS : la commande ' || new.id || ' (livrée par nos livreurs) n''a pas été découpée en pièces ni confirmée (dropshipping)',
+      hint = 'Le livreur ouvre le chargement (pièces) puis indique chaque pièce à la livraison, ou l''administrateur accorde une dérogation motivée.';
+  end if;
   if coalesce(v_n, 0) = 0 then return new; end if;
   if exists (select 1 from public.drop_derogations d where d.cmd_id = new.id and d.cycle = v_cycle) then return new; end if;
   raise exception using errcode = 'P0001',
@@ -1552,7 +1616,7 @@ begin
   select string_agg(t || '.' || col, ', ') into manque
     from (values ('commandes', 'id'), ('commandes', 'lignes'), ('commandes', 'produit'), ('commandes', 'qte'), ('commandes', 'prix'),
                  ('commandes', 'livreur'), ('commandes', 'statut'), ('commandes', 'date_livraison'), ('commandes', 'transporteur'),
-                 ('commandes', 'stock_deduit'), ('produits', 'composants'), ('produits', 'stock'),
+                 ('commandes', 'stock_deduit'), ('commandes', 'created_at'), ('produits', 'composants'), ('produits', 'stock'),
                  ('produits_revient', 'prix_revient_ht'), ('stock_sorties_livraison', 'cmd_id'), ('stock_operations', 'resultat'),
                  ('stock_camion', 'id'), ('stock_camion', 'livreur'), ('stock_camion', 'produit_libelle'), ('stock_camion', 'quantite'),
                  ('stock_camion', 'source_cmd_id'), ('stock_camion', 'source_tournee_id'), ('stock_camion', 'charge_at'),

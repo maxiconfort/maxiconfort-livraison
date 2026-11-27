@@ -6001,7 +6001,10 @@ var DROP_ERREURS = {
   montant_ht_invalide: 'Montant HT de la facture invalide (il doit être inférieur ou égal au TTC payé)',
   montant_invalide: 'Montant TTC payé invalide', cle_deja_utilisee: 'Entrée déjà enregistrée avec d\'autres données : vérifiez la page',
   motif_requis: 'Motif obligatoire (5 caractères au moins)', rien_a_deroger: 'Toutes les pièces sont déjà confirmées',
-  prix_ht_superieur_ttc: 'Le prix HT d\'une ligne dépasse son prix TTC', quantite_invalide: 'Quantité invalide (1 à 10 000)', prix_invalide: 'Prix invalide'
+  prix_ht_superieur_ttc: 'Le prix HT d\'une ligne dépasse son prix TTC', quantite_invalide: 'Quantité invalide (1 à 10 000)', prix_invalide: 'Prix invalide',
+  // v7.5.205
+  achat_au_camion: 'Pièce achetée passée dans le stock du camion : déclarez-la « Déjà dans le camion »',
+  decoupage_requis: 'Commande jamais contrôlée pièce par pièce : ouvrez le chargement, ou dérogation du bureau'
 };
 function dropMessageErreur(corps) { var e = corps && corps.erreur; return DROP_ERREURS[e] || ('Refus de la base' + (e ? ' (' + e + ')' : '')); }
 
@@ -6083,11 +6086,23 @@ function dropLigneOk(cmdId, idx) {
   return ps.length ? dropLigneChargee(ps, idx, !!(ch && ch.charge)) : !!(ch && ch.charge);
 }
 var _dropLectureLancee = {};
+// v7.5.205 (avis chatgpt-review n° 2 sur 76ebd77) : état du module INCONNU = jamais vérifié auprès de la base ET aucun état
+// gardé sur l'appareil (premier démarrage sans réseau) : la migration 041 peut déjà être active
+function dropEtatInconnu() { return dropActif === null && dropActifCache !== true; }
 function dropBloqueLivre(cmdId) {
-  if (!dropModuleActif() || !cmdId) return '';
+  if (!cmdId) return '';
+  var inconnu = dropEtatInconnu();
+  if (!dropModuleActif() && !inconnu) return '';
   // v7.5.201 : commande livrée par nos livreurs (pas GLS) ; pièces jamais lues (hors ligne) ou découpage périmé = BLOQUÉ
   var c = (typeof commandes !== 'undefined') ? commandes.find(function(x) { return x && x.id === cmdId; }) : null;
   var ranou = !c || String(c.transporteur || 'RANOU').toUpperCase() === 'RANOU';
+  // v7.5.205 : état inconnu → BLOQUÉ pour les commandes concernées (nos livreurs ; jamais GLS) ; vérification relancée tout de
+  // suite (réseau revenu : module absent = débloqué, module présent = pièces lues puis contrôle normal)
+  if (inconnu) {
+    if (!ranou) return '';
+    if (!(Date.now() - (_dropLectureLancee[cmdId] || 0) < 30000)) { _dropLectureLancee[cmdId] = Date.now(); try { dropVerifier().then(function(a) { return a ? dropChargerPieces(cmdId) : null; }).then(function() { dropRafraichir(); }).catch(function() {}); } catch(e) {} }
+    return 'Contrôle des pièces pas encore vérifié (premier démarrage sans réseau) : reconnectez-vous puis réessayez — sinon le bureau peut valider la livraison';
+  }
   // pièces jamais lues sur cet appareil : lecture lancée tout de suite (réseau présent), « Livré » possible au clic suivant
   if (ranou && !dropPieces[cmdId] && !(Date.now() - (_dropLectureLancee[cmdId] || 0) < 30000)) { _dropLectureLancee[cmdId] = Date.now(); try { dropVerifier().then(function(a) { if (a) return dropChargerPieces(cmdId).then(function() { dropRafraichir(); }); }).catch(function() {}); } catch(e) {} }
   return dropRaisonLivraison(dropPieces[cmdId], dropConfirm[cmdId], true, ranou);

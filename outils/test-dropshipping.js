@@ -101,8 +101,19 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     test('drop_version absente → module inactif', (await bac.dropVerifier()) === false && bac.dropActif === false);
     bac.dropPieces['#D1'] = { pieces: [PIECE(1)] };
     test('module inactif : « Livré » jamais bloqué, rien affiché', bac.dropBloqueLivre('#D1') === '' && bac.dropSasLigneHtml({ id: '#D1' }, 0) === '' && bac.dropEnlevementHtml({}, { cmdId: '#D1' }, 0) === '' && bac.dropLivraisonHtml({}, { cmdId: '#D1' }, 0) === '');
-    const { bac: b2 } = nouveauBac({ reponse: () => 'reseau' });
-    test('pas de réseau : état inconnu (rien de bloqué)', (await b2.dropVerifier()) === false && b2.dropActif === null);
+    // v7.5.205 (avis chatgpt-review n° 2 sur 76ebd77) : premier démarrage SANS réseau et SANS état gardé = état INCONNU ; la
+    // migration peut déjà être active → « Livré » BLOQUÉ pour les commandes concernées (nos livreurs), jamais pour GLS
+    let reseau = false;
+    const { bac: b2 } = nouveauBac({ reponse: (url) => (!reseau ? 'reseau' : (/drop_version/.test(url) ? { status: 404, json: { code: 'PGRST202' } } : { status: 200, json: { ok: true } })) });
+    b2.commandes = [{ id: '#I1', transporteur: 'RANOU', livreur: 'LIVREUR-TEST' }, { id: '#I2', transporteur: 'GLS', livreur: 'LIVREUR-TEST' }];
+    test('pas de réseau, aucun état gardé : état INCONNU', (await b2.dropVerifier()) === false && b2.dropActif === null && b2.dropEtatInconnu() === true && b2.dropModuleActif() === false);
+    test('état inconnu : « Livré » BLOQUÉ pour une commande de nos livreurs (message clair), JAMAIS pour une commande GLS',
+      /pas encore vérifié \(premier démarrage sans réseau\)/.test(b2.dropBloqueLivre('#I1')) && b2.dropBloqueLivre('#I2') === '', b2.dropBloqueLivre('#I1'));
+    test('état inconnu : commande inconnue de l\'appareil traitée comme concernée (côté sûr)', /pas encore vérifié/.test(b2.dropBloqueLivre('#I9')));
+    reseau = true;
+    vm.runInContext('Date = { now: function() { return 9e15; } };', b2);   // 30 s écoulées : nouvelle vérification permise
+    b2.dropBloqueLivre('#I1'); await attendre();
+    test('réseau revenu, migration ABSENTE : module inactif, « Livré » débloqué', b2.dropActif === false && b2.dropEtatInconnu() === false && b2.dropBloqueLivre('#I1') === '');
     const { bac: b3 } = nouveauBac({ reponse: () => ({ status: 200, json: '041' }) });
     test('drop_version = 041 → module actif', (await b3.dropVerifier()) === true && b3.dropActif === true);
   }
