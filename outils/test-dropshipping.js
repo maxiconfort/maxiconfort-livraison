@@ -816,7 +816,7 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
           _minuteurs: [], setTimeout(f, ms) { b._minuteurs.push({ f, ms }); return b._minuteurs.length; }, _retourT: null,
           sbSaveTournee(t) { b._sauvT.push(JSON.parse(JSON.stringify(t))); return b._retourT ? b._retourT(b._sauvT.length) : undefined; }, sbSaveCommande: () => Promise.resolve(reponse()) };
         vm.createContext(b);
-        vm.runInContext(['var _arretsAvantStatut = {};', 'var _arretsEnvois = {}, ARRETS_ATTENTE_MAX = 30000;', extraireFonction('function arretsRelever(cmdId)'), extraireFonction('function arretsOublier(cmdId, memo)'),
+        vm.runInContext(['var _arretsAvantStatut = {}, _arretsGen = {};', 'var _arretsEnvois = {}, ARRETS_ATTENTE_MAX = 30000;', extraireFonction('function arretsRelever(cmdId)'), extraireFonction('function arretsOublier(cmdId, memo)'),
           extraireFonction('function arretsNoterEnvoi(tid, p)'), extraireFonction('function arretsAppliquer(m, cmdId, seulementTid)'), extraireFonction('function arretsRemettre(cmdId, refuse)'), extraireFonction('function cmdRemettreStatut(c, ancien, refuse, res)'),
           extraireFonction('function reconcilierTournees()'), extraireFonction('function chgStatut(id, st, _annOk)')].join('\n'), b);
         return b;
@@ -922,6 +922,65 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
         bA._minuteurs.forEach((m) => m.f()); bA._minuteurs.forEach((m) => m.f()); await attendre();
         test('ordre : 1er enregistrement sans réponse → remise réenregistrée au délai de garde (30 s), une seule fois',
           avantGarde === 1 && bA._sauvT.length === 2 && bA._sauvT[1].stops[0].statut === 'en-route');
+        // avis chatgpt-review sur 358825d : le 1er enregistrement aboutit TARDIVEMENT, après le délai de garde → la remise déjà
+        // envoyée est RENVOYÉE une fois ce 1er envoi terminé (il a pu arriver en base après elle et remettre l'arrêt « livré »)
+        for (const issue of ['réussi', 'en échec']) {
+          let finir = null, rejeter = null;
+          bA = bacArret(() => REFUS);
+          bA._retourT = (n) => (n === 1 ? new Promise((ok, ko) => { finir = ok; rejeter = ko; }) : undefined);
+          bA.commandes = [CMD()]; bA.tournees = [TOURNEE([ARRET()])];
+          bA.chgStatut('#A1', 'livré'); await attendre();
+          bA._minuteurs.forEach((m) => m.f()); await attendre(); // délai de garde dépassé : la remise part (2e enregistrement)
+          const auDelai = bA._sauvT.map((t) => t.stops[0].statut).join(',');
+          bA.tournees = JSON.parse(JSON.stringify([bA._sauvT[0]])); // le 1er envoi arrive enfin en base, APRÈS la remise ; la relève relit l'arrêt « livré »
+          if (issue === 'réussi') finir(); else rejeter(new Error('504'));
+          await attendre();
+          test('ordre, 1er enregistrement TARDIF (' + issue + ' après le délai de garde) : la remise est RENVOYÉE après lui — dernier enregistrement = arrêt remis, écran remis',
+            auDelai === 'livré,en-route' && bA._sauvT.length === 3 && bA._sauvT[2].stops[0].statut === 'en-route' && bA.tournees[0].stops[0].statut === 'en-route'
+            && bA.commandes[0].statut === 'en-attente', bA._sauvT.map((t) => t.stops[0].statut));
+          bA._minuteurs.forEach((m) => m.f()); await attendre();
+          test('ordre, 1er enregistrement TARDIF (' + issue + ') : rien n\'est renvoyé une fois de plus ensuite', bA._sauvT.length === 3);
+        }
+        // revue native P2 sur 358825d : refus, remise différée (1er enregistrement de la tournée encore en cours), puis « Livré »
+        // RÉUSSI au 2e essai avant la fin de ce 1er enregistrement → la remise différée est abandonnée (génération)
+        {
+          let finir = null; const reps2 = [REFUS, { ok: true }];
+          bA = bacArret(() => reps2.shift());
+          bA._retourT = (n) => (n === 1 ? new Promise((ok) => { finir = ok; }) : undefined);
+          bA.commandes = [CMD()]; bA.tournees = [TOURNEE([ARRET()])];
+          bA.chgStatut('#A1', 'livré'); await attendre();
+          const remisEcran = bA.commandes[0].statut === 'en-attente' && bA.tournees[0].stops[0].statut === 'en-route' && bA._sauvT.length === 1;
+          bA.chgStatut('#A1', 'livré'); await attendre(); // l'utilisateur a corrigé : 2e essai ACCEPTÉ
+          const apres2 = bA._sauvT.length;
+          finir(); await attendre();
+          bA._minuteurs.forEach((m) => m.f()); await attendre();
+          test('génération : refus, puis « Livré » RÉUSSI pendant l\'attente → la remise différée du 1er essai est ABANDONNÉE (commande « livré », arrêt « livré », aucun enregistrement « en-route »)',
+            remisEcran && apres2 === 2 && bA.commandes[0].statut === 'livré' && bA.tournees[0].stops[0].statut === 'livré' && bA._sauvT.length === 2
+            && bA._sauvT[1].stops[0].statut === 'livré' && !bA._sauvT.some((t, i) => i > 0 && t.stops[0].statut === 'en-route'), bA._sauvT.map((t) => t.stops[0].statut));
+          // même séquence, mais le 2e « Livré » passe par un AUTRE chemin que chgStatut (statut remis directement) : abandonnée aussi
+          bA = bacArret(() => REFUS);
+          bA._retourT = (n) => (n === 1 ? new Promise((ok) => { finir = ok; }) : undefined);
+          bA.commandes = [CMD()]; bA.tournees = [TOURNEE([ARRET()])];
+          bA.chgStatut('#A1', 'livré'); await attendre();
+          bA.commandes[0].statut = 'livré'; bA.tournees[0].stops[0].statut = 'livré';
+          finir(); await attendre();
+          test('génération : commande de nouveau « livré » par un autre chemin pendant l\'attente → remise différée abandonnée, arrêt « livré » gardé',
+            bA.tournees[0].stops[0].statut === 'livré' && bA._sauvT.length === 1, bA._sauvT.map((t) => t.stops[0].statut));
+          // 2e essai lui aussi REFUSÉ : sa propre remise est faite (arrêt « en-route », réenregistré une fois le 1er envoi terminé)
+          const reps3 = [REFUS, REFUS];
+          bA = bacArret(() => reps3.shift());
+          bA._retourT = (n) => (n === 1 ? new Promise((ok) => { finir = ok; }) : undefined);
+          bA.commandes = [CMD()]; bA.tournees = [TOURNEE([ARRET()])];
+          bA.chgStatut('#A1', 'livré'); await attendre();
+          bA.chgStatut('#A1', 'livré'); await attendre();
+          finir(); await attendre();
+          test('génération : 2e essai REFUSÉ lui aussi → commande « en-attente », arrêt « en-route » à l\'écran et dans le dernier enregistrement',
+            bA.commandes[0].statut === 'en-attente' && bA.tournees[0].stops[0].statut === 'en-route' && bA._sauvT[bA._sauvT.length - 1].stops[0].statut === 'en-route', bA._sauvT.map((t) => t.stops[0].statut));
+        }
+        test('chgStatut : numéro de génération posé à chaque changement ; arretsRemettre le vérifie avant tout envoi différé',
+          /_arretsGen\[id\] = \(_arretsGen\[id\] \|\| 0\) \+ 1; _arrM = \{ vers: st, gen: _arretsGen\[id\], avant: arretsRelever\(id\) \};/.test(extraireFonction('function chgStatut(id, st, _annOk)'))
+          && /if \(m\.gen !== undefined && _arretsGen\[cmdId\] !== m\.gen\) return true;/.test(extraireFonction('function arretsRemettre(cmdId, refuse)'))
+          && /if \(perimee\(\)\) return;/.test(extraireFonction('function arretsRemettre(cmdId, refuse)')));
         test('reconcilierTournees : chaque enregistrement de tournée est noté pour la remise (arretsNoterEnvoi)',
           /var _pT = sbSaveTournee\(aSauver\[id\]\); if \(typeof arretsNoterEnvoi === 'function'\) arretsNoterEnvoi\(id, _pT\);/.test(extraireFonction('function reconcilierTournees()')));
       }

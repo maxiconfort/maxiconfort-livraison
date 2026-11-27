@@ -17,7 +17,24 @@
 --   3. ajoute public.drop_pieces_lire (avis chatgpt-review sur adf71bb, point 5) : lecture SANS création des pièces d'une
 --      commande, utilisée par l'appli pour une commande déjà livrée (pièces déclarées sur un autre appareil consultables sur un
 --      appareil neuf, sans jamais découper ni redécouper la commande).
--- Aucune ligne n'est créée, modifiée ni supprimée (fonctions seulement). Rejouable. Une seule transaction.
+--   4. TRACE le chemin laissé OUVERT par DÉCISION DE BORHEN (27/11/2026 vers 21h45, « choix B », sur l'avis chatgpt-review de
+--      df07c0d point 1 et de 3b46387 point 2) : une commande concernée aux pièces jamais déclarées peut devenir non concernée
+--      si son livreur est retiré dans une écriture séparée (retrait au dépôt, vente du bureau), puis passer « livré » sans
+--      contrôle des pièces. Ce chemin n'est PAS fermé ; il est journalisé et signalé à l'administrateur, par un déclencheur
+--      APRÈS écriture (commandes_trace_042 → interne.l042_tracer) :
+--        a) retrait du livreur (ou sortie de RANOU) d'une commande concernée, découpée, aux pièces jamais déclarées → une ligne
+--           de drop_journal : « livreur_retire_pieces_non_declarees » (ou « transporteur_change_pieces_non_declarees ») ;
+--        b) « livré » d'une commande NON concernée, découpée, aux pièces jamais déclarées → une ligne de drop_journal
+--           « livre_sans_controle_non_concernee » (commande, rôle, transporteur / livreur avant et après, heure, n° de la ligne
+--           du retrait s'il y en a une) ET une alerte de drop_alertes (type existant « livre_sans_confirmation », clé
+--           « non_concernee:<commande>:<cycle> ») : elle apparaît dans la liste des alertes de la page Dropshipping, sans
+--           nouveau code dans l'appli.
+--      Ces traces ne bloquent RIEN : écrites « au mieux », chacune dans un bloc d'exception — si le journal ou l'alerte ne
+--      peut pas être écrit, le « livré » (ou le retrait du livreur) est enregistré quand même, et un avertissement part dans
+--      les journaux de la base. Une commande jamais découpée (sans livreur depuis toujours, GLS…) ne produit aucune ligne.
+-- La migration elle-même ne crée, ne modifie ni ne supprime aucune ligne (fonctions et un déclencheur seulement). Les lignes de
+-- journal et les alertes sont écrites ensuite, par le déclencheur, à chaque passage par le chemin tracé. Rejouable. Une seule
+-- transaction.
 -- Prérequis : 041 appliquée. Si la 041 est REJOUÉE après la 042, rejouer la 042 ensuite (la 041 remet sa propre déduction).
 --
 -- RETOUR ARRIÈRE (à exécuter tel quel dans l'éditeur SQL si besoin ; aucune donnée touchée) :
@@ -33,6 +50,10 @@
 --   -- c) drop function if exists interne.l042_pieces_jamais_declarees(text);
 --   -- d) drop function if exists public.drop_pieces_lire(text);   (l'appli v7.5.211 revient alors à « aucune pièce lue » pour
 --   --    une commande déjà livrée inconnue de l'appareil)
+--   -- e) traces du choix B : retirer le déclencheur puis sa fonction (les lignes déjà écrites dans drop_journal restent : ajout
+--   --    seul ; les alertes déjà créées restent et se marquent « Vu » dans l'appli)
+--   drop trigger if exists commandes_trace_042 on public.commandes;
+--   drop function if exists interne.l042_tracer();
 --   commit;
 
 begin;
@@ -42,7 +63,11 @@ do $$
 begin
   if to_regclass('public.commande_pieces') is null or to_regprocedure('interne.l041_concernee(text, text, text)') is null
      or to_regprocedure('interne.l041_livre_garde()') is null or to_regprocedure('interne.l041_deduire_040(text)') is null
-     or to_regprocedure('public.deduire_stock_livraison(text)') is null then
+     or to_regprocedure('public.deduire_stock_livraison(text)') is null
+     or to_regclass('public.drop_journal') is null or to_regclass('public.drop_alertes') is null
+     or to_regprocedure('interne.l041_journal(text, text, bigint, bigint, numeric, jsonb)') is null
+     or to_regprocedure('interne.l041_alerte(text, text, text, bigint, bigint, text, numeric)') is null
+     or to_regprocedure('interne.l041_acteur()') is null then
     raise exception 'Contrôle 042 : migration 041 absente — appliquer d''abord la 041. Migration annulée.';
   end if;
 end $$;
@@ -71,7 +96,8 @@ begin
   -- commande concernée ? Pour une mise à jour, elle l'est si elle l'ÉTAIT AVANT l'écriture OU si elle l'est APRÈS, quel que
   -- soit le rôle : ni le livreur ni l'administrateur ne peuvent vider le livreur ou passer en GLS dans la même écriture que le
   -- « livré » pour contourner le contrôle (il faut une dérogation, qui est journalisée) ; date de création toujours celle
-  -- d'avant (041). Retirer le livreur dans une écriture SÉPARÉE, avant, reste possible : la commande devient alors non concernée.
+  -- d'avant (041). Retirer le livreur dans une écriture SÉPARÉE, avant, reste possible : la commande devient alors non concernée
+  -- (DÉCISION DE BORHEN du 27/11/2026, choix B : chemin gardé ouvert, mais TRACÉ et signalé — interne.l042_tracer, section 5).
   if tg_op = 'UPDATE' then
     v_conc := interne.l041_concernee(old.transporteur, old.livreur, old.id)
               or interne.l041_concernee(new.transporteur, new.livreur, old.id);
@@ -165,9 +191,76 @@ end $$;
 revoke all on function public.drop_pieces_lire(text) from public, anon, authenticated;
 grant execute on function public.drop_pieces_lire(text) to anon;   -- session vérifiée DANS la fonction
 
--- 5. Auto-contrôle (rien n'est écrit) : fonctions en place, repères présents, déclencheur branché sur la bonne fonction
+-- 5. TRACES DU CHOIX B (DÉCISION DE BORHEN, 27/11/2026 vers 21h45). Déclencheur APRÈS écriture : il ne voit que les écritures
+--    réellement faites (un « livré » refusé par la garde n'écrit rien), il ne peut ni refuser ni modifier la commande (sa valeur
+--    de retour est ignorée) et il est indépendant de la garde. Aucune lecture tant que l'écriture n'est ni un passage à « livré »
+--    ni un changement de livreur / transporteur. Mêmes règles que la garde : sessions de l'application seulement, « concernée »
+--    lue AVANT et APRÈS l'écriture. JOURNAL « AU MIEUX » : tout est dans un bloc d'exception (et chaque écriture dans le sien) —
+--    une trace qui échoue n'empêche jamais l'enregistrement de la commande ; un avertissement est émis à la place.
+create or replace function interne.l042_tracer() returns trigger
+language plpgsql security definer set search_path = public, interne, pg_catalog as $$
+-- l042_trace (repère lu par l'auto-contrôle de la 042 : ne pas retirer)
+declare v_livre boolean; v_chg boolean; v_avant boolean; v_apres boolean; v_n integer; v_cycle integer; v_retrait bigint;
+  v_action text; v_det jsonb;
+begin
+  v_livre := coalesce(new.statut, '') in ('livré', 'livre') and (tg_op = 'INSERT' or coalesce(old.statut, '') not in ('livré', 'livre'));
+  v_chg := tg_op = 'UPDATE' and coalesce(new.statut, '') not in ('livré', 'livre')
+           and (old.livreur is distinct from new.livreur or old.transporteur is distinct from new.transporteur);
+  if not v_livre and not v_chg then return null; end if;
+  begin
+    if public.session_role() is null then return null; end if;                 -- comme la garde : sessions de l'application
+    select count(*), max(cycle) into v_n, v_cycle from public.commande_pieces where cmd_id = new.id;
+    if coalesce(v_n, 0) = 0 then return null; end if;                          -- jamais découpée : aucune trace
+    if not interne.l042_pieces_jamais_declarees(new.id) then return null; end if;   -- pièce déclarée : la garde contrôle toujours
+    v_avant := tg_op = 'UPDATE' and interne.l041_concernee(old.transporteur, old.livreur, old.id);
+    v_apres := interne.l041_concernee(new.transporteur, new.livreur, new.id);
+    v_det := jsonb_build_object('role', public.session_role(), 'ecriture', lower(tg_op), 'heure', now(),
+      'pieces_non_declarees', v_n, 'cycle', v_cycle,
+      'statut_avant', case when tg_op = 'UPDATE' then old.statut end, 'statut_apres', new.statut,
+      'transporteur_avant', case when tg_op = 'UPDATE' then old.transporteur end, 'transporteur_apres', new.transporteur,
+      'livreur_avant', case when tg_op = 'UPDATE' then old.livreur end, 'livreur_apres', new.livreur);
+    if v_chg and v_avant and not v_apres then
+      -- a) commande concernée qui ne l'est plus (livreur retiré, ou sortie de RANOU), pièces jamais déclarées
+      v_action := case when coalesce(btrim(new.livreur), '') = '' then 'livreur_retire_pieces_non_declarees'
+                       else 'transporteur_change_pieces_non_declarees' end;
+      begin
+        perform interne.l041_journal(v_action, new.id, null, null, null, v_det);
+      exception when others then
+        raise warning 'l042_tracer : ligne de journal « % » non écrite pour % (%)', v_action, new.id, sqlerrm;
+      end;
+    elsif v_livre and not v_avant and not v_apres then
+      -- b) « livré » accepté sans contrôle des pièces (commande non concernée, découpée, pièces jamais déclarées)
+      select max(j.id) into v_retrait from public.drop_journal j
+       where j.cmd_id = new.id and j.action in ('livreur_retire_pieces_non_declarees', 'transporteur_change_pieces_non_declarees');
+      begin
+        perform interne.l041_journal('livre_sans_controle_non_concernee', new.id, null, null, null,
+          v_det || jsonb_build_object('retrait_journal_id', v_retrait));
+      exception when others then
+        raise warning 'l042_tracer : ligne de journal « livre_sans_controle_non_concernee » non écrite pour % (%)', new.id, sqlerrm;
+      end;
+      begin
+        perform interne.l041_alerte('livre_sans_confirmation', 'non_concernee:' || new.id || ':' || v_cycle, new.id, null, null,
+          'Livré SANS contrôle des pièces : ' || new.id || ' — commande non concernée (sans livreur ou hors RANOU), ' || v_n
+          || ' pièce(s) jamais déclarée(s) — par ' || interne.l041_acteur() || ' le '
+          || to_char(now() at time zone 'Europe/Paris', 'DD/MM/YYYY "à" HH24:MI')
+          || case when v_retrait is not null then ' — son livreur avait été retiré auparavant (voir le journal)' else '' end, null);
+      exception when others then
+        raise warning 'l042_tracer : alerte non créée pour % (%)', new.id, sqlerrm;
+      end;
+    end if;
+  exception when others then
+    raise warning 'l042_tracer : trace non écrite pour % (%)', new.id, sqlerrm;
+  end;
+  return null;
+end $$;
+revoke all on function interne.l042_tracer() from public, anon, authenticated;
+drop trigger if exists commandes_trace_042 on public.commandes;
+create trigger commandes_trace_042 after insert or update of statut, livreur, transporteur on public.commandes
+  for each row execute function interne.l042_tracer();
+
+-- 6. Auto-contrôle (rien n'est écrit) : fonctions en place, repères présents, déclencheurs branchés sur les bonnes fonctions
 do $$
-declare f text := null;
+declare f text := null; v_src text;
 begin
   if to_regprocedure('public.drop_pieces_lire(text)') is null
      or position('l042_lecture' in (select prosrc from pg_proc where oid = 'public.drop_pieces_lire(text)'::regprocedure)) = 0
@@ -185,6 +278,25 @@ begin
   if f is null and interne.l041_concernee('GLS', 'Livreur', '#042-AUTO-CONTROLE-INEXISTANTE') then f := 'GLS non concernée'; end if;
   if f is null and interne.l041_concernee('RANOU', '', '#042-AUTO-CONTROLE-INEXISTANTE') then f := 'sans livreur non concernée'; end if;
   if f is null and not interne.l041_concernee('', 'Livreur', '#042-AUTO-CONTROLE-INEXISTANTE') then f := 'RANOU avec livreur concernée'; end if;
+  -- traces du choix B : fonction et déclencheur en place, écritures « au mieux », alerte acceptée par la table
+  if f is null and to_regprocedure('interne.l042_tracer()') is null then f := 'fonction des traces'; end if;
+  if f is null then
+    select prosrc into v_src from pg_proc where oid = 'interne.l042_tracer()'::regprocedure;
+    if position('l042_trace' in v_src) = 0 or position('livre_sans_controle_non_concernee' in v_src) = 0
+       or position('livreur_retire_pieces_non_declarees' in v_src) = 0 or position('exception when others' in v_src) = 0
+       or position('raise exception' in lower(v_src)) > 0 then
+      f := 'traces : repères, types de ligne, écriture au mieux (jamais de refus)';
+    end if;
+  end if;
+  if f is null and not exists (select 1 from pg_trigger t where t.tgrelid = 'public.commandes'::regclass and t.tgname = 'commandes_trace_042'
+                                 and not t.tgisinternal and t.tgfoid = 'interne.l042_tracer()'::regprocedure
+                                 and t.tgenabled <> 'D' and (t.tgtype & 2) = 0 and (t.tgtype & 1) = 1) then
+    f := 'déclencheur commandes_trace_042 (APRÈS écriture, par ligne, actif)';
+  end if;
+  if f is null and not exists (select 1 from pg_constraint k where k.conrelid = 'public.drop_alertes'::regclass and k.contype = 'c'
+                                 and position('livre_sans_confirmation' in pg_get_constraintdef(k.oid)) > 0) then
+    f := 'type d''alerte « livre_sans_confirmation » accepté par drop_alertes';
+  end if;
   if f is not null then raise exception 'Auto-contrôle 042 en échec : « % ». Migration annulée.', f; end if;
 end $$;
 
