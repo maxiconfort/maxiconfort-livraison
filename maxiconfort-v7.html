@@ -12583,7 +12583,13 @@ function chgStatut(id, st, _annOk) {
   // v7.5.85b : synchroniser la TOURNÉE avec le nouveau statut (annulé -> stop annulé,
   // reporté/date -> déplacement, etc.). Avant, changer le statut d'une commande ne
   // touchait pas la tournée -> le client annulé restait dans la tournée.
+  // v7.5.211 (revue native P2 sur df07c0d) : l'état des arrêts de cette commande est relevé AVANT et APRÈS cette synchronisation
+  // (elle marque l'arrêt « livré », ou le retire, et l'ENREGISTRE) : si la base refuse ensuite la commande, l'arrêt est remis
+  // tel qu'il était et réenregistré (arretsRemettre, appelée par cmdRemettreStatut)
+  var _arrM = null;
+  try { _arrM = { vers: st, avant: arretsRelever(id) }; } catch(e) { _arrM = null; }
   if (typeof reconcilierTournees === 'function') reconcilierTournees();
+  try { if (_arrM) { _arrM.apres = arretsRelever(id); _arretsAvantStatut[id] = _arrM; } } catch(e) {}
   renderCmds(); renderDash(); renderTournees(); renderLivreur();
   // v7.5.39 : re-render Suivi logistique (sinon le statut reste l'ancien)
   if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres();
@@ -12592,6 +12598,7 @@ function chgStatut(id, st, _annOk) {
   // AVANT la demande de déduction (qui est alors retirée)
   var _pSc = Promise.resolve(sbSaveCommande(c)).then(function(res) {
     if (res && res.ok === false && res.definitif) { try { cmdRemettreStatut(c, ancienStatut, st, res); } catch(e) { console.warn('[statut] remise :', e && e.message); } }
+    arretsOublier(id, _arrM);
     return res;
   }); // Sync Supabase
   if (st === 'livré') stkDemanderDeduction(c, _pSc); // v7.5.197 : après l'enregistrement du « livré »
@@ -12603,6 +12610,61 @@ function chgStatut(id, st, _annOk) {
   }
   closePanel(); ouvrirCmd(id);
   toast('Statut mis à jour : ' + st, 'ok');
+}
+
+// v7.5.211 (revue native P2 sur df07c0d) : ARRÊTS DE TOURNÉE d'une commande dont le changement de statut est en cours
+// d'enregistrement. chgStatut synchronise la tournée AVANT la réponse de la base (arrêt marqué « livré », ou retiré, et
+// enregistré) ; rappeler reconcilierTournees après un refus ne défait rien (elle garde tout arrêt déjà « livré »). Sans remise,
+// il restait une commande « en-attente » avec un arrêt « livré » ENREGISTRÉ (alerte « Livraison non remontée »).
+//   arretsRelever(cmdId)  : copie de chaque arrêt de la commande (tournée, rang, contenu).
+//   arretsRemettre(cmdId, refuse) : après le refus du statut « refuse », remet CHAQUE champ que la synchronisation avait changé
+//     (statut, heure, heureStatut…), seulement s'il porte encore la valeur posée par elle (un changement fait entre-temps n'est
+//     jamais écrasé) ; un arrêt retiré est replacé à son rang s'il n'est dans aucune tournée ; chaque tournée touchée est
+//     RÉENREGISTRÉE (sbSaveTournee). Rend le nombre de tournées réenregistrées.
+//   arretsOublier(cmdId, memo) : réponse reçue → relevé oublié (seulement si c'est encore celui de ce changement).
+var _arretsAvantStatut = {};
+function arretsRelever(cmdId) {
+  var r = [];
+  if (typeof tournees === 'undefined' || !Array.isArray(tournees)) return r;
+  tournees.forEach(function(t) {
+    if (!t || !Array.isArray(t.stops)) return;
+    t.stops.forEach(function(s, i) { if (s && s.cmdId === cmdId) r.push({ tid: t.id, rang: i, arret: JSON.parse(JSON.stringify(s)) }); });
+  });
+  return r;
+}
+function arretsOublier(cmdId, memo) {
+  try { if (memo && _arretsAvantStatut[cmdId] === memo) delete _arretsAvantStatut[cmdId]; } catch(e) {}
+}
+function arretsRemettre(cmdId, refuse) {
+  var m = _arretsAvantStatut[cmdId];
+  if (!m || m.vers !== refuse) return 0;
+  delete _arretsAvantStatut[cmdId];
+  if (typeof tournees === 'undefined' || !Array.isArray(tournees)) return 0;
+  var egal = function(a, b) { return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b); };
+  var nb = 0;
+  (m.avant || []).forEach(function(av) {
+    var t = tournees.find(function(x) { return x && x.id === av.tid; });
+    if (!t || !Array.isArray(t.stops)) return;
+    var ap = (m.apres || []).find(function(x) { return x.tid === av.tid; }) || null;
+    var s = t.stops.find(function(x) { return x && x.cmdId === cmdId; });
+    var change = false;
+    if (s && ap) {
+      var cles = {};
+      Object.keys(av.arret).forEach(function(k) { cles[k] = 1; });
+      Object.keys(ap.arret).forEach(function(k) { cles[k] = 1; });
+      Object.keys(cles).forEach(function(k) {
+        if (egal(av.arret[k], ap.arret[k]) || !egal(s[k], ap.arret[k])) return; // pas touché par la synchronisation, ou changé depuis
+        if (av.arret[k] === undefined) delete s[k]; else s[k] = JSON.parse(JSON.stringify(av.arret[k]));
+        change = true;
+      });
+    } else if (!s && !ap) {
+      // arrêt RETIRÉ par la synchronisation (ex. « annulé » refusé) : replacé à son rang, sauf s'il est déjà dans une tournée
+      var ailleurs = tournees.some(function(x) { return x && Array.isArray(x.stops) && x.stops.some(function(y) { return y && y.cmdId === cmdId; }); });
+      if (!ailleurs) { t.stops.splice(Math.min(av.rang, t.stops.length), 0, JSON.parse(JSON.stringify(av.arret))); change = true; }
+    }
+    if (change) { nb++; try { sbSaveTournee(t); } catch(e) { console.warn('[statut] arrêt remis, enregistrement :', e && e.message); } }
+  });
+  return nb;
 }
 
 // v7.5.211 (défaut observé en production, GO de Borhen) : la base a REFUSÉ définitivement l'enregistrement d'un changement de statut
@@ -12620,6 +12682,9 @@ function cmdRemettreStatut(c, ancien, refuse, res) {
     try { delete _dedSession[c.id]; } catch(e) {}
   }
   try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(e) {}
+  // revue native P2 sur df07c0d : l'arrêt de tournée (marqué « livré » ou retiré, et enregistré, avant la réponse de la base) est
+  // remis tel qu'il était et RÉENREGISTRÉ ; la synchronisation normale ne le ferait pas (elle garde tout arrêt déjà « livré »)
+  try { if (typeof arretsRemettre === 'function') arretsRemettre(c.id, refuse); } catch(e) { console.warn('[statut] arrêt non remis :', e && e.message); }
   try { if (typeof reconcilierTournees === 'function') reconcilierTournees(); } catch(e) {}
   try { renderCmds(); renderDash(); renderTournees(); renderLivreur(); } catch(e) {}
   try { if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres(); } catch(e) {}

@@ -736,6 +736,93 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
       /var _pSc = Promise\.resolve\(sbSaveCommande\(c\)\)\.then\(function\(res\) \{\n\s*if \(res && res\.ok === false && res\.definitif\) \{ try \{ cmdRemettreStatut\(c, ancienStatut, st, res\);/.test(chg) && chg.indexOf('cmdRemettreStatut') < chg.indexOf('stkDemanderDeduction(c, _pSc)'));
     test('stkDemanderDeduction : « livré » refusé et remis → aucune déduction demandée', /if \(cmd\._statutRefuse && !\(cmd\.statut === 'livré' \|\| cmd\.statut === 'livre'\)\) return 'abandon';/.test(extraireFonction('function stkDemanderDeduction(cmd, pAvant)')));
     test('fiche : refus affiché dans l\'en-tête ; succès suivant : refus effacé', /cmd-statut-refuse/.test(extraireFonction('function ouvrirCmd(id)')) && /delete cmd\._syncRefus; delete cmd\._statutRefuse;/.test(extraireFonction('async function sbSaveCommande(cmd, oqCtx)')));
+    // revue native P2 sur df07c0d : « livré » refusé par la base → l'ARRÊT de tournée (marqué « livré » et enregistré par la
+    // synchronisation AVANT la réponse) revient à son état d'avant et est RÉENREGISTRÉ. Vrai code de chgStatut,
+    // reconcilierTournees, cmdRemettreStatut et arrets*.
+    {
+      const bacArret = (reponse) => {
+        const b = { console: { log() {}, warn() {} }, JSON, Date, String, Array, Object, Math, Promise,
+          commandes: [], tournees: [], offlineQueue: [], _dedSession: {}, currentCmdId: null, role: 'admin', livNom: '', _sauvT: [], _toasts: [],
+          localStorage: { setItem() {}, getItem: () => null }, oqEcrire() {}, renderCmds() {}, renderDash() {}, renderTournees() {}, renderLivreur() {},
+          suiviAppliquerFiltres() {}, closePanel() {}, ouvrirCmd() {}, toast(m, t) { b._toasts.push([m, t]); },
+          document: { getElementById: () => null }, stkDeductionPoser() {}, stkDemanderDeduction() {}, stkReCrediterStock() {},
+          annDemanderMotif(c, f) { f({ motif: 'essai', commentaire: '' }); },
+          cmdEligibleTournee: (c) => !!(c && c.date && c.statut !== 'annulé' && c.statut !== 'livré'), nextTourneeId: () => 'T-NEUVE', paiModeStop: () => 'Espèces',
+          sbSaveTournee(t) { b._sauvT.push(JSON.parse(JSON.stringify(t))); }, sbSaveCommande: () => Promise.resolve(reponse()) };
+        vm.createContext(b);
+        vm.runInContext(['var _arretsAvantStatut = {};', extraireFonction('function arretsRelever(cmdId)'), extraireFonction('function arretsOublier(cmdId, memo)'),
+          extraireFonction('function arretsRemettre(cmdId, refuse)'), extraireFonction('function cmdRemettreStatut(c, ancien, refuse, res)'),
+          extraireFonction('function reconcilierTournees()'), extraireFonction('function chgStatut(id, st, _annOk)')].join('\n'), b);
+        return b;
+      };
+      const ARRET = (o) => Object.assign({ num: 2, cmdId: '#A1', client: 'Client essai', tel: '', adresse: '', etage: '', asc: 'Non', code: '', produit: 'Matelas', prix: 100, paie: 'Espèces', instr: '', statut: 'en-route', heure: '10:15', heureStatut: '2026-11-27T09:15:00.000Z' }, o || {});
+      const CMD = (o) => Object.assign({ id: '#A1', statut: 'en-attente', date: '2026-11-27', transporteur: 'RANOU', produit: 'Matelas', prix: 100 }, o || {});
+      const attendre = () => new Promise((r) => setTimeout(r, 5));
+      const REFUS = { ok: false, definitif: true, message: 'PIECES_NON_CONFIRMEES' };
+      const TOURNEE = (stops) => ({ id: 'T-1', date: '2026-11-27', livreur: 'RANOU', statut: 'en-cours', stops });
+      // 1) « livré » refusé
+      let bA = bacArret(() => REFUS);
+      bA.commandes = [CMD(), CMD({ id: '#A0' })];
+      bA.tournees = [TOURNEE([ARRET({ num: 1, cmdId: '#A0', statut: 'en-attente', heure: '' }), ARRET()])];
+      const avantA = JSON.stringify(bA.tournees);
+      bA.chgStatut('#A1', 'livré');
+      test('arrêt : la synchronisation marque l\'arrêt « livré » et l\'enregistre AVANT la réponse de la base (le défaut signalé)',
+        bA.tournees[0].stops[1].statut === 'livré' && bA._sauvT.length === 1 && bA._sauvT[0].stops[1].statut === 'livré', bA._sauvT);
+      await attendre();
+      test('arrêt : « livré » REFUSÉ par la base → commande remise « en-attente » ET arrêt revenu à son état d\'avant (statut, heure, heureStatut, tous les champs)',
+        bA.commandes[0].statut === 'en-attente' && JSON.stringify(bA.tournees) === avantA, bA.tournees[0].stops[1]);
+      test('arrêt : … et la tournée est RÉENREGISTRÉE avec l\'arrêt remis (dernier enregistrement = état d\'avant, plus aucun « livré »)',
+        bA._sauvT.length === 2 && JSON.stringify([bA._sauvT[1]]) === avantA && !bA._sauvT[1].stops.some((s) => s.statut === 'livré'), bA._sauvT);
+      bA.reconcilierTournees();
+      test('arrêt : … relevé oublié, et une synchronisation normale ensuite ne change plus rien',
+        !bA._arretsAvantStatut['#A1'] && bA._sauvT.length === 2 && JSON.stringify(bA.tournees) === avantA);
+      // 2) changement fait entre-temps sur l'arrêt : jamais écrasé ; seul le champ posé par la synchronisation est remis
+      bA = bacArret(() => REFUS);
+      bA.commandes = [CMD()]; bA.tournees = [TOURNEE([ARRET()])];
+      bA.chgStatut('#A1', 'livré');
+      bA.tournees[0].stops[0].paie = 'CB'; // ex. relève : mode de paiement changé pendant l'attente
+      await attendre();
+      test('arrêt : champ changé entre-temps gardé, statut remis', bA.tournees[0].stops[0].statut === 'en-route' && bA.tournees[0].stops[0].paie === 'CB' && bA._sauvT[bA._sauvT.length - 1].stops[0].paie === 'CB');
+      // 3) tournées rechargées depuis la base pendant l'attente (autres objets, arrêt « livré » enregistré) : remis quand même
+      bA = bacArret(() => REFUS);
+      bA.commandes = [CMD()]; bA.tournees = [TOURNEE([ARRET()])];
+      bA.chgStatut('#A1', 'livré');
+      bA.tournees = JSON.parse(JSON.stringify([bA._sauvT[0]]));
+      await attendre();
+      test('arrêt : tournées rechargées pendant l\'attente → l\'arrêt « livré » relu est remis et réenregistré',
+        bA.tournees[0].stops[0].statut === 'en-route' && bA._sauvT.length === 2 && bA._sauvT[1].stops[0].statut === 'en-route', bA._sauvT);
+      // 4) « livré » ACCEPTÉ : l'arrêt reste « livré », rien n'est défait, relevé oublié
+      bA = bacArret(() => ({ ok: true }));
+      bA.commandes = [CMD()]; bA.tournees = [TOURNEE([ARRET()])];
+      bA.chgStatut('#A1', 'livré'); await attendre();
+      test('arrêt : « livré » accepté → arrêt « livré » gardé, un seul enregistrement, relevé oublié',
+        bA.commandes[0].statut === 'livré' && bA.tournees[0].stops[0].statut === 'livré' && bA._sauvT.length === 1 && !bA._arretsAvantStatut['#A1']);
+      // 5) échec NON définitif (coupure : la commande part en file) : rien n'est défait
+      bA = bacArret(() => ({ ok: false, definitif: false }));
+      bA.commandes = [CMD()]; bA.tournees = [TOURNEE([ARRET()])];
+      bA.chgStatut('#A1', 'livré'); await attendre();
+      test('arrêt : échec non définitif → commande et arrêt restent « livré »', bA.commandes[0].statut === 'livré' && bA.tournees[0].stops[0].statut === 'livré' && bA._sauvT.length === 1);
+      // 6) « annulé » refusé : la synchronisation avait RETIRÉ l'arrêt → replacé à son rang, tel quel, et réenregistré
+      bA = bacArret(() => REFUS);
+      bA.commandes = [CMD({ id: '#A0' }), CMD(), CMD({ id: '#A2' })];
+      bA.tournees = [TOURNEE([ARRET({ num: 1, cmdId: '#A0' }), ARRET(), ARRET({ num: 3, cmdId: '#A2' })])];
+      const avantAnn = JSON.stringify(bA.tournees);
+      bA.chgStatut('#A1', 'annulé');
+      const retire = bA.tournees[0].stops.length === 2;
+      await attendre();
+      test('arrêt : « annulé » refusé → arrêt retiré puis replacé à son rang, identique, tournée réenregistrée, sans doublon',
+        retire && bA.commandes[1].statut === 'en-attente' && JSON.stringify(bA.tournees) === avantAnn && JSON.stringify([bA._sauvT[bA._sauvT.length - 1]]) === avantAnn, bA.tournees);
+      // 7) deux changements coup sur coup : le refus du premier ne touche pas l'arrêt du second
+      const reps = [REFUS, { ok: true }];
+      bA = bacArret(() => reps.shift());
+      bA.commandes = [CMD()]; bA.tournees = [TOURNEE([ARRET()])];
+      bA.chgStatut('#A1', 'arrivé'); bA.chgStatut('#A1', 'livré'); await attendre();
+      test('arrêt : refus d\'un premier changement déjà remplacé → le « livré » suivant (accepté) garde son arrêt « livré »',
+        bA.commandes[0].statut === 'livré' && bA.tournees[0].stops[0].statut === 'livré');
+      const fRem = extraireFonction('function cmdRemettreStatut(c, ancien, refuse, res)');
+      test('cmdRemettreStatut : l\'arrêt est remis AVANT la synchronisation normale',
+        fRem.indexOf('arretsRemettre(c.id, refuse)') > 0 && fRem.indexOf('arretsRemettre(c.id, refuse)') < fRem.indexOf('reconcilierTournees()'));
+    }
     // carte de notification « undefined »
     const bNo = { console, JSON, Date, String, Array, Object, notifications: [], notifCurrentFilter: 'all', _html: '',
       generateId: () => 'n1', notifUpdateBadge() {}, toast() {},
