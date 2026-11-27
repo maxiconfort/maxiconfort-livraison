@@ -553,6 +553,22 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   test('composant d\'une nouvelle catégorie en rupture : substitut de cette catégorie verrouillé et pris (pt2 4 → 2)', rV2.ok && (await stock('pt2')) === 2 && rV2.retraits[0].substitue_de === 'pt1', rV2);
   await q('admin', `update public.produits set composants = '[{"id":"pm","qte":1},{"id":"ps","qte":2}]' where id = 'pens'`);
 
+  console.log('\n13. v7.5.206 (avis chatgpt-review sur c22dacd, point 1) : DÉPASSEMENT « QUANTITÉ DE LIGNE × QUANTITÉ DU COMPOSANT »');
+  await fixer({ pm: 5, ps: 5 });
+  await q('admin', `update public.produits set composants = '[{"id":"pm","qte":1},{"id":"ps","qte":1000000}]' where id = 'pens'`);
+  await commande('#X1', { lignes: [{ produitId: 'pens', qte: 1000000 }] });
+  r = await deduire('livreur', '#X1');
+  test('1 000 000 × 1 000 000 (> 2 147 483 647) : refus propre « quantite_hors_borne » (plus d\'erreur de débordement), RIEN retiré ni journalisé, pas marquée déduite',
+    r && r.ok === false && r.erreur === 'quantite_hors_borne' && r.detail[0].composant === 'ps' && Number(r.detail[0].demande) === 1e12
+    && (await stock('pm')) === 5 && (await stock('ps')) === 5 && (await journal('#X1')) === 0 && (await deduit('#X1')) === false, r);
+  await commande('#X2', { lignes: [{ produitId: 'pens', qte: 2 }] });
+  await q('admin', `update public.produits set composants = '[{"id":"pm","qte":1},{"id":"ps","qte":500001}]' where id = 'pens'`);
+  r = await deduire('livreur', '#X2');
+  test('produit juste au-dessus de la borne (2 × 500 001 = 1 000 002) : refusé aussi, sans écriture', r && r.ok === false && r.erreur === 'quantite_hors_borne' && (await stock('pm')) === 5, r);
+  await q('admin', `update public.produits set composants = '[{"id":"pm","qte":1},{"id":"ps","qte":2}]' where id = 'pens'`);
+  r = await deduire('livreur', '#X2');
+  test('composition revenue à la normale : la même commande se déduit ensuite (pm −2, ps −4)', r && r.ok && (await stock('pm')) === 3 && (await stock('ps')) === 1, r);
+
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
 })().catch(e => { console.error('ERREUR DU BANC :', e); process.exit(2); });

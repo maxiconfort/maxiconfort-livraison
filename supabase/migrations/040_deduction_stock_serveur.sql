@@ -22,6 +22,7 @@
 --   drop function if exists interne.l040_dim_compatible(text, text);
 --   drop function if exists interne.l040_dim(text);
 --   drop function if exists interne.l040_qte(jsonb);
+--   drop function if exists interne.l040_qte_max();   -- v7.5.206 (branche du dropshipping, PR 30) : borne ligne × composant
 --   (Les tables public.stock_sorties_livraison, public.stock_operations et interne.l040_reglages peuvent rester : ce sont
 --    des journaux et un réglage ; les supprimer n'efface aucun stock.)
 --   Puis revenir à l'application v7.5.196 (elle calcule de nouveau le stock sur le téléphone).
@@ -212,6 +213,8 @@ begin
   if m is null then return 1; end if;
   return greatest(1, least(m::numeric, 1000000))::integer;
 end $$;
+-- v7.5.206 : borne d'une quantité demandée (ligne simple, ou ligne × composant d'un ensemble)
+create or replace function interne.l040_qte_max() returns integer language sql immutable as $$ select 1000000 $$;
 
 -- dimension normalisée comme l'appli : minuscules, sans espaces
 create or replace function interne.l040_dim(p text) returns text
@@ -306,7 +309,7 @@ declare
   v_ids text[] := '{}';
   v_requis text[];
   v_stable boolean := false;
-  v_pid text; v_q integer; v_req integer; v_av integer; v_ap integer; v_ret integer;
+  v_pid text; v_q integer; v_req integer; v_av integer; v_ap integer; v_ret integer; v_hb jsonb;
   v_cible text; v_sub text;
   v_retraits jsonb := '[]'::jsonb;
   v_manques jsonb := '[]'::jsonb;
@@ -366,6 +369,20 @@ begin
     end;
   end loop;
   if not v_stable then return json_build_object('ok', false, 'erreur', 'composition_instable'); end if;
+
+  -- v7.5.206 (avis chatgpt-review sur c22dacd, point 1) : BORNE du produit « quantité de la ligne × quantité du composant »
+  -- d'un ensemble (chacune bornée à 1 000 000 par l040_qte) : calculé en bigint AVANT toute écriture et refusé au-delà de
+  -- 1 000 000 (même borne qu'une ligne simple) — avant, au-delà de 2 147 483 647 la multiplication en integer échouait.
+  select jsonb_agg(jsonb_build_object('produit_id', zl ->> 'id', 'composant', zc ->> 'id',
+           'demande', interne.l040_qte(zc -> 'qte')::bigint * interne.l040_qte(zl -> 'qte')::bigint)) into v_hb
+    from jsonb_array_elements(v_lignes) zl
+    join public.produits pe on pe.id = zl ->> 'id' and jsonb_typeof(pe.composants) = 'array'
+    cross join lateral jsonb_array_elements(pe.composants) zc
+   where coalesce(zc ->> 'id', '') <> ''
+     and interne.l040_qte(zc -> 'qte')::bigint * interne.l040_qte(zl -> 'qte')::bigint > interne.l040_qte_max();
+  if v_hb is not null then
+    return json_build_object('ok', false, 'erreur', 'quantite_hors_borne', 'detail', v_hb, 'max', interne.l040_qte_max());
+  end if;
 
   -- (f)(g) retraits, ligne par ligne, dans l'ordre de la commande (toutes les lectures APRÈS les verrous)
   perform set_config('l040.fonction', '1', true);

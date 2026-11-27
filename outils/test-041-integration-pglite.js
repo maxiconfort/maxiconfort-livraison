@@ -361,6 +361,15 @@ grant select, insert, update, delete on storage.objects to anon;
     && (await un(P, 'select status from public.stock_camion where id = $1', [uI9])).status === 'en_camion'
     && (await un(P, 'select cycle, livraison from public.commande_pieces where id = $1', [pI9.id])).livraison === null, { avI9, r });
 
+  console.log('\n11 bis. v7.5.206 (avis sur c22dacd, pt 1) : COMMANDE GLS SANS PIÈCES (fonction de la 040 gardée par la 041) — DÉPASSEMENT LIGNE × COMPOSANT');
+  await q(P, "insert into public.produits (id, nom, cat, dim, prix, stock, composants) values ('pex', 'Ensemble fictif X', 'Ensemble', '90×190', 1, 0, '[{\"id\":\"ps90\",\"qte\":1000000}]')");
+  await cmd('#I10', [{ produitId: 'pex', qte: 1000000 }], 1, { transporteur: 'GLS' });
+  const sX = await stock('ps90');
+  await q('livreur', "update public.commandes set statut = 'livré' where id = '#I10'");
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#I10']);
+  test('GLS, 1 000 000 × 1 000 000 : refus propre « quantite_hors_borne » par la 040 (plus de débordement integer), stock intact, pas marquée déduite',
+    r.ok === false && r.erreur === 'quantite_hors_borne' && (await stock('ps90')) === sX && !(await un(P, "select stock_deduit from public.commandes where id = '#I10'")).stock_deduit, r);
+
   console.log('\n12. REJEU FINAL DE LA 041 : le relevé des commandes livrées à l\'activation n\'est JAMAIS complété');
   await db.exec('set role l41i_postgres');
   let eFin = null; try { await db.exec(lireMigration('041_dropshipping_provenance.sql')); } catch (e) { eFin = e.message; }
