@@ -484,6 +484,16 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   mv = await mouvement('collab', 'pa', 'entree', 5, 'mv-essai-0001');
   test('même clé rejouée (réponse perdue) : deja, stock inchangé (15)', mv.deja === true && mv.stock_apres === 15 && (await stock('pa')) === 15, mv);
   test('même clé pour un autre produit : « cle_deja_utilisee »', (await mouvement('admin', 'pb', 'entree', 1, 'mv-essai-0001')).erreur === 'cle_deja_utilisee');
+  // v7.5.207 (avis chatgpt-review sur 6775bbc, point 2) : même clé, même produit, AUTRE type ou AUTRE quantité = refus explicite
+  const nOpMv = Number((await un('proprio', "select count(*)::int as n from public.stock_operations where cle = 'mv-essai-0001'")).n);
+  mv = await mouvement('admin', 'pa', 'sortie', 5, 'mv-essai-0001');
+  test('même clé, même produit, entrée de 5 puis SORTIE de 5 : refus « cle_deja_utilisee » (détail du 1er mouvement), stock inchangé (15), rien écrit',
+    mv.ok === false && mv.erreur === 'cle_deja_utilisee' && mv.detail && mv.detail.type === 'entree' && mv.detail.qte === 5 && (await stock('pa')) === 15
+    && Number((await un('proprio', "select count(*)::int as n from public.stock_operations where cle = 'mv-essai-0001'")).n) === nOpMv, mv);
+  mv = await mouvement('admin', 'pa', 'entree', 6, 'mv-essai-0001');
+  test('même clé, même produit, même type, AUTRE quantité (6 au lieu de 5) : refus « cle_deja_utilisee », stock inchangé (15)', mv.ok === false && mv.erreur === 'cle_deja_utilisee' && (await stock('pa')) === 15, mv);
+  mv = await mouvement('collab', 'pa', 'entree', 5, 'mv-essai-0001');
+  test('… le MÊME mouvement rejoué reste accepté : « deja », même résultat (15)', mv.ok === true && mv.deja === true && mv.stock_apres === 15, mv);
   mv = await mouvement('admin', 'pa', 'sortie', 40, 'mv-essai-0002');
   test('sortie plus grande que le stock : 0, jamais négatif', mv.stock_apres === 0 && (await stock('pa')) === 0, mv);
   mv = await mouvement('admin', 'pa', 'correction', 12, 'mv-essai-0003');

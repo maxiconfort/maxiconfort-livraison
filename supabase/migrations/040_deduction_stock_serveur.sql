@@ -560,7 +560,14 @@ begin
   perform pg_advisory_xact_lock(hashtext('l040m|' || p_cle));
   select id, produit_id, resultat into o from public.stock_operations where cle = p_cle;
   if found then
-    if o.produit_id is distinct from p_produit_id then return json_build_object('ok', false, 'erreur', 'cle_deja_utilisee'); end if;
+    -- v7.5.207 (avis chatgpt-review sur 6775bbc, point 2) : une clé déjà utilisée n'est rejouée (« deja ») que pour le MÊME
+    -- mouvement (produit, type ET quantité). Avant : une entrée de 5 puis une sortie de 5 avec la même clé répondait « deja »
+    -- sans effectuer la sortie. Toute réutilisation avec d'autres paramètres est refusée explicitement, rien n'est écrit.
+    if o.produit_id is distinct from p_produit_id or (o.resultat ->> 'type') is distinct from p_type
+       or (o.resultat ->> 'qte') is distinct from p_qte::text then
+      return json_build_object('ok', false, 'erreur', 'cle_deja_utilisee', 'detail',
+        jsonb_build_object('produit_id', o.produit_id, 'type', o.resultat ->> 'type', 'qte', (o.resultat ->> 'qte')::integer));
+    end if;
     return (o.resultat || jsonb_build_object('ok', true, 'deja', true, 'operation_id', o.id,
       'stocks_actuels', interne.l040_stocks(array[p_produit_id])))::json;
   end if;
