@@ -238,7 +238,7 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
   test('ajustement de stock → signal produits', f('function sauvegarderAjustement() {').includes("tdbSignaler('produits')"));
   test('chargement des produits → signal produits', f('async function sbLoadProduits() {').includes("tdbSignaler('produits')"));
   test('temps réel produits → signal produits', /table:'produits'\}, function\(payload\) \{[\s\S]*?tdbSignaler\('produits'\)[\s\S]*?\.subscribe\(\);/.test(html));
-  test('réception d’arrivage → produits relus + revient relu', /await sbLoadProduits\(\); \} catch\(e\) \{\}\n\s*if \(typeof tdbSignaler === 'function'\) tdbSignaler\('revients'\);/.test(f('async function arrValiderEnvoi(a, ls, saisies, vue) {'))); // v7.5.170 : suite de arrValider (PR 26)
+  test('réception d’arrivage → produits relus + revient relu', /await sbLoadProduits\(\); \} catch\(e\) \{\}\n\s*if \(typeof tdbSignaler === 'function'\) tdbSignaler\('revients'\);/.test(f('async function arrValiderEnvoi(a, ls, saisies, vue, suivi) {'))); // v7.5.170 : suite de arrValider (PR 26)
   test('ouverture de la page Tableau de bord → recalcul', f('function goTo(p, el) {').includes("if(p==='dashboard') renderDash();"));
   console.log('\n7 ter. REVUE CODEX DE 8705c41 (date égale, lectures concurrentes, pagination, classements de la collaboratrice)');
   { // 1. comparaison à date égale : rien après aujourd'hui dans les chiffres comparés
