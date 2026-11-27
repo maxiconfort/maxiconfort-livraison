@@ -187,6 +187,11 @@ grant select, insert, update, delete on storage.objects to anon;
   if (arret) { await db.exec('reset role'); console.log('\nRÉSULTAT : arrêt, la chaîne 038b → 041 ne s\'applique pas. ' + ok + ' réussis, ' + (ko) + ' échec(s)'); process.exit(1); }
   let e41b = null; try { await db.exec(lireMigration('041_dropshipping_provenance.sql')); } catch (e) { e41b = e.message; }
   test('041 rejouable une 2e fois sur cette base', e41b === null, e41b);
+  // v7.5.211 (défaut observé en production, GO de Borhen) : 042 appliquée après la 041 (déjà en service), telle quelle, puis rejouée
+  let e42 = null; try { await db.exec(lireMigration('042_livre_garde_non_concernee.sql')); } catch (e) { e42 = e.message; }
+  test('mise en ligne : 042_livre_garde_non_concernee.sql appliquée TELLE QUELLE après la 041 (contrôles et auto-contrôle passés)', e42 === null, e42);
+  let e42b = null; try { await db.exec(lireMigration('042_livre_garde_non_concernee.sql')); } catch (e) { e42b = e.message; }
+  test('042 rejouable une 2e fois sur cette base', e42b === null, e42b);
   await db.exec('reset role');
   // fidélité : chaque colonne relevée existe dans la base du banc, même type, même NOT NULL
   const ecarts = [];
@@ -430,12 +435,56 @@ grant select, insert, update, delete on storage.objects to anon;
   let eFab = null; try { await q('livreur', 'insert into public.stock_camion select * from json_populate_record(null::public.stock_camion, $1::json)', [JSON.stringify(Object.assign(bac.scEntreeCamion('Livreur-A', 'Sommier fictif Q', 1, '#I13', 'T-I1', 'Livreur-A'), { utilise_par_piece: pI13[0].id }))]); } catch (e) { eFab = e.message; }
   test('garde de la 041 sur la table réelle : une unité « réservée » fabriquée par l\'appli est refusée', /STOCK_CAMION_RESERVE/.test(eFab || ''), eFab);
 
+  console.log('\n11 quinquies. v7.5.211 — 042 (défaut observé en production, GO de Borhen) : commande NON concernée découpée à l\'ouverture de sa fiche');
+  await cmd('#N1', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 1 }], 120, { livreur: '' });
+  const pN1 = (await rpc('admin', 'public.drop_pieces($1)', ['#N1'])).pieces || [];
+  test('commande SANS livreur (RANOU) : ouverture de la fiche par l\'ancienne appli → la base la découpe (1 pièce, provenance vide) — cas observé',
+    pN1.length === 1 && pN1[0].provenance == null && pN1[0].livraison == null, pN1);
+  const sN1 = await stock('ps90');
+  const eN1 = await echec('admin', "update public.commandes set statut = 'livré' where id = '#N1'");
+  test('… « livré » ACCEPTÉ (pièce jamais déclarée, commande non concernée ; avant la 042 : PIECES_NON_CONFIRMEES)', eN1 === null, eN1);
+  r = await rpc('admin', 'public.deduire_stock_livraison($1)', ['#N1']);
+  test('… déduction : celle de la 040 (lignes de la commande), 1 sommier retiré, jamais « pieces_non_confirmees »', r.ok && r.mode !== 'pieces' && (await stock('ps90')) === sN1 - 1, r);
+  r = await rpc('admin', 'public.deduire_stock_livraison($1)', ['#N1']);
+  test('… déduction rejouée : idempotente (rien de plus retiré)', r.ok && (await stock('ps90')) === sN1 - 1, r);
+  await cmd('#N2', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 1 }], 120, { transporteur: 'GLS' });
+  const pN2 = (await rpc('admin', 'public.drop_pieces($1)', ['#N2'])).pieces || [];
+  const eN2 = await echec('admin', "update public.commandes set statut = 'livré' where id = '#N2'");
+  test('commande GLS découpée (pièce jamais déclarée) : « livré » accepté', pN2.length === 1 && eN2 === null, eN2 || pN2);
+  await cmd('#N3', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 1 }], 120);
+  const pN3 = (await rpc('livreur', 'public.drop_pieces($1)', ['#N3'])).pieces || [];
+  test('commande CONCERNÉE (livreur attribué) découpée, pièce jamais déclarée : « livré » toujours REFUSÉ (PIECES_NON_CONFIRMEES), livreur et administrateur',
+    pN3.length === 1 && /PIECES_NON_CONFIRMEES/.test(await echec('livreur', "update public.commandes set statut = 'livré' where id = '#N3'") || '')
+    && /PIECES_NON_CONFIRMEES/.test(await echec('admin', "update public.commandes set statut = 'livré' where id = '#N3'") || ''));
+  test('… le livreur ne contourne pas le contrôle en vidant le livreur dans la même écriture',
+    /PIECES_NON_CONFIRMEES/.test(await echec('livreur', "update public.commandes set statut = 'livré', livreur = '' where id = '#N3'") || ''));
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#N3']);
+  test('… et sa déduction reste celle de la 041 (refusée : commande pas livrée)', !r.ok, r);
+  await cmd('#N4', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 1 }], 120);
+  const pN4 = (await rpc('livreur', 'public.drop_pieces($1)', ['#N4'])).pieces || [];
+  const dN4 = await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pN4[0].id, 'depot']);
+  await q('admin', "update public.commandes set livreur = '' where id = '#N4'");
+  test('commande dont une pièce A été déclarée, livreur retiré ensuite : « livré » toujours contrôlé (PIECES_NON_CONFIRMEES)',
+    dN4 && dN4.ok && /PIECES_NON_CONFIRMEES/.test(await echec('admin', "update public.commandes set statut = 'livré' where id = '#N4'") || ''), dN4);
+
   console.log('\n12. REJEU FINAL DE LA 041 : le relevé des commandes livrées à l\'activation n\'est JAMAIS complété');
   await db.exec('set role l41i_postgres');
   let eFin = null; try { await db.exec(lireMigration('041_dropshipping_provenance.sql')); } catch (e) { eFin = e.message; }
   await db.exec('reset role');
   const apres = (await q(P, 'select cmd_id from public.drop_livrees_avant_activation order by cmd_id')).map((x) => x.cmd_id);
   test('041 rejouée en fin de parcours (commandes livrées depuis : #I2, #I6, #AV2…) : relevé inchangé (#AV1, #AV3)', eFin === null && JSON.stringify(apres) === '["#AV1","#AV3"]', eFin || apres);
+  // la 041 rejouée remet SA garde et SA déduction : la 042 rejouée ensuite (consigne écrite en tête de la 042) les remplace de nouveau
+  await db.exec('set role l41i_postgres');
+  let e42f = null; try { await db.exec(lireMigration('042_livre_garde_non_concernee.sql')); } catch (e) { e42f = e.message; }
+  await db.exec('reset role');
+  await cmd('#N5', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 1 }], 120, { livreur: '' });
+  await rpc('admin', 'public.drop_pieces($1)', ['#N5']);
+  const eN5 = await echec('admin', "update public.commandes set statut = 'livré' where id = '#N5'");
+  const rN5 = await rpc('admin', 'public.deduire_stock_livraison($1)', ['#N5']);
+  test('042 rejouée APRÈS un rejeu de la 041 : appliquée ; commande sans livreur découpée → « livré » accepté et déduite (040)', e42f === null && eN5 === null && rN5.ok && rN5.mode !== 'pieces', e42f || eN5 || rN5);
+  test('… une seule déduction de la 041 mise de côté (interne.l042_deduire_041), enveloppe en place',
+    (await nb("pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'interne' and p.proname = 'l042_deduire_041'")) === 1
+    && /l042_enveloppe/.test((await un(P, "select prosrc from pg_proc where oid = 'public.deduire_stock_livraison(text)'::regprocedure")).prosrc));
 
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);

@@ -156,7 +156,7 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     await bE.dropDeclarer('#D1', 1, 'fournisseur', 11, null);
     test('refus de la base : message en français', bE._toasts.some((t) => /pas activée en dropshipping/.test(t[0])));
     // progression du chargement (vrai calculerProgressionChargement)
-    bac.commandes = [{ id: '#D1', client: 'Client fictif', lignes: [{ produit: 'Ensemble fictif', qte: 1 }, { produit: 'Oreiller fictif', qte: 1 }] }];
+    bac.commandes = [{ id: '#D1', client: 'Client fictif', livreur: 'LIVREUR-TEST', lignes: [{ produit: 'Ensemble fictif', qte: 1 }, { produit: 'Oreiller fictif', qte: 1 }] }]; // v7.5.211 : commande concernée = livreur attribué
     bac.dropPieces['#D1'] = { pieces: [PIECE(1, { provenance: 'fournisseur' }), PIECE(2, { piece_idx: 1, provenance: 'camion' })] };
     let prog = bac.calculerProgressionChargement({ stops: [{ cmdId: '#D1' }] });
     test('chargement : ligne sans pièce Dépôt (fournisseur + camion) comptée chargée sans être cochée ; ligne sans pièces : règle d\'avant', prog.total === 2 && prog.charges === 1, prog);
@@ -239,7 +239,7 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     test('une pièce sans provenance : « Livré » bloqué', /Provenance manquante/.test(bac.dropBloqueLivre('#D1')));
     // rejeu de la file : la déduction du stock attend la confirmation des pièces
     const { bac: bF } = nouveauBac({ reponse: (url) => (/drop_confirmer_livraison/.test(url) ? 'reseau' : { status: 200, json: { ok: true, deja: false, stock_deduit: true, retraits: [], manques: [] } }) });
-    bF.dropActif = true; bF.commandes = [{ id: '#D1', statut: 'livré' }];
+    bF.dropActif = true; bF.commandes = [{ id: '#D1', statut: 'livré', livreur: 'LIVREUR-TEST' }];
     vm.runInContext("offlineQueue = [{ type: 'drop', data: { id: 'conf:#D1', fn: 'drop_confirmer_livraison', params: { p_cmd_id: '#D1', p_pieces: [] }, cmdId: '#D1' }, ts: 1, oqv: 2, role: 'livreur' }, { type: 'deduction', data: { id: '#D1' }, ts: 2, oqv: 2, role: 'livreur' }];", bF);
     await bF.offlineQueueFlush(); await attendre();
     test('rejeu, confirmation en échec : déduction NON envoyée, les deux restent en file', !bF._envois.some((e) => /deduire_stock_livraison/.test(e.url)) && bF.offlineQueue.length === 2, bF.offlineQueue.map((x) => x.type));
@@ -316,7 +316,7 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
   {
     // réserve n° 2 : état actif du module gardé sur l'appareil ; sans réseau : bloqué au lieu de tout laisser passer
     const { bac } = nouveauBac({ reponse: () => 'reseau', stock: { mx_drop_actif: '041' } });
-    bac.commandes = [{ id: '#H1', transporteur: 'RANOU' }, { id: '#H2', transporteur: 'GLS' }];
+    bac.commandes = [{ id: '#H1', transporteur: 'RANOU', livreur: 'LIVREUR-TEST' }, { id: '#H2', transporteur: 'GLS', livreur: 'LIVREUR-TEST' }];
     test('hors ligne au démarrage, module actif la dernière fois : considéré ACTIF', (await bac.dropVerifier()) === false && bac.dropActif === null && bac.dropModuleActif() === true);
     test('hors ligne, pièces jamais lues : « Livré » BLOQUÉ, message clair ; commande GLS non bloquée', /Pièces pas encore contrôlées/.test(bac.dropBloqueLivre('#H1')) && bac.dropBloqueLivre('#H2') === '');
     bac.dropPieces['#H1'] = { pieces: [PIECE(1, { cmd_id: '#H1', provenance: 'depot' })] };
@@ -353,7 +353,7 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     test('réseau revenu : confirmation PUIS « livré » PUIS déduction ; succès noté', iC > -1 && sav.length >= 1 && iD > iC && bF.dropConfEtat['#F1'] === 'ok' && bF.offlineQueue.length === 0, { iC, iD, sav, file: bF.offlineQueue.map((x) => x.type) });
     // confirmation refusée : la déduction ne part JAMAIS
     const { bac: bX } = nouveauBac({ reponse: (url) => (/drop_confirmer_livraison/.test(url) ? { status: 200, json: { ok: false, erreur: 'decoupage_perime' } } : { status: 200, json: { ok: true, deja: false, stock_deduit: true, retraits: [], manques: [] } }) });
-    bX.dropActif = true; bX.commandes = [{ id: '#X1', statut: 'livré' }];
+    bX.dropActif = true; bX.commandes = [{ id: '#X1', statut: 'livré', livreur: 'LIVREUR-TEST' }]; // v7.5.211 : commande concernée
     bX.dropPieces['#X1'] = { pieces: [PIECE(1, { cmd_id: '#X1', provenance: 'depot' })] };
     vm.runInContext("offlineQueue = [{ type: 'drop', data: { id: 'conf:#X1', fn: 'drop_confirmer_livraison', params: { p_cmd_id: '#X1', p_pieces: [] }, cmdId: '#X1' }, ts: 1, oqv: 2, role: 'livreur' }, { type: 'deduction', data: { id: '#X1' }, ts: 2, oqv: 2, role: 'livreur' }];", bX);
     await bX.offlineQueueFlush(); await attendre();
@@ -650,6 +650,74 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
       const vs = [...sw.matchAll(/^\/\/ v(\d+)\.(\d+)\.(\d+)[a-z]? - /gm)].map((m) => [+m[1], +m[2], +m[3]]);
       return vs.length > 0 && vs.every((v) => (v[0] * 1e6 + v[1] * 1e3 + v[2]) <= (vs[0][0] * 1e6 + vs[0][1] * 1e3 + vs[0][2]));
     })());
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════════════
+  console.log('\nDÉFAUTS OBSERVÉS EN PRODUCTION (v7.5.210, GO de Borhen) — v7.5.211');
+  {
+    // DÉFAUT 1 : une commande NON concernée (sans livreur, GLS) n'est jamais découpée par l'appli ni bloquée
+    const { bac: bN } = nouveauBac({ role: 'admin', reponse: (url) => (/drop_pieces/.test(url) ? { status: 200, json: { ok: true, pieces: [PIECE(1, { cmd_id: '#N3' })] } } : { status: 200, json: { ok: true } }) });
+    bN.dropActif = true;
+    bN.commandes = [{ id: '#N1', transporteur: 'RANOU', livreur: '', statut: 'en-attente' }, { id: '#N2', transporteur: 'GLS', livreur: 'LIVREUR-TEST', statut: 'en-attente' },
+      { id: '#N3', transporteur: 'RANOU', livreur: 'LIVREUR-TEST', statut: 'en-attente' }, { id: '#N4', transporteur: '', livreur: 'LIVREUR-TEST', statut: 'livré' }];
+    test('dropCmdConcernee : sans livreur → non ; GLS → non ; RANOU (ou vide) avec livreur → oui ; inconnue → oui (prudence)',
+      !bN.dropCmdConcernee(bN.commandes[0]) && !bN.dropCmdConcernee(bN.commandes[1]) && bN.dropCmdConcernee(bN.commandes[2]) && bN.dropCmdConcernee(bN.commandes[3]) && bN.dropCmdConcernee(null));
+    const r1 = await bN.dropChargerPieces('#N1'), r2 = await bN.dropChargerPieces('#N2');
+    test('commande SANS livreur ou GLS : aucun appel drop_pieces (plus de découpage à l\'ouverture de la fiche), rien gardé', r1.nonConcernee && r2.nonConcernee
+      && !bN._envois.some((e) => /drop_pieces/.test(e.url)) && !bN.dropPieces['#N1'] && !bN.dropPieces['#N2'], bN._envois.map((e) => e.url));
+    const r4 = await bN.dropChargerPieces('#N4');
+    test('commande DÉJÀ livrée dont l\'appareil ne connaît pas les pièces : aucun découpage', r4.nonConcernee && !bN._envois.some((e) => /drop_pieces/.test(e.url)));
+    test('« Livré » jamais bloqué pour une commande sans livreur ou GLS (et aucune lecture lancée)', bN.dropBloqueLivre('#N1') === '' && bN.dropBloqueLivre('#N2') === ''
+      && !bN._envois.some((e) => /drop_pieces/.test(e.url)));
+    const r3 = await bN.dropChargerPieces('#N3');
+    test('commande CONCERNÉE (livreur attribué) : découpage demandé comme avant', !!r3 && !r3.nonConcernee && bN._envois.filter((e) => /drop_pieces/.test(e.url)).length === 1 && bN.dropPieces['#N3'].pieces.length === 1);
+    test('… et « Livré » toujours bloqué tant que sa pièce n\'est pas indiquée', bN.dropBloqueLivre('#N3') !== '');
+    // pièces déjà en cache (découpée par la v7.5.210 à l'ouverture de sa fiche) : ignorées pour une commande non concernée
+    bN.dropPieces['#N1'] = { pieces: [PIECE(9, { cmd_id: '#N1' })] };
+    test('pièces en cache d\'une commande non concernée : ignorées (aucun blocage, aucune confirmation envoyée, déduction permise)',
+      bN.dropPiecesDe('#N1').length === 0 && bN.dropBloqueLivre('#N1') === '' && bN.dropDeductionPermise('#N1') === true && bN.dropAConfirmer('#N1') === false);
+    test('dropApresLivre d\'une commande non concernée : rien à confirmer', (await bN.dropApresLivre('#N1')) === 'rien' && !bN._envois.some((e) => /drop_confirmer_livraison/.test(e.url)));
+    const { bac: bT } = nouveauBac({ reponse: () => ({ status: 200, json: { ok: true, pieces: [] } }) });
+    bT.dropActif = true; bT.commandes = [{ id: '#T1', transporteur: 'RANOU', livreur: '' }, { id: '#T2', transporteur: 'RANOU', livreur: 'LIVREUR-TEST' }];
+    await bT.dropChargerTournee({ id: 'T-1', stops: [{ cmdId: '#T1' }, { cmdId: '#T2' }] }, null, true);
+    test('pièces d\'une tournée : seule la commande concernée est lue', bT._envois.filter((e) => /drop_pieces/.test(e.url)).map((e) => e.body && e.body.p_cmd_id).join() === '#T2', bT._envois.map((e) => e.body));
+
+    // DÉFAUT 2 : refus définitif de la base → ancien statut remis à l'écran (liste et fiche), raison dite clairement
+    const toasts = [], rendus = [];
+    const bS = { console: { log() {}, warn() {} }, JSON, Date, String, Array, Object, Math,
+      commandes: [], offlineQueue: [], _dedSession: {}, currentCmdId: '#S1', role: 'admin', livNom: '',
+      localStorage: { setItem() {}, getItem: () => null }, oqEcrire() { rendus.push('file'); }, reconcilierTournees() { rendus.push('tournees'); },
+      renderCmds() { rendus.push('liste'); }, renderDash() {}, renderTournees() {}, renderLivreur() {}, suiviAppliquerFiltres() {},
+      closePanel() { rendus.push('fermer'); }, ouvrirCmd(id) { rendus.push('fiche:' + id + ':' + bS.commandes[0].statut); },
+      document: { getElementById: (id) => (id === 'cmd-panel' ? { classList: { contains: () => true } } : null) }, toast(m, t) { toasts.push([m, t]); } };
+    vm.createContext(bS); vm.runInContext(extraireFonction('function cmdRemettreStatut(c, ancien, refuse, res)'), bS);
+    const cS = { id: '#S1', statut: 'livré', historique: [{ de: 'en-attente', vers: 'livré' }] };
+    bS.commandes = [cS]; bS.offlineQueue = [{ type: 'deduction', data: { id: '#S1' } }, { type: 'deduction', data: { id: '#S2' } }]; bS._dedSession = { '#S1': true };
+    const fait = bS.cmdRemettreStatut(cS, 'en-attente', 'livré', { message: 'PIECES_NON_CONFIRMEES : 1 pièce(s) de la commande #S1 sans confirmation' });
+    test('refus définitif du « Livré » : statut remis à « en-attente », historique retiré, refus noté', fait && cS.statut === 'en-attente' && cS.historique.length === 0 && cS._statutRefuse && cS._statutRefuse.vers === 'livré');
+    test('… demande de déduction de CETTE commande retirée de la file (les autres gardées)', bS.offlineQueue.length === 1 && bS.offlineQueue[0].data.id === '#S2' && !bS._dedSession['#S1']);
+    test('… liste redessinée et fiche ouverte rouverte avec l\'ancien statut', rendus.includes('liste') && rendus.includes('fiche:#S1:en-attente'), rendus);
+    test('… message clair : refusé, reste « En attente », rien enregistré, raison de la base', toasts.length === 1 && toasts[0][1] === 'err' && /REFUSÉ par la base/.test(toasts[0][0]) && /reste « En attente »/.test(toasts[0][0]) && /rien n’a été enregistré/.test(toasts[0][0]) && /PIECES_NON_CONFIRMEES/.test(toasts[0][0]), toasts);
+    const cS2 = { id: '#S1', statut: 'reporté' };
+    test('statut changé entre-temps (plus le statut refusé) : jamais écrasé', bS.cmdRemettreStatut(cS2, 'en-attente', 'livré', {}) === false && cS2.statut === 'reporté');
+    const chg = extraireFonction('function chgStatut(id, st, _annOk)');
+    test('chgStatut : refus définitif → cmdRemettreStatut AVANT la demande de déduction (même promesse)',
+      /var _pSc = Promise\.resolve\(sbSaveCommande\(c\)\)\.then\(function\(res\) \{\n\s*if \(res && res\.ok === false && res\.definitif\) \{ try \{ cmdRemettreStatut\(c, ancienStatut, st, res\);/.test(chg) && chg.indexOf('cmdRemettreStatut') < chg.indexOf('stkDemanderDeduction(c, _pSc)'));
+    test('stkDemanderDeduction : « livré » refusé et remis → aucune déduction demandée', /if \(cmd\._statutRefuse && !\(cmd\.statut === 'livré' \|\| cmd\.statut === 'livre'\)\) return 'abandon';/.test(extraireFonction('function stkDemanderDeduction(cmd, pAvant)')));
+    test('fiche : refus affiché dans l\'en-tête ; succès suivant : refus effacé', /cmd-statut-refuse/.test(extraireFonction('function ouvrirCmd(id)')) && /delete cmd\._syncRefus; delete cmd\._statutRefuse;/.test(extraireFonction('async function sbSaveCommande(cmd, oqCtx)')));
+    // carte de notification « undefined »
+    const bNo = { console, JSON, Date, String, Array, Object, notifications: [], notifCurrentFilter: 'all', _html: '',
+      generateId: () => 'n1', notifUpdateBadge() {}, toast() {},
+      document: { getElementById: () => ({ set innerHTML(v) { bNo._html = v; } }), querySelectorAll: () => [] } };
+    vm.createContext(bNo);
+    vm.runInContext(extraireFonction('function notifTypeNorm(t)') + '\n' + extraireFonction('function notifAjout(type, cat, titre, msg, action, page)') + '\n' + extraireFonction('function notifRendreListe()'), bNo);
+    bNo.notifAjout('err', 'commande', '⛔ Refusée par la base — #S1', 'rien n’a été enregistré', 'Voir', 'commandes');
+    bNo.notifications.push({ id: 'n0', type: 'err', cat: 'commande', titre: 'ancienne carte', msg: 'x', time: '10:00' });
+    bNo.notifRendreListe();
+    test('notification « err » : type ramené à « urgent » (icône 🔴), jamais « undefined » (nouvelle carte et ancienne carte gardée)',
+      bNo.notifications[0].type === 'urgent' && !/undefined/.test(bNo._html) && (bNo._html.match(/🔴/g) || []).length === 2, bNo._html.slice(0, 300));
+    bNo.notifCurrentFilter = 'urgent'; bNo.notifRendreListe();
+    test('filtre « urgent » : les deux cartes de refus y figurent', (bNo._html.match(/notif-card/g) || []).length === 2);
   }
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');

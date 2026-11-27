@@ -3833,6 +3833,8 @@ function stkDemanderDeduction(cmd, pAvant) {
   if (!cmd || !cmd.id || cmd.stockDeduit) return Promise.resolve('deja');
   try { stkDeductionPoser(cmd); } catch(e) { console.warn('[stock] demande de déduction :', e && e.message); }
   return Promise.resolve(pAvant).catch(function() {}).then(function() {
+      // v7.5.211 : « livré » refusé par la base et statut remis (cmdRemettreStatut) : aucune déduction à demander
+      if (cmd._statutRefuse && !(cmd.statut === 'livré' || cmd.statut === 'livre')) return 'abandon';
       // v7.5.201 (revue Codex P1) : demande gardée en file, envoyée seulement après le SUCCÈS de la confirmation des pièces
       if (typeof dropDeductionPermise === 'function' && !dropDeductionPermise(cmd.id)) return 'reessayer';
       return stkDeductionEnvoyer(cmd.id, cmd); })
@@ -5683,7 +5685,7 @@ async function sbSaveCommande(cmd, oqCtx) {
         _res = { ok: false, definitif: false, status: resp.status };
       }
     } else {
-      delete cmd._syncRefus;
+      delete cmd._syncRefus; delete cmd._statutRefuse; // v7.5.211
       try { oqSucces('commande', cmd, tsVersion, null); } catch(e) {} // v7.5.196
       showSync('✅ Commande sauvegardée', 'ok');
     }
@@ -5948,8 +5950,26 @@ async function dropVerifier() {
   else if (r.httpOk && r.corps === '041') { dropActif = true; dropActifCache = true; try { localStorage.setItem('mx_drop_actif', '041'); } catch(e) {} }
   return dropActif === true;
 }
+// v7.5.211 (défaut observé en production sur une commande sans livreur, GO de Borhen) : commande CONCERNÉE par le contrôle des
+// pièces — même règle que la base (interne.l041_concernee) : livrée par NOS livreurs (transporteur RANOU, vide = RANOU) ET avec un
+// livreur attribué. Une commande GLS ou sans livreur (retrait, vente du bureau) ne l'est pas : jamais découpée par l'appli, jamais
+// bloquée. Commande inconnue sur l'appareil → tenue pour concernée (prudence). Pure.
+function dropCmdConcernee(c) {
+  if (!c) return true;
+  if ((String(c.transporteur || '').trim().toUpperCase() || 'RANOU') !== 'RANOU') return false;
+  return String(c.livreur || '').trim() !== '';
+}
+function dropCmdDe(cmdId) {
+  try { return (typeof commandes !== 'undefined' && Array.isArray(commandes)) ? (commandes.find(function(x) { return x && x.id === cmdId; }) || null) : null; } catch(e) { return null; }
+}
 async function dropChargerPieces(cmdId) {
   if (!cmdId || dropActif !== true) return null;
+  // v7.5.211 (défaut observé en production) : pas de découpage (drop_pieces crée les pièces) pour une commande NON concernée
+  // (GLS, sans livreur) ni pour une commande DÉJÀ livrée dont l'appareil ne connaît pas les pièces : la base la découpait à la
+  // simple ouverture de la fiche, puis refusait son « Livré » (PIECES_NON_CONFIRMEES)
+  var _c = dropCmdDe(cmdId);
+  var _livree = _c && (String(_c.statut || '') === 'livré' || String(_c.statut || '') === 'livre');
+  if (_c && (!dropCmdConcernee(_c) || (_livree && !dropPieces[cmdId]))) return { pieces: [], nonConcernee: true };
   var r = await dropRpc('drop_pieces', { p_cmd_id: cmdId });
   if (r.httpOk && r.corps && r.corps.ok) {
     dropPieces[cmdId] = { pieces: r.corps.pieces || [], perime: !!r.corps.perime, tva: r.corps.tva_pct, derogation: !!r.corps.derogation, at: Date.now() };
@@ -5964,7 +5984,9 @@ async function dropChargerPieces(cmdId) {
   }
   return null;
 }
-function dropPiecesDe(cmdId) { return (dropModuleActif() && dropPieces[cmdId]) ? (dropPieces[cmdId].pieces || []) : []; }
+// v7.5.211 (défaut observé en production) : pièces d'une commande NON concernée (découpée par une version précédente à l'ouverture
+// de sa fiche) jamais prises en compte : ni blocage, ni confirmation envoyée, ni attente de la déduction
+function dropPiecesDe(cmdId) { return (dropModuleActif() && dropPieces[cmdId] && dropCmdConcernee(dropCmdDe(cmdId))) ? (dropPieces[cmdId].pieces || []) : []; }
 function dropTvaDe(cmdId) { return dropTva(dropPieces[cmdId] && dropPieces[cmdId].tva); }
 // pièces de toutes les commandes RANOU d'une tournée (une à la fois), puis nouvel affichage
 var _dropChargementEnCours = {};
@@ -5981,6 +6003,7 @@ async function dropChargerTournee(t, apres, force) {
       var s = t.stops[i]; if (!s || !s.cmdId) continue;
       var c = (typeof findCmdForStop === 'function') ? findCmdForStop(s) : null;
       if (c && (c.transporteur || 'RANOU') !== 'RANOU') continue;
+      if (c && !dropCmdConcernee(c)) continue; // v7.5.211 : commande non concernée (sans livreur) jamais découpée
       if (!force && dropPieces[s.cmdId] && Date.now() - (dropPieces[s.cmdId].at || 0) < 60000) continue; // relu au plus une fois par minute
       var avant = JSON.stringify(dropPieces[s.cmdId] && dropPieces[s.cmdId].pieces);
       var r = await dropChargerPieces(s.cmdId);
@@ -6112,6 +6135,7 @@ function dropConfEnFile(cmdId) {
 }
 function dropDeductionPermise(cmdId) {
   if (!cmdId) return true;
+  if (!dropCmdConcernee(dropCmdDe(cmdId))) return true; // v7.5.211 : commande non concernée : la déduction n'attend aucune pièce
   return dropDeductionPermiseDe(dropPieces[cmdId], dropConfEnFile(cmdId), dropConfEtat[cmdId], dropModuleActif());
 }
 function dropDepenseLocale(d) {
@@ -6144,6 +6168,9 @@ function dropBloqueLivre(cmdId) {
   // v7.5.201 : commande livrée par nos livreurs (pas GLS) ; pièces jamais lues (hors ligne) ou découpage périmé = BLOQUÉ
   var c = (typeof commandes !== 'undefined') ? commandes.find(function(x) { return x && x.id === cmdId; }) : null;
   var ranou = !c || String(c.transporteur || 'RANOU').toUpperCase() === 'RANOU';
+  // v7.5.211 (défaut observé en production, GO de Borhen) : commande NON concernée (sans livreur : retrait, vente du bureau) :
+  // jamais bloquée et jamais découpée (même règle que la base, interne.l041_concernee)
+  if (c && !dropCmdConcernee(c)) return '';
   // v7.5.205 : état inconnu → BLOQUÉ pour les commandes concernées (nos livreurs ; jamais GLS) ; vérification relancée tout de
   // suite (réseau revenu : module absent = débloqué, module présent = pièces lues puis contrôle normal)
   if (inconnu) {
@@ -12266,7 +12293,9 @@ function ouvrirCmd(id) {
   if (!c) return;
   var _gpanel_title=document.getElementById('panel-title'); if(_gpanel_title) _gpanel_title.textContent=c.client;
 
-  document.getElementById('panel-sub').innerHTML = c.id+' &nbsp;&middot;&nbsp; '+stBdg(c.statut)+(confirmBadge(c)?' &nbsp; '+confirmBadge(c):'');
+  document.getElementById('panel-sub').innerHTML = c.id+' &nbsp;&middot;&nbsp; '+stBdg(c.statut)+(confirmBadge(c)?' &nbsp; '+confirmBadge(c):'')+
+    // v7.5.211 (défaut observé en production) : changement de statut refusé par la base (dans les 30 dernières minutes) : dit clairement
+    ((c._statutRefuse && Date.now() - (c._statutRefuse.at || 0) < 1800000) ? ' &nbsp; <span class="cmd-statut-refuse" style="color:var(--red);font-weight:800">⛔ « '+(['en-attente','en-route','arrivé','livré','reporté','annulé'].indexOf(c._statutRefuse.vers) >= 0 ? c._statutRefuse.vers : '?')+' » refusé par la base : rien n’a été enregistré</span>' : '');
   const tel = c.tel||'';
   const waNum = tel.startsWith('0') ? '33'+tel.slice(1) : tel;
 
@@ -12481,7 +12510,13 @@ function chgStatut(id, st, _annOk) {
   renderCmds(); renderDash(); renderTournees(); renderLivreur();
   // v7.5.39 : re-render Suivi logistique (sinon le statut reste l'ancien)
   if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres();
-  var _pSc = sbSaveCommande(c); // Sync Supabase
+  // v7.5.211 (défaut observé en production, GO de Borhen) : refus DÉFINITIF de la base (ex. « Livré » refusé, PIECES_NON_CONFIRMEES) :
+  // rien n'est enregistré → l'ancien statut est remis à l'écran (liste et fiche), et la raison dite clairement (cmdRemettreStatut),
+  // AVANT la demande de déduction (qui est alors retirée)
+  var _pSc = Promise.resolve(sbSaveCommande(c)).then(function(res) {
+    if (res && res.ok === false && res.definitif) { try { cmdRemettreStatut(c, ancienStatut, st, res); } catch(e) { console.warn('[statut] remise :', e && e.message); } }
+    return res;
+  }); // Sync Supabase
   if (st === 'livré') stkDemanderDeduction(c, _pSc); // v7.5.197 : après l'enregistrement du « livré »
   if (_recredit) stkReCrediterStock(id, { avant: _pSc }); // v7.5.198 : après l'enregistrement du nouveau statut
   // v7.5.206 (revue native P2 sur cfbf0fa) : annulée / reportée AVANT sa livraison depuis la fiche commande : pièces déclarées
@@ -12493,6 +12528,32 @@ function chgStatut(id, st, _annOk) {
   toast('Statut mis à jour : ' + st, 'ok');
 }
 
+// v7.5.211 (défaut observé en production, GO de Borhen) : la base a REFUSÉ définitivement l'enregistrement d'un changement de statut
+// (ex. « Livré » refusé, PIECES_NON_CONFIRMEES) : rien n'est enregistré. Avant : la fiche affichait « Livré ✓ » et l'en-tête « Livré ».
+// Désormais l'ancien statut est remis (seulement si la commande porte encore le statut refusé : un changement fait entre-temps
+// n'est jamais écrasé), la demande de déduction du stock posée pour ce « livré » est retirée, la liste et la fiche ouverte sont
+// redessinées et la raison est dite clairement. Rend vrai si le statut a été remis.
+function cmdRemettreStatut(c, ancien, refuse, res) {
+  if (!c || c.statut !== refuse || ancien === refuse) return false;
+  c.statut = ancien;
+  if (c.historique && c.historique.length && c.historique[c.historique.length - 1].vers === refuse) c.historique.pop();
+  c._statutRefuse = { de: ancien, vers: refuse, at: Date.now(), message: (res && res.message) || '' };
+  if (refuse === 'livré' || refuse === 'livre') {
+    try { offlineQueue = offlineQueue.filter(function(q) { return !(q && q.type === 'deduction' && q.data && q.data.id === c.id); }); oqEcrire(); } catch(e) {}
+    try { delete _dedSession[c.id]; } catch(e) {}
+  }
+  try { localStorage.setItem('mx_commandes_cache', JSON.stringify(commandes)); } catch(e) {}
+  try { if (typeof reconcilierTournees === 'function') reconcilierTournees(); } catch(e) {}
+  try { renderCmds(); renderDash(); renderTournees(); renderLivreur(); } catch(e) {}
+  try { if (typeof suiviAppliquerFiltres === 'function') suiviAppliquerFiltres(); } catch(e) {}
+  try {
+    var _pan = document.getElementById('cmd-panel');
+    if (typeof currentCmdId !== 'undefined' && currentCmdId === c.id && _pan && _pan.classList.contains('on')) { closePanel(); ouvrirCmd(c.id); }
+  } catch(e) {}
+  var _lib = { 'en-attente': 'En attente', 'en-route': 'En route', 'arrivé': 'Arrivé', 'livré': 'Livré', 'reporté': 'Reporté', 'annulé': 'Annulé' };
+  toast('⛔ « ' + (_lib[refuse] || refuse) + ' » REFUSÉ par la base : la commande ' + (c.id || '') + ' reste « ' + (_lib[ancien] || ancien || '?') + ' » (rien n’a été enregistré)' + (res && res.message ? ' — ' + res.message : ''), 'err');
+  return true;
+}
 function assignerLiv(id) {
   const c=commandes.find(x=>x.id===id);
   const l=document.getElementById('pa-liv')?.value||'';
@@ -19041,7 +19102,7 @@ function notifInit() {
 function notifRendreListe() {
   var filtered = notifications.filter(function(n) {
     if (notifCurrentFilter === 'all') return true;
-    if (notifCurrentFilter === 'urgent') return n.type === 'urgent';
+    if (notifCurrentFilter === 'urgent') return notifTypeNorm(n.type) === 'urgent'; // v7.5.211 : anciennes cartes « err » comprises
     return n.cat === notifCurrentFilter;
   });
   var icons = {urgent:'🔴', warn:'🟡', success:'🟢', info:'🔵'};
@@ -19049,7 +19110,7 @@ function notifRendreListe() {
   document.getElementById('notif-list').innerHTML = filtered.length
     ? filtered.map(function(n) {
         return '<div class="notif-card '+n.type+(n.lu?'':' unread')+'" id="nc-'+n.id+'">'+
-          '<div class="notif-icon" style="background:'+bgIco[n.type]+'">'+icons[n.type]+'</div>'+
+          '<div class="notif-icon" style="background:'+(bgIco[notifTypeNorm(n.type)]||'var(--bl)')+'">'+(icons[notifTypeNorm(n.type)]||'🔔')+'</div>'+ // v7.5.211 : jamais « undefined »
           '<div style="flex:1">'+
             '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">'+
               '<div style="font-size:13px;font-weight:'+(n.lu?'500':'700')+'">'+n.titre+'</div>'+
@@ -19113,7 +19174,15 @@ function notifUpdateBadge() {
 }
 
 // Ajouter notification auto depuis autres modules
+// v7.5.211 (défaut observé en production) : type de notification ramené aux 4 connus (urgent, warn, success, info) — « err »
+// (refus définitif de la base) affichait « undefined » à la place de l'icône de la carte
+function notifTypeNorm(t) {
+  t = String(t || '').toLowerCase();
+  if (t === 'err' || t === 'error' || t === 'erreur') return 'urgent';
+  return ['urgent', 'warn', 'success', 'info'].indexOf(t) >= 0 ? t : 'info';
+}
 function notifAjout(type, cat, titre, msg, action, page) {
+  type = notifTypeNorm(type);
   var now = new Date();
   notifications.unshift({
     id: generateId('n'),
