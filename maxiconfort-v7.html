@@ -5936,9 +5936,14 @@ async function dropRpc(nom, params) {
   try { txt = await resp.text(); corps = txt ? JSON.parse(txt) : null; } catch(e) { corps = null; }
   return { statut: resp.status, httpOk: resp.ok, corps: corps, absente: resp.status === 404 || !!(corps && corps.code === 'PGRST202') };
 }
+var _dropVerifEchecA = 0; // v7.5.211 : dernière vérification sans réponse exploitable (réseau, 5xx)
 async function dropVerifier() {
   if (dropActif === true) return true;
+  // v7.5.211 (incident du 27/11, base saturée) : après une vérification sans réponse, pas de nouvelle avant 15 s (avant : une à chaque
+  // affichage) ; l'état reste celui d'avant (inconnu = « Livré » bloqué pour nos livreurs, comme après un échec)
+  if (_dropVerifEchecA && Date.now() - _dropVerifEchecA < 15000) return false;
   var r = await dropRpc('drop_version', {});
+  _dropVerifEchecA = (r.absente || (r.httpOk && r.corps === '041')) ? 0 : Date.now();
   if (r.absente) { dropActif = false; dropActifCache = false; try { localStorage.removeItem('mx_drop_actif'); } catch(e) {} }
   else if (r.httpOk && r.corps === '041') { dropActif = true; dropActifCache = true; try { localStorage.setItem('mx_drop_actif', '041'); } catch(e) {} }
   return dropActif === true;
@@ -5963,12 +5968,15 @@ function dropPiecesDe(cmdId) { return (dropModuleActif() && dropPieces[cmdId]) ?
 function dropTvaDe(cmdId) { return dropTva(dropPieces[cmdId] && dropPieces[cmdId].tva); }
 // pièces de toutes les commandes RANOU d'une tournée (une à la fois), puis nouvel affichage
 var _dropChargementEnCours = {};
+var _dropTourneeEchecA = {}; // v7.5.211 : dernier échec de lecture des pièces, par tournée
 async function dropChargerTournee(t, apres, force) {
   if (!t || !t.id || _dropChargementEnCours[t.id]) return;
+  // v7.5.211 (incident du 27/11) : après un échec, pas de nouvelle lecture des pièces de la tournée avant 15 s (avant : à chaque affichage)
+  if (!force && _dropTourneeEchecA[t.id] && Date.now() - _dropTourneeEchecA[t.id] < 15000) return;
   _dropChargementEnCours[t.id] = true;
   try {
     if (!(await dropVerifier())) return;
-    var change = false;
+    var change = false, echec = false;
     for (var i = 0; i < (t.stops || []).length; i++) {
       var s = t.stops[i]; if (!s || !s.cmdId) continue;
       var c = (typeof findCmdForStop === 'function') ? findCmdForStop(s) : null;
@@ -5976,8 +5984,10 @@ async function dropChargerTournee(t, apres, force) {
       if (!force && dropPieces[s.cmdId] && Date.now() - (dropPieces[s.cmdId].at || 0) < 60000) continue; // relu au plus une fois par minute
       var avant = JSON.stringify(dropPieces[s.cmdId] && dropPieces[s.cmdId].pieces);
       var r = await dropChargerPieces(s.cmdId);
-      if (r && JSON.stringify(r.pieces) !== avant) change = true;
+      if (!r) { echec = true; continue; } // v7.5.211 : lecture sans résultat → nouvelle passe dans 15 s au plus tôt
+      if (JSON.stringify(r.pieces) !== avant) change = true;
     }
+    if (echec) _dropTourneeEchecA[t.id] = Date.now(); else delete _dropTourneeEchecA[t.id];
     if (change && typeof apres === 'function') apres();
   } catch(e) { console.warn('[drop] chargement des pièces :', e && e.message); }
   finally { delete _dropChargementEnCours[t.id]; }
@@ -7320,6 +7330,82 @@ function calculerProgressionChargement(t) {
   };
 }
 
+// CHARGE-DEBUT — v7.5.211 (incident du 27/11/2026 18h40 : base saturée, requêtes en 504/522 et « statement timeout »).
+// Garde de charge des LECTURES LOURDES (jamais des écritures) :
+//  1. une seule lecture en cours par clé (chargeUnique) et réponse gardée au moins CHARGE_CACHE_MIN (60 s) ;
+//  2. après une erreur 5xx, 408, 429 ou un délai dépassé : pause croissante de toutes les lectures lourdes (10 s, 30 s, 60 s, puis 5 min
+//     au plus), remise à zéro au premier succès ; aucune relance immédiate ;
+//  3. onglet caché (document.hidden) : aucune lecture de rafraîchissement (la dernière réponse connue est rendue) ;
+//  4. événements temps réel regroupés : un seul nouvel affichage (et donc au plus une lecture) CHARGE_REGROUPEMENT (5 s) après le dernier.
+var CHARGE_PAUSES = [10000, 30000, 60000, 300000];
+var CHARGE_CACHE_MIN = 60000;
+var CHARGE_REGROUPEMENT = 5000;
+var CHARGE_DELAI_LECTURE = 20000; // une lecture lourde sans réponse au bout de 20 s est abandonnée (= délai dépassé)
+var CHARGE_ETAT = { echecs: 0, pauseJusqua: 0, vols: {}, cache: {}, echecsCle: {} }; // echecsCle[cle] = { n, pasAvant } : attente propre à la clé
+function chargeDelaiPause(n) { return CHARGE_PAUSES[Math.min(Math.max(1, n || 1), CHARGE_PAUSES.length) - 1]; }
+function chargeEnPause(t) { return (t || Date.now()) < CHARGE_ETAT.pauseJusqua; }
+// statut HTTP (ou absence de réponse) qui signale une base surchargée
+function chargeSurcharge(statut) { return statut == null || statut >= 500 || statut === 408 || statut === 429; }
+function chargeEchec(t) { CHARGE_ETAT.echecs++; CHARGE_ETAT.pauseJusqua = (t || Date.now()) + chargeDelaiPause(CHARGE_ETAT.echecs); return CHARGE_ETAT.pauseJusqua; }
+function chargeSucces() { CHARGE_ETAT.echecs = 0; CHARGE_ETAT.pauseJusqua = 0; }
+// réponse d'une lecture lourde : succès → pause levée ; surcharge → pause croissante ; autre refus (401, 403…) → rien
+function chargeNoterReponse(statut, t) { if (statut >= 200 && statut < 400) chargeSucces(); else if (chargeSurcharge(statut)) chargeEchec(t); }
+function chargeOngletCache() { return typeof document !== 'undefined' && !!document && document.hidden === true; }
+// fetch d'une lecture lourde, abandonné après CHARGE_DELAI_LECTURE ; refus HTTP → erreur portant .statut
+async function chargeFetch(url, init) {
+  var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  var minuteur = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, CHARGE_DELAI_LECTURE) : null;
+  try {
+    var r = await fetch(url, Object.assign({}, init || {}, ctrl ? { signal: ctrl.signal } : {}));
+    if (!r.ok) { var err = new Error('HTTP ' + r.status); err.statut = r.status; throw err; }
+    return await r.json();
+  } finally { if (minuteur) clearTimeout(minuteur); }
+}
+// Une seule lecture en cours par clé ; réponse gardée « ttl » ms. En pause ou onglet caché : AUCUNE lecture, la dernière réponse connue
+// (même plus ancienne) est rendue, sinon undefined. Erreur : pause notée, dernière réponse connue rendue (sinon undefined).
+function chargeUnique(cle, ttl, lire) {
+  var t = Date.now(), c = CHARGE_ETAT.cache[cle];
+  if (c && t - c.at < Math.max(ttl || 0, CHARGE_CACHE_MIN)) return Promise.resolve(c.val);
+  if (CHARGE_ETAT.vols[cle]) return CHARGE_ETAT.vols[cle];
+  var ec = CHARGE_ETAT.echecsCle[cle];
+  // attente croissante PROPRE à la clé (un succès d'une autre lecture lève la pause générale, pas celle-ci)
+  if (chargeEnPause(t) || (ec && t < ec.pasAvant) || chargeOngletCache()) return Promise.resolve(c ? c.val : undefined);
+  var p = Promise.resolve().then(lire).then(function (val) {
+    delete CHARGE_ETAT.vols[cle]; delete CHARGE_ETAT.echecsCle[cle]; CHARGE_ETAT.cache[cle] = { val: val, at: Date.now() }; chargeSucces(); return val;
+  }, function (e) {
+    delete CHARGE_ETAT.vols[cle];
+    var n = ((CHARGE_ETAT.echecsCle[cle] || {}).n || 0) + 1;
+    CHARGE_ETAT.echecsCle[cle] = { n: n, pasAvant: Date.now() + chargeDelaiPause(n) };
+    if (chargeSurcharge(e && e.statut != null ? e.statut : null)) chargeEchec();
+    try { console.warn('[charge] ' + cle + ' : ' + (e && e.message)); } catch (x) {}
+    return c ? c.val : undefined;
+  });
+  CHARGE_ETAT.vols[cle] = p;
+  return p;
+}
+// Regroupement : fn appelée UNE fois, CHARGE_REGROUPEMENT ms après le DERNIER appel de la clé (débounce).
+var _chargeRegroupes = {};
+function chargeRegrouper(cle, fn, ms) {
+  if (_chargeRegroupes[cle]) clearTimeout(_chargeRegroupes[cle]);
+  _chargeRegroupes[cle] = setTimeout(function () { _chargeRegroupes[cle] = null; try { fn(); } catch (e) { console.warn('[charge] ' + cle + ' : ' + e.message); } }, ms || CHARGE_REGROUPEMENT);
+}
+// Lecture complète des commandes (sbLoadAll) : une seule à la fois, jamais onglet caché ni pendant une pause, au plus une par
+// CHARGE_CACHE_MIN hors premier chargement (opts.premier) ; la promesse de la lecture en cours est rendue aux autres appelants.
+var _chargeToutVol = null, _chargeToutA = 0;
+function sbChargerTout(opts) {
+  var o = opts || {};
+  if (_chargeToutVol) return _chargeToutVol;
+  if (!o.premier) {
+    if (chargeOngletCache() || chargeEnPause()) return Promise.resolve(false);
+    if (!o.sansEspacement && _chargeToutA && Date.now() - _chargeToutA < CHARGE_CACHE_MIN - 1000) return Promise.resolve(false);
+  }
+  _chargeToutA = Date.now();
+  _chargeToutVol = Promise.resolve().then(function () { return sbLoadAll(); }).then(function () { _chargeToutVol = null; return true; },
+    function (e) { _chargeToutVol = null; console.warn('[charge] chargement complet : ' + (e && e.message)); return false; });
+  return _chargeToutVol;
+}
+// CHARGE-FIN
+
 // Colonnes chargées pour les commandes — EXCLUT gls_pdf_base64 (PDF étiquette 50-400 Ko/cmd,
 // stocké par gls-create-shipment, récupéré uniquement à la demande via l'action getLabel)
 var CMD_SELECT_COLS = 'id,client,tel,email,adresse,etage,ascenseur,code,produit,lignes,qte,prix,prix_brut,remise_globale,remise_globale_val,remise_globale_type,remise_motif,paie,stpaie,montant_enc,livreur,statut,date_livraison,date_commande,created_at,instr,tracking_token,transporteur,tracking_transporteur,gls_date_etiquette,gls_etiquette_imprimee_at,gls_creation_statut,gls_creation_at,gls_creation_erreur,gls_bloque,gls_dernier_scan,litige_type,litige_num_reclamation,litige_date_ouverture,litige_statut,litige_description,origine,ref_marketplace,mode_paie,confirmation_presence,confirmation_at,frais_port,stock_deduit,payment_source,payment_transactions,ticket_cb,encaisse_par,encaisse_at,encaisse_tournee,annulation_motif,annulation_commentaire,annulation_par,annulation_at,updated_at'; // v7.5.157 : updated_at (rejeu du temps réel)
@@ -7368,6 +7454,7 @@ async function sbLoadAll() {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'count=exact' },
       signal: controller.signal
     });
+    if (typeof chargeNoterReponse === 'function') chargeNoterReponse(rCmds.status); // v7.5.211 : 5xx → pause croissante des lectures lourdes
     var rTour = await fetch(SUPABASE_URL + '/rest/v1/tournees?select=*&order=created_at.desc', {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
       signal: controller.signal
@@ -7427,18 +7514,10 @@ async function sbLoadAll() {
       try { livControleNonRemontees(); } catch(e) {} // v7.5.191 : contrôle admin, lecture seule
     }
 
-    // Récupérer le nombre total de commandes pour la pagination
-    try {
-      var rCount = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=id', {
-        headers: {
-          'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
-          'Prefer': 'count=exact', 'Range': '0-0'
-        }
-      });
-      var countHeader = rCount.headers.get('Content-Range');
-      if (countHeader) cmdTotalCount = parseInt(countHeader.split('/')[1]) || 0;
-      cmdAllLoaded = true; // Tout chargé au démarrage
-    } catch(e) {}
+    // Nombre total de commandes pour la pagination. v7.5.211 (incident du 27/11, base saturée) : plus de 2e requête « select=id »
+    // de comptage à chaque chargement — le total est déjà donné par la MÊME réponse (Prefer: count=exact, Content-Range).
+    if (cmdsTotal != null) cmdTotalCount = cmdsTotal;
+    cmdAllLoaded = true; // Tout chargé au démarrage
 
     // Mettre à jour nextCmdId
     if (commandes.length > 0) {
@@ -7474,6 +7553,7 @@ async function sbLoadAll() {
     }
   } catch(e) {
     console.warn('sbLoadAll erreur:', e.message);
+    if (typeof chargeEchec === 'function') chargeEchec(); // v7.5.211 : délai dépassé ou réseau → pause croissante, aucune relance immédiate
     if (_cmdFile) { cmdRtFermer(_cmdFile); _cmdFile = null; } // v7.5.157 : file fermée (événements déjà appliqués à la liste gardée)
     // Fallback cache localStorage — uniquement si AUCUNE donnée chargée depuis Supabase
     // NE PAS utiliser le cache si Supabase a répondu (même partiellement)
@@ -7862,12 +7942,19 @@ function cmdFusionnerChargees(nouvelles, anciennes) {
 }
 
 var _pollingInterval = null;
+var _pollingEnCours = false; // v7.5.211 : une seule relève à la fois
 function startPolling() {
   if (_pollingInterval) return;
   oqSignalerPurge(); // v7.5.191 : anciennes mises à jour de stock retirées de la file → une notification
   // Vider la queue offline au démarrage si items en attente
   if (navigator.onLine && offlineQueue.length > 0) setTimeout(offlineQueueFlush, 3000);
   _pollingInterval = setInterval(async function() {
+    // v7.5.211 (incident du 27/11, base saturée) : une seule relève à la fois (avant : une relève lente ou bloquée n'empêchait pas
+    // la suivante, 10 s plus tard — les requêtes s'empilaient), aucune relève onglet caché, aucune pendant la pause croissante après erreur
+    if (_pollingEnCours) return;
+    if (typeof chargeOngletCache === 'function' && chargeOngletCache()) return;
+    if (typeof chargeEnPause === 'function' && chargeEnPause()) { cmdSynchroPerdue('relève suspendue (base surchargée)'); return; }
+    _pollingEnCours = true;
     try {
       // Recharger commandes
       // v7.5.51 : tri par updated_at (date de MODIFICATION) et non created_at.
@@ -7876,9 +7963,16 @@ function startPolling() {
       // le livreur) restait HORS fenetre -> l'encaissement ne remontait jamais
       // en direct cote admin (sauf rechargement complet). Desormais toute commande
       // que le livreur vient de modifier remonte en tete et est rafraichie en 30s.
-      var rC = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=updated_at.desc.nullslast&limit=80', {
-        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
-      });
+      var _ctlRel = typeof AbortController !== 'undefined' ? new AbortController() : null; // v7.5.211 : relève abandonnée après 15 s
+      var _minRel = _ctlRel ? setTimeout(function() { try { _ctlRel.abort(); } catch(e) {} }, 15000) : null;
+      var rC;
+      try {
+        rC = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=updated_at.desc.nullslast&limit=80', {
+          headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }, signal: _ctlRel ? _ctlRel.signal : undefined
+        });
+      } finally { if (_minRel) clearTimeout(_minRel); }
+      if (typeof chargeNoterReponse === 'function') chargeNoterReponse(rC.status); // v7.5.211 : 5xx → pause croissante
+      if (typeof chargeEnPause === 'function' && chargeEnPause()) { cmdSynchroPerdue('relève HTTP ' + rC.status); return; } // pas de 2e requête
       if (rC.ok) {
         var data = await rC.json();
         if (data && data.length > 0) {
@@ -7972,7 +8066,10 @@ function startPolling() {
     // v7.5.197 : demandes de déduction du stock restées en file : renvoyées (au plus une fois par minute)
     try { if (navigator.onLine) stkReprendreDeductions(false).catch(function() {}); } catch(e) {}
 
-    } catch(e) { console.warn('Polling erreur:', e.message); cmdSynchroPerdue('relève'); } // v7.5.154 : preuve retirée
+    } catch(e) {
+      console.warn('Polling erreur:', e.message); cmdSynchroPerdue('relève'); // v7.5.154 : preuve retirée
+      if (typeof chargeEchec === 'function') chargeEchec(); // v7.5.211 : délai dépassé ou réseau → pause croissante
+    } finally { _pollingEnCours = false; }
   }, 10000); // toutes les 10 secondes
 }
 
@@ -7998,7 +8095,10 @@ function sbStartRealtime() {
       // v7.5.160 : appliqué à la liste actuelle, SUPPRESSIONS comprises (retirée par payload.old.id ; sans identifiant -> preuve retirée)
       if (!cmdTempsReelAppliquer(payload)) return;
       if (typeof tdbSignaler === 'function') tdbSignaler('commandes'); // v7.5.138
-      renderDash(); renderCmds(); renderTournees(); renderLivreur();
+      // v7.5.211 (incident du 27/11, base saturée) : tableau de bord et liste des commandes (qui relisaient la base à chaque événement)
+      // redessinés UNE fois, 5 s après le dernier événement d'une rafale ; tournées et écran du livreur (sans lecture) tout de suite
+      chargeRegrouper('rt-commandes', function() { renderDash(); renderCmds(); });
+      renderTournees(); renderLivreur();
     })
     .on('postgres_changes', {event:'*', schema:'public', table:'tournees'}, function(payload) {
       var r = payload.new;
@@ -8081,6 +8181,11 @@ document.addEventListener('visibilitychange', function() {
   if (document.visibilityState === 'visible' && !sbRealtimeIsConnected) {
     console.log('[Realtime] Onglet actif → reconnexion');
     sbStartRealtime();
+  }
+  // v7.5.211 : aucune lecture onglet caché ; au retour, rattrapage (au plus une lecture complète par minute, hors pause après erreur)
+  if (document.visibilityState === 'visible' && typeof role !== 'undefined' && role) {
+    try { if (typeof sbChargerTout === 'function') sbChargerTout().then(function(fait) { if (fait) { renderCmds(); renderDash(); } }); } catch(e) {}
+    try { if (typeof tdbVisible === 'function' && tdbVisible()) renderDash(); } catch(e) {}
   }
 });
 
@@ -8960,7 +9065,7 @@ function buildUI(r) {
   sbLoadEntretiens(); // Entretiens
   sbLoadZones();      // Zones géographiques
   sbLoadLivreurs().then(function() {
-    sbLoadAll().then(function() {
+    sbChargerTout({ premier: true }).then(function() { // v7.5.211 : une seule lecture complète à la fois (CHARGE)
       renderDash(); renderCmds(); renderTournees(); renderLivreur();
       // v7.5.197 : reprise des demandes de déduction restées en file (fermeture ou coupure pendant l'envoi) pour les
       // commandes livrées dont stock_deduit est encore faux : renvoyées (la base ne déduit jamais deux fois)
@@ -8979,7 +9084,7 @@ function buildUI(r) {
       // Si commandes vides, réessayer après 3s
       if (commandes.length === 0) {
         setTimeout(function() {
-          sbLoadAll().then(function() {
+          sbChargerTout({ sansEspacement: true }).then(function() { // v7.5.211 : jamais pendant une pause après erreur ni onglet caché
             renderDash(); renderCmds(); renderTournees(); renderLivreur();
           });
         }, 3000);
@@ -9600,6 +9705,21 @@ function tdbReessayer() { TDB_ETAT.reessaiA = 0; tdbRendre(); }
 // v7.5.139 (revue Codex de 8705c41) : la lecture continue page après page jusqu'à la dernière ; garde-fou EXPLICITE (jamais un
 // arrêt silencieux) : au-delà de TDB_PAGES_MAX pages, erreur affichée (« chiffres non calculés »), jamais de chiffres tronqués.
 var TDB_PAGES_MAX = 500;
+// v7.5.211 (incident du 27/11/2026, base saturée : 115 lectures du tableau + ~100 contrôles « id,updated_at » en 20 min) :
+//  - une période n'est RELUE qu'au plus une fois par TDB_RELECTURE_MIN (60 s) — avant, chaque événement temps réel arrivé PENDANT une
+//    lecture la déclarait périmée et une nouvelle lecture (3 lots × lecture + contrôle) repartait AUSSITÔT : boucle tant que la base
+//    était lente et que des commandes changeaient ;
+//  - aucune lecture si le tableau n'est pas affiché, si l'onglet est caché, pendant la pause croissante après erreur (CHARGE) ou pendant
+//    un chargement complet des commandes (il redessine le tableau à son arrivée) ;
+//  - signaux regroupés : un seul nouvel affichage TDB_REGROUPEMENT (5 s) après le dernier signal.
+var TDB_RELECTURE_MIN = 60000, TDB_REGROUPEMENT = 5000;
+function tdbLecturePermise() {
+  if (!tdbVisible()) return false;
+  if (typeof chargeOngletCache === 'function' && chargeOngletCache()) return false;
+  if (typeof chargeEnPause === 'function' && chargeEnPause()) return false;
+  if (typeof _chargeToutVol !== 'undefined' && _chargeToutVol) return false;
+  return true;
+}
 var TDB_PAGE = 1000; // v7.5.157 : lignes demandées par page (la base peut en rendre moins : la page suivante part du dernier identifiant reçu)
 var _tdbSignal = null, _tdbExpire = null;
 function tdbVisible() { var p = document.getElementById('p-dashboard'); return !!(p && p.classList && p.classList.contains('on')); }
@@ -9613,7 +9733,7 @@ function tdbSignaler(quoi) {
   // refaite à son arrivée (génération), jamais deux lectures en même temps (une réponse ancienne ne remplace pas une récente)
   if (quoi === 'revients') { TDB_ETAT.revientsDemandes = false; TDB_ETAT.revientsGen++; }
   clearTimeout(_tdbSignal);
-  _tdbSignal = setTimeout(function () { _tdbSignal = null; if (tdbVisible()) renderDash(); }, 800);
+  _tdbSignal = setTimeout(function () { _tdbSignal = null; if (tdbVisible()) renderDash(); }, TDB_REGROUPEMENT); // v7.5.211 : 5 s (avant 0,8 s)
 }
 /** Relecture programmée à l'expiration de la lecture par période (tableau affiché seulement). */
 function tdbProgrammerExpiration(ms) {
@@ -9648,9 +9768,14 @@ async function tdbLire(filtre, cols) {
   for (var page = 0; ; page++) {
     if (page >= TDB_PAGES_MAX) throw new Error('plus de ' + TDB_PAGES_MAX.toLocaleString('fr-FR') + ' pages (' + out.length.toLocaleString('fr-FR') + ' commandes lues) sur la période : lecture arrêtée, chiffres non calculés');
     var apres = dernier == null ? '' : '&id=gt.' + encodeURIComponent(dernier);
-    var r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + (cols || TDB_COLS) + filtre + apres + '&order=id.asc&limit=' + TDB_PAGE, {
-      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    // v7.5.211 : page abandonnée après 20 s (délai dépassé) ; 5xx ou délai → pause croissante de toutes les lectures lourdes (CHARGE)
+    var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null, minu = ctl ? setTimeout(function () { try { ctl.abort(); } catch (e) {} }, 20000) : null, r;
+    try {
+      r = await fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + (cols || TDB_COLS) + filtre + apres + '&order=id.asc&limit=' + TDB_PAGE, Object.assign({
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } }, ctl ? { signal: ctl.signal } : {}));
+    } catch (e) { if (typeof chargeEchec === 'function') chargeEchec(); throw e; }
+    finally { if (minu) clearTimeout(minu); }
+    if (!r.ok) { if (typeof chargeNoterReponse === 'function') chargeNoterReponse(r.status); throw new Error('HTTP ' + r.status); }
     var rows = await r.json(); if (!Array.isArray(rows)) throw new Error('réponse inattendue');
     if (!rows.length) break;
     for (var k = 0; k < rows.length; k++) {
@@ -9758,8 +9883,12 @@ function tdbRendre() {
     }
     var frais = TDB_ETAT.cle === cle && Date.now() - TDB_ETAT.at < TDB_DUREE;
     var echec = TDB_ETAT.cle === cle && !!TDB_ETAT.erreur, patiente = echec && Date.now() < TDB_ETAT.reessaiA;
-    if (!frais && !patiente && !TDB_ETAT.vols[cle]) tdbCharger(P, cle);
+    // v7.5.211 : même période relue au plus une fois par minute (relecture programmée à l'échéance), et seulement tableau affiché
+    var tropTot = TDB_ETAT.cle === cle && !!TDB_ETAT.luA && Date.now() - TDB_ETAT.luA < TDB_RELECTURE_MIN;
+    if (!frais && !patiente && !TDB_ETAT.vols[cle] && !tropTot && tdbLecturePermise()) tdbCharger(P, cle);
     else if (frais) tdbProgrammerExpiration(TDB_ETAT.at + TDB_DUREE - Date.now());
+    else if (tropTot && !patiente) tdbProgrammerExpiration(TDB_ETAT.luA + TDB_RELECTURE_MIN - Date.now());
+    else if (!patiente && typeof chargeEnPause === 'function' && chargeEnPause()) tdbProgrammerExpiration(CHARGE_ETAT.pauseJusqua - Date.now());
     if (patiente) tdbProgrammerExpiration(TDB_ETAT.reessaiA - Date.now()); // nouvelle tentative différée (tableau affiché)
     if (TDB_ETAT.cle === cle && TDB_ETAT.lignes) { lignes = TDB_ETAT.lignes; if (TDB_ETAT.luA) note = tdbNoteLecture(TDB_ETAT.luA); }
     else if (echec) { // v7.5.149 : l'avertissement RESTE affiché, même pendant la nouvelle tentative
@@ -9892,12 +10021,13 @@ async function cmdFetchRange(dMin, dMaxExcl) {
   var tk = tn.getFullYear() + '-' + String(tn.getMonth()+1).padStart(2,'0') + '-' + String(tn.getDate()).padStart(2,'0');
   var immuable = dMaxExcl <= tk; // plage entierement passee -> ne changera plus
   if (immuable && cmdStatsCache[key]) return cmdStatsCache[key];
-  var res = { nb: 0, total: 0 };
+  var res = { nb: 0, total: 0 }, lu = false;
   try {
     var url = SUPABASE_URL + '/rest/v1/commandes?select=id,prix,date_commande,date_livraison,statut,origine&date_commande=gte.' + dMin + '&date_commande=lt.' + dMaxExcl + '&statut=not.eq.annul%C3%A9&limit=2000';
-    var r = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
-    if (r.ok) {
-      var data = await r.json();
+    // v7.5.211 (incident du 27/11) : une seule lecture à la fois par plage, réponse gardée 60 s, attente croissante après erreur
+    var data = await chargeUnique('cmdPlage:' + key, CHARGE_CACHE_MIN, function() { return chargeFetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } }); });
+    if (Array.isArray(data)) {
+      lu = true;
       var vr = (data || []).filter(function(c){
         if (!c.date_commande) return false;
         var notRetro = !c.date_livraison || c.date_livraison >= c.date_commande;
@@ -9906,7 +10036,7 @@ async function cmdFetchRange(dMin, dMaxExcl) {
       res = { nb: vr.length, total: vr.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0) };
     }
   } catch(e) { console.warn('cmdFetchRange', e.message); }
-  if (immuable) cmdStatsCache[key] = res;
+  if (immuable && lu) cmdStatsCache[key] = res; // v7.5.211 : un échec n'est jamais gardé comme « 0 commande » définitif
   return res;
 }
 
@@ -9964,14 +10094,14 @@ async function renderCmdStatsJour() {
   // v7.5.24 : utilise date_commande (vraie date prise commande)
   // v7.5.25 : exclut les saisies retroactives (date_livraison < date_commande)
   // v7.5.32 : date_commande source de verite + filtre retroactif maintenu
+  // v7.5.211 (incident du 27/11/2026, base saturée) : renderCmdStatsJour est appelé par CHAQUE renderCmds (événement temps réel,
+  // relève, chargement complet, filtre…) et relançait à chaque fois cette lecture du mois (263 requêtes en 20 min) — désormais une
+  // seule lecture à la fois, réponse gardée 60 s, attente croissante après erreur, aucune lecture onglet caché (dernière réponse gardée).
   var moisData = [];
   try {
     var url = SUPABASE_URL + '/rest/v1/commandes?select=id,prix,date_commande,date_livraison,statut,origine&date_commande=gte.' + debutMoisStr + '&date_commande=lt.' + demainStr + '&statut=not.eq.annul%C3%A9&limit=1000';
-    var r = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
-    if (r.ok) {
-      var data = await r.json();
-      if (Array.isArray(data)) moisData = data;
-    }
+    var data = await chargeUnique('cmdStatsMois:' + debutMoisStr + ':' + demainStr, CHARGE_CACHE_MIN, function() { return chargeFetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } }); });
+    if (Array.isArray(data)) moisData = data;
   } catch(e) { console.warn('renderCmdStatsJour fetch err:', e.message); }
 
   // Filtre rétroactif global
@@ -22485,8 +22615,9 @@ setInterval(function() {
 setInterval(function() {
   try {
     // Recharger les données fraîches depuis Supabase
-    if (typeof sbLoadAll === 'function') {
-      sbLoadAll().then(function(){
+    // v7.5.211 (incident du 27/11) : une seule lecture complète à la fois, aucune lecture onglet caché ni pendant une pause après erreur
+    if (typeof sbChargerTout === 'function') {
+      sbChargerTout().then(function(){
         // Re-render des vues actives uniquement
         var pageDash    = document.getElementById('p-dash');
         var pageGps     = document.getElementById('p-gps');

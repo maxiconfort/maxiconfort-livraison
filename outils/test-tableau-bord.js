@@ -222,7 +222,15 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
   b4.tdbSignaler('commandes'); // une commande change PENDANT la lecture
   enAttente.splice(0).forEach((l) => l()); await attendre(); await attendre(); await attendre();
   test('lecture par période lancée (base non chargée en entier ; Mois = 2 requêtes)', n1 === 2, n1);
-  test('commande changée pendant la lecture : résultat périmé, relecture relancée aussitôt', b4.TDB_ETAT.gen === 1 && b4.TDB_ETAT.at === 0 && lectures === 4, [b4.TDB_ETAT.at, lectures]);
+  // v7.5.211 (incident du 27/11, base saturée) : plus de relecture AUSSITÔT (c'était une boucle tant que la base était lente et que des
+  // commandes changeaient) : résultat affiché, daté et périmé, relecture programmée 60 s après la lecture précédente
+  test('commande changée pendant la lecture : résultat périmé, AUCUNE relecture immédiate (v7.5.211)', b4.TDB_ETAT.gen === 1 && b4.TDB_ETAT.at === 0 && lectures === 2, [b4.TDB_ETAT.at, lectures]);
+  const prog = minuteurs.filter((m) => m.ms > 58000 && m.ms <= 60200);
+  test('relecture programmée ≈ 60 s après la lecture précédente (v7.5.211)', prog.length >= 1, minuteurs.map((m) => m.ms));
+  b4.tdbRendre(); b4.tdbRendre(); b4.tdbSignaler('commandes'); b4.tdbRendre();
+  test('rendus et signaux répétés avant 60 s : toujours aucune lecture (v7.5.211)', lectures === 2, lectures);
+  b4.TDB_ETAT.luA = Date.now() - 61000; prog[prog.length - 1].f();
+  test('60 s écoulées, tableau affiché : relecture', lectures === 4, lectures);
   for (let k = 0; k < 10 && enAttente.length; k++) { enAttente.splice(0).forEach((l) => l()); await attendre(); await attendre(); }
   await attendre();
   test('lecture terminée sans changement : gardée (at posé)', b4.TDB_ETAT.at > 0);
@@ -230,12 +238,12 @@ console.log('\n7 bis. FRAÎCHEUR DES CHIFFRES (revue Codex de b425c03)');
   test('lecture fraîche : pas de nouvelle requête', lectures === l2);
   const exp = minuteurs.filter((m) => m.ms > 50000);
   test('relecture programmée à l’expiration (≈ 60 s)', exp.length === 1 && exp[0].ms <= 60200, minuteurs.map((m) => m.ms));
-  b4.TDB_ETAT.at = Date.now() - 61000; exp[0].f();
+  b4.TDB_ETAT.at = Date.now() - 61000; b4.TDB_ETAT.luA = Date.now() - 61000; exp[0].f();
   test('à l’expiration, tableau affiché : nouvelle lecture', lectures > l2, [l2, lectures]);
   for (let k = 0; k < 10 && enAttente.length; k++) { enAttente.splice(0).forEach((l) => l()); await attendre(); await attendre(); }
   minuteurs.length = 0; b4.tdbSignaler('commandes');
   test('signal « commandes » : cache périmé (at = 0)', b4.TDB_ETAT.at === 0);
-  const sig = minuteurs.find((m) => m.ms === 800); rendus = 0; sig.f();
+  const sig = minuteurs.find((m) => m.ms === 5000); rendus = 0; sig.f(); // v7.5.211 : regroupement 5 s (avant 0,8 s)
   test('signal : tableau affiché redessiné une fois (regroupé)', rendus === 1);
   pageOn.on = false; rendus = 0; b4.tdbSignaler('produits'); minuteurs[minuteurs.length - 1].f();
   test('signal : tableau non affiché → rien (recalculé à l’ouverture)', rendus === 0);
