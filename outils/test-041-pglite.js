@@ -925,6 +925,62 @@ grant select, insert, update, delete on storage.objects to anon;
     (await un(P, 'select livraison, provenance from public.commande_pieces where id = $1', [pN3.id])).provenance === 'depot'
     && (await nb("public.drop_journal where action = 'commande_annulee_non_livree' and cmd_id = '#N3'")) === 0);
 
+  // =========================================================================================================================
+  console.log('\n26. v7.5.207 (revue native P2 sur c22dacd) : LIGNES DU CHARGEMENT RÉCONCILIÉES À LA LIVRAISON — un article livré n\'est jamais reproposé');
+  await q(P, `insert into public.produits (id, nom, cat, prix, stock) values ('pz140', 'Matelas fictif Z', 'Matelas', 300, 5), ('pz90', 'Sommier fictif Z', 'Sommier', 120, 5)`);
+  await q(P, "insert into public.produits_revient (produit_id, prix_revient_ht) values ('pz140', 90), ('pz90', 35)");
+  await cmd('#Z1', { lignes: [{ produitId: 'pz140', nom: 'Matelas fictif Z', qte: 1 }, { produitId: 'pz90', nom: 'Sommier fictif Z', qte: 2 }], prix: 540 });
+  const pZ1 = (await rpc('livreur', 'public.drop_pieces($1)', ['#Z1'])).pieces;
+  // lignes cochées à l'écran de chargement : l'appli crée ses lignes du camion (uuid, source_cmd_id, sans achat ni pièce)
+  await q('livreur', "insert into public.stock_camion (livreur, produit_libelle, quantite, source_cmd_id, source_tournee_id, charge_par, status) values ('Livreur-A', 'Matelas fictif Z', 1, '#Z1', 'T-1', 'Livreur-A', 'en_camion'), ('Livreur-A', 'Sommier fictif Z', 2, '#Z1', 'T-1', 'Livreur-A', 'en_camion')");
+  for (const p of pZ1) await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [p.id, 'depot']);
+  const sZ = pZ1.filter((p) => p.produit_id === 'pz90');
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Z1', JSON.stringify(pZ1.map((p) => ({ id: p.id, livree: p.id !== sZ[1].id })))]);
+  test('confirmation : les 2 lignes du chargement (matelas, 2 sommiers) sont fermées « livre », quelle que soit la provenance déclarée (Dépôt)',
+    r.ok && r.chargement && r.chargement.fermees.length === 2
+    && (await nb("public.stock_camion where source_cmd_id = '#Z1' and piece_id is null and status = 'livre'")) === 2
+    && (await nb("public.stock_camion where source_cmd_id = '#Z1' and piece_id is null and status = 'en_camion'")) === 0, r);
+  const gZ = await q(P, "select * from public.stock_camion where source_cmd_id = '#Z1' and status = 'en_camion'");
+  test('seule l\'unité NON livrée reste dans le camion : 1 ligne d\'une unité, rattachée à la pièce « pas livrée » (produit renseigné, livreur, tournée)',
+    gZ.length === 1 && String(gZ[0].piece_id) === String(sZ[1].id) && gZ[0].produit_id === 'pz90' && gZ[0].quantite === 1 && gZ[0].livreur === 'Livreur-A'
+    && gZ[0].source_tournee_id === 'T-1' && gZ[0].achat_id === null && r.chargement.gardees.length === 1, { gZ, r });
+  test('journal : réconciliation du chargement tracée (fermées, gardées)', (await nb("public.drop_journal where action = 'chargement_reconcilie' and cmd_id = '#Z1'")) === 1);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Z1', JSON.stringify(pZ1.map((p) => ({ id: p.id, livree: true })))]);
+  test('rejeu de la confirmation : « deja », aucune ligne fermée ni créée en plus', r.ok && r.deja === true
+    && (await nb("public.stock_camion where source_cmd_id = '#Z1'")) === 3, r);
+  await q('livreur', "update public.commandes set statut = 'livré' where id = '#Z1'");
+  const avZ = { m: await stock('pz140'), s: await stock('pz90') };
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#Z1']);
+  test('déduction inchangée : matelas et sommier LIVRÉS retirés du dépôt (5 → 4, 5 → 4), le sommier non livré n\'est pas retiré',
+    r.ok && (await stock('pz140')) === avZ.m - 1 && (await stock('pz90')) === avZ.s - 1, { r, avZ });
+  // LE LENDEMAIN : les lignes du chargement d'hier ne sont proposées à AUCUNE commande ; seule l'unité non livrée l'est
+  await q(P, "update public.stock_camion set charge_at = now() - interval '1 day' where source_cmd_id = '#Z1'");
+  await cmd('#Z2', { lignes: [{ produitId: 'pz140', nom: 'Matelas fictif Z', qte: 1 }, { produitId: 'pz90', nom: 'Sommier fictif Z', qte: 1 }], prix: 420 });
+  const pZ2 = (await rpc('livreur', 'public.drop_pieces($1)', ['#Z2'])).pieces;
+  const mZ2 = pZ2.find((p) => p.produit_id === 'pz140'), sZ2 = pZ2.find((p) => p.produit_id === 'pz90');
+  test('lendemain : le matelas LIVRÉ hier n\'est plus proposé « Déjà dans le camion » (aucune ligne du camion pour lui)', (mZ2.camion || []).length === 0, mZ2.camion);
+  test('lendemain : le sommier livré hier non plus — seule l\'unité NON livrée est proposée (1 choix, 1 unité)',
+    (sZ2.camion || []).length === 1 && sZ2.camion[0].id === gZ[0].id && sZ2.camion[0].quantite === 1, sZ2.camion);
+  const mZL = await un(P, "select id from public.stock_camion where source_cmd_id = '#Z1' and produit_libelle = 'Matelas fictif Z'");
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [mZ2.id, 'camion', mZL.id]);
+  test('une ligne du chargement déjà livrée ne peut pas être déclarée « Déjà dans le camion » (2e consommation refusée)', !r.ok && r.erreur === 'piece_camion_indisponible', r);
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [sZ2.id, 'camion', gZ[0].id]);
+  const rZ2 = await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [mZ2.id, 'depot']);
+  test('l\'unité non livrée se déclare « Déjà dans le camion » (venue du dépôt)', r.ok && rZ2.ok && r.piece.stock_camion_id === gZ[0].id && r.piece.origine === 'depot', r);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Z2', JSON.stringify(pZ2.map((p) => ({ id: p.id, livree: true })))]);
+  test('livrée à #Z2 : l\'unité sort du camion (« livre ») ; plus rien de #Z1 dans le camion', r.ok
+    && (await un(P, 'select status from public.stock_camion where id = $1', [gZ[0].id])).status === 'livre'
+    && (await nb("public.stock_camion where source_cmd_id in ('#Z1', '#Z2') and status = 'en_camion'")) === 0, r);
+  // aucune ligne de chargement (ligne jamais cochée, déblocage du bureau) : rien n'est inventé dans le camion
+  await cmd('#Z3', { lignes: [{ produitId: 'pz90', nom: 'Sommier fictif Z', qte: 1 }], prix: 140 });
+  const pZ3 = (await rpc('livreur', 'public.drop_pieces($1)', ['#Z3'])).pieces[0];
+  await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pZ3.id, 'depot']);
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#Z3', JSON.stringify([{ id: pZ3.id, livree: false }])]);
+  test('sans ligne de chargement : pièce « pas livrée » d\'origine dépôt, aucune ligne du camion créée (rien ne prouve qu\'elle y est)',
+    r.ok && r.chargement.fermees.length === 0 && (await nb("public.stock_camion where source_cmd_id = '#Z3'")) === 0, r);
+  test('texte : la confirmation appelle la réconciliation du chargement dans la même fonction',
+    /create or replace function public\.drop_confirmer_livraison[\s\S]*?interne\.l041_reconcilier_chargement\(c\.id, c\.livreur\)[\s\S]*?end \$\$;/.test(sql041));
+
   console.log('\nRÉSULTAT : ' + ok + ' tests réussis, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error('ERREUR DU BANC :', e); process.exit(1); });

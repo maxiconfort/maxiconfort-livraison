@@ -477,8 +477,72 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     b._envois.length = 0;
     const rLeg = await b.retirerStockCamion('sc_1700000000_abcdef', 'retour_depot', 'admin');
     test('ancienne ligne locale « sc_… » (jamais dans la base) : retirée de l\'appareil, AUCUN appel à la base', rLeg === true && b._envois.length === 0 && !b.stockCamion.some((s) => s.id === 'sc_1700000000_abcdef'));
-    test('ancienne ligne « sc_… » jamais renvoyée à la base au chargement', b.scFusionner([], [{ id: 'sc_1', a_envoyer: true, status: 'en_camion' }]).length === 0);
+    test('ancienne ligne « sc_… » jamais renvoyée telle quelle, mais GARDÉE sur l appareil à la fusion (v7.5.207 : reprise)', b.scFusionner([], [{ id: 'sc_1', a_envoyer: true, status: 'en_camion' }]).length === 1 && !b._envois.some((x) => x.body && x.body.id === 'sc_1'));
     test('plus aucun identifiant « sc_ » fabriqué dans l\'appli', !/'sc_' \+ Date\.now\(\)/.test(html));
+
+    // v7.5.207 (avis chatgpt-review sur 6775bbc, point 1) : REPRISE des anciennes lignes locales « sc_… »
+    const ANC = (id, cmd, lib, q) => ({ id, livreur: 'LIVREUR-TEST', produit_libelle: lib, quantite: q || 1, source_cmd_id: cmd, source_tournee_id: 'T-S', charge_at: '2026-11-20T08:00:00.000Z', charge_par: 'LIVREUR-TEST', status: 'en_camion' });
+    let n = 0;
+    const cv = b.scConvertirAnciennes([ANC('sc_1', '#R1', 'Matelas fictif 140'), ANC('sc_2', '#R2', 'Sommier fictif 90', 2), ANC('sc_3', '#R9', 'Oreiller fictif'),
+      Object.assign(ANC('sc_4', '#R1', 'Vieux'), { status: 'livre' }), { id: ids[0], status: 'en_camion', a_envoyer: true }],
+      (id) => ({ '#R1': 'en-route', '#R2': 'livré' })[id] || null, () => 'u-' + (++n));
+    test('conversion : ancienne ligne « en_camion » d\'une commande en cours → NOUVEL uuid, « à envoyer », note de reprise, mêmes produit / quantité / date / tournée',
+      cv.converties.length === 2 && cv.stock.some((s) => s.reprise_de === 'sc_1' && s.id === 'u-1' && s.a_envoyer && /Reprise v7\.5\.207/.test(s.notes) && s.produit_libelle === 'Matelas fictif 140'
+        && s.charge_at === '2026-11-20T08:00:00.000Z' && s.source_tournee_id === 'T-S'), cv);
+    test('conversion : commande déjà LIVRÉE → écartée (l\'article est chez le client), citée ; commande inconnue → reprise « à vérifier » ; historique local ignoré ; lignes uuid gardées telles quelles',
+      cv.ecartees.length === 1 && cv.ecartees[0].ancien === 'sc_2' && cv.converties.some((c) => c.ancien === 'sc_3' && c.a_verifier)
+      && !cv.stock.some((s) => s.reprise_de === 'sc_4' || s.id === 'sc_4') && cv.stock.some((s) => s.id === ids[0]) && !cv.stock.some((s) => !b.scEstUuid(s.id) && !/^u-/.test(s.id)), cv);
+    // parcours complet : 1re ouverture, base indisponible puis disponible ; une seule ligne dans la base, jamais de doublon
+    const baseR = []; let refusR = true;
+    b = bacSc((url, opt, env) => {
+      if (/stock_camion/.test(url) && env.method === 'POST') { if (refusR) return { status: 503, json: {} }; if (!baseR.some((x) => x.id === env.body.id)) baseR.push(env.body); return { status: 201, json: [env.body] }; }
+      if (/stock_camion\?status=eq\.en_camion/.test(url)) return { status: 200, json: baseR.slice() };
+      return { status: 204 };
+    });
+    b.stockCamion = [ANC('sc_10', '#R1', 'Matelas fictif 140'), ANC('sc_11', '#R2', 'Sommier fictif 90')];
+    b.chargements = { '#R1': { 0: { charge: true, stockCamionId: 'sc_10' } } };
+    await b.sbLoadStockCamion();
+    test('statuts des commandes pas encore lus : rien n\'est converti ni envoyé (reprise remise au chargement suivant)', b.stockCamion.length === 2 && b.stockCamion[0].id === 'sc_10'
+      && !b._envois.some((x) => x.method === 'POST'));
+    b.commandes = [{ id: '#R1', statut: 'en-route' }, { id: '#R2', statut: 'livré' }];
+    await b.sbLoadStockCamion();
+    const uR = b.stockCamion.find((s) => s.reprise_de === 'sc_10');
+    test('1re ouverture, base indisponible : ancienne ligne convertie (uuid v4), gardée « à envoyer » ; l\'ancienne retirée du stockage ; l\'écran de chargement pointe sur le nouvel uuid',
+      uR && UUID4.test(uR.id) && uR.a_envoyer === true && !JSON.parse(b.localStorage.getItem('mx_stock_camion')).some((s) => /^sc_/.test(s.id)) && b.chargements['#R1'][0].stockCamionId === uR.id, b.stockCamion);
+    test('récapitulatif pour l\'administrateur : 1 reprise, 1 écartée (commande livrée)', b._notifs.length === 1 && /1 ancienne\(s\) ligne\(s\) reprise\(s\), 1 écartée/.test(b._notifs[0][2]) && /Administrateur/.test(b._notifs[0][3]), b._notifs);
+    refusR = false;
+    await b.sbLoadStockCamion(); await b.sbLoadStockCamion();
+    const postsR = b._envois.filter((x) => /stock_camion/.test(x.url) && x.method === 'POST');
+    test('réseau revenu : envoyée avec le MÊME uuid (note de reprise transmise), une seule ligne dans la base ; plus aucun envoi ensuite ; aucune 2e notification',
+      baseR.length === 1 && baseR[0].id === uR.id && /Reprise/.test(baseR[0].notes) && postsR.length === 2 && postsR.every((p) => p.body.id === uR.id)
+      && b.stockCamion.length === 1 && !b.stockCamion[0].a_envoyer && b._notifs.length === 1, { baseR, n: postsR.length });
+
+    // v7.5.207 (revue native P2 sur c22dacd) : lignes du chargement retirées à la livraison
+    const L = (id, cmd, champs) => Object.assign({ id, livreur: 'LIVREUR-TEST', produit_libelle: 'Matelas fictif 140', quantite: 1, source_cmd_id: cmd, status: 'en_camion' }, champs || {});
+    const [c1, c2, c3, c4] = [b.scUuid(), b.scUuid(), b.scUuid(), b.scUuid()];
+    const lst = [L(c1, '#V1'), L(c2, '#V1', { achat_id: 7 }), L(c3, '#V1', { piece_id: 9 }), L(c4, '#V2')];
+    test('scLignesChargement : seulement les lignes du chargement de la commande (ni achat, ni pièce, ni autre commande)', JSON.stringify(b.scLignesChargement(lst, '#V1').map((s) => s.id)) === JSON.stringify([c1]));
+    b = bacSc(() => ({ status: 204 }));
+    b.stockCamion = lst.map((x) => Object.assign({}, x));
+    let rL = await b.scApresLivre('#V1', 'LIVREUR-TEST');
+    const patches = b._envois.filter((x) => x.method === 'PATCH');
+    test('« livré » d\'une commande sans pièces : la ligne du chargement sort du camion (PATCH « livre ») ; l\'article acheté et l\'unité d\'une pièce restent',
+      rL === 1 && patches.length === 1 && patches[0].url.indexOf(c1) > 0 && patches[0].body.status === 'livre' && b.stockCamion.some((s) => s.id === c2) && b.stockCamion.some((s) => s.id === c3), patches);
+    b = bacSc((url) => (/status=eq\.en_camion/.test(url) ? { status: 200, json: [L(c3, '#V1', { piece_id: 9 })] } : { status: 204 }));
+    b.stockCamion = lst.map((x) => Object.assign({}, x));
+    b.dropPiecesDe = () => [{ id: 1, livraison: null }];
+    rL = await b.scApresLivre('#V1', 'LIVREUR-TEST');
+    test('commande découpée, confirmation pas encore réussie : « attente », rien retiré (la base réconcilie à la confirmation)', rL === 'attente' && !b._envois.some((x) => x.method === 'PATCH'));
+    b.dropPiecesDe = () => [{ id: 1, livraison: 'livree' }];
+    rL = await b.scApresLivre('#V1', 'LIVREUR-TEST');
+    test('après le succès de la confirmation : lignes du chargement retirées de l\'appareil SANS nouvel envoi, camion relu (l\'unité non livrée gardée par la base)',
+      rL === 1 && !b._envois.some((x) => x.method === 'PATCH') && b.stockCamion.length === 1 && b.stockCamion[0].id === c3, b.stockCamion);
+    const tri = b.scAEnvoyer([L(c1, '#V1', { a_envoyer: true }), L(c4, '#V2', { a_envoyer: true })], (id) => id === '#V1');
+    test('ligne « à envoyer » d\'une commande déjà livrée : jamais envoyée, retirée de l\'appareil', tri.retirer.length === 1 && tri.retirer[0].id === c1 && tri.envoyer.length === 1 && tri.envoyer[0].id === c4);
+    const vs = extraireFonction('function validerSig()');
+    test('texte : la signature (validerSig) appelle scApresLivre ; le succès de la confirmation (dropEnvoyer) appelle scApresConfirmation ; setLvSt ne retire plus toutes les lignes de la commande',
+      /scApresLivre\(_cmdLivre\.id/.test(vs) && /estConf && typeof scApresConfirmation === 'function'/.test(CODE_DROP)
+      && !/sc\.status === 'en_camion' && sc\.source_cmd_id === cLv\.id/.test(html) && /scApresLivre\(cLv\.id/.test(html));
   }
 
   {

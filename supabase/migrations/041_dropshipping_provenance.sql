@@ -118,6 +118,12 @@
 --   * COMMANDE ANNULÉE AVANT SA LIVRAISON (déclencheur commandes_annulee_pieces, toutes voies) : pièces déclarées libérées comme
 --     pour un report (achat payé → stock du camion).
 --
+-- v7.5.207 (revue native P2 sur c22dacd, toujours présente sur 6775bbc) :
+--   * LIGNES DU CHARGEMENT RÉCONCILIÉES À LA LIVRAISON (interne.l041_reconcilier_chargement, appelée par drop_confirmer_livraison) :
+--     les lignes du camion créées par l'appli au chargement de la commande sont fermées « livre », quelle que soit la provenance
+--     déclarée ; seule une ligne d'une unité par pièce « pas livrée » d'origine dépôt reste dans le camion — un article livré
+--     n'est jamais reproposé « Déjà dans le camion ».
+--
 -- LIMITES : un « livré » posé hors session de l'application (serveur, maintenance) n'est pas bloqué par le déclencheur ; la
 -- déduction refuse alors (« pieces_non_confirmees ») et une alerte est posée. Le stockage des photos utilise la même session
 -- (en-têtes x-app-secret / x-session-token) que l'API REST : à vérifier sur le premier ticket envoyé ; sans photo,
@@ -1015,10 +1021,51 @@ begin
   return json_build_object('ok', true);
 end $$;
 
+-- v7.5.207 (revue native P2 sur c22dacd, toujours présente sur 6775bbc) : RÉCONCILIATION DES LIGNES DU CHARGEMENT. Quand le
+-- livreur coche une ligne à l'écran de chargement, l'appli crée une ligne du camion (stock_camion, uuid, source_cmd_id = la
+-- commande, sans achat ni pièce). Jusqu'ici, la confirmation de livraison ne traitait que la provenance « camion » : une pièce
+-- déclarée « Dépôt » ou « stock tampon » livrée laissait sa ligne « en_camion », proposée dès le lendemain à une autre
+-- commande comme « Déjà dans le camion » (un article livré consommé une 2e fois). Désormais, à la confirmation (même
+-- transaction), TOUTES les lignes de chargement de la commande encore « en_camion » (sans achat, sans pièce d'origine, non
+-- réservées par une pièce) sont fermées « livre » — quelle que soit la provenance déclarée — et seules les unités NON livrées
+-- restent dans le camion : une ligne d'une unité (quantite 1, produit et pièce renseignés) par pièce « pas livrée » d'origine
+-- dépôt (Dépôt — stock BMS ou stock tampon). Les pièces achetées non livrées ont déjà leur ligne (l041_vers_camion) ; une
+-- pièce du camion non livrée garde la sienne (libérée). Sans ligne de chargement (ligne jamais cochée, déblocage du
+-- bureau), rien n'est créé : rien ne prouve que l'article est dans le camion. Rejouable : la confirmation ne passe qu'une fois.
+create or replace function interne.l041_reconcilier_chargement(p_cmd_id text, p_livreur text) returns jsonb
+language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
+declare r record; p record; v_ferme jsonb := '[]'::jsonb; v_garde jsonb := '[]'::jsonb; v_id uuid;
+  v_vu boolean := false; v_liv text; v_tour text; v_at timestamptz; v_par text;
+begin
+  for r in select sc.* from public.stock_camion sc
+            where sc.source_cmd_id = p_cmd_id and sc.status = 'en_camion' and sc.achat_id is null and sc.piece_id is null
+              and sc.utilise_par_piece is null
+            order by sc.charge_at, sc.id for update loop
+    update public.stock_camion set status = 'livre', retour_at = now(), retour_par = interne.l041_acteur() where id = r.id;
+    v_ferme := v_ferme || jsonb_build_array(jsonb_build_object('id', r.id, 'libelle', r.produit_libelle, 'quantite', r.quantite));
+    if not v_vu then v_vu := true; v_liv := r.livreur; v_tour := r.source_tournee_id; v_at := r.charge_at; v_par := r.charge_par; end if;
+  end loop;
+  if not v_vu then return jsonb_build_object('fermees', v_ferme, 'gardees', v_garde); end if;
+  for p in select q.* from public.commande_pieces q
+            where q.cmd_id = p_cmd_id and q.livraison = 'non_livree' and q.provenance in ('depot', 'tampon')
+              and not exists (select 1 from public.stock_camion s2 where s2.piece_id = q.id and s2.achat_id is null and s2.status = 'en_camion')
+            order by q.id loop
+    insert into public.stock_camion (livreur, produit_libelle, quantite, source_cmd_id, source_tournee_id, charge_at, charge_par,
+                                     status, produit_id, piece_id)
+    values (coalesce(nullif(v_liv, ''), p_livreur, ''), p.libelle, 1, p_cmd_id, v_tour, v_at, v_par, 'en_camion', p.produit_id, p.id)
+    returning id into v_id;
+    v_garde := v_garde || jsonb_build_array(jsonb_build_object('id', v_id, 'piece_id', p.id, 'libelle', p.libelle));
+  end loop;
+  perform interne.l041_journal('chargement_reconcilie', p_cmd_id, null, null, null, jsonb_build_object('fermees', v_ferme, 'gardees', v_garde));
+  return jsonb_build_object('fermees', v_ferme, 'gardees', v_garde);
+end $$;
+revoke all on function interne.l041_reconcilier_chargement(text, text) from public, anon, authenticated;
+
 -- 3e pare-feu : LIVRAISON, pièce par pièce. p_pieces = [{ "id": <pièce>, "livree": true|false }, …] : TOUTES les pièces
 create or replace function public.drop_confirmer_livraison(p_cmd_id text, p_pieces jsonb) returns json
 language plpgsql volatile security definer set search_path = public, interne, pg_catalog as $$
 declare c record; p record; e jsonb; v_liv boolean; v_n integer; v_cout record; v_camion uuid; v_res jsonb := '[]'::jsonb; g record;
+  v_charg jsonb;
 begin
   if public.session_role() is null or public.session_role() not in ('admin', 'livreur') then
     return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
@@ -1099,8 +1146,10 @@ begin
     v_res := v_res || jsonb_build_array(jsonb_build_object('id', p.id, 'livree', v_liv, 'vers_camion', v_camion));
     v_camion := null;
   end loop;
-  perform interne.l041_journal('livraison_confirmee', c.id, null, null, null, jsonb_build_object('pieces', v_res));
-  return json_build_object('ok', true, 'deja', false, 'pieces', v_res);
+  -- v7.5.207 : lignes du chargement de la commande réconciliées avec les pièces livrées (voir interne.l041_reconcilier_chargement)
+  v_charg := interne.l041_reconcilier_chargement(c.id, c.livreur);
+  perform interne.l041_journal('livraison_confirmee', c.id, null, null, null, jsonb_build_object('pieces', v_res, 'chargement', v_charg));
+  return json_build_object('ok', true, 'deja', false, 'pieces', v_res, 'chargement', v_charg);
 end $$;
 
 -- commande NON livrée (reportée, client absent) : achats payés → stock du camion, déclarations remises à zéro (le jour de la

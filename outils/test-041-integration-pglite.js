@@ -370,6 +370,47 @@ grant select, insert, update, delete on storage.objects to anon;
   test('GLS, 1 000 000 × 1 000 000 : refus propre « quantite_hors_borne » par la 040 (plus de débordement integer), stock intact, pas marquée déduite',
     r.ok === false && r.erreur === 'quantite_hors_borne' && (await stock('ps90')) === sX && !(await un(P, "select stock_deduit from public.commandes where id = '#I10'")).stock_deduit, r);
 
+  console.log('\n11 ter. v7.5.207 (revue native P2 sur c22dacd ; avis sur 6775bbc, pt 1) : CHARGEMENT → LIVRAISON → LENDEMAIN, et REPRISE DES ANCIENNES LIGNES « sc_… » (code réel de l\'appli)');
+  const morceau = (de, a) => { const i = html.indexOf(de), j = html.indexOf(a, i + 1); if (i < 0 || j < 0) throw new Error('code introuvable : ' + de); return html.slice(i, j); };
+  vm.runInContext(morceau('function scConvertirAnciennes(', 'function scReprendreAnciennes(') + '\n' + morceau('function scLignesChargement(', '// après la CONFIRMATION'), bac);
+  await q(P, "insert into public.produits (id, nom, cat, dim, prix, stock) values ('pq140', 'Matelas fictif Q', 'Matelas', '140×190', 300, 5), ('pq90', 'Sommier fictif Q', 'Sommier', '90×190', 120, 5)");
+  await cmd('#I11', [{ produitId: 'pq140', nom: 'Matelas fictif Q', qte: 1 }, { produitId: 'pq90', nom: 'Sommier fictif Q', qte: 2 }], 648);
+  const pI11 = (await rpc('livreur', 'public.drop_pieces($1)', ['#I11'])).pieces;
+  // les deux lignes cochées à l'écran de chargement : lignes du camion construites par le VRAI code de l'appli, insérées comme l'appli
+  const chI11 = [bac.scEntreeCamion('Livreur-A', 'Matelas fictif Q', 1, '#I11', 'T-I1', 'Livreur-A'), bac.scEntreeCamion('Livreur-A', 'Sommier fictif Q', 2, '#I11', 'T-I1', 'Livreur-A')];
+  for (const l of chI11) await q('livreur', 'insert into public.stock_camion select * from json_populate_record(null::public.stock_camion, $1::json) on conflict (id) do nothing', [JSON.stringify(l)]);
+  for (const p of pI11) await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [p.id, 'depot']);
+  const sI11 = pI11.filter((p) => p.produit_id === 'pq90');
+  r = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#I11', JSON.stringify(pI11.map((p) => ({ id: p.id, livree: p.id !== sI11[1].id })))]);
+  const garde = await q(P, "select * from public.stock_camion where source_cmd_id = '#I11' and status = 'en_camion'");
+  test('confirmation (pièces « Dépôt ») : les 2 lignes du chargement de l\'appli fermées « livre » ; 1 seule unité gardée, celle du sommier NON livré',
+    r.ok && (await nb("public.stock_camion where id = any($1::uuid[]) and status = 'livre'", [chI11.map((l) => l.id)])) === 2
+    && garde.length === 1 && String(garde[0].piece_id) === String(sI11[1].id) && garde[0].quantite === 1 && garde[0].produit_id === 'pq90', { r, garde });
+  test('l\'appli suit la base : plus aucune ligne du chargement de #I11 « en_camion » (scLignesChargement, code réel)',
+    bac.scLignesChargement(await q('livreur', "select * from public.stock_camion where status = 'en_camion'"), '#I11').length === 0);
+  await q('livreur', "update public.commandes set statut = 'livré' where id = '#I11'");
+  const avI11 = { m: await stock('pq140'), s: await stock('pq90') };
+  r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#I11']);
+  test('déduction : matelas et 1 sommier retirés du dépôt (le sommier non livré reste au stock du dépôt)', r.ok && (await stock('pq140')) === avI11.m - 1 && (await stock('pq90')) === avI11.s - 1, { r, avI11 });
+  await q(P, "update public.stock_camion set charge_at = now() - interval '1 day' where source_cmd_id = '#I11'");
+  await cmd('#I12', [{ produitId: 'pq140', nom: 'Matelas fictif Q', qte: 1 }, { produitId: 'pq90', nom: 'Sommier fictif Q', qte: 1 }], 504);
+  const pI12 = (await rpc('livreur', 'public.drop_pieces($1)', ['#I12'])).pieces;
+  const mI12 = pI12.find((p) => p.produit_id === 'pq140'), sI12 = pI12.find((p) => p.produit_id === 'pq90');
+  test('LENDEMAIN : aucune unité livrée n\'est proposée « Déjà dans le camion » (matelas : 0 choix ; sommier : la seule unité non livrée)',
+    (mI12.camion || []).length === 0 && (sI12.camion || []).length === 1 && sI12.camion[0].id === garde[0].id, { m: mI12.camion, s: sI12.camion });
+  r = await rpc('livreur', 'public.drop_declarer($1, $2, null, $3)', [mI12.id, 'camion', chI11[0].id]);
+  test('… et la ligne du chargement livrée hier est refusée si on la force (piece_camion_indisponible)', !r.ok && r.erreur === 'piece_camion_indisponible', r);
+  // reprise d'une ancienne ligne locale « sc_… » : convertie par le VRAI code de l'appli, acceptée par la table réelle, une seule fois
+  const cvI = bac.scConvertirAnciennes([{ id: 'sc_1700000000_abcdef', livreur: 'Livreur-A', produit_libelle: 'Sommier fictif Q', quantite: 1, source_cmd_id: '#I12',
+    source_tournee_id: 'T-I1', charge_at: new Date(Date.now() - 86400000).toISOString(), charge_par: 'Livreur-A', status: 'en_camion' }], () => 'en-route', bac.scUuid);
+  const rep = cvI.stock[0], corps = Object.assign(bac.scEntreeCamion(rep.livreur, rep.produit_libelle, rep.quantite, rep.source_cmd_id, rep.source_tournee_id, rep.charge_par, rep.id, rep.charge_at), { notes: rep.notes });
+  let eRep = null;
+  for (let k = 0; k < 2; k++) { try { await q('livreur', 'insert into public.stock_camion select * from json_populate_record(null::public.stock_camion, $1::json) on conflict (id) do nothing', [JSON.stringify(corps)]); } catch (e) { eRep = e.message; } }
+  test('ancienne ligne « sc_… » reprise : nouvel uuid ACCEPTÉ par la table réelle (note de reprise), envoyée deux fois = une seule ligne', eRep === null && cvI.converties.length === 1
+    && (await nb('public.stock_camion where id = $1 and notes like $2', [rep.id, 'Reprise v7.5.207%'])) === 1, eRep);
+  test('… puis proposée « Déjà dans le camion » à une commande du livreur (produit retrouvé par le libellé)',
+    ((await rpc('livreur', 'public.drop_pieces($1)', ['#I12'])).pieces.find((p) => p.produit_id === 'pq90').camion || []).some((c) => c.id === rep.id));
+
   console.log('\n12. REJEU FINAL DE LA 041 : le relevé des commandes livrées à l\'activation n\'est JAMAIS complété');
   await db.exec('set role l41i_postgres');
   let eFin = null; try { await db.exec(lireMigration('041_dropshipping_provenance.sql')); } catch (e) { eFin = e.message; }

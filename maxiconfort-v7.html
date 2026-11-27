@@ -6047,6 +6047,9 @@ async function dropEnvoyer(data) {
     if (data.fn === 'drop_enlever_payer' && r.corps.depense) dropDepenseLocale(r.corps.depense);
     if (estConf) { dropConfEtat[data.cmdId] = 'ok'; dropSauver(); }   // v7.5.201 : la déduction peut partir
     if (data.cmdId) { try { await dropChargerPieces(data.cmdId); } catch(e) {} }
+    // v7.5.207 (revue native P2 sur c22dacd) : la base a réconcilié les lignes du chargement (unités non livrées gardées) :
+    // l'appareil retire les siennes et relit le camion
+    if (estConf && typeof scApresConfirmation === 'function') { try { await scApresConfirmation(data.cmdId); } catch(e) {} }
     return 'ok';
   }
   // v7.5.201 : confirmation REFUSÉE : la déduction et le « livré » attendent (la base refuse « livré » sans pièces confirmées)
@@ -6640,15 +6643,123 @@ function scEntreeCamion(livreur, produitLib, qte, cmdId, tourneeId, parUser, id,
 }
 // corps de l'envoi : la ligne locale SANS ses marques locales (a_envoyer…). Pure.
 function scCorpsEnvoi(entry) {
-  return scEntreeCamion(entry.livreur, entry.produit_libelle, entry.quantite, entry.source_cmd_id, entry.source_tournee_id, entry.charge_par, entry.id, entry.charge_at);
+  var c = scEntreeCamion(entry.livreur, entry.produit_libelle, entry.quantite, entry.source_cmd_id, entry.source_tournee_id, entry.charge_par, entry.id, entry.charge_at);
+  if (entry.notes) c.notes = String(entry.notes);   // v7.5.207 : colonne réelle (trace d'une reprise d'ancienne ligne locale)
+  return c;
 }
 // après la lecture de la base : lignes de la base + lignes locales pas encore enregistrées (uuid valide). Pure.
 function scFusionner(base, local) {
   var res = (base || []).slice();
   (local || []).forEach(function(s) {
     if (s && s.a_envoyer && scEstUuid(s.id) && s.status === 'en_camion' && !res.some(function(b) { return b && b.id === s.id; })) res.push(s);
+    // v7.5.207 (avis chatgpt-review sur 6775bbc, point 1) : ancienne ligne locale « sc_… » pas encore reprise (statuts des
+    // commandes pas encore lus) : GARDÉE sur l'appareil (seule trace possible du camion), jamais envoyée telle quelle
+    else if (s && !scEstUuid(s.id) && (!s.status || s.status === 'en_camion')) res.push(s);
   });
   return res;
+}
+// v7.5.207 (avis chatgpt-review sur 6775bbc, point 1) : REPRISE DES ANCIENNES LIGNES LOCALES « sc_… ». Jusqu'à la v7.5.205 la
+// base refusait ces lignes : elles peuvent être la SEULE trace de ce qui est dans le camion. À la première ouverture de la
+// nouvelle version (statuts des commandes lus), chaque ancienne ligne « en_camion » devient une ligne au NOUVEL uuid, gardée
+// « à envoyer » (envoyée une seule fois : même uuid à chaque renvoi, on_conflict=id), avec une note de reprise ; l'ancienne est
+// retirée du stockage de l'appareil. Une ancienne ligne dont la commande est déjà LIVRÉE ou ANNULÉE n'est pas reprise (avant
+// la v7.5.207, la signature ne retirait pas l'article du camion : la reprendre le reproposerait) ; elle est citée dans le
+// récapitulatif. Commande inconnue sur l'appareil : reprise, notée « à vérifier ». Pure (statut de commande et uuid fournis).
+function scConvertirAnciennes(stock, statutCmd, nouvelUuid) {
+  var res = [], converties = [], ecartees = [];
+  (stock || []).forEach(function(s) {
+    if (!s) return;
+    if (scEstUuid(s.id)) { res.push(s); return; }
+    if (s.status && s.status !== 'en_camion') return;   // historique local seulement
+    var st = s.source_cmd_id ? statutCmd(s.source_cmd_id) : null;
+    var sn = String(st || '').toLowerCase();
+    if (sn === 'livré' || sn === 'livre' || sn === 'annulé' || sn === 'annule') {
+      ecartees.push({ ancien: String(s.id), cmd: s.source_cmd_id, libelle: s.produit_libelle, quantite: s.quantite, statut: st });
+      return;
+    }
+    var aVerifier = st === null || st === undefined;
+    var n = scEntreeCamion(s.livreur, s.produit_libelle, s.quantite, s.source_cmd_id, s.source_tournee_id, s.charge_par, nouvelUuid(), s.charge_at);
+    n.a_envoyer = true; n.reprise_de = String(s.id);
+    n.notes = 'Reprise v7.5.207 de l\'ancienne ligne locale ' + String(s.id) + (aVerifier ? ' (commande inconnue sur l\'appareil : à vérifier)' : '');
+    res.push(n);
+    converties.push({ ancien: String(s.id), nouveau: n.id, cmd: s.source_cmd_id, libelle: s.produit_libelle, quantite: n.quantite, a_verifier: aVerifier });
+  });
+  return { stock: res, converties: converties, ecartees: ecartees };
+}
+function scReprendreAnciennes() {
+  if (!Array.isArray(stockCamion) || !stockCamion.some(function(s) { return s && !scEstUuid(s.id); })) return null;
+  // statuts des commandes pas encore lus : reprise remise au chargement suivant (rien n'est perdu, rien n'est envoyé)
+  if (typeof commandes === 'undefined' || !Array.isArray(commandes) || !commandes.length) return null;
+  var r = scConvertirAnciennes(stockCamion, function(id) {
+    var c = commandes.find(function(x) { return x && x.id === id; });
+    return c ? String(c.statut || '') : null;
+  }, scUuid);
+  stockCamion = r.stock;
+  // l'écran de chargement garde l'identifiant de la ligne du camion : ancien → nouvel uuid (décocher retire la bonne ligne)
+  try {
+    if (typeof chargements !== 'undefined' && chargements) {
+      Object.keys(chargements).forEach(function(cmd) { Object.keys(chargements[cmd] || {}).forEach(function(i) {
+        var ch = chargements[cmd][i];
+        r.converties.concat(r.ecartees).forEach(function(cv) { if (ch && ch.stockCamionId === cv.ancien) ch.stockCamionId = cv.nouveau || null; });
+      }); });
+      if (typeof mxEcrire === 'function') mxEcrire('mx_chargements', JSON.stringify(chargements));
+    }
+  } catch(e) {}
+  try { localStorage.setItem('mx_stock_camion', JSON.stringify(stockCamion)); } catch(e) {}   // AVANT l'envoi : uuid fixé
+  if (r.converties.length || r.ecartees.length) {
+    var det = r.converties.map(function(c) { return (c.quantite || 1) + ' × ' + c.libelle + (c.cmd ? ' (' + c.cmd + ')' : '') + (c.a_verifier ? ' — à vérifier' : ''); });
+    var ec = r.ecartees.map(function(c) { return (c.quantite || 1) + ' × ' + c.libelle + ' (' + c.cmd + ', ' + c.statut + ')'; });
+    try { notifAjout('warn', 'stock', '🚚 Stock du camion : ' + r.converties.length + ' ancienne(s) ligne(s) reprise(s)' + (r.ecartees.length ? ', ' + r.ecartees.length + ' écartée(s)' : ''),
+      (det.length ? 'Reprises et envoyées à la base : ' + det.join(' ; ') + '. ' : '') + (ec.length ? 'Écartées (commande déjà livrée ou annulée) : ' + ec.join(' ; ') + '. ' : '')
+      + 'Administrateur : vérifiez le contenu du camion.', 'Voir', 'livreur'); } catch(e) {}
+  }
+  return r;
+}
+// v7.5.207 (revue native P2 sur c22dacd) : lignes du CHARGEMENT d'une commande (créées en cochant la ligne : sans achat, sans
+// pièce d'origine, non réservées par une pièce), encore dans le camion. Pure.
+function scLignesChargement(stock, cmdId) {
+  return (stock || []).filter(function(s) {
+    return s && cmdId && s.status === 'en_camion' && s.source_cmd_id === cmdId && !s.achat_id && !s.piece_id && !s.utilise_par_piece;
+  });
+}
+// après la CONFIRMATION des pièces par la base (qui a fermé ces lignes et gardé une ligne par unité non livrée) : retrait de
+// l'appareil (sans nouvel envoi) puis relecture du camion — jamais un article livré gardé « en_camion » sur le téléphone
+async function scApresConfirmation(cmdId) {
+  var ids = scLignesChargement(stockCamion, cmdId).map(function(s) { return s.id; });
+  if (ids.length) {
+    stockCamion = stockCamion.filter(function(s) { return ids.indexOf(s.id) < 0; });
+    try { localStorage.setItem('mx_stock_camion', JSON.stringify(stockCamion)); } catch(e) {}
+  }
+  try { await sbLoadStockCamion(); } catch(e) {}
+  return ids.length;
+}
+// v7.5.207 : « livré » (signature validerSig ou setLvSt) : les lignes du chargement de la commande sortent du camion.
+// Commande découpée en pièces (module actif) : la BASE réconcilie à la confirmation (unités non livrées gardées) — en
+// attente tant que la confirmation n'a pas réussi ; dérogation de l'administrateur (livré sans confirmation) ou commande sans
+// pièces : lignes du chargement retirées (« livre »). Les lignes d'un achat ou d'une pièce (articles non livrés) ne sont
+// jamais touchées ici.
+async function scApresLivre(cmdId, parUser) {
+  var ps = []; try { ps = (typeof dropPiecesDe === 'function') ? dropPiecesDe(cmdId) : []; } catch(e) { ps = []; }
+  var derog = false; try { derog = !!(typeof dropPieces !== 'undefined' && dropPieces[cmdId] && dropPieces[cmdId].derogation); } catch(e) {}
+  if (ps.length && !derog) {
+    var attente = ps.some(function(p) { return p && !p.livraison; });
+    try { if (!attente && typeof dropConfEnFile === 'function' && dropConfEnFile(cmdId)) attente = true; } catch(e) {}
+    if (attente) return 'attente';   // dropEnvoyer (succès de la confirmation) appelle scApresConfirmation
+    return scApresConfirmation(cmdId);
+  }
+  var l = scLignesChargement(stockCamion, cmdId);
+  for (var i = 0; i < l.length; i++) { try { await retirerStockCamion(l[i].id, 'livre', parUser); } catch(e) {} }
+  return l.length;
+}
+// lignes « à envoyer » d'une commande déjà LIVRÉE : jamais envoyées (l'article est chez le client), retirées de l'appareil. Pure.
+function scAEnvoyer(stock, estLivree) {
+  var garder = [], envoyer = [], retirer = [];
+  (stock || []).forEach(function(s) {
+    if (s && s.a_envoyer && scEstUuid(s.id) && !s.achat_id && !s.piece_id && s.source_cmd_id && estLivree(s.source_cmd_id)) { retirer.push(s); return; }
+    garder.push(s);
+    if (s && s.a_envoyer && scEstUuid(s.id)) envoyer.push(s);
+  });
+  return { garder: garder, envoyer: envoyer, retirer: retirer };
 }
 async function scEnvoyer(entry) {
   if (!entry || !scEstUuid(entry.id)) return false;
@@ -6675,8 +6786,16 @@ async function scEnvoyer(entry) {
 async function sbLoadStockCamion() {
   try {
     if (typeof SUPABASE_URL === 'undefined' || !SUPABASE_URL) return;
+    // v7.5.207 : anciennes lignes locales « sc_… » reprises (nouvel uuid, à envoyer) une seule fois
+    try { scReprendreAnciennes(); } catch(e) { console.warn('[stockCamion] reprise des anciennes lignes :', e && e.message); }
+    // v7.5.207 : ligne « à envoyer » d'une commande déjà livrée = jamais envoyée (article chez le client), retirée de l'appareil
+    var _tri = scAEnvoyer(stockCamion, function(id) {
+      var c = (typeof commandes !== 'undefined' && Array.isArray(commandes)) ? commandes.find(function(x) { return x && x.id === id; }) : null;
+      return !!c && (c.statut === 'livré' || c.statut === 'livre');
+    });
+    if (_tri.retirer.length) { stockCamion = _tri.garder; try { localStorage.setItem('mx_stock_camion', JSON.stringify(stockCamion)); } catch(e) {} }
     // v7.5.206 : lignes locales pas encore enregistrées → renvoyées d'abord (même uuid)
-    var enAttente = stockCamion.filter(function(s) { return s && s.a_envoyer && scEstUuid(s.id); });
+    var enAttente = _tri.envoyer;
     for (var i = 0; i < enAttente.length; i++) { await scEnvoyer(enAttente[i]); }
     var resp = await fetch(SUPABASE_URL + '/rest/v1/stock_camion?status=eq.en_camion&order=charge_at.desc', {
       headers: {'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY}
@@ -14912,13 +15031,10 @@ function setLvSt(tid, idx, st, _annOk) {
       // (plus bas) ; une erreur de stock n'empêche jamais l'enregistrement du « livré »
       try { stkDeductionPoser(cLv); } catch(e) { console.warn('[stock] demande de déduction :', e && e.message); }
       // v7.1.7 : Retirer du stock camion (camion → livré client)
+      // v7.5.207 (revue native P2 sur c22dacd) : seules les lignes du CHARGEMENT de la commande (jamais un article acheté ou
+      // une unité non livrée d'une autre livraison) ; commande découpée en pièces : réconciliée par la base à la confirmation
       try {
-        var itemsCamion = stockCamion.filter(function(sc){
-          return sc.status === 'en_camion' && sc.source_cmd_id === cLv.id;
-        });
-        itemsCamion.forEach(function(item){
-          retirerStockCamion(item.id, 'livre', (typeof livNom !== 'undefined' && livNom) ? livNom : (role || 'admin'));
-        });
+        Promise.resolve(scApresLivre(cLv.id, (typeof livNom !== 'undefined' && livNom) ? livNom : (role || 'admin'))).catch(function(e) { console.warn('[stock-camion] livraison :', e && e.message); });
       } catch(e) { console.warn('[stock-camion] livraison fail:', e); }
     }
   }
@@ -15324,6 +15440,10 @@ function validerSig(){
     // v7.5.199 : confirmation des pièces livrées envoyée à la base (gardée en file), la déduction l'attend
     var _aConf = false; try { _aConf = (typeof dropAConfirmer === 'function') && dropAConfirmer(_cmdLivre.id); } catch(e) {}
     var _pDrop = null; try { _pDrop = (_aConf && typeof dropApresLivre === 'function') ? dropApresLivre(_cmdLivre.id) : null; } catch(e) { console.warn('[drop] confirmation :', e && e.message); }
+    // v7.5.207 (revue native P2 sur c22dacd) : la signature retire aussi du camion les lignes du chargement de la commande
+    // (avant : seul setLvSt le faisait — l'article livré restait « en_camion » et pouvait être reproposé) ; commande découpée :
+    // la base réconcilie à la confirmation (unités non livrées gardées), l'appareil suit après le succès (dropEnvoyer)
+    try { Promise.resolve(scApresLivre(_cmdLivre.id, t.livreur || livNom || role || 'admin')).catch(function(e) { console.warn('[stock-camion] signature :', e && e.message); }); } catch(e) { console.warn('[stock-camion] signature :', e && e.message); }
     try { stkDeductionPoser(_cmdLivre); } catch(e) { console.warn('[stock] demande de déduction :', e && e.message); }
     try { offlineQueueAdd('commande', _cmdLivre); } catch(e) { console.warn('[livré] enregistrement préventif :', e && e.message); }
     // v7.5.202 (revue Codex P1 et réserve n° 1) : ORDRE OBLIGATOIRE — 1) confirmation des pièces ; 2) SEULEMENT si elle a
