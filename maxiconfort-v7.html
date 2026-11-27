@@ -5981,6 +5981,29 @@ function dropCmdConcernee(c) {
 function dropCmdDe(cmdId) {
   try { return (typeof commandes !== 'undefined' && Array.isArray(commandes)) ? (commandes.find(function(x) { return x && x.id === cmdId; }) || null) : null; } catch(e) { return null; }
 }
+// v7.5.211 (avis chatgpt-review PR 31 sur df07c0d, point 3) : pièce DÉJÀ déclarée = provenance, issue de livraison ou achat (même
+// règle que la base, interne.l042_pieces_jamais_declarees). Pure.
+function dropPieceDeclaree(p) { return !!(p && (p.provenance || p.livraison || p.achat_id || (p.achat && (p.achat.id || p.achat.statut)))); }
+// Commande CONTRÔLÉE par l'appli (pièces prises en compte, « Livré » bloqué tant qu'elles ne sont pas réglées, déduction en
+// attente de leur confirmation) : commande concernée, OU commande devenue non concernée (livreur retiré, passage en GLS) dont une
+// pièce connue de l'appareil a DÉJÀ été déclarée — la base (042) contrôle toujours celle-ci : l'appli ne doit ni masquer ces
+// pièces ni laisser passer un « Livré » que la base refusera.
+function dropCmdControlee(cmdId) {
+  if (dropCmdConcernee(dropCmdDe(cmdId))) return true;
+  var e = dropPieces[cmdId];
+  return !!(e && (e.pieces || []).some(dropPieceDeclaree));
+}
+// Lecture SANS création des pièces d'une commande non concernée (une fois par session et par commande ; nouvel essai 5 min après
+// un échec ; jamais pendant une pause après erreur de la base ; plus jamais si la 042 n'est pas appliquée). Rend vrai si lancée.
+var _dropLuNonConcernee = {}, _dropLireAbsente = false;
+function dropLireNonConcernee(cmdId) {
+  var m = _dropLuNonConcernee[cmdId];
+  if (!cmdId || _dropLireAbsente || (m && (m.ok || Date.now() - m.at < 300000))) return false;
+  if (typeof chargeEnPause === 'function' && chargeEnPause()) return false;
+  _dropLuNonConcernee[cmdId] = { at: Date.now(), ok: false };
+  try { dropVerifier().then(function(a) { return a ? dropChargerPieces(cmdId) : null; }).then(function(r) { if (r && r.pieces && r.pieces.length) dropRafraichir(); }).catch(function() {}); } catch(e) {}
+  return true;
+}
 async function dropChargerPieces(cmdId) {
   if (!cmdId || dropActif !== true) return null;
   // v7.5.211 (défaut observé en production) : pas de découpage (drop_pieces crée les pièces) pour une commande NON concernée
@@ -5988,7 +6011,27 @@ async function dropChargerPieces(cmdId) {
   // simple ouverture de la fiche, puis refusait son « Livré » (PIECES_NON_CONFIRMEES)
   var _c = dropCmdDe(cmdId);
   var _livree = _c && (String(_c.statut || '') === 'livré' || String(_c.statut || '') === 'livre');
-  if (_c && !dropCmdConcernee(_c)) return { pieces: [], nonConcernee: true }; // jamais de création ni de lecture
+  // v7.5.211 (avis chatgpt-review PR 31 sur df07c0d, point 3) : commande NON concernée → jamais de création (drop_pieces), mais
+  // lecture SANS création (drop_pieces_lire, 042) : si une pièce A DÉJÀ été déclarée (provenance, livraison, achat — ex. livreur
+  // retiré après la déclaration), la base contrôle toujours son « Livré » ; l'appli garde donc ces pièces et les contrôle aussi.
+  // Pièces jamais déclarées : rien gardé. Fonction absente (042 pas appliquée) : aucune lecture, plus aucun essai de la session.
+  if (_c && !dropCmdConcernee(_c)) {
+    var _rien = { pieces: [], nonConcernee: true };
+    if (_dropLireAbsente) return _rien;
+    var rn = await dropRpc('drop_pieces_lire', { p_cmd_id: cmdId });
+    if (rn.absente) { _dropLireAbsente = true; return _rien; }
+    if (!(rn.httpOk && rn.corps && rn.corps.ok)) return _rien; // échec de lecture : rien changé, nouvel essai plus tard (dropLireNonConcernee)
+    _dropLuNonConcernee[cmdId] = { at: Date.now(), ok: true };
+    var psn = rn.corps.pieces || [];
+    if (!psn.some(dropPieceDeclaree)) {
+      // la base fait foi : des pièces connues de l'appareil comme déclarées et qui ne le sont plus (réinitialisées) sont oubliées
+      if (dropPieces[cmdId] && (dropPieces[cmdId].pieces || []).some(dropPieceDeclaree)) { delete dropPieces[cmdId]; dropSauver(); }
+      return _rien;
+    }
+    dropPieces[cmdId] = { pieces: psn, perime: !!rn.corps.perime, tva: rn.corps.tva_pct, derogation: !!rn.corps.derogation, lectureSeule: true, at: Date.now() };
+    dropSauver();
+    return dropPieces[cmdId];
+  }
   // v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 5) : commande concernée DÉJÀ livrée → lecture SANS création
   // (drop_pieces_lire, migration 042) : les pièces déclarées sur un autre appareil sont consultables sur un appareil neuf, et la
   // commande n'est jamais découpée ni redécoupée. Fonction absente (042 pas appliquée) : aucune pièce lue, aucun découpage.
@@ -6017,8 +6060,9 @@ async function dropChargerPieces(cmdId) {
   return null;
 }
 // v7.5.211 (défaut observé en production) : pièces d'une commande NON concernée (découpée par une version précédente à l'ouverture
-// de sa fiche) jamais prises en compte : ni blocage, ni confirmation envoyée, ni attente de la déduction
-function dropPiecesDe(cmdId) { return (dropModuleActif() && dropPieces[cmdId] && dropCmdConcernee(dropCmdDe(cmdId))) ? (dropPieces[cmdId].pieces || []) : []; }
+// de sa fiche) jamais prises en compte : ni blocage, ni confirmation envoyée, ni attente de la déduction — SAUF si l'une d'elles
+// a déjà été déclarée (avis chatgpt-review sur df07c0d, point 3 : la base la contrôle toujours, cf. dropCmdControlee)
+function dropPiecesDe(cmdId) { return (dropModuleActif() && dropPieces[cmdId] && dropCmdControlee(cmdId)) ? (dropPieces[cmdId].pieces || []) : []; }
 function dropTvaDe(cmdId) { return dropTva(dropPieces[cmdId] && dropPieces[cmdId].tva); }
 // pièces de toutes les commandes RANOU d'une tournée (une à la fois), puis nouvel affichage
 var _dropChargementEnCours = {};
@@ -6035,7 +6079,7 @@ async function dropChargerTournee(t, apres, force) {
       var s = t.stops[i]; if (!s || !s.cmdId) continue;
       var c = (typeof findCmdForStop === 'function') ? findCmdForStop(s) : null;
       if (c && (c.transporteur || 'RANOU') !== 'RANOU') continue;
-      if (c && !dropCmdConcernee(c)) continue; // v7.5.211 : commande non concernée (sans livreur) jamais découpée
+      if (c && !dropCmdControlee(s.cmdId)) continue; // v7.5.211 : commande non concernée (sans livreur) jamais découpée ; pièces déjà déclarées : relues sans création
       if (!force && dropPieces[s.cmdId] && Date.now() - (dropPieces[s.cmdId].at || 0) < 60000) continue; // relu au plus une fois par minute
       var avant = JSON.stringify(dropPieces[s.cmdId] && dropPieces[s.cmdId].pieces);
       var r = await dropChargerPieces(s.cmdId);
@@ -6167,7 +6211,7 @@ function dropConfEnFile(cmdId) {
 }
 function dropDeductionPermise(cmdId) {
   if (!cmdId) return true;
-  if (!dropCmdConcernee(dropCmdDe(cmdId))) return true; // v7.5.211 : commande non concernée : la déduction n'attend aucune pièce
+  if (!dropCmdControlee(cmdId)) return true; // v7.5.211 : commande non concernée (aucune pièce déjà déclarée) : la déduction n'attend aucune pièce
   return dropDeductionPermiseDe(dropPieces[cmdId], dropConfEnFile(cmdId), dropConfEtat[cmdId], dropModuleActif());
 }
 function dropDepenseLocale(d) {
@@ -6202,7 +6246,10 @@ function dropBloqueLivre(cmdId) {
   var ranou = !c || String(c.transporteur || 'RANOU').toUpperCase() === 'RANOU';
   // v7.5.211 (défaut observé en production, GO de Borhen) : commande NON concernée (sans livreur : retrait, vente du bureau) :
   // jamais bloquée et jamais découpée (même règle que la base, interne.l041_concernee)
-  if (c && !dropCmdConcernee(c)) return '';
+  // (avis chatgpt-review sur df07c0d, point 3) sauf si une de ses pièces a DÉJÀ été déclarée : la base la contrôle toujours, l'appli
+  // aussi ; pièces pas encore connues de l'appareil : lues une fois SANS création (dropLireNonConcernee)
+  var _nonConc = !!c && !dropCmdConcernee(c);
+  if (_nonConc && !dropCmdControlee(cmdId)) { try { dropLireNonConcernee(cmdId); } catch(e) {} return ''; }
   // v7.5.205 : état inconnu → BLOQUÉ pour les commandes concernées (nos livreurs ; jamais GLS) ; vérification relancée tout de
   // suite (réseau revenu : module absent = débloqué, module présent = pièces lues puis contrôle normal)
   if (inconnu) {
@@ -6212,7 +6259,7 @@ function dropBloqueLivre(cmdId) {
   }
   // pièces jamais lues sur cet appareil : lecture lancée tout de suite (réseau présent), « Livré » possible au clic suivant
   if (ranou && !dropPieces[cmdId] && !(Date.now() - (_dropLectureLancee[cmdId] || 0) < 30000)) { _dropLectureLancee[cmdId] = Date.now(); try { dropVerifier().then(function(a) { if (a) return dropChargerPieces(cmdId).then(function() { dropRafraichir(); }); }).catch(function() {}); } catch(e) {} }
-  return dropRaisonLivraison(dropPieces[cmdId], dropConfirm[cmdId], true, ranou);
+  return dropRaisonLivraison(dropPieces[cmdId], dropConfirm[cmdId], true, ranou || _nonConc);
 }
 // v7.5.202 : pièces de la commande à confirmer à la base avant le « livré » ?
 function dropAConfirmer(cmdId) { return dropPiecesDe(cmdId).some(function(p) { return p && !p.livraison; }); }
@@ -7509,6 +7556,12 @@ function sbChargerTout(opts) {
     function (e) { _chargeToutVol = null; console.warn('[charge] chargement complet : ' + (e && e.message)); return false; });
   return _chargeToutVol;
 }
+// v7.5.211 (avis chatgpt-review PR 31 sur df07c0d, point 2) : reprise « liste vide » 3 s après le premier chargement — seulement si
+// ce chargement n'a PAS lu les commandes (échec). Une base réellement vide (commandes lues avec succès, 0 ligne) n'est jamais
+// relue à 3 s : la limite d'un chargement complet par minute s'applique. _chargeToutLuA = heure de la dernière lecture réussie
+// des commandes par le chargement complet (0 = jamais). Pure.
+var _chargeToutLuA = 0;
+function chargeRepriseListeVide(nbCommandes, luA) { return nbCommandes === 0 && !luA; }
 // CHARGE-FIN
 
 // Colonnes chargées pour les commandes — EXCLUT gls_pdf_base64 (PDF étiquette 50-400 Ko/cmd,
@@ -7585,6 +7638,7 @@ async function sbLoadAll() {
     _dTout.fin();
     // v7.5.211 (revue native P2 PR 31 sur adf71bb) : attente croissante remise à zéro SEULEMENT ici, les deux réponses lues avec succès
     if (rCmds.ok && rTour.ok && typeof chargeSucces === 'function') chargeSucces(_cmdDebutLecture);
+    if (!cmdsRes.error && Array.isArray(cmdsRes.data)) _chargeToutLuA = Date.now(); // v7.5.211 : commandes lues avec succès (même 0 ligne) → pas de reprise « liste vide »
     if (cmdsRes.error) { console.warn('Supabase commandes error:', cmdsRes.error); }
     if (tourRes.error) { console.warn('Supabase tournees error:', tourRes.error); }
 
@@ -9217,8 +9271,9 @@ function buildUI(r) {
         if (typeof renderLivreur === 'function') renderLivreur();
         if (typeof renderCamionContenu === 'function') renderCamionContenu();
       });
-      // Si commandes vides, réessayer après 3s
-      if (commandes.length === 0) {
+      // Si commandes vides, réessayer après 3s — v7.5.211 (avis chatgpt-review sur df07c0d, point 2) : seulement si le premier
+      // chargement n'a PAS lu les commandes (échec) ; une base réellement vide n'est pas relue (au plus un chargement complet par minute)
+      if (chargeRepriseListeVide(commandes.length, _chargeToutLuA)) {
         setTimeout(function() {
           sbChargerTout({ sansEspacement: true }).then(function() { // v7.5.211 : jamais pendant une pause après erreur ni onglet caché
             renderDash(); renderCmds(); renderTournees(); renderLivreur();

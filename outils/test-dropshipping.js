@@ -663,10 +663,11 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     test('dropCmdConcernee : sans livreur → non ; GLS → non ; RANOU (ou vide) avec livreur → oui ; inconnue → oui (prudence)',
       !bN.dropCmdConcernee(bN.commandes[0]) && !bN.dropCmdConcernee(bN.commandes[1]) && bN.dropCmdConcernee(bN.commandes[2]) && bN.dropCmdConcernee(bN.commandes[3]) && bN.dropCmdConcernee(null));
     const r1 = await bN.dropChargerPieces('#N1'), r2 = await bN.dropChargerPieces('#N2');
-    test('commande SANS livreur ou GLS : aucun appel drop_pieces (plus de découpage à l\'ouverture de la fiche), rien gardé', r1.nonConcernee && r2.nonConcernee
-      && !bN._envois.some((e) => /drop_pieces/.test(e.url)) && !bN.dropPieces['#N1'] && !bN.dropPieces['#N2'], bN._envois.map((e) => e.url));
-    test('« Livré » jamais bloqué pour une commande sans livreur ou GLS (et aucune lecture lancée)', bN.dropBloqueLivre('#N1') === '' && bN.dropBloqueLivre('#N2') === ''
-      && !bN._envois.some((e) => /drop_pieces/.test(e.url)));
+    const lireN = () => bN._envois.filter((e) => /\/rpc\/drop_pieces_lire$/.test(e.url)).map((e) => e.body && e.body.p_cmd_id).join();
+    test('commande SANS livreur ou GLS : aucun appel drop_pieces (plus de découpage à l\'ouverture de la fiche) ; lue SANS création (avis sur df07c0d, point 3) ; pièces jamais déclarées : rien gardé', r1.nonConcernee && r2.nonConcernee
+      && !bN._envois.some((e) => /\/rpc\/drop_pieces$/.test(e.url)) && lireN() === '#N1,#N2' && !bN.dropPieces['#N1'] && !bN.dropPieces['#N2'], bN._envois.map((e) => e.url));
+    test('« Livré » jamais bloqué pour une commande sans livreur ou GLS (aucun découpage ; déjà lue sans création : pas relue)', bN.dropBloqueLivre('#N1') === '' && bN.dropBloqueLivre('#N2') === ''
+      && !bN._envois.some((e) => /\/rpc\/drop_pieces$/.test(e.url)) && lireN() === '#N1,#N2', lireN());
     const r3 = await bN.dropChargerPieces('#N3');
     test('commande CONCERNÉE (livreur attribué) : découpage demandé comme avant', !!r3 && !r3.nonConcernee && bN._envois.filter((e) => /\/rpc\/drop_pieces$/.test(e.url)).length === 1 && bN.dropPieces['#N3'].pieces.length === 1);
     // avis chatgpt-review sur adf71bb, point 5 : commande DÉJÀ livrée → lecture SANS création (drop_pieces_lire, 042), jamais drop_pieces
@@ -691,7 +692,7 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     test('commande livrée DONT les pièces sont déjà connues : relue sans création (plus de drop_pieces, ni découpage ni redécoupage)',
       lus.join() === '#L1,#L2,#L1' && !bL._envois.some((e) => /\/rpc\/drop_pieces$/.test(e.url)), lus);
     const rL3 = await bL.dropChargerPieces('#L3');
-    test('commande livrée NON concernée (sans livreur) : ni lecture ni création', rL3.nonConcernee && lus.length === 3 && !bL._envois.some((e) => /\/rpc\/drop_pieces$/.test(e.url)));
+    test('commande livrée NON concernée (sans livreur) : lue SANS création, aucune pièce déclarée → rien gardé, jamais de création', rL3.nonConcernee && lus.join() === '#L1,#L2,#L1,#L3' && !bL.dropPieces['#L3'] && !bL._envois.some((e) => /\/rpc\/drop_pieces$/.test(e.url)), lus);
     bL._lireEtat = 'panne'; delete bL.dropPieces['#L2'];
     const rP = await bL.dropChargerPieces('#L2');
     test('lecture seule en 503 : rien gardé (nouvel essai plus tard), jamais de repli sur drop_pieces', rP === null && !bL.dropPieces['#L2'] && !bL._envois.some((e) => /\/rpc\/drop_pieces$/.test(e.url)));
@@ -700,8 +701,8 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     test('042 pas appliquée (drop_pieces_lire absente) : aucune pièce lue pour une commande inconnue, pièces déjà connues gardées, jamais drop_pieces',
       rA.nonConcernee && rA.pieces.length === 0 && rA1 && rA1.pieces.length === 1 && !bL._envois.some((e) => /\/rpc\/drop_pieces$/.test(e.url)));
     const r4 = await bN.dropChargerPieces('#N4');
-    test('commande DÉJÀ livrée (bac précédent) : seule la lecture sans création est demandée', !!r4 && bN._envois.filter((e) => /\/rpc\/drop_pieces_lire$/.test(e.url)).length === 1
-      && bN._envois.filter((e) => /\/rpc\/drop_pieces$/.test(e.url)).length === 1, bN._envois.map((e) => e.url));
+    test('commande DÉJÀ livrée (bac précédent) : seule la lecture sans création est demandée', !!r4 && bN._envois.filter((e) => /\/rpc\/drop_pieces_lire$/.test(e.url) && e.body && e.body.p_cmd_id === '#N4').length === 1
+      && bN._envois.filter((e) => /\/rpc\/drop_pieces$/.test(e.url)).map((e) => e.body && e.body.p_cmd_id).join() === '#N3', bN._envois.map((e) => e.url));
     test('… et « Livré » toujours bloqué tant que sa pièce n\'est pas indiquée', bN.dropBloqueLivre('#N3') !== '');
     // pièces déjà en cache (découpée par la v7.5.210 à l'ouverture de sa fiche) : ignorées pour une commande non concernée
     bN.dropPieces['#N1'] = { pieces: [PIECE(9, { cmd_id: '#N1' })] };
@@ -712,6 +713,70 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     bT.dropActif = true; bT.commandes = [{ id: '#T1', transporteur: 'RANOU', livreur: '' }, { id: '#T2', transporteur: 'RANOU', livreur: 'LIVREUR-TEST' }];
     await bT.dropChargerTournee({ id: 'T-1', stops: [{ cmdId: '#T1' }, { cmdId: '#T2' }] }, null, true);
     test('pièces d\'une tournée : seule la commande concernée est lue', bT._envois.filter((e) => /drop_pieces/.test(e.url)).map((e) => e.body && e.body.p_cmd_id).join() === '#T2', bT._envois.map((e) => e.body));
+
+    // AVIS chatgpt-review SUR df07c0d, point 3 : pièces DÉJÀ déclarées d'une commande devenue NON concernée (livreur retiré après la
+    // déclaration, passage en GLS) : la base (042) les contrôle toujours → l'appli les lit (sans création), les montre et les contrôle
+    {
+      const etatD = { mode: 'ok' };
+      const { bac: bD } = nouveauBac({ reponse: (url, opt) => {
+        if (/\/rpc\/drop_pieces_lire$/.test(url)) { const id = JSON.parse(opt.body).p_cmd_id;
+          if (etatD.mode === 'absente') return { status: 404, json: { code: 'PGRST202' } };
+          if (etatD.mode === 'panne') return { status: 503, json: {} };
+          if (id === '#D9') return { status: 200, json: { ok: true, lecture_seule: true, perime: false, tva_pct: 20, pieces: etatD.reinit ? [PIECE(91, { cmd_id: '#D9' })] : [PIECE(91, { cmd_id: '#D9', provenance: 'depot' })] } };
+          if (id === '#D8') return { status: 200, json: { ok: true, lecture_seule: true, perime: false, tva_pct: 20, pieces: [PIECE(81, { cmd_id: '#D8', provenance: 'depot', livraison: 'livree' }), PIECE(82, { cmd_id: '#D8', provenance: 'depot' })] } };
+          return { status: 200, json: { ok: true, lecture_seule: true, pieces: [PIECE(71, { cmd_id: id })] } }; }
+        return { status: 200, json: { ok: true, pieces: [PIECE(99)] } }; } });
+      const lireD = () => bD._envois.filter((e) => /\/rpc\/drop_pieces_lire$/.test(e.url)).map((e) => e.body && e.body.p_cmd_id).join();
+      const creeD = () => bD._envois.some((e) => /\/rpc\/drop_pieces$/.test(e.url));
+      const tic = () => new Promise((r) => setImmediate(r));
+      bD.dropActif = true;
+      bD.commandes = [{ id: '#D9', transporteur: 'RANOU', livreur: '', statut: 'en-attente' }, { id: '#D8', transporteur: 'GLS', livreur: 'LIVREUR-TEST', statut: 'en-attente' },
+        { id: '#D7', transporteur: 'RANOU', livreur: '', statut: 'en-attente' }, { id: '#D6', transporteur: 'RANOU', livreur: '', statut: 'en-attente' }, { id: '#D5', transporteur: 'RANOU', livreur: '', statut: 'en-attente' }];
+      test('dropPieceDeclaree : provenance, issue de livraison ou achat → déclarée ; pièce nue → non (même règle que la base)',
+        bD.dropPieceDeclaree(PIECE(1, { provenance: 'depot' })) && bD.dropPieceDeclaree(PIECE(1, { livraison: 'non_livree' })) && bD.dropPieceDeclaree(PIECE(1, { achat: { id: 3, statut: 'paye' } }))
+        && bD.dropPieceDeclaree(PIECE(1, { achat_id: 4 })) && !bD.dropPieceDeclaree(PIECE(1)) && !bD.dropPieceDeclaree(PIECE(1, { achat: null })) && !bD.dropPieceDeclaree(null));
+      // appareil neuf : rien en cache → 1er affichage : pas bloqué, lecture SANS création lancée ; ensuite contrôlée comme la base
+      const b0 = bD.dropBloqueLivre('#D9'); await tic(); await tic();
+      test('livreur retiré APRÈS la déclaration, appareil neuf : pièces lues SANS création (jamais drop_pieces), gardées',
+        b0 === '' && lireD() === '#D9' && !creeD() && bD.dropPieces['#D9'] && bD.dropPieces['#D9'].lectureSeule && bD.dropPieces['#D9'].pieces.length === 1, [b0, lireD()]);
+      test('… commande CONTRÔLÉE : pièces montrées, « Livré » bloqué tant que la pièce n\'est pas indiquée, confirmation à envoyer, déduction en attente',
+        bD.dropCmdControlee('#D9') && bD.dropPiecesDe('#D9').length === 1 && /Indiquez pièce par pièce/.test(bD.dropBloqueLivre('#D9')) && bD.dropAConfirmer('#D9') === true && bD.dropDeductionPermise('#D9') === false, bD.dropBloqueLivre('#D9'));
+      bD.dropChoisirLivraison('#D9', 91, true);
+      test('… pièce indiquée « livrée » : « Livré » permis, et la confirmation part à la base après le « livré »', bD.dropBloqueLivre('#D9') === ''
+        && (await bD.dropApresLivre('#D9'), bD._envois.some((e) => /drop_confirmer_livraison/.test(e.url) && e.body && e.body.p_cmd_id === '#D9')));
+      const luAvant = lireD(); bD.dropBloqueLivre('#D9'); await tic(); bD.dropBloqueLivre('#D9'); await tic();
+      test('… aucune relecture à chaque affichage (seulement à la demande et après la confirmation)', lireD() === luAvant && !creeD(), [luAvant, lireD()]);
+      // GLS dont les pièces ont déjà été déclarées (connues de l'appareil) : contrôlée aussi
+      await bD.dropChargerPieces('#D8');
+      test('passée en GLS APRÈS la déclaration : pièces gardées, « Livré » bloqué (1 pièce à indiquer), jamais de création',
+        bD.dropPiecesDe('#D8').length === 2 && /Indiquez pièce par pièce[^(]*\(1 pièce\)/.test(bD.dropBloqueLivre('#D8')) && !creeD(), bD.dropBloqueLivre('#D8'));
+      // tournée : la commande non concernée aux pièces déclarées est relue SANS création ; celle sans pièce déclarée n'est pas lue
+      const nAv = bD._envois.length;
+      await bD.dropChargerTournee({ id: 'T-D', stops: [{ cmdId: '#D9' }, { cmdId: '#D7' }] }, null, true);
+      test('pièces d\'une tournée : commande non concernée aux pièces déclarées relue sans création ; sans pièce déclarée : pas lue',
+        bD._envois.slice(nAv).map((e) => e.url.replace(/.*\/rpc\//, '') + ':' + (e.body && e.body.p_cmd_id)).join() === 'drop_pieces_lire:#D9', bD._envois.slice(nAv).map((e) => e.url));
+      // la base fait foi : pièces réinitialisées (plus aucune déclaration) → oubliées, commande de nouveau libre
+      etatD.reinit = true; await bD.dropChargerPieces('#D9');
+      test('pièces réinitialisées dans la base (plus aucune déclaration) : oubliées par l\'appareil, « Livré » de nouveau libre',
+        !bD.dropPieces['#D9'] && !bD.dropCmdControlee('#D9') && bD.dropBloqueLivre('#D9') === '' && bD.dropDeductionPermise('#D9') === true);
+      // pièces jamais déclarées : rien gardé, jamais bloquée, une seule lecture
+      bD.dropBloqueLivre('#D7'); await tic(); await tic(); bD.dropBloqueLivre('#D7'); await tic();
+      test('non concernée, pièces JAMAIS déclarées : rien gardé, jamais bloquée, une seule lecture sans création',
+        !bD.dropPieces['#D7'] && bD.dropBloqueLivre('#D7') === '' && lireD().split(',').filter((x) => x === '#D7').length === 1 && !creeD(), lireD());
+      // base surchargée : aucune lecture pendant la pause ; lecture en 503 : rien gardé, pas de nouvel essai avant 5 min
+      bD.chargeEnPause = () => true; bD.dropBloqueLivre('#D6'); await tic();
+      const sansPause = !lireD().includes('#D6');
+      bD.chargeEnPause = () => false; etatD.mode = 'panne'; bD.dropBloqueLivre('#D6'); await tic(); await tic(); bD.dropBloqueLivre('#D6'); await tic();
+      test('pause après erreur de la base : aucune lecture ; lecture en 503 : rien gardé, pas bloquée, pas de nouvel essai avant 5 min',
+        sansPause && lireD().split(',').filter((x) => x === '#D6').length === 1 && !bD.dropPieces['#D6'] && bD.dropBloqueLivre('#D6') === '', lireD());
+      // 042 pas appliquée : un seul essai pour toute la session ; pièces déclarées déjà connues de l'appareil toujours contrôlées
+      etatD.mode = 'absente'; bD.dropBloqueLivre('#D5'); await tic(); await tic();
+      const nAbs = bD._envois.length;
+      bD._dropLuNonConcernee = {}; bD.dropBloqueLivre('#D7'); await tic(); const rAbs = await bD.dropChargerPieces('#D6');
+      test('042 pas appliquée (drop_pieces_lire absente) : plus aucune lecture de la session, aucune création, rien bloqué',
+        bD._dropLireAbsente === true && bD._envois.length === nAbs && rAbs.nonConcernee && !creeD() && bD.dropBloqueLivre('#D5') === '');
+      test('… et les pièces déclarées déjà connues de l\'appareil restent contrôlées', bD.dropPiecesDe('#D8').length === 2 && bD.dropBloqueLivre('#D8') !== '');
+    }
 
     // DÉFAUT 2 : refus définitif de la base → ancien statut remis à l'écran (liste et fiche), raison dite clairement
     const toasts = [], rendus = [];

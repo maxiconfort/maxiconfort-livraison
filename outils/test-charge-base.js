@@ -487,6 +487,31 @@ function nouveauBac(opts) {
     test('chargeHeure : « HH:MM » à deux chiffres', bac.chargeHeure(new Date(2026, 10, 27, 8, 5).getTime()) === '08:05');
   }
 
+  console.log('\n17. AVIS SUR df07c0d (point 2) : BASE RÉELLEMENT VIDE → PAS DE 2e CHARGEMENT COMPLET À 3 S (au plus un par minute)');
+  {
+    test('chargeRepriseListeVide : liste vide ET commandes jamais lues → reprise ; liste vide mais lue avec succès → non ; liste non vide → non',
+      nouveauBac().bac.chargeRepriseListeVide(0, 0) === true && nouveauBac().bac.chargeRepriseListeVide(0, 1e12) === false && nouveauBac().bac.chargeRepriseListeVide(3, 0) === false);
+    // base vide : le vrai chargement complet lit 0 commande avec succès → aucune reprise à 3 s
+    const v = prepToutB(() => ({ status: 200, json: [], entetes: { 'Content-Range': '*/0' } }));
+    const rV = await v.bac.sbChargerTout({ premier: true }); const nV = v.etat.requetes.length;
+    test('base VIDE (commandes lues avec succès, 0 ligne) : lecture notée, aucune reprise « liste vide »',
+      rV === true && v.bac.commandes.length === 0 && v.bac._chargeToutLuA === v.etat.t && v.bac.chargeRepriseListeVide(v.bac.commandes.length, v.bac._chargeToutLuA) === false, v.bac._chargeToutLuA);
+    v.etat.t += 3000; const rV2 = await v.bac.sbChargerTout();
+    test('… et 3 s après, un chargement ordinaire est refusé (au plus un par minute) : aucune requête', rV2 === false && v.etat.requetes.length === nV);
+    // échec du premier chargement (commandes refusées, 401) : rien lu → reprise à 3 s gardée
+    const e = prepToutB((u) => (u.includes('/commandes?') ? { status: 401, json: {} } : { status: 200, json: [] }));
+    await e.bac.sbChargerTout({ premier: true });
+    test('premier chargement en échec (commandes en 401) : rien lu → reprise « liste vide » gardée', e.bac._chargeToutLuA === 0 && e.bac.chargeRepriseListeVide(e.bac.commandes.length, e.bac._chargeToutLuA) === true);
+    const n401 = e.etat.requetes.length; e.etat.t += 3000; e.etat.reponse = normalB; const rE = await e.bac.sbChargerTout({ sansEspacement: true });
+    test('… la reprise lit les commandes, puis plus aucune reprise', rE === true && e.etat.requetes.length > n401 && e.bac.commandes.length === 1 && e.bac._chargeToutLuA > 0);
+    // commandes en 503 : rien lu, mais la reprise ne part pas pendant la pause
+    const s5 = prepToutB((u) => (u.includes('/commandes?') ? { status: 503, json: {} } : { status: 200, json: [] }));
+    await s5.bac.sbChargerTout({ premier: true }); const n5 = s5.etat.requetes.length; s5.etat.t += 3000;
+    test('commandes en 503 : rien lu, et la reprise à 3 s ne part pas pendant la pause', s5.bac._chargeToutLuA === 0 && (await s5.bac.sbChargerTout({ sansEspacement: true })) === false && s5.etat.requetes.length === n5);
+    test('démarrage : la reprise à 3 s passe par chargeRepriseListeVide (plus « commandes.length === 0 » seul)',
+      /if \(chargeRepriseListeVide\(commandes\.length, _chargeToutLuA\)\) \{\r?\n\s*setTimeout\(function\(\) \{\r?\n\s*sbChargerTout\(\{ sansEspacement: true \}\)/.test(html) && !/if \(commandes\.length === 0\) \{\r?\n\s*setTimeout/.test(html));
+  }
+
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');
   process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error('ERREUR DU BANC :', e); process.exit(1); });
