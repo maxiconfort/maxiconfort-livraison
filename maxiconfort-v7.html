@@ -8307,6 +8307,9 @@ var cmdfEtat = null;
 // Tant qu'elle est posée, toute écriture des réglages (tri, panneau « Filtres », date de prise / livraison) garde CETTE période dans
 // localStorage : la période vidée à l'écran pour JARVIS n'est jamais enregistrée. Seul un choix EXPLICITE de période (Du / Au,
 // « Effacer ») la remplace. Au prochain chargement de la page, la période mémorisée revient d'elle-même.
+// v7.5.200 (revue Codex PR 28 sur 62f910d et c825409) : le CHAMP de date (prise / livraison) fait partie du choix de période ; il est
+// mis de côté AVEC les bornes ({ du, au, champ }). Avant, « Date de prise / Date de livraison » touché pendant la vue JARVIS enregistrait
+// le nouveau champ avec les anciennes bornes : au rechargement, les mêmes bornes filtraient sur une AUTRE date.
 var cmdfPeriodeMemo = null;
 function cmdfDateOk(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s); }
 // Réglages relus (ou reçus) → toujours un état valide ; toute valeur inattendue retombe sur le défaut.
@@ -8327,7 +8330,7 @@ function cmdfLire() { try { var s = localStorage.getItem(CMDF_CLE); return cmdfN
 // Réglages à enregistrer : ceux de l'écran, sauf la période mise de côté pour JARVIS (cmdfPeriodeMemo), remise telle quelle.
 function cmdfAEnregistrer(e) {
   var n = cmdfNormaliser(e);
-  if (cmdfPeriodeMemo) { n.du = cmdfPeriodeMemo.du; n.au = cmdfPeriodeMemo.au; n = cmdfNormaliser(n); }
+  if (cmdfPeriodeMemo) { n.du = cmdfPeriodeMemo.du; n.au = cmdfPeriodeMemo.au; n.champ = cmdfPeriodeMemo.champ; n = cmdfNormaliser(n); }
   return n;
 }
 function cmdfEcrire(e) { try { localStorage.setItem(CMDF_CLE, JSON.stringify(cmdfAEnregistrer(e))); } catch (x) {} }
@@ -8433,7 +8436,7 @@ function cmdfEffacerPeriode() { var e = cmdfEtatCourant(); e.du = ''; e.au = '';
 // un clic ultérieur sur le tri ou sur « Filtres » l'enregistre donc intacte. Plusieurs vues JARVIS d'affilée gardent la première.
 function cmdfViderPeriode() {
   var e = cmdfEtatCourant();
-  if (!cmdfPeriodeMemo) cmdfPeriodeMemo = { du: e.du, au: e.au };
+  if (!cmdfPeriodeMemo) cmdfPeriodeMemo = { du: e.du, au: e.au, champ: e.champ }; // v7.5.200 : le champ de date avec les bornes
   e.du = ''; e.au = '';
 }
 // CMDF-FIN
