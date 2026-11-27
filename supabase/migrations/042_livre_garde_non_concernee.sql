@@ -8,10 +8,15 @@
 --      n'ont JAMAIS été déclarées (aucune provenance, aucune issue de livraison, aucun achat — même règle que le redécoupage de
 --      drop_pieces) passe « livré » sans blocage ; tout le reste est inchangé (commande concernée : toujours refusée tant que
 --      ses pièces ne sont pas confirmées, sauf dérogation ; commande non concernée dont une pièce A été déclarée : contrôlée
---      comme avant, pour qu'on ne puisse pas contourner le contrôle en retirant le livreur) ;
+--      comme avant, pour qu'on ne puisse pas contourner le contrôle en retirant le livreur ; une commande qui ÉTAIT concernée
+--      avant l'écriture reste contrôlée, même si la même écriture retire le livreur ou passe en GLS — livreur comme
+--      administrateur : valeurs d'avant ET d'après) ;
 --   2. enveloppe public.deduire_stock_livraison : pour cette même commande (non concernée, pièces jamais déclarées), la
 --      déduction est celle de la 040 (lignes de la commande), sinon celle de la 041, inchangée — sans quoi la déduction
---      refuserait « pieces_non_confirmees » après un « livré » désormais accepté.
+--      refuserait « pieces_non_confirmees » après un « livré » désormais accepté ;
+--   3. ajoute public.drop_pieces_lire (avis chatgpt-review sur adf71bb, point 5) : lecture SANS création des pièces d'une
+--      commande, utilisée par l'appli pour une commande déjà livrée (pièces déclarées sur un autre appareil consultables sur un
+--      appareil neuf, sans jamais découper ni redécouper la commande).
 -- Aucune ligne n'est créée, modifiée ni supprimée (fonctions seulement). Rejouable. Une seule transaction.
 -- Prérequis : 041 appliquée. Si la 041 est REJOUÉE après la 042, rejouer la 042 ensuite (la 041 remet sa propre déduction).
 --
@@ -26,6 +31,8 @@
 --   -- b) garde du « livré » : rejouer le bloc « create or replace function interne.l041_livre_garde() … end $$; » de
 --   --    041_dropshipping_provenance.sql (section 7, juste avant « drop trigger if exists commandes_livre_garde »), tel quel ;
 --   -- c) drop function if exists interne.l042_pieces_jamais_declarees(text);
+--   -- d) drop function if exists public.drop_pieces_lire(text);   (l'appli v7.5.211 revient alors à « aucune pièce lue » pour
+--   --    une commande déjà livrée inconnue de l'appareil)
 --   commit;
 
 begin;
@@ -61,11 +68,13 @@ begin
   if coalesce(new.statut, '') not in ('livré', 'livre') or v_role is null then return new; end if;
   if tg_op = 'UPDATE' and coalesce(old.statut, '') in ('livré', 'livre') then return new; end if;
   if tg_op = 'INSERT' and exists (select 1 from public.commandes x where x.id = new.id) then return new; end if;   -- upsert : la mise à jour contrôle
-  -- commande concernée ? Valeurs d'AVANT la mise à jour pour le livreur (il ne peut pas vider le livreur ou changer le
-  -- transporteur dans la même écriture pour contourner le contrôle) ; date de création toujours celle d'avant (041)
+  -- commande concernée ? Pour une mise à jour, elle l'est si elle l'ÉTAIT AVANT l'écriture OU si elle l'est APRÈS, quel que
+  -- soit le rôle : ni le livreur ni l'administrateur ne peuvent vider le livreur ou passer en GLS dans la même écriture que le
+  -- « livré » pour contourner le contrôle (il faut une dérogation, qui est journalisée) ; date de création toujours celle
+  -- d'avant (041). Retirer le livreur dans une écriture SÉPARÉE, avant, reste possible : la commande devient alors non concernée.
   if tg_op = 'UPDATE' then
-    v_conc := case when v_role = 'livreur' then interne.l041_concernee(old.transporteur, old.livreur, old.id)
-                   else interne.l041_concernee(new.transporteur, new.livreur, old.id) end;
+    v_conc := interne.l041_concernee(old.transporteur, old.livreur, old.id)
+              or interne.l041_concernee(new.transporteur, new.livreur, old.id);
   else
     v_conc := interne.l041_concernee(new.transporteur, new.livreur, new.id);
   end if;
@@ -131,11 +140,42 @@ end $$;
 revoke all on function public.deduire_stock_livraison(text) from public, anon, authenticated;
 grant execute on function public.deduire_stock_livraison(text) to anon;   -- session vérifiée DANS les fonctions appelées
 
--- 4. Auto-contrôle (rien n'est écrit) : fonctions en place, repères présents, déclencheur branché sur la bonne fonction
+-- 4. Lecture SANS création des pièces d'une commande (avis chatgpt-review sur adf71bb, point 5) : pour une commande DÉJÀ livrée,
+--    l'appli ne demande plus drop_pieces (qui découpe la commande quand elle n'a pas de pièces, ou la redécoupe) ; elle lit
+--    seulement les pièces DÉJÀ déclarées, par exemple sur un autre appareil. Mêmes droits et même réponse que drop_pieces
+--    (session, commande visible par la session, pièces au même format) ; aucune ligne créée, modifiée ni supprimée, aucun journal.
+create or replace function public.drop_pieces_lire(p_cmd_id text) returns json
+language plpgsql stable security definer set search_path = public, interne, pg_catalog as $$
+-- l042_lecture (repère lu par l'auto-contrôle de la 042 : ne pas retirer)
+declare c record; v_emp text;
+begin
+  if public.session_role() is null or public.session_role() not in ('admin', 'collab', 'livreur') then
+    return json_build_object('ok', false, 'erreur', 'session_requise'); end if;
+  if not interne.l041_cmd_autorisee(p_cmd_id, true) then return json_build_object('ok', false, 'erreur', 'commande_introuvable'); end if;
+  select id, lignes, produit, qte into c from public.commandes where id = p_cmd_id;
+  v_emp := interne.l041_empreinte(c.lignes, c.produit, c.qte);
+  return json_build_object('ok', true, 'cmd_id', c.id, 'lecture_seule', true,
+    'perime', exists (select 1 from public.commande_pieces where cmd_id = c.id and empreinte <> v_emp),
+    'tva_pct', interne.l041_tva(),
+    'derogation', exists (select 1 from public.drop_derogations d where d.cmd_id = c.id
+                            and d.cycle = (select max(q.cycle) from public.commande_pieces q where q.cmd_id = c.id)),
+    'pieces', coalesce((select json_agg(interne.l041_piece_json(p.id) order by p.ligne_idx, p.piece_idx)
+                          from public.commande_pieces p where p.cmd_id = c.id), '[]'::json));
+end $$;
+revoke all on function public.drop_pieces_lire(text) from public, anon, authenticated;
+grant execute on function public.drop_pieces_lire(text) to anon;   -- session vérifiée DANS la fonction
+
+-- 5. Auto-contrôle (rien n'est écrit) : fonctions en place, repères présents, déclencheur branché sur la bonne fonction
 do $$
 declare f text := null;
 begin
-  if position('l042_garde' in (select prosrc from pg_proc where oid = 'interne.l041_livre_garde()'::regprocedure)) = 0 then f := 'garde du livré'; end if;
+  if to_regprocedure('public.drop_pieces_lire(text)') is null
+     or position('l042_lecture' in (select prosrc from pg_proc where oid = 'public.drop_pieces_lire(text)'::regprocedure)) = 0
+     or position('insert' in lower((select prosrc from pg_proc where oid = 'public.drop_pieces_lire(text)'::regprocedure))) > 0
+     or position('delete' in lower((select prosrc from pg_proc where oid = 'public.drop_pieces_lire(text)'::regprocedure))) > 0 then
+    f := 'lecture des pièces sans création';
+  end if;
+  if f is null and position('l042_garde' in (select prosrc from pg_proc where oid = 'interne.l041_livre_garde()'::regprocedure)) = 0 then f := 'garde du livré'; end if;
   if f is null and position('l042_enveloppe' in (select prosrc from pg_proc where oid = 'public.deduire_stock_livraison(text)'::regprocedure)) = 0 then f := 'enveloppe de la déduction'; end if;
   if f is null and to_regprocedure('interne.l042_deduire_041(text)') is null then f := 'déduction de la 041 mise de côté'; end if;
   if f is null and position('l041_enveloppe' in (select prosrc from pg_proc where oid = 'interne.l042_deduire_041(text)'::regprocedure)) = 0 then f := 'déduction mise de côté = celle de la 041'; end if;

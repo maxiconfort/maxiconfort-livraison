@@ -176,12 +176,15 @@ function nouveauBac(opts) {
   {
     const sl = fonction('async function sbLoadAll() {');
     test('sbLoadAll : plus de 2e requête « select=id » de comptage (total de la même réponse)', !/commandes\?select=id'/.test(sl) && /if \(cmdsTotal != null\) cmdTotalCount = cmdsTotal;/.test(sl));
-    test('sbLoadAll : 5xx noté, délai dépassé / réseau → pause', /chargeNoterReponse\(rCmds\.status, _cmdDebutLecture\)/.test(sl) && /catch\(e\) \{\n\s*console\.warn\('sbLoadAll erreur:', e\.message\);\n\s*if \(typeof chargeEchec === 'function'\) chargeEchec\(\);/.test(sl));
+    test('sbLoadAll : 5xx noté tout de suite (commandes ET tournées), succès noté seulement les 2 réponses lues, délai dépassé / réseau → pause (jamais comptée deux fois)',
+      /chargeNoterEchecHttp\(rCmds\.status\)/.test(sl) && /chargeNoterEchecHttp\(rTour\.status\)/.test(sl) && /if \(rCmds\.ok && rTour\.ok && typeof chargeSucces === 'function'\) chargeSucces\(_cmdDebutLecture\);/.test(sl)
+      && !/chargeNoterReponse\(/.test(sl) && /catch\(e\) \{\n\s*console\.warn\('sbLoadAll erreur:', e\.message\);[\s\S]{0,200}?if \(typeof chargeEchec === 'function' && !\(e && e\.chargeNote\)\) chargeEchec\(\);/.test(sl));
     test('plus aucun appel direct de sbLoadAll() hors de la garde (démarrage, reprise, rafraîchissement 60 s)', (html.match(/sbLoadAll\(\)/g) || []).length === 2 && /async function sbLoadAll\(\) \{/.test(html) &&/return sbLoadAll\(\);/.test(html));
     test('rafraîchissement automatique 60 s : passe par sbChargerTout', /if \(typeof sbChargerTout === 'function'\) \{\n\s*sbChargerTout\(\)\.then\(function\(\)\{/.test(html));
     const sp = fonction('function startPolling() {');
     test('relève : jamais deux à la fois, jamais onglet caché, jamais pendant la pause', /if \(_pollingEnCours\) return;/.test(sp) && /chargeOngletCache\(\)\) return;/.test(sp) && /chargeEnPause\(\)\) \{ cmdSynchroPerdue\(/.test(sp) && /\} finally \{ if \(_dRel\) _dRel\.fin\(\); _pollingEnCours = false; \}/.test(sp));
-    test('relève : réponse notée avec son heure d’envoi (5xx → pause), relève ENTIÈRE bornée à 15 s (2 requêtes et 2 corps)', /chargeNoterReponse\(rC\.status, _debRel\)/.test(sp) && /_dRel = \(typeof chargeDelai === 'function'\) \? chargeDelai\(15000\)/.test(sp)
+    test('relève : 5xx noté tout de suite (commandes ET tournées), succès noté (heure d’envoi) seulement les 2 réponses lues, relève ENTIÈRE bornée à 15 s (2 requêtes et 2 corps)',
+      /chargeNoterEchecHttp\(rC\.status\)/.test(sp) && /chargeNoterEchecHttp\(rT\.status\)/.test(sp) && /if \(rC\.ok && rT\.ok && typeof chargeSucces === 'function'\) chargeSucces\(_debRel\);/.test(sp) && !/chargeNoterReponse\(/.test(sp) && /_dRel = \(typeof chargeDelai === 'function'\) \? chargeDelai\(15000\)/.test(sp)
       && (sp.match(/_dRel\.borne\(/g) || []).length === 4 && /\} finally \{ if \(_dRel\) _dRel\.fin\(\); _pollingEnCours = false; \}/.test(sp));
     const tdb = tranche('// TDB-DEBUT', '// TDB-FIN');
     test('tableau : lecture seulement affiché, visible, hors pause et hors chargement complet', /function tdbLecturePermise\(\) \{\n\s*if \(!tdbVisible\(\)\) return false;\n\s*if \(typeof chargeOngletCache === 'function' && chargeOngletCache\(\)\) return false;\n\s*if \(typeof chargeEnPause === 'function' && chargeEnPause\(\)\) return false;\n\s*if \(typeof _chargeToutVol !== 'undefined' && _chargeToutVol\) return false;/.test(tdb)
@@ -268,10 +271,12 @@ function nouveauBac(opts) {
       Object.assign(bac, { SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k', CMD_SELECT_COLS: 'id', navigator: { onLine: false }, offlineQueue: [], tournees: [],
         setInterval: (f) => { tick = f; return 1; }, oqSignalerPurge() {}, offlineQueueFlush() {}, cmdSynchroPerdue: (m) => { pertes.push(m); }, cmdPollingAppliquer: () => false,
         renderCmds() {}, renderDash() {}, renderTournees() {}, renderLivreur() {}, livControleNonRemontees() {}, findCmdForStop: () => null, paiEstEnLigne: () => false,
-        stkReprendreDeductions: () => Promise.resolve() });
-      vm.runInContext('var _pollingInterval = null;\nvar _pollingEnCours = false;\n' + fonction('function startPolling() {'), bac);
+        stkReprendreDeductions: () => { ecritures.push(etat.t); return Promise.resolve(); } });
+      const ecritures = [];
+      vm.runInContext('var _pollingInterval = null;\nvar _pollingEnCours = false;\n' + fonction('function startPolling() {') + '\n' + fonction('function stkRepriseEcritures() {'), bac);
+      bac.navigator.onLine = true;
       bac.startPolling();
-      return { bac, etat, tick: () => tick(), pertes };
+      return { bac, etat, tick: () => tick(), pertes, ecritures };
     };
     for (const [nom, rep] of [
       ['1re réponse (commandes) qui n’arrive jamais', () => 'jamais'],
@@ -343,6 +348,143 @@ function nouveauBac(opts) {
     test('corps d’une page qui n’arrive jamais : lecture en attente', err === null && etat.requetes.length === 1);
     declencher(etat, 20000); await p;
     test('à 20 s : lecture rejetée « délai dépassé », pause posée', !!err && /délai dépassé/.test(err.message) && bac.chargeEnPause(), err && err.message);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  // Avis chatgpt-review et revue native P2 sur adf71bb
+  const prepRelB = (rep) => {
+    const { bac, etat } = nouveauBac({ reponse: rep });
+    let tick = null; const pertes = [], ecritures = [];
+    Object.assign(bac, { SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k', CMD_SELECT_COLS: 'id', navigator: { onLine: false }, offlineQueue: [], tournees: [],
+      setInterval: (f) => { tick = f; return 1; }, oqSignalerPurge() {}, offlineQueueFlush() {}, cmdSynchroPerdue: (m) => { pertes.push(m); }, cmdPollingAppliquer: () => false,
+      renderCmds() {}, renderDash() {}, renderTournees() {}, renderLivreur() {}, livControleNonRemontees() {}, findCmdForStop: () => null, paiEstEnLigne: () => false,
+      stkReprendreDeductions: () => { ecritures.push(etat.t); return Promise.resolve(); } });
+    vm.runInContext('var _pollingInterval = null;\nvar _pollingEnCours = false;\n' + fonction('function startPolling() {') + '\n' + fonction('function stkRepriseEcritures() {'), bac);
+    bac.navigator.onLine = true;
+    bac.startPolling();
+    return { bac, etat, tick: () => tick(), pertes, ecritures };
+  };
+  const prepToutB = (rep) => {
+    const { bac, etat } = nouveauBac({ reponse: rep });
+    Object.assign(bac, { commandes: [], tournees: [], caissesRemises: {}, nextCmdId: 1, cmdTotalCount: 0, cmdAllLoaded: false, CMD_SELECT_COLS: 'id,client', SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
+      localStorage: { getItem: () => null, setItem() {} }, isFinite, renderCmds() {}, renderDash() {}, renderTournees() {}, renderLivreur() {}, toast() {}, reconcilierTournees() {} });
+    bac.document.querySelector = () => null;
+    vm.runInContext(html.slice(html.indexOf('var cmdChargementComplet = false;'), html.indexOf('var _pollingInterval = null;')), bac);
+    vm.runInContext(fonction('async function sbLoadAll() {'), bac);
+    return { bac, etat };
+  };
+  const normalB = (u) => (u.includes('/commandes?') ? { status: 200, json: [{ id: '#1', client: 'Client fictif' }], entetes: { 'Content-Range': '0-0/1' } } : { status: 200, json: [] });
+
+  console.log('\n13. AVIS SUR adf71bb (point 2) : HTTP 5xx DES TOURNÉES COMPTÉ ; 5xx DES COMMANDES → SUITE ARRÊTÉE (relève et chargement complet)');
+  {
+    // relève : tournées en 503 à chaque fois → attente croissante 10, 30, 60, 300 s (avant : la réponse 200 des commandes remettait à zéro)
+    const { bac, etat, tick, pertes } = prepRelB((u) => (u.includes('/tournees?') ? { status: 503, json: {} } : { status: 200, json: [] }));
+    const pauses = [];
+    for (let k = 0; k < 4; k++) { await tick(); pauses.push(bac.CHARGE_ETAT.pauseJusqua - etat.t); etat.t = bac.CHARGE_ETAT.pauseJusqua + 1; }
+    test('relève, tournées en 503 à chaque passage : attente croissante 10 s, 30 s, 60 s, 5 min', JSON.stringify(pauses) === JSON.stringify([10000, 30000, 60000, 300000]), pauses);
+    test('… synchro retirée à chaque 503 des tournées', pertes.filter((m) => /tournées HTTP 503/.test(m)).length === 4, pertes);
+    etat.reponse = () => ({ status: 200, json: [] }); await tick();
+    test('… puis les deux réponses lues avec succès (après l’échéance) : attente remise à zéro', bac.CHARGE_ETAT.echecs === 0 && !bac.chargeEnPause(), bac.CHARGE_ETAT);
+    const r2 = prepRelB((u) => (u.includes('/commandes?') ? { status: 504, json: {} } : { status: 200, json: [] }));
+    await r2.tick();
+    test('relève, commandes en 504 : la requête des tournées NE PART PAS, une seule pause de 10 s', r2.etat.requetes.length === 1 && r2.etat.requetes[0].includes('/commandes?') && r2.bac.CHARGE_ETAT.echecs === 1 && r2.bac.CHARGE_ETAT.pauseJusqua - r2.etat.t === 10000, r2.etat.requetes);
+    // chargement complet
+    const t1 = prepToutB((u) => (u.includes('/commandes?') ? { status: 503, json: {} } : normalB(u)));
+    const ok1 = await t1.bac.sbChargerTout({ premier: true });
+    test('chargement complet, commandes en 503 : la requête des tournées NE PART PAS (caisse + commandes seulement)', t1.etat.requetes.length === 2 && !t1.etat.requetes.some((u) => u.includes('/tournees?')), t1.etat.requetes);
+    test('… échec compté UNE seule fois (pause de 10 s, pas 30 s), chargement terminé', ok1 === true && t1.bac.CHARGE_ETAT.echecs === 1 && t1.bac.CHARGE_ETAT.pauseJusqua - t1.etat.t === 10000 && t1.bac._chargeToutVol === null, t1.bac.CHARGE_ETAT);
+    const t2 = prepToutB((u) => (u.includes('/tournees?') ? { status: 503, json: {} } : normalB(u)));
+    const pausesT = [];
+    for (let k = 0; k < 4; k++) { await t2.bac.sbChargerTout({ premier: true }); pausesT.push(t2.bac.CHARGE_ETAT.pauseJusqua - t2.etat.t); t2.etat.t = t2.bac.CHARGE_ETAT.pauseJusqua + 1; }
+    test('chargement complet, tournées en 503 à chaque fois : attente croissante 10 s, 30 s, 60 s, 5 min (commandes quand même lues)', JSON.stringify(pausesT) === JSON.stringify([10000, 30000, 60000, 300000]) && t2.bac.commandes.length === 1, pausesT);
+    t2.etat.reponse = normalB; await t2.bac.sbChargerTout({ premier: true });
+    test('… puis commandes et tournées lues avec succès : attente remise à zéro', t2.bac.CHARGE_ETAT.echecs === 0 && !t2.bac.chargeEnPause());
+  }
+
+  console.log('\n14. REVUE NATIVE P2 SUR adf71bb : ATTENTE REMISE À ZÉRO SEULEMENT APRÈS LES DEUX RÉPONSES LUES — SÉQUENCE 10, 30, 60, 300 S');
+  {
+    for (const [nom, rep] of [
+      ['corps des commandes hors délai', (u) => (u.includes('/commandes?') ? { status: 200, json: 'jamais' } : { status: 200, json: [] })],
+      ['requête des tournées hors délai', (u) => (u.includes('/tournees?') ? 'jamais' : { status: 200, json: [] })],
+      ['corps des tournées hors délai', (u) => (u.includes('/tournees?') ? { status: 200, json: 'jamais' } : { status: 200, json: [] })],
+    ]) {
+      const { bac, etat, tick } = prepRelB(rep);
+      const pauses = [];
+      for (let k = 0; k < 4; k++) { const p = tick(); await attendre(10); declencher(etat, 15000); await p; pauses.push(bac.CHARGE_ETAT.pauseJusqua - etat.t); etat.t = bac.CHARGE_ETAT.pauseJusqua + 1; }
+      test('relève, ' + nom + ' à chaque passage : 10 s, 30 s, 60 s, 5 min (plus bloquée à 10 s)', JSON.stringify(pauses) === JSON.stringify([10000, 30000, 60000, 300000]), pauses);
+    }
+    for (const [nom, rep] of [
+      ['corps des commandes hors délai', (u) => (u.includes('/commandes?') ? { status: 200, json: 'jamais' } : normalB(u))],
+      ['requête des tournées hors délai', (u) => (u.includes('/tournees?') ? 'jamais' : normalB(u))],
+      ['corps des tournées hors délai', (u) => (u.includes('/tournees?') ? { status: 200, json: 'jamais' } : normalB(u))],
+    ]) {
+      const { bac, etat } = prepToutB(rep);
+      const pauses = [];
+      for (let k = 0; k < 4; k++) { const p = bac.sbChargerTout({ premier: true }); await attendre(10); declencher(etat, 10000); await attendre(10); declencher(etat, 30000); await p; pauses.push(bac.CHARGE_ETAT.pauseJusqua - etat.t); etat.t = bac.CHARGE_ETAT.pauseJusqua + 1; }
+      test('chargement complet, ' + nom + ' à chaque fois : 10 s, 30 s, 60 s, 5 min (plus bloquée à 10 s)', JSON.stringify(pauses) === JSON.stringify([10000, 30000, 60000, 300000]), pauses);
+    }
+  }
+
+  console.log('\n15. AVIS SUR adf71bb (point 3) : LES ÉCRITURES EN ATTENTE REPRENNENT MÊME EN PAUSE, ONGLET CACHÉ OU RELÈVE EN COURS');
+  {
+    const { bac, etat, tick, ecritures } = prepRelB(() => ({ status: 200, json: [] }));
+    bac.chargeEchec(); const n0 = etat.requetes.length; await tick();
+    test('pendant la pause de charge : aucune lecture, mais les déductions en attente sont renvoyées', etat.requetes.length === n0 && ecritures.length === 1, [etat.requetes.length - n0, ecritures.length]);
+    etat.t = bac.CHARGE_ETAT.pauseJusqua + 1; etat.cache = true; await tick();
+    test('onglet caché : aucune lecture, mais les déductions en attente sont renvoyées', etat.requetes.length === n0 && ecritures.length === 2);
+    etat.cache = false; etat.reponse = () => 'jamais';
+    const p = tick(); await attendre(10); await tick();
+    test('relève encore en cours : la suivante ne part pas, mais les déductions sont renvoyées à chaque passage', bac._pollingEnCours === true && ecritures.length === 4, ecritures.length);
+    declencher(etat, 15000); await p;
+    bac.navigator.onLine = false; await tick();
+    test('hors ligne : rien n’est tenté (les demandes restent en file)', ecritures.length === 4);
+    // attente PROPRE aux demandes de déduction après une erreur 5xx (vrai code de stkDeductionEnvoyer, fausse base)
+    const bd = { console: { log() {}, warn() {} }, JSON, Math, Number, String, Object, Array, Promise, Error, Date: bac.Date, SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k',
+      offlineQueue: [], toast() {}, notifAjout() {}, dedErreurSignaler() {}, dedAppliquer() {}, dedFileRetirer() {}, dedCommande: () => null, livEstLivre: () => true, _dedSession: {},
+      fetch: async () => { if (statutDed === 'reseau') throw new Error('Failed to fetch'); return { ok: statutDed < 300, status: statutDed, text: async () => (statutDed < 300 ? JSON.stringify({ ok: true }) : '') }; } };
+    let statutDed = 503;
+    vm.createContext(bd);
+    vm.runInContext(html.slice(html.indexOf('var _dedEnvoi = {}'), html.indexOf('\n', html.indexOf('var DED_PAUSES_SURCHARGE')) + 1) + html.slice(html.indexOf('function httpTemporaire(status) {'), html.indexOf('\n', html.indexOf('function httpTemporaire(status) {'))) + '\n' + fonction('async function stkDeductionEnvoyer(id, cmdV) {'), bd);
+    const attentes = [];
+    for (const s of [503, 504, 'reseau', 522]) { statutDed = s; const r = await bd.stkDeductionEnvoyer('#D1', null); attentes.push([r, bd._dedProchain['#D1'] - etat.t]); }
+    test('déduction en 503, 504, coupure, 522 : gardée en file, attente propre croissante 1 min, 2 min, 5 min, 5 min (plafond)',
+      JSON.stringify(attentes) === JSON.stringify([['reessayer', 60000], ['reessayer', 120000], ['reessayer', 300000], ['reessayer', 300000]]), attentes);
+    statutDed = 200; const rOk = await bd.stkDeductionEnvoyer('#D1', null);
+    statutDed = 503; await bd.stkDeductionEnvoyer('#D1', null);
+    test('… réponse de la base reçue : attente remise à zéro (erreur suivante : de nouveau 1 min)', rOk === 'ok' && bd._dedProchain['#D1'] - etat.t === 60000, bd._dedProchain);
+    statutDed = 401; delete bd._dedSurcharges['#D1']; await bd.stkDeductionEnvoyer('#D1', null); await bd.stkDeductionEnvoyer('#D1', null);
+    test('… refus 401 (pas une surcharge) : attente fixe d’une minute, comme avant', bd._dedProchain['#D1'] - etat.t === 60000 && !bd._dedSurcharges['#D1']);
+  }
+
+  console.log('\n16. AVIS SUR adf71bb (point 4) : COMPTEURS D’UNE ANCIENNE RÉPONSE → « lu à HH:MM »');
+  {
+    const ligne = { id: '#16', prix: 80, date_commande: '2026-11-27', date_livraison: '2026-11-28', statut: 'en-attente', origine: 'LeBonCoin' };
+    const { bac, etat } = nouveauBac({ reponse: () => ({ status: 200, json: [ligne] }) });
+    etat.t = new Date(2026, 10, 27, 18, 40).getTime();
+    const box = { style: {}, innerHTML: '' };
+    Object.assign(bac, { SUPABASE_URL: 'https://x.invalid', SUPABASE_KEY: 'k', role: 'admin', cmdStatsSel: { jour: '', sem: '', mois: '' }, cmdStatsCache: {} });
+    bac.document.getElementById = (id) => (id === 'cmd-stats-jour' ? box : null);
+    vm.runInContext(fonction('async function cmdFetchRange(dMin, dMaxExcl) {') + '\n' + fonction('async function renderCmdStatsJour() {'), bac);
+    const nbLu = (h) => (h.match(/lu à 18:40/g) || []).length;
+    await bac.renderCmdStatsJour();
+    test('lecture fraîche (18:40) : chiffres affichés, aucune heure « lu à »', /<strong>1<\/strong> cmd/.test(box.innerHTML) && !/cmd-stats-lu-a/.test(box.innerHTML));
+    etat.t += 30000; await bac.renderCmdStatsJour();
+    test('réponse encore fraîche (moins de 60 s, sans échec) : toujours aucune heure', !/cmd-stats-lu-a/.test(box.innerHTML));
+    etat.reponse = () => ({ status: 504, json: {} }); etat.t += 120000; // 18:42:30 : lecture en 504
+    await bac.renderCmdStatsJour();
+    test('base en 504 : derniers chiffres gardés ET « lu à 18:40 » sur les 3 compteurs', /<strong>1<\/strong> cmd/.test(box.innerHTML) && nbLu(box.innerHTML) === 3, box.innerHTML.slice(0, 600));
+    etat.t += 5000; const n0 = etat.requetes.length; await bac.renderCmdStatsJour();
+    test('pendant la pause qui suit (aucune lecture) : toujours « lu à 18:40 »', etat.requetes.length === n0 && nbLu(box.innerHTML) === 3);
+    etat.t += 400000; etat.reponse = () => ({ status: 200, json: [ligne] }); await bac.renderCmdStatsJour();
+    test('base de nouveau disponible : lecture fraîche, heure retirée', !/cmd-stats-lu-a/.test(box.innerHTML) && /<strong>1<\/strong> cmd/.test(box.innerHTML));
+    // période passée choisie (cmdFetchRange) : même règle
+    bac.cmdStatsSel.jour = '2026-11-20';
+    await bac.renderCmdStatsJour(); const tLu = etat.t;
+    etat.t += 120000; etat.reponse = (u) => (/date_commande=gte\.2026-11-20&/.test(u) ? { status: 503, json: {} } : { status: 200, json: [ligne] });
+    bac.cmdStatsCache = {}; // plage passée : relue (cache définitif vidé pour l'essai)
+    const r = await bac.cmdFetchRange('2026-11-20', '2026-11-21');
+    test('cmdFetchRange : ancienne réponse rendue après un échec → luA = heure de sa lecture, jamais gardée comme définitive', r.luA === tLu && !bac.cmdStatsCache['2026-11-20_2026-11-21'], r);
+    test('chargeHeure : « HH:MM » à deux chiffres', bac.chargeHeure(new Date(2026, 10, 27, 8, 5).getTime()) === '08:05');
   }
 
   console.log('\n' + ok + ' OK, ' + ko + ' échec(s)');

@@ -665,12 +665,43 @@ const PIECE = (id, champs) => Object.assign({ id, cmd_id: '#D1', ligne_idx: 0, p
     const r1 = await bN.dropChargerPieces('#N1'), r2 = await bN.dropChargerPieces('#N2');
     test('commande SANS livreur ou GLS : aucun appel drop_pieces (plus de découpage à l\'ouverture de la fiche), rien gardé', r1.nonConcernee && r2.nonConcernee
       && !bN._envois.some((e) => /drop_pieces/.test(e.url)) && !bN.dropPieces['#N1'] && !bN.dropPieces['#N2'], bN._envois.map((e) => e.url));
-    const r4 = await bN.dropChargerPieces('#N4');
-    test('commande DÉJÀ livrée dont l\'appareil ne connaît pas les pièces : aucun découpage', r4.nonConcernee && !bN._envois.some((e) => /drop_pieces/.test(e.url)));
     test('« Livré » jamais bloqué pour une commande sans livreur ou GLS (et aucune lecture lancée)', bN.dropBloqueLivre('#N1') === '' && bN.dropBloqueLivre('#N2') === ''
       && !bN._envois.some((e) => /drop_pieces/.test(e.url)));
     const r3 = await bN.dropChargerPieces('#N3');
-    test('commande CONCERNÉE (livreur attribué) : découpage demandé comme avant', !!r3 && !r3.nonConcernee && bN._envois.filter((e) => /drop_pieces/.test(e.url)).length === 1 && bN.dropPieces['#N3'].pieces.length === 1);
+    test('commande CONCERNÉE (livreur attribué) : découpage demandé comme avant', !!r3 && !r3.nonConcernee && bN._envois.filter((e) => /\/rpc\/drop_pieces$/.test(e.url)).length === 1 && bN.dropPieces['#N3'].pieces.length === 1);
+    // avis chatgpt-review sur adf71bb, point 5 : commande DÉJÀ livrée → lecture SANS création (drop_pieces_lire, 042), jamais drop_pieces
+    const lus = [];
+    const { bac: bL } = nouveauBac({ role: 'admin', reponse: (url, opt) => {
+      if (/\/rpc\/drop_pieces_lire$/.test(url)) { const id = JSON.parse(opt.body).p_cmd_id; lus.push(id);
+        if (bL._lireEtat === 'absente') return { status: 404, json: { code: 'PGRST202' } };
+        if (bL._lireEtat === 'panne') return { status: 503, json: {} };
+        return { status: 200, json: { ok: true, lecture_seule: true, perime: false, tva_pct: 20, pieces: id === '#L1' ? [PIECE(7, { cmd_id: '#L1', provenance: 'depot', livraison: 'livree' })] : [] } }; }
+      if (/\/rpc\/drop_pieces$/.test(url)) return { status: 200, json: { ok: true, pieces: [PIECE(8)] } };
+      return { status: 200, json: { ok: true } }; } });
+    bL.dropActif = true;
+    bL.commandes = [{ id: '#L1', transporteur: 'RANOU', livreur: 'LIVREUR-TEST', statut: 'livré' }, { id: '#L2', transporteur: '', livreur: 'LIVREUR-TEST', statut: 'livre' },
+      { id: '#L3', transporteur: 'RANOU', livreur: '', statut: 'livré' }];
+    const rL1 = await bL.dropChargerPieces('#L1');
+    test('commande DÉJÀ livrée, pièces déclarées sur un AUTRE appareil (appareil neuf, rien en cache) : lues sans création, gardées',
+      rL1 && !rL1.nonConcernee && rL1.lectureSeule && rL1.pieces.length === 1 && rL1.pieces[0].livraison === 'livree' && bL.dropPieces['#L1'] && bL.dropPieces['#L1'].pieces.length === 1, rL1);
+    const rL2 = await bL.dropChargerPieces('#L2');
+    test('commande DÉJÀ livrée jamais découpée : lecture seule, aucune pièce, aucun drop_pieces (jamais de création)', rL2 && rL2.pieces.length === 0
+      && !bL._envois.some((e) => /\/rpc\/drop_pieces$/.test(e.url)) && lus.join() === '#L1,#L2', [rL2, lus]);
+    await bL.dropChargerPieces('#L1');
+    test('commande livrée DONT les pièces sont déjà connues : relue sans création (plus de drop_pieces, ni découpage ni redécoupage)',
+      lus.join() === '#L1,#L2,#L1' && !bL._envois.some((e) => /\/rpc\/drop_pieces$/.test(e.url)), lus);
+    const rL3 = await bL.dropChargerPieces('#L3');
+    test('commande livrée NON concernée (sans livreur) : ni lecture ni création', rL3.nonConcernee && lus.length === 3 && !bL._envois.some((e) => /\/rpc\/drop_pieces$/.test(e.url)));
+    bL._lireEtat = 'panne'; delete bL.dropPieces['#L2'];
+    const rP = await bL.dropChargerPieces('#L2');
+    test('lecture seule en 503 : rien gardé (nouvel essai plus tard), jamais de repli sur drop_pieces', rP === null && !bL.dropPieces['#L2'] && !bL._envois.some((e) => /\/rpc\/drop_pieces$/.test(e.url)));
+    bL._lireEtat = 'absente';
+    const rA = await bL.dropChargerPieces('#L2'), rA1 = await bL.dropChargerPieces('#L1');
+    test('042 pas appliquée (drop_pieces_lire absente) : aucune pièce lue pour une commande inconnue, pièces déjà connues gardées, jamais drop_pieces',
+      rA.nonConcernee && rA.pieces.length === 0 && rA1 && rA1.pieces.length === 1 && !bL._envois.some((e) => /\/rpc\/drop_pieces$/.test(e.url)));
+    const r4 = await bN.dropChargerPieces('#N4');
+    test('commande DÉJÀ livrée (bac précédent) : seule la lecture sans création est demandée', !!r4 && bN._envois.filter((e) => /\/rpc\/drop_pieces_lire$/.test(e.url)).length === 1
+      && bN._envois.filter((e) => /\/rpc\/drop_pieces$/.test(e.url)).length === 1, bN._envois.map((e) => e.url));
     test('… et « Livré » toujours bloqué tant que sa pièce n\'est pas indiquée', bN.dropBloqueLivre('#N3') !== '');
     // pièces déjà en cache (découpée par la v7.5.210 à l'ouverture de sa fiche) : ignorées pour une commande non concernée
     bN.dropPieces['#N1'] = { pieces: [PIECE(9, { cmd_id: '#N1' })] };

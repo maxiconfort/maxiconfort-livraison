@@ -458,8 +458,48 @@ grant select, insert, update, delete on storage.objects to anon;
     && /PIECES_NON_CONFIRMEES/.test(await echec('admin', "update public.commandes set statut = 'livré' where id = '#N3'") || ''));
   test('… le livreur ne contourne pas le contrôle en vidant le livreur dans la même écriture',
     /PIECES_NON_CONFIRMEES/.test(await echec('livreur', "update public.commandes set statut = 'livré', livreur = '' where id = '#N3'") || ''));
+  // avis chatgpt-review sur adf71bb : l'administrateur non plus (valeurs d'AVANT et d'APRÈS lues, quel que soit le rôle)
+  const eN3a = await echec('admin', "update public.commandes set statut = 'livré', livreur = '' where id = '#N3'");
+  test('… l\'ADMINISTRATEUR ne le contourne pas non plus : retirer le livreur + « livré » dans la même écriture → REFUSÉ (PIECES_NON_CONFIRMEES)',
+    /PIECES_NON_CONFIRMEES/.test(eN3a || ''), eN3a);
+  const eN3g = await echec('admin', "update public.commandes set statut = 'livré', transporteur = 'GLS' where id = '#N3'");
+  test('… ni en passant la commande en GLS dans la même écriture → REFUSÉ (PIECES_NON_CONFIRMEES)', /PIECES_NON_CONFIRMEES/.test(eN3g || ''), eN3g);
+  const cN3 = await un(P, "select statut, livreur, transporteur from public.commandes where id = '#N3'");
+  test('… après ces refus : commande intacte (pas livrée, livreur toujours là, transporteur inchangé) et aucune dérogation inscrite',
+    cN3.statut !== 'livré' && (cN3.livreur || '') !== '' && cN3.transporteur !== 'GLS'
+    && (await nb("public.drop_derogations where cmd_id = '#N3'")) === 0, cN3);
   r = await rpc('livreur', 'public.deduire_stock_livraison($1)', ['#N3']);
   test('… et sa déduction reste celle de la 041 (refusée : commande pas livrée)', !r.ok, r);
+  // le cas légitime reste possible : livreur retiré dans une écriture SÉPARÉE (vente du bureau), puis « livré »
+  await cmd('#N6', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 1 }], 120);
+  const pN6 = (await rpc('livreur', 'public.drop_pieces($1)', ['#N6'])).pieces || [];
+  await q('admin', "update public.commandes set livreur = '' where id = '#N6'");
+  const eN6 = await echec('admin', "update public.commandes set statut = 'livré' where id = '#N6'");
+  test('commande concernée découpée (pièce jamais déclarée), livreur retiré dans une écriture SÉPARÉE, puis « livré » : accepté (devenue non concernée)',
+    pN6.length === 1 && eN6 === null, eN6 || pN6);
+  // avis chatgpt-review sur adf71bb, point 5 : lecture SANS création (drop_pieces_lire) pour une commande déjà livrée
+  await cmd('#N9', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 1 }], 120);
+  const pN9 = (await rpc('livreur', 'public.drop_pieces($1)', ['#N9'])).pieces || [];
+  const dN9 = await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pN9[0].id, 'depot']);
+  const cfN9 = await rpc('livreur', 'public.drop_confirmer_livraison($1, $2::jsonb)', ['#N9', JSON.stringify([{ id: pN9[0].id, livree: true }])]);
+  const eN9 = await echec('livreur', "update public.commandes set statut = 'livré' where id = '#N9'");
+  test('commande concernée livrée normalement (pièce déclarée « dépôt » puis confirmée livrée)', dN9 && dN9.ok && cfN9 && cfN9.ok && eN9 === null, [dN9, cfN9, eN9]);
+  const totPieces = await nb('public.commande_pieces'), totJournal = await nb('public.drop_journal');
+  const lN9a = await rpc('admin', 'public.drop_pieces_lire($1)', ['#N9']), lN9l = await rpc('livreur', 'public.drop_pieces_lire($1)', ['#N9']);
+  test('drop_pieces_lire (appareil neuf) : la pièce déclarée ailleurs est lue, au même format que drop_pieces (provenance, livraison), administrateur et livreur',
+    lN9a.ok && lN9a.lecture_seule && lN9a.pieces.length === 1 && lN9a.pieces[0].id === pN9[0].id && lN9a.pieces[0].provenance === 'depot' && lN9a.pieces[0].livraison === 'livree'
+    && lN9l.ok && lN9l.pieces.length === 1, [lN9a, lN9l]);
+  await cmd('#N8', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 2 }], 240);
+  const lN8 = [await rpc('admin', 'public.drop_pieces_lire($1)', ['#N8']), await rpc('livreur', 'public.drop_pieces_lire($1)', ['#N8']), await rpc('collab', 'public.drop_pieces_lire($1)', ['#N8'])];
+  test('drop_pieces_lire d\'une commande jamais découpée : aucune pièce rendue ET aucune créée (administrateur, livreur, collaboratrice)',
+    lN8.every((x) => x && x.ok && x.pieces.length === 0) && (await nb("public.commande_pieces where cmd_id = '#N8'")) === 0, lN8);
+  await q(P, "update public.commandes set lignes = $1::jsonb where id = '#N9'", [JSON.stringify([{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 3 }])]);
+  const lN9p = await rpc('admin', 'public.drop_pieces_lire($1)', ['#N9']);
+  test('… lignes changées après la livraison : signalé « périmé », jamais redécoupé (même pièce rendue)', lN9p.ok && lN9p.perime === true && lN9p.pieces.length === 1 && lN9p.pieces[0].id === pN9[0].id, lN9p);
+  test('… aucune ligne créée ni supprimée, rien au journal, par toutes ces lectures', (await nb('public.commande_pieces')) === totPieces && (await nb('public.drop_journal')) === totJournal);
+  const lB = await rpc('livreurB', 'public.drop_pieces_lire($1)', ['#N9']), lS = await rpc('anonyme', 'public.drop_pieces_lire($1)', ['#N9']);
+  test('drop_pieces_lire : commande d\'un autre livreur → « commande_introuvable » ; sans session → « session_requise »',
+    lB && lB.ok === false && lB.erreur === 'commande_introuvable' && lS && lS.ok === false && lS.erreur === 'session_requise', [lB, lS]);
   await cmd('#N4', [{ produitId: 'ps90', nom: 'Sommier fictif 90', qte: 1 }], 120);
   const pN4 = (await rpc('livreur', 'public.drop_pieces($1)', ['#N4'])).pieces || [];
   const dN4 = await rpc('livreur', 'public.drop_declarer($1, $2, null, null)', [pN4[0].id, 'depot']);

@@ -3688,6 +3688,9 @@ function oqSucces(type, data, tsV, r) {
 var DED_BASE_ABSENTE_MSG = '⏳ Stock : mise à jour de la base en attente — la déduction sera faite automatiquement';
 var _dedEnvoi = {}, _dedBaseAbsenteVue = false, _dedErreurVue = {}, _dedProchain = {};
 var DED_PAUSE_MS = 60000, DED_PAUSE_ABSENTE_MS = 300000; // relève : pas plus d'un essai par minute (5 min si fonction absente)
+// v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 3) : attente PROPRE aux demandes de déduction après une erreur 5xx (408, 429)
+// ou une coupure : croissante par demande (1 min, 2 min, puis 5 min au plus), remise à zéro à la première réponse de la base
+var DED_PAUSES_SURCHARGE = [60000, 120000, 300000], _dedSurcharges = {};
 function dedEnFile(id) { return offlineQueue.some(function(q) { return oqCle(q) === 'deduction|' + id; }); }
 function dedFileRetirer(id) {
   var n = offlineQueue.length;
@@ -3784,6 +3787,7 @@ function dedErreurSignaler(id, detail) {
 async function stkDeductionEnvoyer(id, cmdV) {
   if (!id) return 'abandon';
   if (_dedEnvoi[id]) return _dedEnvoi[id]; // un seul envoi à la fois par commande
+  var surcharge = false; // v7.5.211 : 5xx / 408 / 429 / coupure → attente croissante propre à cette demande
   var envoi = (async function() {
     var resp, corps = null, txt = '';
     try {
@@ -3792,8 +3796,9 @@ async function stkDeductionEnvoyer(id, cmdV) {
         headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
         body: JSON.stringify({ p_cmd_id: id })
       });
-    } catch(e) { return 'reessayer'; } // coupure, ou réponse perdue après la déduction : le rejeu répondra « deja »
+    } catch(e) { surcharge = true; return 'reessayer'; } // coupure, ou réponse perdue après la déduction : le rejeu répondra « deja »
     try { txt = await resp.text(); corps = txt ? JSON.parse(txt) : null; } catch(e) { corps = null; }
+    if (!resp.ok && httpTemporaire(resp.status)) surcharge = true;
     if (!resp.ok) {
       if (resp.status === 404 || (corps && corps.code === 'PGRST202')) { // fonction absente : migration 040 pas appliquée
         if (!_dedBaseAbsenteVue) { _dedBaseAbsenteVue = true; try { toast(DED_BASE_ABSENTE_MSG, 'info'); } catch(e) {} }
@@ -3820,7 +3825,12 @@ async function stkDeductionEnvoyer(id, cmdV) {
   // un deuxième appelant pendant l'envoi reçoit le MÊME résultat final (« absente » → « reessayer » : jamais retiré)
   var fin = envoi.catch(function() { return 'reessayer'; }).then(function(r) {
     delete _dedEnvoi[id];
-    if (r === 'absente' || r === 'reessayer') _dedProchain[id] = Date.now() + (r === 'absente' ? DED_PAUSE_ABSENTE_MS : DED_PAUSE_MS);
+    var attente = (r === 'absente') ? DED_PAUSE_ABSENTE_MS : DED_PAUSE_MS;
+    if (r === 'reessayer' && surcharge) {
+      var n = (_dedSurcharges[id] || 0) + 1; _dedSurcharges[id] = n;
+      attente = DED_PAUSES_SURCHARGE[Math.min(n, DED_PAUSES_SURCHARGE.length) - 1];
+    } else delete _dedSurcharges[id];
+    if (r === 'absente' || r === 'reessayer') _dedProchain[id] = Date.now() + attente;
     else delete _dedProchain[id];
     if (r === 'refus' || r === 'abandon') delete _dedSession[id];
     return r === 'absente' ? 'reessayer' : r;
@@ -3877,6 +3887,15 @@ function stkReprendreDeductions(force) {
     });
   }
   return Promise.all(p).then(function() {});
+}
+// v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 3) : reprise des ÉCRITURES en attente, appelée au début de chaque passage
+// de la relève, AVANT ses gardes de lecture (pause de charge, onglet caché, relève en cours) : elle ne dépend jamais d'elles.
+// Chaque demande garde sa propre attente (_dedProchain : 1 min, croissante après une erreur 5xx ou une coupure). Ne rejette jamais.
+function stkRepriseEcritures() {
+  try {
+    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) return Promise.resolve();
+    return stkReprendreDeductions(false).catch(function(e) { console.warn('[stock] reprise des écritures :', e && e.message); });
+  } catch(e) { return Promise.resolve(); }
 }
 
 // v7.5.198 : appel d'une fonction de la base (rpc) — { etat: 'ok' | 'reseau' | 'absente' | 'http', status, corps }
@@ -5969,7 +5988,20 @@ async function dropChargerPieces(cmdId) {
   // simple ouverture de la fiche, puis refusait son « Livré » (PIECES_NON_CONFIRMEES)
   var _c = dropCmdDe(cmdId);
   var _livree = _c && (String(_c.statut || '') === 'livré' || String(_c.statut || '') === 'livre');
-  if (_c && (!dropCmdConcernee(_c) || (_livree && !dropPieces[cmdId]))) return { pieces: [], nonConcernee: true };
+  if (_c && !dropCmdConcernee(_c)) return { pieces: [], nonConcernee: true }; // jamais de création ni de lecture
+  // v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 5) : commande concernée DÉJÀ livrée → lecture SANS création
+  // (drop_pieces_lire, migration 042) : les pièces déclarées sur un autre appareil sont consultables sur un appareil neuf, et la
+  // commande n'est jamais découpée ni redécoupée. Fonction absente (042 pas appliquée) : aucune pièce lue, aucun découpage.
+  if (_livree) {
+    var rl = await dropRpc('drop_pieces_lire', { p_cmd_id: cmdId });
+    if (rl.httpOk && rl.corps && rl.corps.ok) {
+      dropPieces[cmdId] = { pieces: rl.corps.pieces || [], perime: !!rl.corps.perime, tva: rl.corps.tva_pct, derogation: !!rl.corps.derogation, lectureSeule: true, at: Date.now() };
+      dropSauver();
+      return dropPieces[cmdId];
+    }
+    if (rl.absente) return dropPieces[cmdId] || { pieces: [], nonConcernee: true };
+    return null; // échec de lecture (réseau, 5xx, session) : rien gardé, nouvel essai plus tard
+  }
   var r = await dropRpc('drop_pieces', { p_cmd_id: cmdId });
   if (r.httpOk && r.corps && r.corps.ok) {
     dropPieces[cmdId] = { pieces: r.corps.pieces || [], perime: !!r.corps.perime, tva: r.corps.tva_pct, derogation: !!r.corps.derogation, at: Date.now() };
@@ -7369,7 +7401,7 @@ var CHARGE_CACHE_MIN = 60000;
 var CHARGE_REGROUPEMENT = 5000;
 var CHARGE_DELAI_LECTURE = 20000; // une lecture lourde sans réponse au bout de 20 s est abandonnée (= délai dépassé)
 var CHARGE_DELAI_COMPLET = 30000; // chargement complet (sbLoadAll) : commandes + tournées, réponses ET corps, bornés à 30 s au total
-var CHARGE_ETAT = { echecs: 0, pauseJusqua: 0, dernierEchec: 0, vols: {}, cache: {}, echecsCle: {} }; // echecsCle[cle] = { n, pasAvant } : attente propre à la clé
+var CHARGE_ETAT = { echecs: 0, pauseJusqua: 0, dernierEchec: 0, vols: {}, cache: {}, echecsCle: {}, perimes: {} }; // echecsCle[cle] = { n, pasAvant } : attente propre à la clé ; perimes[cle] = heure de lecture d'une ancienne réponse rendue
 function chargeDelaiPause(n) { return CHARGE_PAUSES[Math.min(Math.max(1, n || 1), CHARGE_PAUSES.length) - 1]; }
 function chargeEnPause(t) { return (t || Date.now()) < CHARGE_ETAT.pauseJusqua; }
 // statut HTTP (ou absence de réponse) qui signale une base surchargée
@@ -7389,6 +7421,10 @@ function chargeSucces(debut) {
 // réponse d'une lecture lourde (debut = heure d'envoi) : succès → remise à zéro (seulement après l'échéance de la pause) ;
 // surcharge → pause croissante ; autre refus (401, 403…) → rien
 function chargeNoterReponse(statut, debut) { if (statut >= 200 && statut < 400) chargeSucces(debut); else if (chargeSurcharge(statut)) chargeEchec(); }
+// v7.5.211 (revue native P2 PR 31 sur adf71bb) : en-tête d'une réponse d'une suite de lectures (relève, chargement complet) : un
+// échec de surcharge est noté TOUT DE SUITE (rend vrai : la suite doit s'arrêter) ; un succès n'est JAMAIS noté ici — l'attente
+// croissante n'est remise à zéro (chargeSucces) qu'une fois TOUTES les réponses ET leurs corps lus avec succès.
+function chargeNoterEchecHttp(statut) { if (chargeSurcharge(statut)) { chargeEchec(); return true; } return false; }
 function chargeOngletCache() { return typeof document !== 'undefined' && !!document && document.hidden === true; }
 // v7.5.211 (revue chatgpt-review PR 31 sur 6ddb631, point 3, et revue native P2) : délai GLOBAL d'une suite d'opérations réseau,
 // réponses ET lectures des corps comprises. À l'échéance : abandon (ctrl.abort) et toute opération passée par borne() est rejetée
@@ -7419,22 +7455,35 @@ async function chargeFetch(url, init) {
 }
 // Une seule lecture en cours par clé ; réponse gardée « ttl » ms. En pause ou onglet caché : AUCUNE lecture, la dernière réponse connue
 // (même plus ancienne) est rendue, sinon undefined. Erreur : pause notée, dernière réponse connue rendue (sinon undefined).
+// v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 4) : quand la réponse rendue est une ancienne réponse gardée (pause, échec,
+// onglet caché), son heure de lecture est notée (CHARGE_ETAT.perimes[cle], lue par chargeLuA) pour l'afficher « lu à HH:MM ».
+function chargeRendrePerimee(cle, c) {
+  if (!CHARGE_ETAT.perimes) CHARGE_ETAT.perimes = {};
+  if (c) CHARGE_ETAT.perimes[cle] = c.at; else delete CHARGE_ETAT.perimes[cle];
+  return c ? c.val : undefined;
+}
+// heure de lecture (ms) de la dernière réponse rendue pour « cle » SI c'était une ancienne réponse gardée ; null si elle était fraîche
+function chargeLuA(cle) { var p = CHARGE_ETAT.perimes && CHARGE_ETAT.perimes[cle]; return p ? p : null; }
+// « HH:MM » (heure locale) d'une heure en ms
+function chargeHeure(ms) { var d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 function chargeUnique(cle, ttl, lire) {
   var t = Date.now(), c = CHARGE_ETAT.cache[cle];
-  if (c && t - c.at < Math.max(ttl || 0, CHARGE_CACHE_MIN)) return Promise.resolve(c.val);
+  if (c && t - c.at < Math.max(ttl || 0, CHARGE_CACHE_MIN)) { if (CHARGE_ETAT.perimes) delete CHARGE_ETAT.perimes[cle]; return Promise.resolve(c.val); }
   if (CHARGE_ETAT.vols[cle]) return CHARGE_ETAT.vols[cle];
   var ec = CHARGE_ETAT.echecsCle[cle];
   // attente croissante PROPRE à la clé (le succès d'une autre lecture ne lève pas celle-ci)
-  if (chargeEnPause(t) || (ec && t < ec.pasAvant) || chargeOngletCache()) return Promise.resolve(c ? c.val : undefined);
+  if (chargeEnPause(t) || (ec && t < ec.pasAvant) || chargeOngletCache()) return Promise.resolve(chargeRendrePerimee(cle, c));
   var p = Promise.resolve().then(lire).then(function (val) {
-    delete CHARGE_ETAT.vols[cle]; delete CHARGE_ETAT.echecsCle[cle]; CHARGE_ETAT.cache[cle] = { val: val, at: Date.now() }; chargeSucces(t); return val;
+    delete CHARGE_ETAT.vols[cle]; delete CHARGE_ETAT.echecsCle[cle]; CHARGE_ETAT.cache[cle] = { val: val, at: Date.now() };
+    if (CHARGE_ETAT.perimes) delete CHARGE_ETAT.perimes[cle];
+    chargeSucces(t); return val;
   }, function (e) {
     delete CHARGE_ETAT.vols[cle];
     var n = ((CHARGE_ETAT.echecsCle[cle] || {}).n || 0) + 1;
     CHARGE_ETAT.echecsCle[cle] = { n: n, pasAvant: Date.now() + chargeDelaiPause(n) };
     if (chargeSurcharge(e && e.statut != null ? e.statut : null)) chargeEchec();
     try { console.warn('[charge] ' + cle + ' : ' + (e && e.message)); } catch (x) {}
-    return c ? c.val : undefined;
+    return chargeRendrePerimee(cle, c);
   });
   CHARGE_ETAT.vols[cle] = p;
   return p;
@@ -7518,16 +7567,24 @@ async function sbLoadAll() {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'count=exact' },
       signal: controller.signal
     }));
-    if (typeof chargeNoterReponse === 'function') chargeNoterReponse(rCmds.status, _cmdDebutLecture); // v7.5.211 : 5xx → pause croissante des lectures lourdes
+    // v7.5.211 (avis chatgpt-review et revue native P2 PR 31 sur adf71bb) : surcharge (5xx, 408, 429) notée TOUT DE SUITE et suite
+    // ARRÊTÉE (la requête des tournées ne part pas : on n'insiste pas auprès d'une base saturée) ; un succès n'est noté qu'à la fin,
+    // une fois les deux réponses ET leurs corps lus
+    if (typeof chargeNoterEchecHttp === 'function' && chargeNoterEchecHttp(rCmds.status)) {
+      var _eCmds = new Error('commandes HTTP ' + rCmds.status + ' (base surchargée)'); _eCmds.chargeNote = true; throw _eCmds;
+    }
     var rTour = await _dTout.borne(fetch(SUPABASE_URL + '/rest/v1/tournees?select=*&order=created_at.desc', {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
       signal: controller.signal
     }));
     clearTimeout(timeout);
+    var _tourSurcharge = (typeof chargeNoterEchecHttp === 'function') && chargeNoterEchecHttp(rTour.status); // v7.5.211 : 5xx des tournées compté aussi
     var cmdsRes = { data: rCmds.ok ? await _dTout.borne(rCmds.json()) : [], error: rCmds.ok ? null : 'HTTP '+rCmds.status };
     var cmdsTotal = cmdTotalDepuisEntete(rCmds.headers && rCmds.headers.get ? rCmds.headers.get('Content-Range') : null);
-    var tourRes = { data: rTour.ok ? await _dTout.borne(rTour.json()) : [], error: rTour.ok ? null : 'HTTP '+rTour.status };
+    var tourRes = { data: (rTour.ok && !_tourSurcharge) ? await _dTout.borne(rTour.json()) : [], error: rTour.ok ? null : 'HTTP '+rTour.status };
     _dTout.fin();
+    // v7.5.211 (revue native P2 PR 31 sur adf71bb) : attente croissante remise à zéro SEULEMENT ici, les deux réponses lues avec succès
+    if (rCmds.ok && rTour.ok && typeof chargeSucces === 'function') chargeSucces(_cmdDebutLecture);
     if (cmdsRes.error) { console.warn('Supabase commandes error:', cmdsRes.error); }
     if (tourRes.error) { console.warn('Supabase tournees error:', tourRes.error); }
 
@@ -7618,7 +7675,8 @@ async function sbLoadAll() {
     }
   } catch(e) {
     console.warn('sbLoadAll erreur:', e.message);
-    if (typeof chargeEchec === 'function') chargeEchec(); // v7.5.211 : délai dépassé ou réseau → pause croissante, aucune relance immédiate
+    // v7.5.211 : délai dépassé ou réseau → pause croissante, aucune relance immédiate (surcharge HTTP déjà notée : pas comptée deux fois)
+    if (typeof chargeEchec === 'function' && !(e && e.chargeNote)) chargeEchec();
     if (_dTout) _dTout.fin(); try { clearTimeout(timeout); } catch(x) {} // v7.5.211 : minuteurs arrêtés
     if (_cmdFile) { cmdRtFermer(_cmdFile); _cmdFile = null; } // v7.5.157 : file fermée (événements déjà appliqués à la liste gardée)
     // Fallback cache localStorage — uniquement si AUCUNE donnée chargée depuis Supabase
@@ -8015,6 +8073,10 @@ function startPolling() {
   // Vider la queue offline au démarrage si items en attente
   if (navigator.onLine && offlineQueue.length > 0) setTimeout(offlineQueueFlush, 3000);
   _pollingInterval = setInterval(async function() {
+    // v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 3) : les ÉCRITURES en attente (demandes de déduction du stock, recrédits,
+    // mouvements) reprennent à CHAQUE passage, AVANT les gardes de lecture : ni la pause de charge, ni l'onglet caché, ni une relève
+    // encore en cours ne les bloquent. Elles ont leur PROPRE attente (par demande, croissante après une erreur 5xx : stkDeductionEnvoyer).
+    stkRepriseEcritures();
     // v7.5.211 (incident du 27/11, base saturée) : une seule relève à la fois (avant : une relève lente ou bloquée n'empêchait pas
     // la suivante, 10 s plus tard — les requêtes s'empilaient), aucune relève onglet caché, aucune pendant la pause croissante après erreur
     if (_pollingEnCours) return;
@@ -8038,7 +8100,10 @@ function startPolling() {
       var rC = await _dRel.borne(fetch(SUPABASE_URL + '/rest/v1/commandes?select=' + CMD_SELECT_COLS + '&order=updated_at.desc.nullslast&limit=80', {
         headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }, signal: _dRel.signal
       }));
-      if (typeof chargeNoterReponse === 'function') chargeNoterReponse(rC.status, _debRel); // v7.5.211 : 5xx → pause croissante
+      // v7.5.211 (revue native P2 PR 31 sur adf71bb) : surcharge notée TOUT DE SUITE, suite arrêtée (pas de 2e requête) ; un succès
+      // n'est noté qu'en fin de relève, les deux réponses et leurs corps lus (avant : remise à zéro dès l'en-tête des commandes, et un
+      // corps ou des tournées hors délai à chaque fois laissaient la pause bloquée à 10 s)
+      if (typeof chargeNoterEchecHttp === 'function' && chargeNoterEchecHttp(rC.status)) { cmdSynchroPerdue('relève HTTP ' + rC.status); return; }
       if (typeof chargeEnPause === 'function' && chargeEnPause()) { cmdSynchroPerdue('relève HTTP ' + rC.status); return; } // pas de 2e requête
       if (rC.ok) {
         var data = await _dRel.borne(rC.json());
@@ -8083,6 +8148,8 @@ function startPolling() {
       var rT = await _dRel.borne(fetch(SUPABASE_URL + '/rest/v1/tournees?select=*', {
         headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }, signal: _dRel.signal
       }));
+      // v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 2) : un 5xx des tournées compte aussi dans l'attente croissante
+      if (typeof chargeNoterEchecHttp === 'function' && chargeNoterEchecHttp(rT.status)) cmdSynchroPerdue('relève tournées HTTP ' + rT.status);
       if (rT.ok) {
         var tData = await _dRel.borne(rT.json());
         if (tData && tData.length > 0) {
@@ -8111,6 +8178,8 @@ function startPolling() {
         }
         try { livControleNonRemontees(); } catch(e) {} // v7.5.191 : contrôle admin, lecture seule
       }
+      // v7.5.211 (revue native P2 PR 31 sur adf71bb) : attente croissante remise à zéro SEULEMENT ici, les deux réponses et leurs corps lus
+      if (rC.ok && rT.ok && typeof chargeSucces === 'function') chargeSucces(_debRel);
     // Sync prix/paie/stpaie des stops depuis les commandes mises à jour
     var _syncNeeded = false;
     tournees.forEach(function(t) {
@@ -8130,8 +8199,8 @@ function startPolling() {
       });
     });
     if (_syncNeeded) renderLivreur();
-    // v7.5.197 : demandes de déduction du stock restées en file : renvoyées (au plus une fois par minute)
-    try { if (navigator.onLine) stkReprendreDeductions(false).catch(function() {}); } catch(e) {}
+    // v7.5.197 : demandes de déduction du stock restées en file : renvoyées — v7.5.211 : au début de CHAQUE passage (stkRepriseEcritures),
+    // plus ici (une relève suspendue par la pause ou l'onglet caché les bloquait)
 
     } catch(e) {
       console.warn('Polling erreur:', e.message); cmdSynchroPerdue('relève'); // v7.5.154 : preuve retirée
@@ -10099,6 +10168,7 @@ async function cmdFetchRange(dMin, dMaxExcl) {
     var url = SUPABASE_URL + '/rest/v1/commandes?select=id,prix,date_commande,date_livraison,statut,origine&date_commande=gte.' + dMin + '&date_commande=lt.' + dMaxExcl + '&statut=not.eq.annul%C3%A9&limit=2000';
     // v7.5.211 (incident du 27/11) : une seule lecture à la fois par plage, réponse gardée 60 s, attente croissante après erreur
     var data = await chargeUnique('cmdPlage:' + key, CHARGE_CACHE_MIN, function() { return chargeFetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } }); });
+    var _luA = (typeof chargeLuA === 'function') ? chargeLuA('cmdPlage:' + key) : null; // v7.5.211 : ancienne réponse gardée → son heure
     if (Array.isArray(data)) {
       lu = true;
       var vr = (data || []).filter(function(c){
@@ -10107,9 +10177,12 @@ async function cmdFetchRange(dMin, dMaxExcl) {
         return notRetro && (c.origine || '').toUpperCase().indexOf('SAV') !== 0;
       });
       res = { nb: vr.length, total: vr.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0) };
+      // v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 4) : chiffres d'une ancienne réponse (pause, échec) → « lu à HH:MM »
+      // (une telle réponse n'est jamais gardée comme définitive dans cmdStatsCache : relue plus tard)
+      if (_luA) res.luA = _luA;
     }
   } catch(e) { console.warn('cmdFetchRange', e.message); }
-  if (immuable && lu) cmdStatsCache[key] = res; // v7.5.211 : un échec n'est jamais gardé comme « 0 commande » définitif
+  if (immuable && lu && !res.luA) cmdStatsCache[key] = res; // v7.5.211 : un échec n'est jamais gardé comme « 0 commande » définitif
   // v7.5.211 (revue chatgpt-review PR 31 sur 6ddb631, point 2) : lecture impossible (erreur, pause, onglet caché) et aucune réponse
   // connue → « indisponible », jamais un « 0 commande » qui passerait pour un vrai chiffre
   if (!lu) res.indisponible = true;
@@ -10174,10 +10247,12 @@ async function renderCmdStatsJour() {
   // relève, chargement complet, filtre…) et relançait à chaque fois cette lecture du mois (263 requêtes en 20 min) — désormais une
   // seule lecture à la fois, réponse gardée 60 s, attente croissante après erreur, aucune lecture onglet caché (dernière réponse gardée).
   var moisData = [], moisLu = false; // v7.5.211 (revue chatgpt-review PR 31, point 2) : moisLu faux = aucune réponse connue → « indisponible »
+  var moisLuA = null; // v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 4) : heure de lecture d'une ancienne réponse gardée (pause, échec)
   try {
     var url = SUPABASE_URL + '/rest/v1/commandes?select=id,prix,date_commande,date_livraison,statut,origine&date_commande=gte.' + debutMoisStr + '&date_commande=lt.' + demainStr + '&statut=not.eq.annul%C3%A9&limit=1000';
-    var data = await chargeUnique('cmdStatsMois:' + debutMoisStr + ':' + demainStr, CHARGE_CACHE_MIN, function() { return chargeFetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } }); });
-    if (Array.isArray(data)) { moisData = data; moisLu = true; }
+    var _cleMois = 'cmdStatsMois:' + debutMoisStr + ':' + demainStr;
+    var data = await chargeUnique(_cleMois, CHARGE_CACHE_MIN, function() { return chargeFetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } }); });
+    if (Array.isArray(data)) { moisData = data; moisLu = true; if (typeof chargeLuA === 'function') moisLuA = chargeLuA(_cleMois); }
   } catch(e) { console.warn('renderCmdStatsJour fetch err:', e.message); }
 
   // Filtre rétroactif global
@@ -10197,7 +10272,7 @@ async function renderCmdStatsJour() {
     });
     var nb = items.length;
     var total = items.reduce(function(s,c){ return s + (parseFloat(c.prix)||0); }, 0);
-    return moisLu ? { nb: nb, total: total } : { nb: 0, total: 0, indisponible: true };
+    return moisLu ? { nb: nb, total: total, luA: moisLuA } : { nb: 0, total: 0, indisponible: true };
   }
 
   // v7.5.96 : chaque carte affiche la période EN COURS par défaut (depuis le fetch du mois
@@ -10240,7 +10315,7 @@ async function renderCmdStatsJour() {
   }
   var moisSel = '<select onchange="cmdStatsSel.mois=this.value; renderCmdStatsJour();" style="'+inStyle+'" title="Choisir un mois">'+moisOpts+'</select>';
 
-  function carte(ico, lbl, selHtml, nb, total, bg, brd, txt, indispo) {
+  function carte(ico, lbl, selHtml, nb, total, bg, brd, txt, indispo, luA) {
     // white-space:nowrap + flex:0 0 auto : la carte ne se compresse pas et le montant
     // (ex "1 656,45 €", qui contient des espaces) ne passe plus jamais a la ligne.
     var h = '<div style="background:'+bg+';border:1px solid '+brd+';border-radius:8px;padding:6px 10px;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:'+txt+';white-space:nowrap;flex:0 0 auto">'+
@@ -10249,13 +10324,15 @@ async function renderCmdStatsJour() {
     if (indispo) return h + '<span class="cmd-stats-indispo" style="white-space:nowrap;opacity:.8" title="Lecture de la base impossible pour le moment (base surchargée ou hors ligne) : chiffres non disponibles, nouvel essai automatique">⚠️ indisponible</span></div>';
     h += '<span style="white-space:nowrap"><strong>'+nb+'</strong> cmd'+(nb>1?'s':'')+'</span>';
     if (showMontants) h += '<span style="opacity:.5">·</span><span style="font-weight:900;white-space:nowrap">'+total.toLocaleString('fr-FR').replace(/\s/g,' ')+' €</span>';
+    // v7.5.211 (avis chatgpt-review PR 31 sur adf71bb, point 4) : chiffres d'une ancienne réponse (base surchargée, pause) → heure de lecture
+    if (luA && typeof chargeHeure === 'function') h += '<span class="cmd-stats-lu-a" style="white-space:nowrap;opacity:.75;font-weight:600" title="Base surchargée ou hors ligne : chiffres de la dernière lecture réussie, nouvel essai automatique">lu à '+chargeHeure(luA)+'</span>';
     return h + '</div>';
   }
 
   box.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
-    carte('📊', '',     jourSel, jStats.nb, jStats.total, 'var(--bl)', 'var(--blue)', 'var(--bd)', jStats.indisponible) +
-    carte('📅', 'Sem.', semSel,  sStats.nb, sStats.total, 'var(--gl)', 'var(--green)', 'var(--gd)', sStats.indisponible) +
-    carte('📆', '',     moisSel, mStats.nb, mStats.total, 'var(--ol)', 'var(--orange)', 'var(--od)', mStats.indisponible) +
+    carte('📊', '',     jourSel, jStats.nb, jStats.total, 'var(--bl)', 'var(--blue)', 'var(--bd)', jStats.indisponible, jStats.luA) +
+    carte('📅', 'Sem.', semSel,  sStats.nb, sStats.total, 'var(--gl)', 'var(--green)', 'var(--gd)', sStats.indisponible, sStats.luA) +
+    carte('📆', '',     moisSel, mStats.nb, mStats.total, 'var(--ol)', 'var(--orange)', 'var(--od)', mStats.indisponible, mStats.luA) +
   '</div>';
 }
 
