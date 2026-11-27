@@ -874,7 +874,8 @@ grant select, insert, update, delete on storage.objects to anon;
     && (await un(P, 'select status from public.stock_camion where id = $1', [uR])).status === 'livre'
     && !(await un(P, "select stock_deduit from public.commandes where id = '#Q1'")).stock_deduit, r);
   r = await rpc('admin', 'public.recrediter_stock_livraison($1, false)', ['#Q1']);
-  test('recrédit alors que la commande est ENCORE livrée : rien n\'est rouvert (cycle 1, pièces confirmées)', r.ok && !r.pieces_rouvertes_sans_deduction
+  // v7.5.210 (avis chatgpt-review sur a1d9e57) : la 040 vérifie le statut avant stock_deduit → refus explicite (plus de rejeu « ok »)
+  test('recrédit alors que la commande est ENCORE livrée : refus « commande_encore_livree », rien n\'est rouvert (cycle 1, pièces confirmées)', r.ok === false && r.erreur === 'commande_encore_livree' && !r.pieces_rouvertes_sans_deduction
     && (await nb("public.commande_pieces where cmd_id = '#Q1' and cycle = 1 and livraison = 'livree'")) === 2, r);
   const sR = { s: await stock('ps90'), m: await stock('pm140') };
   await q('admin', "update public.commandes set statut = 'annulé' where id = '#Q1'");

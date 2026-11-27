@@ -514,11 +514,15 @@ begin
   if not v_trouvee and not coalesce(p_suppression, false) then
     return json_build_object('ok', false, 'erreur', 'commande_introuvable');
   end if;
-  -- déjà recréditée (ou jamais déduite) : rien n'est touché ; résultat du recrédit restitué (idempotent)
-  if v_trouvee and not coalesce(c.stock_deduit, false) then return interne.l040_rejeu(p_cmd_id, 'recredit'); end if;
+  -- v7.5.210 (avis chatgpt-review sur a1d9e57) : le STATUT est vérifié AVANT stock_deduit. Une commande encore « livré » en
+  -- base est toujours refusée « commande_encore_livree », même jamais déduite (avant : rejeu « ok » trompeur). Ne concerne
+  -- que la commande encore présente : la suppression (p_suppression) l'a déjà retirée ci-dessus (v_trouvee faux), son cas
+  -- « recredit_manuel_requis » plus bas est inchangé.
   if v_trouvee and coalesce(c.statut, '') in ('livré', 'livre') and not coalesce(p_suppression, false) then
     return json_build_object('ok', false, 'erreur', 'commande_encore_livree', 'statut', c.statut);
   end if;
+  -- déjà recréditée (ou jamais déduite) : rien n'est touché ; résultat du recrédit restitué (idempotent)
+  if v_trouvee and not coalesce(c.stock_deduit, false) then return interne.l040_rejeu(p_cmd_id, 'recredit'); end if;
   select id, nature, sortie_max into o from public.stock_operations
    where cmd_id = p_cmd_id and nature in ('deduction', 'recredit') order by id desc limit 1;
   if not found or o.nature <> 'deduction' then

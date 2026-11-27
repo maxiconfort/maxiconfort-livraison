@@ -482,6 +482,18 @@ create policy sess_livreur_stock on public.produits for update to anon using ((s
   rc = await recrediter('collab', '#RC7', true);
   test('suppression d\'une commande « livré » sans déduction journalisée (collaboratrice) : « recredit_manuel_requis », deduction_certaine = faux, rien recrédité',
     rc.ok === true && rc.recredit_manuel_requis === true && rc.deduction_certaine === false && (await stock('pa')) === paRC6, rc);
+  // v7.5.210 (avis chatgpt-review sur a1d9e57) : commande ENCORE « livré » et JAMAIS déduite (stock_deduit faux), recrédit
+  // SANS suppression : le statut est vérifié avant stock_deduit → refus « commande_encore_livree » (plus de rejeu « ok »)
+  await commande('#RC8', { lignes: [{ produitId: 'pa', qte: 1 }] });
+  const opsRC8 = await nbOps('#RC8');
+  rc = await recrediter('admin', '#RC8');
+  test('recrédit (sans suppression) d\'une commande encore « livré » jamais déduite : refus « commande_encore_livree » (pas de rejeu ok), rien touché, aucune ligne au journal',
+    rc.ok === false && rc.erreur === 'commande_encore_livree' && (await deduit('#RC8')) === false && (await stock('pa')) === paRC6
+    && (await nbOps('#RC8')) === opsRC8 && (await q('proprio', "select 1 from public.commandes where id = '#RC8'")).length === 1, rc);
+  rc = await recrediter('admin', '#RC8', true);
+  test('… la même commande supprimée (p_suppression) : cas « recredit_manuel_requis » inchangé (deduction_certaine faux), commande supprimée',
+    rc.ok === true && rc.recredit_manuel_requis === true && rc.deduction_certaine === false
+    && (await q('proprio', "select 1 from public.commandes where id = '#RC8'")).length === 0, rc);
   // suppression d'une commande livrée
   await commande('#RC3', { lignes: [{ produitId: 'pb', qte: 2 }] });
   await deduire('livreur', '#RC3');

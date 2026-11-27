@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.210 - Dropshipping 040 et 041 (avis chatgpt-review et revue native P2 sur a1d9e57) : recredit d une commande encore livree jamais deduite refuse (statut verifie avant la deduction), derogation motivee de l administrateur pour une unite tampon reprise du camion dont le lot s est epuise apres la confirmation (27/11/2026)
 // v7.5.209 - Dropshipping 041 et 040 (avis chatgpt-review et revue native P2 sur 3fefbc9) : suppression d une commande deduite par une ancienne version signalee au bureau (recredit manuel requis, produits listes, journal), confirmation du chargement retenue tant qu une ligne du chargement n est pas enregistree, unites tampon gardees dans le camion comptees dans les controles des lots (27/11/2026)
 // v7.5.208 - Dropshipping 041 (regle des 10 retours : relecture complete et correction groupee ; revue native P2 sur bac211e) : unite gardee dans le camion rattachee a SA ligne de chargement (indice de ligne envoye par l appli, plafond de la quantite chargee : plus d unite fictive pour une ligne jamais cochee), unite reservee une fois jamais refermee par sa commande d origine, unite du stock tampon gardee qui sort de son lot, garde du stock du camion contre les ecritures directes, ligne du chargement tardive fermee, achat paye libere a l annulation apres livraison, piece repetee refusee a la confirmation (27/11/2026)
 // v7.5.207 - Dropshipping 041 et 040 (revue native P2 sur c22dacd, avis chatgpt-review sur 6775bbc) : lignes du chargement reconciliees a la livraison (article livre jamais repropose dans le camion, unites non livrees gardees ; la signature les retire aussi), anciennes lignes locales sc_ reprises avec un uuid neuf et envoyees une seule fois, cle de mouvement de stock reutilisee avec un autre type ou une autre quantite refusee (27/11/2026)
@@ -76,7 +77,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-209';
+const CACHE_VERSION = 'maxiconfort-v7-5-210';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
