@@ -96,6 +96,16 @@
 --     200 pièces au plus par commande ; au-delà, refus « quantite_hors_borne » (découpage) — la commande se traite alors au
 --     bureau (dérogation).
 --
+-- v7.5.205 (lecture de la VRAIE base le 27/11 ; avis chatgpt-review et revue native sur b8b7fe0, 5d095d5 et 3728fb8) :
+--   * stock_camion.id est un UUID (défaut gen_random_uuid()) : commande_pieces.stock_camion_id en uuid, lignes du camion
+--     créées avec un vrai uuid, une seule par achat (index unique partiel) ; identifiant reçu de l'appli converti sans erreur.
+--   * annulation après livraison partielle : la pièce « pas livrée » est remise à zéro (son article acheté reste une ligne
+--     du camion disponible) ; une pièce fournisseur dont l'achat est au camion n'est jamais confirmée livrée.
+--   * stock du camion réservé et consommé PAR UNITÉ (ligne de plusieurs unités découpée à la déclaration).
+--   * COMMANDE CONCERNÉE (interne.l041_concernee) jamais découpée : « livré » et déduction refusés, sauf dérogation.
+--   * stock tampon épuisé entre la déclaration et la livraison : confirmation / déduction refusées, correction tracée
+--     (drop_tampon_corriger).
+--
 -- LIMITES : un « livré » posé hors session de l'application (serveur, maintenance) n'est pas bloqué par le déclencheur ; la
 -- déduction refuse alors (« pieces_non_confirmees ») et une alerte est posée. Le stockage des photos utilise la même session
 -- (en-têtes x-app-secret / x-session-token) que l'API REST : à vérifier sur le premier ticket envoyé ; sans photo,

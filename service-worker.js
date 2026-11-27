@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // MAXICONFORT LIVRAISON PRO - SERVICE WORKER
+// v7.5.205 - Dropshipping 041 (avis chatgpt-review et revue native sur b8b7fe0, 5d095d5, 3728fb8) : stock_camion.id en uuid comme dans la vraie base, piece non livree remise a zero a l annulation, reservation par unite du stock du camion, commande concernee jamais decoupee bloquee (derogation admin), etat du module inconnu hors ligne = bloquant, chargement coche par le livreur, stock tampon epuise refuse, banc d integration 038b-041 (27/11/2026)
 // v7.5.204 - Fusion de Commandes filtres (9c87ab7, v7.5.200 : PR 27 7f2ed3f controle de coherence ligne par ligne et durees comparees signalees, PR 26 de0ca7b erreur inattendue apres l envoi de la reception = resultat INDETERMINE) dans le dropshipping ; version de la mise en ligne groupee (27/11/2026)
 // v7.5.203 - Fusion de Commandes filtres (ae4fcc5, v7.5.200 : tentative de reception gardee, controle de coherence du tableau de bord, champ de date garde avec la periode) dans le dropshipping (27/11/2026)
 // v7.5.202 - Dropshipping (revue Codex sur 53c7b59) : CAISSE TTC / MARGE HT (decision de Borhen corrigee), livre refuse par la base tant que les pieces ne sont pas confirmees (derogation admin motivee), deduction apres le succes de la confirmation, decoupage perime refuse, module garde hors ligne, entree de stock tampon rejouee avec la meme cle, recredit vers le lot d origine et cycles de relivraison, bornes explicites (27/11/2026)
@@ -71,7 +72,7 @@
 // v7.5.104 - Liste Commandes : colonne Livreur affiche "GLS" pour les commandes expediees
 // ═══════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'maxiconfort-v7-5-204';
+const CACHE_VERSION = 'maxiconfort-v7-5-205';
 const CACHE_NAME = `maxiconfort-cache-${CACHE_VERSION}`;
 
 // Ressources mises en cache au démarrage (assets statiques)
